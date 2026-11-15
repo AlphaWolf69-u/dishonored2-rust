@@ -112,13 +112,22 @@ pub(super) struct CameraGpu {
     alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
     particles: Option<ParticleGpu>,
+    /// The non-isAlpha particle surfaces' zPrePass and opaque colour pass.
+    /// Its own buffers: the alpha pass uploads into the shared pass later
+    /// in the same frame.
+    opaque_particles: Option<OpaqueParticleGpu>,
+    /// 14031d7e0's occlusion query pass for this view.
+    occlusion_queries: Option<super::occlusion_query_pass::OcclusionQueryPass>,
     particle_images: super::particle_images::ParticleImagesGpu,
     particle_programs: std::collections::HashMap<(bevy::render::render_resource::TextureFormat, bevy::render::render_resource::TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
 }
 pub(super) struct ParticlePublicationFrame {
     pub camera: Entity,
     pub frame: u32,
+    /// isAlpha renderers for the FX colour pass, in publication order.
     pub draws: Vec<super::particle_pass::ParticleDraw>,
+    /// Non-isAlpha renderers: zPrePass and opaque colour model surfaces.
+    pub opaque_draws: Vec<super::particle_pass::ParticleDraw>,
     pub world_meshes: Vec<super::particle_system::WorldMeshDraw>,
 }
 
@@ -158,7 +167,7 @@ impl FxFrame {
         self.capacity.hash(&mut hash);
         for draw in self.screen_draws.iter().flatten() { draw.debug_values().hash(&mut hash); }
         if let Some(published) = &self.particles {
-            for draw in &published.draws {
+            for draw in published.draws.iter().chain(&published.opaque_draws) {
                 draw.material.name.hash(&mut hash);
                 draw.instances.len().hash(&mut hash);
                 for value in &draw.instances { particle(value, &mut hash); }
@@ -222,7 +231,6 @@ fn publish_particles(
                         axes,
                     ),
                     view_z: std::array::from_fn(|i| -matrices.view[2][i]),
-                    query_visibility: 1.,
                     alpha_scale: 1.,
                     cvars: &console.cvars,
                     transparency: &transparency,
@@ -231,10 +239,12 @@ fn publish_particles(
                 })
             })?;
         drop(console);
+    let (opaque_draws, draws) = draws.into_iter().partition(|draw: &super::particle_pass::ParticleDraw| draw.material.opaque);
     Ok(ParticlePublicationFrame {
         camera: water.camera,
         frame: water.matrices.frame,
         draws,
+        opaque_draws,
         world_meshes,
     })
 }
@@ -251,6 +261,18 @@ struct ParticleGpu {
     retirement: u64,
 }
 
+struct OpaqueParticleGpu {
+    pass: super::particle_pass::ParticlePass,
+    instances: usize,
+    draws: usize,
+    colour_format: bevy::render::render_resource::TextureFormat,
+    depth_format: bevy::render::render_resource::TextureFormat,
+    /// Whether this frame's zPrePass drew the published opaque renderers;
+    /// the colour pass draws EQUAL against exactly that depth.
+    depth_frame: Option<(Entity, u32)>,
+    prepared: Option<bevy::render::render_resource::SamplerId>,
+}
+
 /// Level loading gate: the level's particle GPU materials exist.
 pub const PARTICLE_GATE: &str = "particle materials";
 
@@ -259,6 +281,7 @@ pub(super) fn release_level(world: &mut World) {
     gpu.current = None;
     gpu.completed = None;
     gpu.alpha_completed = None;
+    gpu.opaque_particles = None;
     if let Some(particles) = gpu.particles.take() {
         gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
     }
@@ -349,6 +372,25 @@ pub(super) fn register(app: &mut App) {
             .after(super::fog_scene::AtmospherePass)
             .before(render_particles)
             .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d));
+        // Non-isAlpha particle surfaces: their zPrePass precedes every
+        // consumer of the prepass depth (screen shadows, AO, the opaque
+        // fog-depth snapshot); their colour pass follows the opaque pass and
+        // precedes atmosphere, as the original's capture orders them.
+        render.add_systems(
+            Core3d,
+            (
+                render_opaque_particle_depth
+                    .in_set(Core3dSystems::MainPass)
+                    .after(Core3dSystems::Prepass)
+                    .before(super::screen_shadow_pass::ScreenShadowPass)
+                    .before(super::fog_scene::SceneDepthPass),
+                render_opaque_particles
+                    .in_set(Core3dSystems::MainPass)
+                    .after(bevy::core_pipeline::core_3d::main_opaque_pass_3d)
+                    .before(super::fog_scene::AtmosphereDepthPass)
+                    .before(super::fog_scene::AtmospherePass),
+            ),
+        );
         render.add_systems(
             Core3d,
             render_particles
@@ -564,7 +606,8 @@ fn render_particles(
                 let bounded = !particles.prepared && lighting_scene.upload_budget.max_bytes.is_some()
                     && !bevy::render::render_asset::unbounded_loading_acquisition();
                 let (created, complete) = particles.pass.prepare_materials_bounded(
-                    particle_images, &device, &queue, materials, &console.cvars, sampler, bounded.then_some(1))?;
+                    particle_images, &device, &queue, materials, &lighting_scene.world_sources.0.strip_materials(),
+                    &console.cvars, sampler, bounded.then_some(1))?;
                 if !complete {
                     return Err("particle materials are preparing".into());
                 }
@@ -591,7 +634,7 @@ fn render_particles(
                 let console = crate::platform::console::shared().read();
                 let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
                 match particles.pass.prepare_materials_bounded(particle_images, &device, &queue,
-                    prewarm.sources.particle_materials(), &console.cvars, sampler, Some(1)) {
+                    prewarm.sources.particle_materials(), &prewarm.sources.strip_materials(), &console.cvars, sampler, Some(1)) {
                     Ok((created, complete)) => {
                         if let Some(started) = started {
                             eprintln!("FX_LIFECYCLE gpu_prepare generation={} created={created} complete={complete} cpu_ms={:.3}",
@@ -607,6 +650,19 @@ fn render_particles(
                 }
             }
         }
+        // 14031d7e0: the occlusion queries test the scene depth whether or
+        // not any particle draws this frame.
+        {
+            let CameraGpu { occlusion_queries, .. } = &mut *gpu;
+            if occlusion_queries.as_ref().is_none_or(|pass| pass.depth_format() != depth_format) {
+                *occlusion_queries = Some(super::occlusion_query_pass::OcclusionQueryPass::new(&device, depth_format));
+            }
+            let mut manager = crate::rendering::occlusion_query::shared().lock()
+                .map_err(|_| "occlusion query manager poisoned")?;
+            occlusion_queries.as_mut().unwrap().record(&device, &queue, context.command_encoder(),
+                &depth.alpha.full_attachment, matrices,
+                [target.main_texture().width(), target.main_texture().height()], &mut manager);
+        }
         // Prepare the shared particle pipeline once the live pool exists,
         // independently of whether this frame sees any of its sprites.
         if draws.is_empty() {
@@ -616,114 +672,15 @@ fn render_particles(
         let adaptation = buffers
             .get(&exposure.0)
             .ok_or("particle adaptation awaits preparation")?;
-        let parameters = buffers
-            .get(&shared.parameters)
-            .ok_or("particle fog parameters await preparation")?;
-        let image = |handle| {
-            images
-                .get(handle)
-                .map(|image| &image.texture_view)
-                .ok_or("particle fog image awaits preparation")
-        };
-        let inverse = view.clip_from_view.inverse();
+        let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
+            lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
+            &depth.alpha.full_attachment, target.main_texture_view())?;
         let CameraGpu { particles, particle_images, .. } = &mut *gpu;
         particles.as_mut().unwrap().pass.record(
             particle_images, &device,
             &queue,
             context.command_encoder(),
-            super::particle_pass::ParticleViewInputs {
-                distortion_sources: sources,
-                surface_sampler: lighting_scene.sampler.as_ref().and_then(|sampler|
-                    images.get(&sampler.0)).map(|image| &image.sampler),
-                direct: if draws.iter().any(|d| !d.material.distortion && d.material.option("fx/opt/use_lighting").is_ok_and(|v| v==1 || v>=3)) {
-                    let tiled=fog.tiled_lighting(water.camera,water.matrices.frame)
-                        .ok_or("particle tiled lighting awaits the current view")?;
-                    let sampling=lighting_scene.parallel.as_ref().ok_or("particle directional sampling owner unavailable")?;
-                    let directional_image=match &lighting_scene.directional_frame.state {
-                        super::shadow_pass::ShadowSceneState::Ready {target_image,..} => {
-                            if !lighting_scene.directional_gpu.completed_revision(lighting_scene.directional_frame.revision) {
-                                return Err("particle directional shadows await current atlas submission".into());
-                            }
-                            target_image
-                        },
-                        super::shadow_pass::ShadowSceneState::Disabled => &sampling.unavailable_depth,
-                        _ => return Err("particle directional atlas owner is not ready".into()),
-                    };
-                    let local=if lighting_scene.lights.lights.iter().any(|l| l[24]!=u32::MAX) {
-                        let owner=lighting_scene.local_frame.as_ref().and_then(|v| v.0.as_ref())
-                            .ok_or("particle local shadow owner unavailable")?;
-                        if lighting_scene.lights.shadow_revision!=Some(owner.revision) {
-                            return Err("particle local shadows belong to another frame".into());
-                        }
-                        let ready=lighting_scene.local_completion.as_ref().and_then(|v| v.0.lock().ok()).is_some_and(|v|
-                            v.as_ref().is_some_and(|(revision,atlas,cache,_)|
-                                *revision==owner.revision && *atlas==owner.atlas.id() && *cache==owner.cache.id()));
-                        if !ready {return Err("particle local shadows await atlas submission".into());}
-                        let sampling=lighting_scene.local.as_ref().ok_or("particle local sampling owner unavailable")?;
-                        Some((&buffers.get(&sampling.buffer).ok_or("particle local sampling buffer unavailable")?.buffer,
-                            &images.get(&owner.atlas).ok_or("particle local atlas unavailable")?.texture_view))
-                    } else {None};
-                    Some(super::particle_pass::ParticleDirectLightingInputs {
-                        pixel: if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some())) {
-                            let screen = lighting_scene.screen.as_ref().ok_or("particle cloud owner unavailable")?;
-                            let cloud = images.get(&screen.cloud).ok_or("particle cloud image awaits GPU preparation")?;
-                            if lighting_scene.lights.area_images.iter().any(Option::is_some) && tiled.area_pool.is_none() {
-                                return Err("particle area-light images await the shared pool".into());
-                            }
-                            Some(super::particle_pass::ParticlePixelLightingInputs {
-                                screen: &images.get(&screen.output).ok_or("particle screen binding awaits GPU preparation")?.texture_view,
-                                cloud: &cloud.texture_view, cloud_sampler: &cloud.sampler,
-                                area: tiled.area_pool.as_ref(),
-                            })
-                        } else { None },
-                        lights:&tiled.lights,pool:&tiled.buffers.pool,heads:&tiled.normal_heads,shadows:&tiled.shadows,
-                        parallel:&buffers.get(&sampling.buffer).ok_or("particle parallel sampling buffer unavailable")?.buffer,
-                        parallel_depth:&images.get(directional_image).ok_or("particle directional atlas unavailable")?.texture_view,
-                        local,grid:tiled.grid(),sun:water.parallel,
-                    })
-                } else {None},
-                lighting: if draws.iter().any(|d| d.lighting.is_some()) {
-                    let resources=lighting_scene.probes.0.as_ref().map_err(Clone::clone)?
-                        .as_ref().ok_or("particle shared probe resources absent")?;
-                    if resources.cube_count==0 { return Err("particle reflection cube array is empty".into()); }
-                    Some(super::particle_pass::ParticleLightingInputs {
-                        probes:&buffers.get(&lighting_scene.models.records)
-                            .ok_or("particle primary SH buffer unavailable")?.buffer,
-                        words:&buffers.get(&resources.vertex_references)
-                            .ok_or("particle tetrahedron buffer unavailable")?.buffer,
-                        planes:&buffers.get(&resources.planes)
-                            .ok_or("particle reflection planes unavailable")?.buffer,
-                        cubes:&images.get(&resources.cubes)
-                            .ok_or("particle reflection cube array unavailable")?.texture_view,
-                        sampler:&images.get(&resources.cubes)
-                            .ok_or("particle reflection sampler unavailable")?.sampler,
-                    })
-                } else {None},
-                compressed_hdr: lens.settings.hdr_buffer_format != 1,
-                white_level: lens.white_level,
-                resolve_state: *sources
-                    .transparency_resolve_state
-                    .as_ref()
-                    .map_err(Clone::clone)?,
-                matrices,
-                local_time: water.local_time[0],
-                camera_exposure: camera.exposure,
-                extent: [
-                    target.main_texture().width(),
-                    target.main_texture().height(),
-                ],
-                inverse_z: [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
-                adaptation: &adaptation.buffer,
-                colour: target.main_texture_view(),
-                depth: &depth.alpha.full_attachment,
-                fog: super::particle_pass::ParticleFogInputs {
-                    parameters: &parameters.buffer,
-                    world: image(&shared.world)?,
-                    canvas: image(&shared.canvas)?,
-                    curve: image(&shared.curve)?,
-                    depth: image(&shared.opaque_depth)?,
-                },
-            },
+            inputs,
             draws,
         )?;
         if !*reported {
@@ -745,6 +702,278 @@ fn render_particles(
         Err(_) => {}
     }
 }
+
+/// The FX pass's view, lighting and fog inputs, shared by the isAlpha colour
+/// pass and the opaque particle colour pass.
+#[allow(clippy::too_many_arguments)]
+fn particle_view_inputs<'a>(
+    draws: &[super::particle_pass::ParticleDraw],
+    lighting_scene: &'a ParticleLightingScene,
+    sources: &'a super::screen_effects::ScreenEffectSources,
+    fog: &'a FogGpu,
+    water: &'a super::water_scene::WaterFrame,
+    images: &'a RenderAssets<GpuImage>,
+    buffers: &'a RenderAssets<GpuShaderBuffer>,
+    shared: &'a super::fog_material::FogMaterialResources,
+    compressed_hdr: bool,
+    white_level: f32,
+    camera: &ExtractedCamera,
+    view: &ExtractedView,
+    target: &ViewTarget,
+    adaptation: &'a bevy::render::render_resource::Buffer,
+    depth: &'a TextureView,
+    colour: &'a TextureView,
+) -> Result<super::particle_pass::ParticleViewInputs<'a>, String> {
+    let parameters = buffers
+        .get(&shared.parameters)
+        .ok_or("particle fog parameters await preparation")?;
+    let image = |handle| {
+        images
+            .get(handle)
+            .map(|image| &image.texture_view)
+            .ok_or("particle fog image awaits preparation")
+    };
+    let inverse = view.clip_from_view.inverse();
+    Ok(super::particle_pass::ParticleViewInputs {
+        distortion_sources: sources,
+        surface_sampler: lighting_scene.sampler.as_ref().and_then(|sampler|
+            images.get(&sampler.0)).map(|image| &image.sampler),
+        direct: if draws.iter().any(|d| !d.material.distortion && d.material.option("fx/opt/use_lighting").is_ok_and(|v| v==1 || v>=3)) {
+            let tiled=fog.scene_lights(water.camera,water.matrices.frame)
+                .ok_or("particle tiled lighting awaits the current view")?;
+            let sampling=lighting_scene.parallel.as_ref().ok_or("particle directional sampling owner unavailable")?;
+            let directional_image=match &lighting_scene.directional_frame.state {
+                super::shadow_pass::ShadowSceneState::Ready {target_image,..} => {
+                    if !lighting_scene.directional_gpu.completed_revision(lighting_scene.directional_frame.revision) {
+                        return Err("particle directional shadows await current atlas submission".into());
+                    }
+                    target_image
+                },
+                super::shadow_pass::ShadowSceneState::Disabled => &sampling.unavailable_depth,
+                _ => return Err("particle directional atlas owner is not ready".into()),
+            };
+            let local=if lighting_scene.lights.lights.iter().any(|l| l[24]!=u32::MAX) {
+                let owner=lighting_scene.local_frame.as_ref().and_then(|v| v.0.as_ref())
+                    .ok_or("particle local shadow owner unavailable")?;
+                if lighting_scene.lights.shadow_revision!=Some(owner.revision) {
+                    return Err("particle local shadows belong to another frame".into());
+                }
+                let ready=lighting_scene.local_completion.as_ref().and_then(|v| v.0.lock().ok()).is_some_and(|v|
+                    v.as_ref().is_some_and(|(revision,atlas,cache,_)|
+                        *revision==owner.revision && *atlas==owner.atlas.id() && *cache==owner.cache.id()));
+                if !ready {return Err("particle local shadows await atlas submission".into());}
+                let sampling=lighting_scene.local.as_ref().ok_or("particle local sampling owner unavailable")?;
+                Some((&buffers.get(&sampling.buffer).ok_or("particle local sampling buffer unavailable")?.buffer,
+                    &images.get(&owner.atlas).ok_or("particle local atlas unavailable")?.texture_view))
+            } else {None};
+            Some(super::particle_pass::ParticleDirectLightingInputs {
+                pixel: if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some())) {
+                    let screen = lighting_scene.screen.as_ref().ok_or("particle cloud owner unavailable")?;
+                    let cloud = images.get(&screen.cloud).ok_or("particle cloud image awaits GPU preparation")?;
+                    if lighting_scene.lights.area_images.iter().any(Option::is_some) && tiled.area_pool.is_none() {
+                        return Err("particle area-light images await the shared pool".into());
+                    }
+                    Some(super::particle_pass::ParticlePixelLightingInputs {
+                        screen: &images.get(&screen.output).ok_or("particle screen binding awaits GPU preparation")?.texture_view,
+                        cloud: &cloud.texture_view, cloud_sampler: &cloud.sampler,
+                        area: tiled.area_pool.as_ref(),
+                    })
+                } else { None },
+                lights:&tiled.lights,pool:&tiled.buffers.pool,heads:&tiled.normal_heads,shadows:&tiled.shadows,
+                parallel:&buffers.get(&sampling.buffer).ok_or("particle parallel sampling buffer unavailable")?.buffer,
+                parallel_depth:&images.get(directional_image).ok_or("particle directional atlas unavailable")?.texture_view,
+                local,grid:tiled.grid(),sun:water.parallel,
+            })
+        } else {None},
+        lighting: if draws.iter().any(|d| d.lighting.is_some()) {
+            let resources=lighting_scene.probes.0.as_ref().map_err(Clone::clone)?
+                .as_ref().ok_or("particle shared probe resources absent")?;
+            if resources.cube_count==0 { return Err("particle reflection cube array is empty".into()); }
+            Some(super::particle_pass::ParticleLightingInputs {
+                probes:&buffers.get(&lighting_scene.models.records)
+                    .ok_or("particle primary SH buffer unavailable")?.buffer,
+                words:&buffers.get(&resources.vertex_references)
+                    .ok_or("particle tetrahedron buffer unavailable")?.buffer,
+                planes:&buffers.get(&resources.planes)
+                    .ok_or("particle reflection planes unavailable")?.buffer,
+                cubes:&images.get(&resources.cubes)
+                    .ok_or("particle reflection cube array unavailable")?.texture_view,
+                sampler:&images.get(&resources.cubes)
+                    .ok_or("particle reflection sampler unavailable")?.sampler,
+            })
+        } else {None},
+        compressed_hdr,
+        white_level,
+        resolve_state: *sources
+            .transparency_resolve_state
+            .as_ref()
+            .map_err(Clone::clone)?,
+        matrices: &water.matrices.current,
+        local_time: water.local_time[0],
+        camera_exposure: camera.exposure,
+        extent: [
+            target.main_texture().width(),
+            target.main_texture().height(),
+        ],
+        inverse_z: [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
+        adaptation,
+        colour,
+        depth,
+        fog: super::particle_pass::ParticleFogInputs {
+            parameters: &parameters.buffer,
+            world: image(&shared.world)?,
+            canvas: image(&shared.canvas)?,
+            curve: image(&shared.curve)?,
+            depth: image(&shared.opaque_depth)?,
+        },
+    })
+}
+
+/// The zPrePass of this frame's non-isAlpha particle surfaces into the view
+/// depth, before the screen-shadow pass reads it.
+fn render_opaque_particle_depth(
+    publication: Res<FxPublication>,
+    sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    world_sources: Res<super::world_effects::WorldEffectSources>,
+    water: Res<WaterSceneFrame>,
+    sampler: Option<Res<super::particle_pass::ParticleMaterialSampler>>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
+    mut gpu: ResMut<CameraGpu>,
+    mut context: RenderContext,
+    view: ViewQuery<(&MainEntity, &ExtractedView, &ViewTarget, &bevy::render::view::ViewDepthTexture, &MaterialExposure)>,
+    mut last_error: Local<Option<String>>,
+) {
+    let Some(water) = water.0.as_ref() else { gpu.opaque_particles = None; return; };
+    let (main, view, target, depth, exposure) = view.into_inner();
+    if main.id() != water.camera {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let Some(frame) = publication.0.as_ref()
+            .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame) else { return Ok(()) };
+        let Some(published) = frame.particles.as_ref() else { return Ok(()) };
+        let CameraGpu { particles, opaque_particles, particle_images, particle_programs, .. } = &mut *gpu;
+        if let Some(opaque) = opaque_particles.as_mut() { opaque.depth_frame = None; }
+        let draws = published.opaque_draws.as_slice();
+        if draws.is_empty() { return Ok(()); }
+        // The shared FX pass owns the level's images and material admission.
+        if particles.as_ref().is_none_or(|p| !p.prepared) {
+            return Err("opaque particle surfaces await the particle material gate".into());
+        }
+        let (instances, draw_capacity) = frame.capacity;
+        let colour_format = target.main_texture_format();
+        let depth_format = depth.texture.format();
+        if opaque_particles.as_ref().is_none_or(|p| p.instances < instances || p.draws < draw_capacity
+            || p.colour_format != colour_format || p.depth_format != depth_format) {
+            let cached = particle_programs.remove(&(colour_format, depth_format));
+            *opaque_particles = Some(OpaqueParticleGpu {
+                pass: super::particle_pass::ParticlePass::new_with_programs(&device, &queue, instances.max(1),
+                    draw_capacity.max(1), colour_format, depth_format, cached)?,
+                instances, draws: draw_capacity, colour_format, depth_format, depth_frame: None, prepared: None,
+            });
+        }
+        let opaque = opaque_particles.as_mut().unwrap();
+        let surface_sampler = sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler);
+        {
+            let console = crate::platform::console::shared().read();
+            let value = |name: &str| console.cvars.float(name).ok_or_else(|| format!("{name} is not registered"));
+            opaque.pass.set_opaque_alpha_tests([value("r_particleAlphaTestDepth")?, value("r_particleAlphaTestLit")?]);
+        }
+        // Both opaque programs of the level's non-isAlpha materials exist
+        // before their first draw, as the alpha pass prepares its own.
+        if let Some(surface_sampler) = surface_sampler.filter(|s| opaque.prepared != Some(s.id())) {
+            let level = sources.0.as_ref().ok_or("particle sources unavailable")?;
+            opaque.pass.prepare_opaque_materials(particle_images, &device, &queue,
+                world_sources.0.particle_materials().chain(level.particle_materials()), surface_sampler)?;
+            opaque.prepared = Some(surface_sampler.id());
+        }
+        let adaptation = buffers.get(&exposure.0).ok_or("particle adaptation awaits preparation")?;
+        let inverse = view.clip_from_view.inverse();
+        opaque.pass.record_opaque_depth(particle_images, &device, &queue, context.command_encoder(),
+            super::particle_pass::ParticleDepthInputs {
+                surface_sampler,
+                matrices: &water.matrices.current,
+                local_time: water.local_time[0],
+                extent: [target.main_texture().width(), target.main_texture().height()],
+                inverse_z: [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
+                adaptation: &adaptation.buffer,
+                depth: depth.view(),
+            }, draws)?;
+        opaque.depth_frame = Some((water.camera, water.matrices.frame));
+        Ok(())
+    })();
+    match result {
+        Ok(()) => *last_error = None,
+        Err(error) if last_error.as_ref() != Some(&error) => {
+            warn!("Opaque particle zPrePass pending: {error}");
+            *last_error = Some(error);
+        }
+        Err(_) => {}
+    }
+}
+
+/// The opaque colour pass of the surfaces this frame's zPrePass drew.
+fn render_opaque_particles(
+    lighting_scene: ParticleLightingScene,
+    sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    display: Res<DisplaySceneFrame>,
+    water: Res<WaterSceneFrame>,
+    fog: Res<FogGpu>,
+    shared: Res<super::fog_material::FogMaterialResources>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
+    mut gpu: ResMut<CameraGpu>,
+    mut context: RenderContext,
+    view: ViewQuery<(&MainEntity, &ExtractedView, &ExtractedCamera, &ViewTarget,
+        &bevy::render::view::ViewDepthTexture, &MaterialExposure)>,
+    mut last_error: Local<Option<String>>,
+    mut reported: Local<bool>,
+) {
+    let Some(water) = water.0.as_ref() else { return };
+    let (main, view, camera, target, depth, exposure) = view.into_inner();
+    if main.id() != water.camera {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let Some(opaque) = gpu.opaque_particles.as_ref() else { return Ok(()) };
+        if opaque.depth_frame != Some((water.camera, water.matrices.frame)) { return Ok(()); }
+        let draws = lighting_scene.publication.0.as_ref()
+            .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
+            .and_then(|frame| frame.particles.as_ref())
+            .map(|frame| frame.opaque_draws.as_slice())
+            .ok_or("opaque particle draws belong to another frame")?;
+        let sources = sources.0.as_ref().ok_or("particle sources unavailable")?;
+        let lens = display.0.as_ref().filter(|f| f.camera == water.camera).and_then(|f| f.lens.as_ref())
+            .ok_or("particle HDR settings await the current view")?;
+        let adaptation = buffers.get(&exposure.0).ok_or("particle adaptation awaits preparation")?;
+        let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
+            lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
+            depth.view(), target.main_texture_view())?;
+        let CameraGpu { opaque_particles, particle_images, .. } = &mut *gpu;
+        opaque_particles.as_mut().unwrap().pass.record_opaque(particle_images, &device, &queue,
+            context.command_encoder(), inputs, draws)?;
+        if !*reported {
+            info!(draws = draws.len(), instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
+                "Opaque particle submission active");
+            *reported = true;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => *last_error = None,
+        Err(error) if last_error.as_ref() != Some(&error) => {
+            warn!("Opaque particle colour pending: {error}");
+            *last_error = Some(error);
+        }
+        Err(_) => {}
+    }
+}
+
 /// The shared CPU controller advances before transparent colour submission.
 /// Camera postprocessing consumes these commands without advancing it again.
 /// World FX inputs and the pre-pass water state read by the FX update.
@@ -820,6 +1049,8 @@ pub(crate) fn simulate_effects(
     }
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
+        particle_systems.collision = inputs.collision.clone();
+        particle_systems.moving = inputs.moving.clone();
         // The frame retains the authoritative shared query owner. Hold its
         // actual read lease through this FX batch; never clone a physics world.
         let result = inputs.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())

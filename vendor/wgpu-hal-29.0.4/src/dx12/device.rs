@@ -2308,7 +2308,9 @@ impl crate::Device for super::Device {
         let (heap_ty, raw_ty) = match desc.ty {
             wgt::QueryType::Occlusion => (
                 Direct3D12::D3D12_QUERY_HEAP_TYPE_OCCLUSION,
-                Direct3D12::D3D12_QUERY_TYPE_BINARY_OCCLUSION,
+                // DH2: counting occlusion queries, as the original's D3D11
+                // queries (1402926d0 divides the passed samples by the area).
+                Direct3D12::D3D12_QUERY_TYPE_OCCLUSION,
             ),
             wgt::QueryType::PipelineStatistics(_) => (
                 Direct3D12::D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS,

@@ -78,6 +78,7 @@ pub mod camera_colours;
 #[cfg(feature = "game")]
 pub mod alpha_depth;
 #[cfg(feature = "game")]
+pub mod occlusion_query_pass;
 pub mod water_depth;
 #[cfg(feature = "game")]
 pub mod underwater_stencil;

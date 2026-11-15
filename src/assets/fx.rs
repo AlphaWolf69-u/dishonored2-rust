@@ -11,6 +11,11 @@ mod particle_emission_mesh;
 pub mod particle_mesh;
 pub mod particle_sprite;
 pub mod particle_stage;
+pub mod particle_attractor;
+pub mod particle_trail;
+pub mod particle_beam;
+pub mod particle_ribbon;
+pub mod particle_havok_stage;
 pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;
@@ -48,6 +53,8 @@ pub type EnvironmentGroupAsset = EffectGroupAsset;
 /// arkFXSubFXDesc: nested FX played by a group (group+0x120, 0x38 bytes).
 /// Ranges keep the serialized maximum-then-minimum order of arkFXMinMax.
 pub struct SubEffectAsset {
+    /// arkSubFXDesc +0: m_name (idAtomicString).
+    pub name: String,
     pub enabled: bool,
     /// arkStandardEventTimings: m_delay, m_cycles and m_period.
     pub delay: [f32; 2],
@@ -65,6 +72,7 @@ impl Default for SubEffectAsset {
     /// m_sequentialMode and m_randomStart clear; delay 0, one cycle, period 1.
     fn default() -> Self {
         Self {
+            name: String::new(),
             enabled: true,
             delay: [0.; 2],
             cycles: [1; 2],
@@ -81,6 +89,7 @@ fn sub_effect(fields: &Fields) -> Result<SubEffectAsset, String> {
     let mut effect = SubEffectAsset::default();
     for (name, value) in fields {
         match name.as_str() {
+            "m_name" => effect.name = atom(value)?.to_owned(),
             "m_enabled" => effect.enabled = boolean(value)?,
             "m_waitFXEnd" => effect.wait_end = boolean(value)?,
             "m_sequentialMode" => effect.sequential = boolean(value)?,
@@ -307,9 +316,9 @@ fn edit_list<T: Clone>(
             .ok_or_else(|| format!("unknown FX array field {name}"))?
             .parse::<usize>()
             .map_err(|e| format!("FX array index: {e}"))?;
-        let slot = edited
-            .get_mut(index)
-            .ok_or_else(|| format!("FX array index {index} exceeds declared count"))?;
+        // 14014d300 warns "array element %d out of range" and skips an
+        // element past the current count; it does not grow the list.
+        let Some(slot) = edited.get_mut(index) else { continue };
         edit(slot, value)?;
     }
     *values = edited;

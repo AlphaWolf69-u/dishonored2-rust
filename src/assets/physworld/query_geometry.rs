@@ -79,6 +79,40 @@ impl QueryShapes {
         self.shapes.iter().map(|(&item, shape)| (item, shape))
     }
 
+    /// A scaled HKX redirect (`standalone_hkx_alias`): the uniform factor
+    /// applies to the base resource's vertices, plane distances, convex
+    /// radius, compound child translations and bounds.
+    pub fn scaled(mut self, factor: f32) -> Self {
+        for shape in self.shapes.values_mut() {
+            match &mut shape.geometry {
+                QueryGeometry::Polytope(polytope) => {
+                    for vertex in &mut polytope.vertices {
+                        for axis in 0..3 {
+                            vertex[axis] *= factor;
+                        }
+                    }
+                    for plane in &mut polytope.planes {
+                        plane[3] *= factor;
+                    }
+                    polytope.radius *= factor;
+                }
+                QueryGeometry::Compound(compound) => {
+                    for instance in &mut compound.instances {
+                        for axis in 0..3 {
+                            instance.transform[3][axis] *= factor;
+                        }
+                    }
+                    for bound in &mut compound.bounds {
+                        for axis in 0..3 {
+                            bound[axis] *= factor;
+                        }
+                    }
+                }
+            }
+        }
+        self
+    }
+
     /// Actual calcAabb dispatch: compounds transform their cached local bounds;
     /// convex shapes transform vertices and then include the convex radius.
     pub fn bounds(

@@ -48,6 +48,10 @@ impl EmitterPose {
     pub fn set_position(&mut self, position: [f32; 3]) {
         self.start = position;
     }
+    /// 140486a00: the history's start position (+0xc).
+    pub fn start(&self) -> [f32; 3] {
+        self.start
+    }
     /// 1d9eb0 resets only the interpolation fraction.
     pub fn reset_fraction(&mut self) {
         self.fraction = 0.;

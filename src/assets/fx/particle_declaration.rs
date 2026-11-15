@@ -61,6 +61,23 @@ impl ParticleVisibility {
     }
 }
 
+/// arkDeclParticleSystem::clipping_t::plane_t (0x14 bytes, reflection
+/// 141558910): m_normal +0, m_distance +0xC, m_worldspace +0x10. Installed
+/// declarations write only non-default fields: items set `z = -1` or zero z
+/// beside another axis, and m_worldspace only as false, so the default is
+/// normal (0, 0, 1), distance 0, world space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClippingPlane {
+    pub normal: [f32; 3],
+    pub distance: f32,
+    pub worldspace: bool,
+}
+impl Default for ClippingPlane {
+    fn default() -> Self {
+        Self { normal: [0., 0., 1.], distance: 0., worldspace: true }
+    }
+}
+
 pub struct ParticleClipping {
     /// Authored order is [maximum, minimum], unlike simulation contains().
     pub bounding_box: [[f32; 3]; 2],
@@ -71,6 +88,8 @@ pub struct ParticleClipping {
     pub ocean_plane_offset: f32,
     pub rendering_offset: f32,
     pub rendering_fade_distance: f32,
+    /// clipping +0x30, emptied by 1401c3f80.
+    pub planes: Vec<ClippingPlane>,
 }
 impl Default for ParticleClipping {
     /// 1c3f80 supplies the +/-1e30 clipping box, not +/-FLT_MAX.
@@ -87,6 +106,7 @@ impl Default for ParticleClipping {
             ocean_plane_offset: 0.,
             rendering_offset: 0.,
             rendering_fade_distance: 0.,
+            planes: Vec::new(),
         }
     }
 }
@@ -113,6 +133,34 @@ impl ParticleClipping {
                 "m_oceanPlaneOffset" => self.ocean_plane_offset = number(value)?,
                 "m_renderingOffset" => self.rendering_offset = number(value)?,
                 "m_renderingFadeDistance" => self.rendering_fade_distance = number(value)?,
+                "m_planes" => {
+                    for (name, value) in scope(value)? {
+                        if name == "num" {
+                            let count = atom(value)?
+                                .parse::<usize>()
+                                .map_err(|e| format!("particle clipping plane count: {e}"))?;
+                            self.planes.resize_with(count, ClippingPlane::default);
+                            continue;
+                        }
+                        let index = name
+                            .strip_prefix("item[")
+                            .and_then(|v| v.strip_suffix(']'))
+                            .ok_or_else(|| format!("unknown particle clipping plane array field {name}"))?
+                            .parse::<usize>()
+                            .map_err(|e| format!("particle clipping plane index: {e}"))?;
+                        let plane = self.planes.get_mut(index).ok_or_else(|| {
+                            format!("particle clipping plane {index} exceeds declared count")
+                        })?;
+                        for (name, value) in scope(value)? {
+                            match name.as_str() {
+                                "m_normal" => particles::vector(&mut plane.normal, scope(value)?)?,
+                                "m_distance" => plane.distance = number(value)?,
+                                "m_worldspace" => plane.worldspace = boolean(value)?,
+                                _ => return Err(format!("unknown particle clipping plane field {name}")),
+                            }
+                        }
+                    }
+                }
                 _ => return Err(format!("unresolved particle clipping field {name}")),
             }
         }
@@ -215,8 +263,37 @@ impl ParticleVelocityInheritance {
 }
 
 // The renderer can retain declarations after the main-world level stops.
+/// occlusionKill_t (+0x98): m_enabled, m_delay +4, m_occlusionTime +8;
+/// the declaration constructor clears all three.
+#[derive(Default, Clone, Copy)]
+pub struct ParticleOcclusionKill {
+    pub enabled: bool,
+    pub delay: f32,
+    pub occlusion_time: f32,
+}
+
+/// occlusionQuery_t (+0xe8): m_enabled, m_radius +4, m_offset +8 and
+/// m_queryVisibility (+0x10 size, +0x70 alpha curves keyed by the query
+/// result). The declaration constructor: disabled, radius 1, offset 0,
+/// one-key curves of 1.
+pub struct ParticleOcclusionQuery {
+    pub enabled: bool,
+    pub radius: f32,
+    pub offset: f32,
+    pub size: crate::gameplay::effects::curve::EffectFloatCurve,
+    pub alpha: crate::gameplay::effects::curve::EffectFloatCurve,
+}
+impl Default for ParticleOcclusionQuery {
+    fn default() -> Self {
+        let one = || crate::gameplay::effects::curve::EffectFloatCurvePair::constant(1.).maximum;
+        Self { enabled: false, radius: 1., offset: 0., size: one(), alpha: one() }
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
+    pub occlusion_kill: ParticleOcclusionKill,
+    pub occlusion_query: ParticleOcclusionQuery,
     pub visibility: ParticleVisibility,
     pub underwater: bool,
     pub handle_seen_from_underwater: bool,
@@ -227,6 +304,140 @@ pub struct ParticleDeclaration {
     pub wind: ParticleWind,
     pub velocity_inheritance: ParticleVelocityInheritance,
     pub stages: Vec<ParticleStageAsset>,
+    /// System +0x39a's arkTrail producers.
+    pub trails: Vec<super::particle_trail::DeclarationTrailAsset>,
+    /// System +0x398's arkBeam producers.
+    pub beams: Vec<super::particle_beam::ParticleBeamAsset>,
+    pub ribbons: Vec<super::particle_ribbon::ParticleRibbonAsset>,
+    /// Declaration +0x5c8's arkHavokParticleStageDesc list.
+    pub havok_stages: Vec<super::particle_havok_stage::ParticleHavokStageAsset>,
+    /// Declaration +0x608's arkFXEventDesc list.
+    pub fx_events: Vec<FxEventAsset>,
+}
+
+/// arkFXEventDesc (0x58 bytes, reflection 14155c730, constructor
+/// 1401da020): an FX started where a stage event fires.
+pub struct FxEventAsset {
+    /// +0 m_event.
+    pub event: String,
+    /// +8 m_enabled (true).
+    pub enabled: bool,
+    /// +0xc m_interval (0): the least time between two started FX.
+    pub interval: f32,
+    /// +0x10 m_fx.
+    pub fx: Option<String>,
+    /// +0x18 m_axisMode: false VELOCITY_PROJECTED (the event normal is
+    /// z), true CUSTOM.
+    pub custom_axis: bool,
+    /// +0x1c m_customAxis: m_velocityAxis (Z), m_reverseVelocityAxis
+    /// (true), m_viewAxis (X), m_reverseViewAxis (false).
+    pub velocity_axis: usize,
+    pub reverse_velocity_axis: bool,
+    pub view_axis: usize,
+    pub reverse_view_axis: bool,
+    /// +0x2c m_rotation, arkFXMinMax<idVec3> in [maximum, minimum] order,
+    /// degrees.
+    pub rotation: [[f32; 3]; 2],
+    /// +0x44 m_rotationOrder (idAngles::XYZ).
+    pub rotation_order: usize,
+    /// +0x48 m_offset along the event frame.
+    pub offset: [f32; 3],
+    /// +0x54 m_target: false PARTICLESYSTEM_ORIGIN, true
+    /// PARTICLESYSTEM_TARGET (the default).
+    pub target_is_system_target: bool,
+}
+
+impl FxEventAsset {
+    /// 1401da0d0: a name, an FX, and distinct custom axes.
+    pub fn valid(&self) -> bool {
+        !self.event.is_empty() && self.fx.is_some() && !(self.custom_axis && self.velocity_axis == self.view_axis)
+    }
+}
+
+fn axis(value: &Value) -> Result<usize, String> {
+    // arkFXEventDesc::axis_mapping_t (1419fbb10).
+    match atom(value)?.rsplit("::").next().unwrap_or("") {
+        "X" => Ok(0),
+        "Y" => Ok(1),
+        "Z" => Ok(2),
+        other => Err(format!("unknown FX event axis {other}")),
+    }
+}
+
+fn fx_event(fields: &Fields) -> Result<FxEventAsset, String> {
+    let mut event = FxEventAsset {
+        event: String::new(),
+        enabled: true,
+        interval: 0.,
+        fx: None,
+        custom_axis: false,
+        velocity_axis: 2,
+        reverse_velocity_axis: true,
+        view_axis: 0,
+        reverse_view_axis: false,
+        rotation: [[0.; 3]; 2],
+        rotation_order: 0,
+        offset: [0.; 3],
+        target_is_system_target: true,
+    };
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_event" => event.event = atom(value)?.to_owned(),
+            "m_enabled" => event.enabled = boolean(value)?,
+            "m_interval" => event.interval = number(value)?,
+            "m_fx" => event.fx = Some(atom(value)?.to_owned()).filter(|fx| !fx.is_empty()),
+            // arkFXEventDesc::axis_mode_t (1419fbba0).
+            "m_axisMode" => {
+                event.custom_axis = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                    "VELOCITY_PROJECTED" => false,
+                    "CUSTOM" => true,
+                    other => return Err(format!("unknown FX event axis mode {other}")),
+                }
+            }
+            "m_customAxis" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_velocityAxis" => event.velocity_axis = axis(value)?,
+                        "m_reverseVelocityAxis" => event.reverse_velocity_axis = boolean(value)?,
+                        "m_viewAxis" => event.view_axis = axis(value)?,
+                        "m_reverseViewAxis" => event.reverse_view_axis = boolean(value)?,
+                        _ => return Err(format!("unknown FX event custom axis field {name}")),
+                    }
+                }
+            }
+            "m_rotation" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_max" => super::particles::vector(&mut event.rotation[0], scope(value)?)?,
+                        "m_min" => super::particles::vector(&mut event.rotation[1], scope(value)?)?,
+                        _ => return Err(format!("unknown FX event rotation field {name}")),
+                    }
+                }
+            }
+            "m_rotationOrder" => {
+                event.rotation_order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
+                    mode => return Err(format!("unknown FX event rotation order {mode}")),
+                }
+            }
+            "m_offset" => super::particles::vector(&mut event.offset, scope(value)?)?,
+            // arkFXEventDesc::target_t (1419fbc10).
+            "m_target" => {
+                event.target_is_system_target = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                    "PARTICLESYSTEM_ORIGIN" => false,
+                    "PARTICLESYSTEM_TARGET" => true,
+                    other => return Err(format!("unknown FX event target {other}")),
+                }
+            }
+            _ => return Err(format!("unknown FX event field {name}")),
+        }
+    }
+    Ok(event)
 }
 
 impl ParticleDeclaration {
@@ -246,6 +457,36 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_underwater" => result.underwater = boolean(value)?,
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
+            "m_occlusionQuery" => {
+                let query = &mut result.occlusion_query;
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_enabled" => query.enabled = boolean(value)?,
+                        "m_radius" => query.radius = number(value)?,
+                        "m_offset" => query.offset = number(value)?,
+                        "m_queryVisibility" => {
+                            for (name, value) in scope(value)? {
+                                match name.as_str() {
+                                    "m_size" => curve(&mut query.size, scope(value)?)?,
+                                    "m_alpha" => curve(&mut query.alpha, scope(value)?)?,
+                                    _ => return Err(format!("unknown particle query visibility field {name}")),
+                                }
+                            }
+                        }
+                        _ => return Err(format!("unknown particle occlusion query field {name}")),
+                    }
+                }
+            }
+            "m_occlusionKill" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_enabled" => result.occlusion_kill.enabled = boolean(value)?,
+                        "m_delay" => result.occlusion_kill.delay = number(value)?,
+                        "m_occlusionTime" => result.occlusion_kill.occlusion_time = number(value)?,
+                        _ => return Err(format!("unknown particle occlusion kill field {name}")),
+                    }
+                }
+            }
             "m_distance" => result.distance.edit(scope(value)?)?,
             "m_lod" => edit_list(&mut result.lod_distances, scope(value)?, 0., |slot, value| {
                 // lod_t contains just m_distance (15590a0); 1c1a30 initializes0.
@@ -292,6 +533,11 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
                     }
                 }
             }
+            "m_beams" => descriptor_list(&mut result.beams, scope(value)?, super::particle_beam::beam)?,
+            "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::declaration_trail)?,
+            "m_ribbons" => descriptor_list(&mut result.ribbons, scope(value)?, super::particle_ribbon::ribbon)?,
+            "m_havokStages" => descriptor_list(&mut result.havok_stages, scope(value)?, super::particle_havok_stage::havok_stage)?,
+            "m_fxEvents" => descriptor_list(&mut result.fx_events, scope(value)?, fx_event)?,
             _ => return Err(format!("unresolved particle declaration producer {name}")),
         }
     }

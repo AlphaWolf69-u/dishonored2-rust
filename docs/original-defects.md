@@ -48,6 +48,24 @@ would change, so it can be made opt-in without guessing.
 - Status: not yet reproduced (translucent vegetation is unported; only the
   two Dust District root sprite materials enable translucency).
 
+### Opaque soft-contact particles discard themselves (particle/blood, particle/liquid)
+- Source: the `particle/blood` and `particle/liquid` colour programs multiply
+  alpha by `SoftContact` before `ClipAlpha` unless `$isZPrePass`. For a
+  non-isAlpha material the colour program reads `ro_fx_depthfull`, which is
+  copied (Karnaca fish-market capture, event 5051) after the zPrePass in
+  which the same particle wrote its own depth (events 4383-4425).
+- Defect: the scene depth equals the particle's depth, so the soft-contact
+  factor is about zero and every lit-pass pixel is discarded. The world
+  behind already failed against the particle's prepass depth, so the lit
+  target keeps its cleared zero there: measured 0 at all sampled blood-drop
+  pixels after events 69112-69154, while their neighbours are lit. Blood
+  drops therefore appear as black (later fogged) silhouettes.
+- Fix: read soft contact from a depth copy taken before the opaque particle
+  zPrePass, or disable soft contact for non-isAlpha particle materials.
+- Rewrite: `render_opaque_particles` in
+  `src/rendering/bevy_backend/camera_scene.rs` uses the fog's opaque-depth
+  snapshot, recorded after the particle zPrePass, as the original does.
+
 ## Engine
 
 ### Image format normalization reads an uninitialized local
@@ -61,3 +79,34 @@ would change, so it can be made opt-in without guessing.
   the 0.1 s recentering delay applies only after the first activation.
 - Rewrite: `src/gameplay/player/states.rs` (lean update) keeps it.
 - Needs confirmation in the running game before treating it as a defect.
+
+### Particle attractors never read m_velocityOverCycle
+- `FUN_1401cde40` samples the attractor's `m_velocity` (+0x230) twice, once
+  at the attractor's time and once at the cycle fraction (confirmed in the
+  disassembly: both calls use `lea rcx, [rbp+0x230]`); `m_velocityOverCycle`
+  (+0x348) is parsed but never sampled. Its position counterpart uses
+  `m_positionOverCycle` (+0x118) as expected.
+- Rewrite: `AttractorState::prepare` in `src/gameplay/particles/attractor.rs`
+  keeps the double `m_velocity` sample.
+
+### Trail segment motion reads the trail-life gravity
+- `FUN_14020c620` samples `m_trailLifeCurves.m_acceleration.m_gravity`
+  (+0xac8) at the segment's age; `m_segmentLifeCurves`' gravity (+0x1120,
+  default 1 from 14020ee80) is never read (confirmed in the disassembly).
+- Rewrite: `TrailRecord::move_point` in `src/gameplay/particles/trail.rs`
+  keeps it.
+
+## Particle ribbons add no bounds
+
+140207230 measures the ribbon strip's bounds (1402054c0 and 140204950) into
+a stack copy and never stores it; the emitter bounds (+0x140) it resets
+stay empty, so 1402007b0 never merges a ribbon into the system bounds. The
+rewrite keeps this (Ribbon::build returns no bounds).
+
+## Havok particle renderer seeds are never written
+
+arkHavokParticleStageSimulator sizes a per-body seed array at +0x340
+(1401dfc20, 140384fe0) but nothing writes it. The sprite and mesh updates
+(1401e83f0) and draw publications (1401e5440, 1401e4f50) read their seed
+from it, so they see whatever the allocation held. The rewrite uses zero
+(`gameplay::particles::havok_stage`, marked approximate).

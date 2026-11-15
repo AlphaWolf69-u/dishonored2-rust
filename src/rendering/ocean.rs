@@ -29,7 +29,7 @@ pub use patches::{
     build_ocean_patches, ocean_patch_bounds, ocean_patch_visible, OceanPatchCulling, ocean_projected_cell_area,
     OceanPatchView,
 };
-pub use queries::{OceanQueryHandle, OceanQueryQueue, OCEAN_QUERY_CAPACITY};
+pub use queries::{ocean_query_manager, OceanMultiQuery, OceanQueryHandle, OceanQueryLink, OceanQueryQueue, SharedOceanQueries, OCEAN_QUERY_CAPACITY};
 pub use spectrum::{initialize_wave_spectrum, WaveSpectrumParameters};
 
 /// 1402fb010 copies all nine wave controls and latches spectrum invalidation

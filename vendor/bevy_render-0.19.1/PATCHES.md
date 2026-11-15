@@ -42,3 +42,9 @@ The prepared-shadow cache GPU fixture also enables batching. A controlled DX12
 test updating 80 buffers over 120 frames reduced native placed-resource creation
 from 10,227 to 630, with identical endpoints and destination identities. This is
 an allocation measurement, not a gameplay FPS result.
+
+## Query set re-exports
+
+`src/render_resource/mod.rs` also re-exports wgpu's `QuerySet`,
+`QuerySetDescriptor` and `QueryType`, which the rewrite's occlusion query
+pass (the original renderer's 1402926d0) needs to create counting query sets.

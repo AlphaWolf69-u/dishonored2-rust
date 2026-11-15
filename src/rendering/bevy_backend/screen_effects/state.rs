@@ -163,6 +163,7 @@ impl ScreenEffectState {
                             allowed_mask: 1,
                             bounds_dirty: false,
                             delta,
+                            target: Default::default(),
                         },
                         underwater,
                     )?;

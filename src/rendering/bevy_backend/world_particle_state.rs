@@ -63,6 +63,10 @@ struct Instance {
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
+    /// The record target (+0x80/+0x8c) arkCpntFX writes into every record
+    /// of the instance (1404b20b0); 14021dc10's origin and identity until a
+    /// target entity is resolved.
+    target: crate::gameplay::particles::beam::BeamTarget,
 }
 
 /// What a group start (222f80) needs from the FX manager, for top-level
@@ -988,6 +992,69 @@ impl WorldParticleState {
         }
         Ok(())
     }
+    /// 14019d100 + 1401a2ff0 for one particle FX event: a detached FX
+    /// entity at the event pose whose instance starts with the deferred
+    /// starts.
+    fn start_event_effect(
+        &mut self,
+        start: crate::gameplay::particles::fx_event::FxEventStart,
+        target: crate::gameplay::particles::beam::BeamTarget,
+        sources: &WorldFxSources,
+    ) -> Result<(), String> {
+        let definition = sources
+            .effects
+            .get(&start.fx)
+            .ok_or_else(|| format!("particle FX event effect {} was not prepared", start.fx))?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .clone();
+        admit(&start.fx, &definition, &sources.effects, self.sounds.as_ref(), &self.decal_programs, &mut HashSet::new())?;
+        let mut slot = u16::MAX;
+        if !self.pool.acquire(&mut slot)? {
+            return Ok(());
+        }
+        let pose = ReferenceFrame { position: start.position, basis: start.axis };
+        let parameters = FxRuntimeParameters { effect: Some(start.fx), ..Default::default() };
+        let entity = self.next_entity;
+        self.next_entity = entity.wrapping_add(1);
+        let motion = crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() };
+        self.entities.insert(
+            entity,
+            FxEntity {
+                owner: FxEntityOwner::Detached,
+                parameters: parameters.clone(),
+                component: Default::default(),
+                suspended: false,
+                pose,
+                local: None,
+                dynamic_sources: None,
+                motion,
+            },
+        );
+        let id = self.next_instance;
+        self.next_instance = id.wrapping_add(1);
+        self.slots[usize::from(slot)] = Some(Instance {
+            id,
+            entity,
+            definition,
+            parameters,
+            pose,
+            local: None,
+            dynamic_sources: None,
+            motion,
+            age: 0.,
+            head: u16::MAX,
+            sound_head: u16::MAX,
+            decal_head: u16::MAX,
+            sub_effects: Vec::new(),
+            actor_observer: None,
+            target,
+        });
+        self.handles.insert(id, slot);
+        self.pending_starts.push(slot);
+        Ok(())
+    }
+
     pub fn advance(
         &mut self,
         graphs: &WorldEffectDefinitions,
@@ -1282,6 +1349,14 @@ impl WorldParticleState {
             .cvars
             .float("pm_screenParticleOffset")
             .ok_or("pm_screenParticleOffset is not registered")?;
+        // FX the particle systems' m_fxEvents started (1401da820: an FX
+        // entity at the event with the system's origin or target as its
+        // record target, then 1401a2ff0).
+        for (start, target) in systems.take_fx_starts() {
+            if let Err(error) = self.start_event_effect(start, target, sources) {
+                self.report(error);
+            }
+        }
         // 1a16d0 drains deferred starts forward before ANY active instance
         // update can consume the manager's shared random stream.
         for slot in std::mem::take(&mut self.pending_starts) {
@@ -1349,6 +1424,7 @@ impl WorldParticleState {
                         allowed_mask: 1,
                         bounds_dirty: false,
                         delta,
+                        target: instance.target,
                     },
                     underwater,
                     motion: instance.motion,
@@ -1552,9 +1628,6 @@ impl FxGraphWorld for GraphHost<'_> {
         _: &mut FxNode,
         _: f32,
     ) -> Result<Option<CreatedEffect>, String> {
-        if !parameters.target_tag.is_empty() || parameters.target.is_some() {
-            return Err("world particle FX target/tag pose producer is not connected".into());
-        }
         if parameters.dont_spawn_if_culled {
             return Err("world FX spawn culling awaits its actual view query".into());
         }
@@ -1609,6 +1682,17 @@ struct InstanceHost<'a> {
     entity: &'a FxEntity,
     id: u32,
 }
+impl InstanceHost<'_> {
+    /// 1404b1880: the target entity's world pose, or the pose of its target
+    /// tag or joint (1404b19b0); None while the target entity is absent.
+    fn target_pose(&self) -> Result<Option<crate::gameplay::particles::beam::BeamTarget>, String> {
+        let parameters = &self.entity.parameters;
+        let Some(target) = parameters.target.as_ref() else { return Ok(None) };
+        Ok(self.frames.resolve(target, &parameters.target_tag)?.map(|pose| {
+            crate::gameplay::particles::beam::BeamTarget { position: pose.position, basis: pose.basis }
+        }))
+    }
+}
 impl WorldFxComponentHost for InstanceHost<'_> {
     fn has_effect(&self) -> bool {
         self.entity.parameters.effect.is_some()
@@ -1633,9 +1717,10 @@ impl WorldFxComponentHost for InstanceHost<'_> {
     }
     fn play(&mut self) -> Result<Option<u32>, String> {
         let parameters = &self.entity.parameters;
-        if parameters.target.is_some() || !parameters.target_tag.is_empty() {
-            return Err("world FX target/tag pose producer is not connected".into());
-        }
+        // 1404b1d80: an existing target entity initializes its tag or joint
+        // (1404b19b0) and writes the target pose into the new record
+        // (1404b20b0); otherwise the record keeps 14021dc10's defaults.
+        let target = self.target_pose()?.unwrap_or_default();
         let name = parameters.effect.as_ref().ok_or("world FX effect absent")?;
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
             bevy::log::info!(effect = name, "World FX play requested");
@@ -1690,6 +1775,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             decal_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
+            target,
         });
         self.state.handles.insert(id, slot);
         self.state.pending_starts.push(slot);
@@ -1709,11 +1795,22 @@ impl WorldFxComponentHost for InstanceHost<'_> {
     fn target_present(&self) -> bool {
         self.entity.parameters.target.is_some()
     }
+    /// 1404b2200's 1406dc560: the target entity still exists.
     fn target_alive(&mut self) -> Result<bool, String> {
-        Err("world FX target context is not connected".into())
+        let target = self.entity.parameters.target.as_ref().ok_or("world FX target absent")?;
+        Ok(self.frames.resolve(target, "")?.is_some())
     }
-    fn update_target_pose(&mut self) -> Result<(), String> {
-        Err("world FX target context is not connected".into())
+    /// 1404b20b0: the target pose (1404b1880) into every record of the
+    /// instance.
+    fn update_target_pose(&mut self, handle: u32) -> Result<(), String> {
+        let Some(target) = self.target_pose()? else { return Ok(()) };
+        let Some(&slot) = self.state.handles.get(&handle) else {
+            return Ok(());
+        };
+        if let Some(instance) = self.state.slots[usize::from(slot)].as_mut() {
+            instance.target = target;
+        }
+        Ok(())
     }
     fn request_stop(&mut self, handle: u32) -> Result<(), String> {
         self.state.stop(handle, self.systems)?;

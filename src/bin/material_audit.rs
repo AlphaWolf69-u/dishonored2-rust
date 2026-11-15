@@ -15,6 +15,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     let catalog = archive::Catalog::open(base)?;
     let mut args = std::env::args().skip(1);
     let world_path = args.next().unwrap_or_else(|| "tutorial_p".into());
+    if world_path == "--dump" {
+        for path in args {
+            let bytes = catalog.read(&path)?.ok_or("absent")?;
+            std::io::Write::write_all(&mut std::io::stdout(), &bytes)?;
+        }
+        return Ok(());
+    }
+    if world_path == "--list" {
+        let suffix = args.next().unwrap_or_default();
+        for path in catalog.paths_with_suffix(&suffix) {
+            println!("{path}");
+        }
+        return Ok(());
+    }
+    if world_path == "--program-census" {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for path in catalog.paths_with_suffix(".decl") {
+            if !path.starts_with("generated/decls/material/") {
+                continue;
+            }
+            let Ok(Some(bytes)) = catalog.read(&path) else { continue };
+            let program = material::authored_program_override(&bytes, "mainProgram")
+                .unwrap_or_else(|| "<none>".into())
+                .to_ascii_lowercase();
+            if std::env::var("DH2_CENSUS_PROGRAM").is_ok_and(|wanted| wanted == program) {
+                println!("{path}");
+            }
+            *counts.entry(program).or_default() += 1;
+        }
+        let mut sorted: Vec<_> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (program, count) in sorted {
+            println!("{count:6} {program}");
+        }
+        return Ok(());
+    }
     if world_path == "--particle-material" {
         let name = args
             .next()

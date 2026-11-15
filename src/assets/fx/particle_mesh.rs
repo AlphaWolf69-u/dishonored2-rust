@@ -136,13 +136,13 @@ pub fn mesh(fields: &Fields) -> Result<ParticleMeshAsset, String> {
                 scope(value)?,
             )?,
             "m_rotationOrder" => {
-                result.rotation_order = match atom(value)? {
-                    "idAngles::XYZ" => 0,
-                    "idAngles::YZX" => 1,
-                    "idAngles::ZXY" => 2,
-                    "idAngles::XZY" => 3,
-                    "idAngles::YXZ" => 4,
-                    "idAngles::ZYX" => 5,
+                result.rotation_order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
                     mode => return Err(format!("unknown particle mesh rotation order {mode}")),
                 }
             }

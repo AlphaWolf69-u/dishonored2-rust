@@ -38,6 +38,12 @@ pub(crate) struct ParticleSystems {
         crate::gameplay::world_point_query::WorldPointQuery,
         crate::gameplay::world_ray_query::WorldRayQuery,
     )>,
+    /// The level collision map and its active owners for this frame's
+    /// Havok particle collisions; None outside a level.
+    pub collision: Option<(std::sync::Arc<crate::gameplay::navigation::CollisionMap>, std::sync::Arc<[bool]>)>,
+    /// The dynamic world bodies for the Havok particles' moving-body
+    /// collisions this frame.
+    pub moving: Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>,
 }
 impl Default for ParticleSystems {
     fn default() -> Self {
@@ -47,6 +53,8 @@ impl Default for ParticleSystems {
             slots: (0..links.next.len()).map(|_| None).collect(),
             links,
             workers: Vec::new(),
+            collision: None,
+            moving: None,
         }
     }
 }
@@ -115,19 +123,36 @@ impl ParticleSystems {
     ) -> Result<u32, String> {
         let slots = &mut self.slots;
         let seed = &mut self.seed;
+        let collision = self.collision.as_ref().map(|(map, owners)| (&**map, &**owners));
+        let spawn_world = &self.collision;
+        let moving = &self.moving;
         self.links.update_chain(head, |index| {
             let slot = &mut slots[usize::from(index)];
             let system = slot.as_mut().ok_or("particle pool slot absent")?;
             if system.effect.active {
+                for stage in &mut system.havok_stages {
+                    stage.moving = moving.clone();
+                    stage.ocean_link = Some(crate::rendering::ocean::ocean_query_manager().clone());
+                    let queries = &stage.definition().spawn_collisions;
+                    if queries.position_sphere_query || queries.velocity_ray_cast {
+                        stage.spawn_world = spawn_world.clone();
+                    }
+                }
                 system.source_motion = motion.copied();
                 system.source_velocity = motion.map_or([0.; 3], |motion| motion.linear);
-                system.update(now, frame, underwater, seed)?;
+                system.update(now, frame, underwater, collision, seed)?;
                 Ok(true)
             } else {
                 *slot = None;
                 Ok(false)
             }
         })
+    }
+    /// The FX every system's m_fxEvents started since the last call.
+    pub fn take_fx_starts(
+        &mut self,
+    ) -> Vec<(crate::gameplay::particles::fx_event::FxEventStart, crate::gameplay::particles::beam::BeamTarget)> {
+        self.slots.iter_mut().flatten().flat_map(|system| system.fx_starts.drain(..)).collect()
     }
     pub fn capacity(&self) -> (usize, usize) {
         let mut instances = 0;
@@ -143,9 +168,13 @@ impl ParticleSystems {
                 let meshes=stage.declaration.stages[stage.index].meshes.iter()
                     .filter(|mesh|mesh.enabled&&mesh.model.is_some()
                         &&mesh.material.as_ref().is_some_and(|name|!system.world_mesh_materials.contains(name))).count();
-                instances += stage.particles.capacity() * (sprites+meshes);
-                draws += sprites+meshes;
+                // A trail renderer is one draw with one instance record.
+                let trails = stage.trails.iter().filter(|records| !records.is_empty()).count();
+                instances += stage.particles.capacity() * (sprites+meshes) + trails;
+                draws += sprites+meshes+trails;
             }
+            instances += system.trails.len() + system.beams.len() + system.ribbons.len();
+            draws += system.trails.len() + system.beams.len() + system.ribbons.len();
         }
         (instances, draws)
     }

@@ -99,11 +99,16 @@ pub fn authored_bounds(visibility: &ParticleVisibility, position: [f32; 3]) -> [
 
 /// 1c3890's authored root plus 1ffff0/201480's generated bounds. Fixed
 /// declarations retain their authored root independently of live particles.
+/// `trails` is the world-space union of the trail renderers' last strip
+/// bounds (140210e90's +0xc0 through 1401f1c40, and the declaration trails'
+/// +0x150 after 140212410).
 pub fn system_bounds(
     stages: &[StageSimulation],
     visibility: &ParticleVisibility,
     pose: ReferenceFrame,
     scale: f32,
+    trails: Option<[[f32; 3]; 2]>,
+    havok: &[crate::gameplay::particles::havok_stage::HavokStageSimulation],
 ) -> Result<[[f32; 3]; 2], String> {
     let mut result = authored_bounds(visibility, pose.position);
     if visibility.fixed_box {
@@ -161,5 +166,46 @@ pub fn system_bounds(
             }
         }
     }
+    // 1401fef80: each Havok stage's body bounds (+0x6cc) widened by its
+    // largest sprite/mesh radius (+0x1d1c, 1401dfb40) x the distance size.
+    for stage in havok {
+        let bounds = stage.bounds;
+        if !(bounds[0][0] <= bounds[1][0]) {
+            continue;
+        }
+        let definition = &stage.definition().stage;
+        let mut radius = 0.;
+        for candidate in definition.sprites.iter().map(|sprite| sprite.bounding_radius())
+            .chain(definition.meshes.iter().map(|mesh| mesh.bounding_radius()))
+        {
+            let candidate = candidate?;
+            if radius <= candidate {
+                radius = candidate;
+            }
+        }
+        let margin = multiply(radius, scale);
+        include(
+            &mut result,
+            [bounds[0].map(|value| subtract(value, margin)), bounds[1].map(|value| add(value, margin))],
+        );
+    }
+    if let Some(trails) = trails {
+        include(&mut result, trails);
+    }
     Ok(result)
+}
+
+/// Grow `bounds` by `other` when `other` is non-empty (140210e90's test).
+pub fn include(bounds: &mut [[f32; 3]; 2], other: [[f32; 3]; 2]) {
+    if !(other[0][0] <= other[1][0]) {
+        return;
+    }
+    for i in 0..3 {
+        if other[0][i] <= bounds[0][i] {
+            bounds[0][i] = other[0][i];
+        }
+        if bounds[1][i] <= other[1][i] {
+            bounds[1][i] = other[1][i];
+        }
+    }
 }

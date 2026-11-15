@@ -144,7 +144,8 @@ impl ParticleResources {
                 .map_err(|error| format!("{path}: {error}"))?;
             // Emission meshes are dedicated PMODEL archive resources,
             // independent of the ordinary rendered-prop mesh loader.
-            for stage in &mut declaration.stages {
+            let havok_stages = declaration.havok_stages.iter_mut().map(|stage| &mut stage.stage);
+            for stage in declaration.stages.iter_mut().chain(havok_stages) {
                 check_active(cancelled)?;
                 for field in stage
                     .spawn_fields
@@ -189,6 +190,14 @@ impl ParticleResources {
                     self.model(catalog, &resource, marker, cancelled)?;
                     mesh.model = Some(self.models[&resource].clone());
                 }
+            }
+            for stage in &mut declaration.havok_stages {
+                let Some(source) = &stage.collisions.mesh else { continue };
+                let resource = crate::assets::particle_model::resource_path(source)?;
+                self.model(catalog, &resource, marker, cancelled)?;
+                let hull = crate::assets::fx::particle_havok_stage::CollisionHull::build(&self.models[&resource], stage.collisions.bounding_box)
+                    .map_err(|error| format!("{path}: {source}: {error}"))?;
+                stage.collisions.hull = Some(Arc::new(hull));
             }
 
             Ok(Arc::new(declaration))
@@ -241,6 +250,11 @@ pub struct ParticleDefinition {
     /// every renderer an ordinary model surface (material = desc+0x278), so
     /// these draw through the world material's own passes, not the FX pass.
     pub world_mesh_materials: HashSet<String>,
+    /// Materials drawn as trail strips, whose strip pipelines are prepared
+    /// with the level's particle materials.
+    pub strip_materials: HashSet<String>,
+    /// The catalog's beam noise table, held while a beam with noise exists.
+    pub beam_noise: Option<Arc<crate::gameplay::particles::beam_noise::SimplexTable>>,
 }
 impl ParticleDefinition {
     pub fn load(
@@ -291,10 +305,13 @@ impl ParticleDefinition {
         let mut materials = HashMap::new();
         let mut world_mesh_materials = HashSet::new();
         for declaration in declarations.iter().flatten() {
-            for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
-                for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
+            let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
+            for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
+                let world_candidates = stage.meshes.iter().filter(|mesh| mesh.enabled).map(|mesh| &mesh.material)
+                    .chain(stage.sprites.iter().filter(|sprite| sprite.enabled).map(|sprite| &sprite.material));
+                for material in world_candidates {
                     check_active(cancelled)?;
-                    if let Some(name) = &mesh.material {
+                    if let Some(name) = material {
                         let key = name.replace('\\', "/").to_ascii_lowercase();
                         if *resources
                             .world_materials
@@ -318,6 +335,13 @@ impl ParticleDefinition {
                             .iter()
                             .filter(|mesh| mesh.enabled)
                             .map(|mesh| &mesh.material),
+                    )
+                    .chain(
+                        stage
+                            .trails
+                            .iter()
+                            .filter(|trail| trail.enabled)
+                            .map(|trail| &trail.material),
                     );
                 for material in names {
                     check_active(cancelled)?;
@@ -335,21 +359,153 @@ impl ParticleDefinition {
                         resources.material_reads += 1;
                         let material = Arc::new(ParticleMaterial::load_shared(
                             catalog, library, name, &mut resources.images,
-                        )?);
+                        ).map_err(|error| format!("material {name}: {error}"))?);
                         resources.materials.insert(key, Arc::downgrade(&material));
                         material
                     };
                     materials.insert(name.clone(), material);
                 }
             }
+            // Declaration trails (arkTrailDesc +0x2b0) load like the rest.
+            for trail in declaration.trails.iter().filter(|trail| trail.enabled) {
+                let Some(name) = &trail.trail.material else { continue };
+                let key = name.replace('\\', "/").to_ascii_lowercase();
+                let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+                let material = if let Some(material) = cached {
+                    material
+                } else {
+                    resources.material_reads += 1;
+                    let material = Arc::new(ParticleMaterial::load_shared(
+                        catalog, library, name, &mut resources.images,
+                    ).map_err(|error| format!("material {name}: {error}"))?);
+                    resources.materials.insert(key, Arc::downgrade(&material));
+                    material
+                };
+                materials.insert(name.clone(), material);
+            }
         }
+        // 140201760 creates an arkBeam for each enabled beam with a material
+        // (1401d0ff0); its material loads like the rest.
+        let beams: Vec<&crate::assets::fx::particle_beam::ParticleBeamAsset> = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.beams.iter())
+            .filter(|beam| beam.enabled && beam.material.is_some())
+            .collect();
+        for beam in &beams {
+            // No installed beam position names a spawn mesh (1401d0d60).
+            if beam.start.spawn_mesh.source.is_some() || beam.end.spawn_mesh.source.is_some() {
+                return Err("particle beam spawn meshes are not loaded".into());
+            }
+            let name = beam.material.as_ref().unwrap();
+            let key = name.replace('\\', "/").to_ascii_lowercase();
+            let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+            let material = if let Some(material) = cached {
+                material
+            } else {
+                resources.material_reads += 1;
+                let material = Arc::new(ParticleMaterial::load_shared(
+                    catalog, library, name, &mut resources.images,
+                ).map_err(|error| format!("material {name}: {error}"))?);
+                resources.materials.insert(key, Arc::downgrade(&material));
+                material
+            };
+            materials.insert(name.clone(), material);
+        }
+        // 140201760 creates an arkHavokParticleStage (simulator 1401dfc20) for
+        // each enabled Havok stage; its Havok FX pipeline is not ported yet.
+        for declaration in declarations.iter().flatten() {
+            for stage in declaration.havok_stages.iter().filter(|stage| stage.stage.enabled) {
+                havok_stage_admission(declaration, stage)?;
+            }
+        }
+        // 140201760 creates an arkRibbon for each enabled ribbon with a
+        // material (1402042b0).
+        let ribbons: Vec<&crate::assets::fx::particle_ribbon::ParticleRibbonAsset> = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.ribbons.iter())
+            .filter(|ribbon| ribbon.enabled && ribbon.material.is_some())
+            .collect();
+        for ribbon in &ribbons {
+            // No installed ribbon spawns from a mesh (140204080).
+            if ribbon.spawn.spawn_mesh.source.is_some() || ribbon.spawn.velocity_mesh.source.is_some() {
+                return Err("particle ribbon spawn meshes are not loaded".into());
+            }
+            let name = ribbon.material.as_ref().unwrap();
+            let key = name.replace('\\', "/").to_ascii_lowercase();
+            let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+            let material = if let Some(material) = cached {
+                material
+            } else {
+                resources.material_reads += 1;
+                let material = Arc::new(ParticleMaterial::load_shared(
+                    catalog, library, name, &mut resources.images,
+                ).map_err(|error| format!("material {name}: {error}"))?);
+                resources.materials.insert(key, Arc::downgrade(&material));
+                material
+            };
+            materials.insert(name.clone(), material);
+        }
+        let noisy = beams.iter().any(|beam| f32::from_bits(0x3400_0000) < beam.noise.scale)
+            || ribbons.iter().any(|ribbon| f32::from_bits(0x3400_0000) < ribbon.noise.scale);
+        let beam_noise = noisy.then(|| {
+            catalog.beam_noise.get_or_init(|| {
+                crate::gameplay::particles::beam_noise::SimplexTable::load(catalog.base()).map(Arc::new)
+            }).clone()
+        }).transpose()?;
+        let beam_materials: Vec<String> = beams.iter().filter_map(|beam| beam.material.clone())
+            .chain(ribbons.iter().filter_map(|ribbon| ribbon.material.clone())).collect();
+        let strip_materials = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.stages.iter()
+                .chain(declaration.havok_stages.iter().map(|stage| &stage.stage))
+                .filter(|stage| stage.enabled))
+            .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
+            .filter_map(|trail| trail.material.clone())
+            .chain(declarations.iter().flatten().flat_map(|declaration| declaration.trails.iter())
+                .filter(|trail| trail.enabled).filter_map(|trail| trail.trail.material.clone()))
+            .chain(beam_materials)
+            .collect();
         check_active(cancelled)?;
         Ok(Self {
+            strip_materials,
             owner,
             parameter_block,
             declarations,
             materials,
             world_mesh_materials,
+            beam_noise,
         })
     }
+}
+
+/// The parts of an arkHavokParticleStageSimulator (1401dfc20) this port runs
+/// so far: emission, Integrate and the sprite/mesh renderers. The effects and
+/// producers below are refused until ported.
+fn havok_stage_admission(
+    declaration: &particle_declaration::ParticleDeclaration,
+    stage: &crate::assets::fx::particle_havok_stage::ParticleHavokStageAsset,
+) -> Result<(), String> {
+    let asset = &stage.stage;
+    if stage.enable_collisions {
+        if stage.collisions.mesh.is_some() {
+            if stage.collisions.hull.is_none() {
+                return Err("Havok particle collision hull was not built".into());
+            }
+        }
+        // m_selfCollisions adds SolveSelfContacts (140fd2620), whose
+        // constraints come only from the SpatialPartition's new pairs. The
+        // simulator's partition keeps computeNewPairs off (140fd6a00, never
+        // changed by 1401dfc20), so no constraint is ever created; without
+        // contacts its sleep flags never reach 6 and ProcessDeactivation
+        // changes nothing. The stage therefore moves as without it.
+    }
+    if asset.spawn_fields.iter().chain(&asset.vector_fields).chain(&asset.acceleration_fields).any(|field| field.target_position || field.cycle_reset) {
+        return Err("Havok particle vector fields at the system target or with cycle resets are not connected".into());
+    }
+    if asset.enable_wind && declaration.wind.enabled {
+        return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());
+    }
+    // 1401e6420 subscribes a Havok stage to events naming its burst event;
+    // its event-driven emission is not ported.
+    if asset.burst && !asset.burst_event.is_empty() {
+        return Err("Havok particle event bursts are not connected".into());
+    }
+    Ok(())
 }

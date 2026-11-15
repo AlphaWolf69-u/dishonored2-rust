@@ -1,20 +1,30 @@
 //! CPU particle state shared by the FX emitters. Descriptor loading and sprite
 //! submission have separate owners; these routines never infer missing inputs.
+pub mod attractor;
+pub mod beam;
+pub mod beam_noise;
+pub mod beam_system;
 pub mod emitter;
 pub mod events;
 pub mod field;
+pub mod fx_event;
 pub mod mesh;
 pub mod mesh_appearance;
 pub mod orientation;
 pub mod parameters;
 pub mod periodic;
+pub mod ribbon;
 pub mod pose;
+pub mod shape_spawn;
 pub mod simulation;
 pub mod space;
 pub mod spawn;
 pub mod sprite;
 pub mod stage;
+pub mod havok_stage;
 pub mod timing;
+pub mod trail;
+pub mod trail_system;
 
 use crate::float::{add, divide, multiply, subtract};
 

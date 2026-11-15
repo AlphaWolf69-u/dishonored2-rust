@@ -755,7 +755,7 @@ pub(super) fn prepare_level(
                 }
                 None => triangle.body_filter,
             };
-            (triangle.vertices.map(game_to_view), u32::MAX, material, filter)
+            (triangle.vertices.map(game_to_view), u32::MAX, material, filter, triangle.quad_second)
         };
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
@@ -766,15 +766,15 @@ pub(super) fn prepare_level(
                 } else {
                     model_material_base + material
                 };
-                (triangle, owner, material, filter)
+                (triangle, owner, material, filter, false)
             },
         );
         let (mut world, staging_bytes) = if stage_triangles {
             // Retain the previous borrowed-input allocation for measurement.
             let staged: Vec<_> = world_triangles.iter().map(&mut resolve_triangle).collect();
-            let bytes = staged.capacity() * std::mem::size_of::<([Vec3; 3], u32, u32, u32)>();
+            let bytes = staged.capacity() * std::mem::size_of::<([Vec3; 3], u32, u32, u32, bool)>();
             (
-                navigation::CollisionWorld::with_materials_until(
+                navigation::CollisionWorld::with_quads_until(
                     staged.into_iter().chain(placed_triangles), model_collision.owners, resolved,
                     || cancelled(CancellationPoint::CollisionIndex),
                 )?,
@@ -783,7 +783,7 @@ pub(super) fn prepare_level(
         } else {
             let level_triangles = world_triangles.into_iter().map(|triangle| resolve_triangle(&triangle));
             (
-                navigation::CollisionWorld::with_materials_until(
+                navigation::CollisionWorld::with_quads_until(
                     level_triangles.chain(placed_triangles), model_collision.owners, resolved,
                     || cancelled(CancellationPoint::CollisionIndex),
                 )?,
@@ -1079,7 +1079,11 @@ pub(super) fn prepare_level(
             app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
         .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
-        .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
+        // The original clears the lit HDR target to zero before the opaque
+        // pass (Karnaca fish-market capture, event 157); pixels no opaque
+        // colour draw reaches, such as opaque particle surfaces whose
+        // soft-contact discards them after their zPrePass, keep that zero.
+        .insert_resource(ClearColor(Color::BLACK))
         // Bevy allocates six depth layers for every shadow-casting point
         // light. Dense missions contain hundreds of authored lights, so keep
         // the shadow maps small enough to leave room for the mission assets.

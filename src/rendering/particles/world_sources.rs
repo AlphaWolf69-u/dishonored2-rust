@@ -85,6 +85,24 @@ pub struct WorldFxSources {
     pub deferred_admission_bytes: usize,
 }
 
+/// The surface source naming a shared sprite grid level.
+pub fn sprite_grid_source(level: u32) -> String {
+    format!("sprite-grid:{level}")
+}
+
+/// The FX of the enabled, valid m_fxEvents entries of loaded particle
+/// definitions.
+fn fx_event_effects(particles: &[Result<super::definition::ParticleDefinition, String>]) -> Vec<String> {
+    particles
+        .iter()
+        .filter_map(|particle| particle.as_ref().ok())
+        .flat_map(|particle| particle.declarations.iter().flatten())
+        .flat_map(|declaration| declaration.fx_events.iter())
+        .filter(|event| event.enabled && event.valid())
+        .filter_map(|event| event.fx.clone())
+        .collect()
+}
+
 impl WorldFxSources {
     /// Reference one already prepared effect and its declared sub-effects
     /// without retaining every unrelated effect in the level.
@@ -98,6 +116,9 @@ impl WorldFxSources {
             for child in loaded.groups.iter().flat_map(|group| &group.asset.sub_effects)
                 .flat_map(|sub| sub.effects.iter().flatten()) {
                 pending.push(child.clone());
+            }
+            for group in &loaded.groups {
+                pending.extend(fx_event_effects(&group.particles));
             }
             result.effects.insert(name, definition.clone());
         }
@@ -120,6 +141,14 @@ impl WorldFxSources {
     }
 
     /// Every particle material of the level's world FX.
+    /// Names of the materials the level's FX draw as trail strips.
+    pub fn strip_materials(&self) -> std::collections::HashSet<String> {
+        self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+            .flat_map(|p| p.strip_materials.iter().cloned())
+            .collect()
+    }
+
     pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
         self.effects.values().filter_map(|e| e.as_ref().ok())
             .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
@@ -134,13 +163,28 @@ impl WorldFxSources {
             .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
         {
             for declaration in definition.declarations.iter().flatten() {
-                for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
+                for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
                     for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
                         let (Some(material), Some(source), Some(model)) = (&mesh.material, &mesh.source, &mesh.model) else {
                             continue;
                         };
                         if definition.world_mesh_materials.contains(material) {
                             pairs.entry((source.clone(), material.clone())).or_insert_with(|| model.clone());
+                        }
+                    }
+                    // A sprite renderer's surface is the shared grid its
+                    // tessellation distance selects (1eee40): level 0 unless
+                    // the distance can select finer ones.
+                    for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
+                        let Some(material) = sprite.material.as_ref().filter(|material| definition.world_mesh_materials.contains(*material)) else {
+                            continue;
+                        };
+                        let levels = if 0. < sprite.tessellation_distance { 0..=5 } else { 0..=0 };
+                        for level in levels {
+                            pairs.entry((sprite_grid_source(level), material.clone())).or_insert_with(|| {
+                                Arc::new(crate::assets::particle_model::ParticleModel { vertices: Vec::new(), bytes_after_vertices: 0 })
+                            });
                         }
                     }
                 }
@@ -366,6 +410,9 @@ impl WorldFxSources {
                             .iter()
                             .flat_map(|sub| sub.effects.iter().flatten().cloned()),
                     );
+                    // The FX the particle declarations' m_fxEvents start
+                    // (their idDeclFX references load with the declaration).
+                    children.extend(fx_event_effects(&particles));
                     groups.push(WorldEffectGroup {
                         asset,
                         particles,

@@ -14,6 +14,7 @@ pub mod environment_profiles;
 pub mod lens_dirt;
 pub mod luminance;
 pub mod bloom;
+pub mod occlusion_query;
 pub mod viewport;
 pub mod view_history;
 pub mod colour_downscale;

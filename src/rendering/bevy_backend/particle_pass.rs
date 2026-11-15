@@ -80,6 +80,33 @@ struct MaterialParameters {
     fuzz: Vec4,
     translucency_phase: Vec4,
     translucency_ramp: [Vec4; 3],
+    /// particle/liquid: (flowmap_strength, liquid_outer_alpha,
+    /// liquid_inner_alpha, fresnel_power), (fresnel_intensity,
+    /// liquid_Disto_amount, liquid_Disto_reflx, liquid_rflx_intensity),
+    /// fresnel_color.
+    liquid: [Vec4; 3],
+    /// particle/liquid use_flow_map, use_flow_mask, use_reflexion.
+    liquid_options: UVec4,
+    /// particle/dissolve (distoStrength, alpha_Adjust.xyz).
+    dissolve: Vec4,
+    /// particle/dissolve tile_alpha, use_mesh.
+    dissolve_options: UVec4,
+    /// particle/fire (fire_distortion, lookup_adjust, fire_intensity,
+    /// fire_light_intensity), (fire_smoke_color.xyz, fire_light_color).
+    fire: [Vec4; 2],
+    /// particle/fire use_lookup_light.
+    fire_options: UVec4,
+    /// particle/add_liquid (distoStrength.xy, liquid_Threshold).
+    add_liquid: Vec4,
+    /// particle/add_liquid fade_threshold, no_opacity_map.
+    add_liquid_options: UVec4,
+    /// particle/water and blood (liquid_Threshold, liquid_inner_alpha,
+    /// liquid_Disto_amount, liquid_default_alpha).
+    water: Vec4,
+    /// liquid_nm_thresholds.
+    water_thresholds: Vec4,
+    /// liquid_alpha_fb_animated, use_mesh.
+    water_options: UVec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -132,8 +159,66 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
+        let (liquid, liquid_options) = if source.liquid {
+            let reflexion = option("fx/opt/use_reflexion")?;
+            let (reflx, rflx) = if reflexion != 0 {
+                (scalar("liquid_Disto_reflx")?, scalar("liquid_rflx_intensity")?)
+            } else {
+                (0., 0.)
+            };
+            ([
+                Vec4::new(scalar("flowmap_strength")?, scalar("liquid_outer_alpha")?,
+                    scalar("liquid_inner_alpha")?, scalar("fresnel_power")?),
+                Vec4::new(scalar("fresnel_intensity")?, scalar("liquid_Disto_amount")?, reflx, rflx),
+                Vec4::from_array(source.uniform("fresnel_color")?),
+            ], UVec4::new(option("fx/opt/use_flow_map")?, option("fx/opt/use_flow_mask")?, reflexion, 0))
+        } else {
+            ([Vec4::ZERO; 3], UVec4::ZERO)
+        };
+        let (dissolve, dissolve_options) = if source.dissolve {
+            let adjust = source.uniform("alpha_Adjust")?;
+            (Vec4::new(scalar("distoStrength")?, adjust[0], adjust[1], adjust[2]),
+                UVec4::new(option("fx/opt/tile_alpha")?, option("fx/opt/use_mesh")?, 0, 0))
+        } else {
+            (Vec4::ZERO, UVec4::ZERO)
+        };
+        let (fire, fire_options) = if source.fire {
+            let smoke = source.uniform("fire_smoke_color")?;
+            ([Vec4::new(scalar("fire_distortion")?, scalar("lookup_adjust")?, scalar("fire_intensity")?,
+                    scalar("fire_light_intensity")?),
+                Vec4::new(smoke[0], smoke[1], smoke[2], scalar("fire_light_color")?)],
+                UVec4::new(option("fx/opt/use_lookup_light")?, 0, 0, 0))
+        } else {
+            ([Vec4::ZERO; 2], UVec4::ZERO)
+        };
+        let (add_liquid, add_liquid_options) = if source.add_liquid {
+            let strength = source.uniform("distoStrength")?;
+            (Vec4::new(strength[0], strength[1], scalar("liquid_Threshold")?, 0.),
+                UVec4::new(option("fx/opt/fade_threshold")?, option("fx/opt/no_opacity_map")?, 0, 0))
+        } else {
+            (Vec4::ZERO, UVec4::ZERO)
+        };
+        let (water, water_thresholds, water_options) = if source.water {
+            (Vec4::new(scalar("liquid_Threshold")?, scalar("liquid_inner_alpha")?,
+                scalar("liquid_Disto_amount")?, scalar("liquid_default_alpha")?),
+                Vec4::from_array(source.uniform("liquid_nm_thresholds")?),
+                UVec4::new(option("fx/opt/liquid_alpha_fb_animated")?, option("fx/opt/use_mesh")?, 0, 0))
+        } else {
+            (Vec4::ZERO, Vec4::ZERO, UVec4::ZERO)
+        };
         Ok(Self {
-            distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)}
+            water,
+            water_thresholds,
+            water_options,
+            liquid,
+            liquid_options,
+            dissolve,
+            dissolve_options,
+            fire,
+            fire_options,
+            add_liquid,
+            add_liquid_options,
+            distortion_fog: if source.distortion || source.add_liquid {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)}
                 else if source.scrolling_water {Vec4::new(0.,0.,0.,scalar("liquid_Disto_amount")?)} else {Vec4::ZERO},
             pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
                 u32::from(p.fuzz.is_some()), u32::from(p.fuzz_mask), u32::from(p.translucency.is_some()),
@@ -169,10 +254,13 @@ impl MaterialParameters {
                 .as_ref()
                 .map_or(Vec4::ZERO, |light| Vec4::from_array(light.uv)),
             shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
-                // Supported pixel particles are isAlpha, hence direct parallel
-                // receiving and neutral AO (2d5210 / lightContext).
+                // isAlpha pixel particles receive the parallel light directly
+                // with neutral AO; an opaque particle surface reads the screen
+                // shadow mask built from its zPrePass (route 0, 2d5210 /
+                // lightContext), as the capture's ro_texscreenshadows shows.
                 let clouds = light.pixel.as_ref().is_none_or(|p| p.translucency.is_none());
-                UVec4::new(light.shadow_flags | (u32::from(clouds) << 4), light.shadow_filtering as u32, 1, 0)
+                UVec4::new(light.shadow_flags | (u32::from(clouds) << 4), light.shadow_filtering as u32,
+                    u32::from(!source.opaque), 0)
             }),
             lighting_parameters: source.lighting.as_ref().map_or(Vec4::ZERO, |light| {
                 Vec4::new(
@@ -257,6 +345,34 @@ impl MaterialParameters {
     }
 }
 
+/// Which program of a particle material a GPU material specializes.
+/// The ordinary FX pass draws isAlpha materials; a non-isAlpha (blend ONE
+/// ZERO) material is a model surface drawn in the world zPrePass and the
+/// opaque colour pass (1401fbad0 publishes particle renderers as dynamic
+/// model surfaces), as the original's capture shows: GREATER_EQUAL depth
+/// writes in the prepass, then an EQUAL depth test without writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParticlePhase {
+    Colour,
+    Masking,
+    OpaqueDepth,
+    OpaqueColour,
+}
+
+/// 1402fcff0's per-model zPrePass partition for a particle surface. The FX
+/// render model has no model depth hack (the capture's prepass draw keeps
+/// stencil disabled), so only the source state's depth fields apply.
+pub fn opaque_depth_state(state: crate::render_state::RenderState) -> crate::render_state::RenderState {
+    crate::render_state::main_depth_surface_state(state, 0.0).0
+}
+
+/// The opaque colour pass after the zPrePass: EQUAL depth, no depth writes
+/// (capture events 67930 and 69112 for model and particle surfaces alike).
+pub fn opaque_colour_state(mut state: crate::render_state::RenderState) -> crate::render_state::RenderState {
+    state[5] = (state[5] & !0x1f) | 0x8 | 2;
+    state
+}
+
 pub struct ParticleDraw {
     pub material: Arc<ParticleMaterial>,
     pub masking_factor: f32,
@@ -268,6 +384,9 @@ pub struct ParticleDraw {
     pub grid_level: u32,
     pub mesh: Option<(String, Arc<crate::assets::particle_model::ParticleModel>)>,
     pub instances: Vec<ParticleInstance>,
+    /// Non-instanced particle geometry (vertex format 4, a triangle strip),
+    /// drawn with one instance record for the draw's clip/fade/record data.
+    pub strip: Vec<crate::gameplay::particles::trail::TrailVertex>,
     pub clip_plane: Vec4,
     pub clip_fade_distance: f32,
     pub fog: FogObjectParameters,
@@ -304,6 +423,16 @@ pub struct ParticlePixelLightingInputs<'a> {
     pub cloud: &'a TextureView,
     pub cloud_sampler: &'a Sampler,
     pub area: Option<&'a TextureView>,
+}
+/// The zPrePass needs only the view, its time and the depth attachment.
+pub struct ParticleDepthInputs<'a> {
+    pub surface_sampler: Option<&'a Sampler>,
+    pub matrices: &'a crate::rendering::view_history::ViewMatrices,
+    pub local_time: f32,
+    pub extent: [u32; 2],
+    pub inverse_z: [f32; 3],
+    pub adaptation: &'a Buffer,
+    pub depth: &'a TextureView,
 }
 pub struct ParticleViewInputs<'a> {
     pub distortion_sources: &'a super::screen_effects::ScreenEffectSources,
@@ -347,7 +476,9 @@ pub(super) struct ParticlePrograms {
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, i32, u8, bool), RenderPipeline>,
+    /// The zPrePass programs use only the view and material groups.
+    depth_layout: PipelineLayout,
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, bool, i32, u8, ParticlePhase, bool), RenderPipeline>,
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
@@ -439,66 +570,78 @@ impl ParticlePrograms {
             ],
             immediate_size: 0,
         });
-        let fog = include_str!("../../../assets/shaders/dh2_fog_material.wgsl")
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("#import"))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
-        // Directives are stripped; only the particle-surface instancing branch
-        // (never defined for the FX pass) is removed with its body.
-        let shared_source = |source: &str| {
-            let mut instanced = None;
-            source
-                .lines()
-                .filter(|line| {
-                    let directive = line.trim_start();
-                    match (directive, instanced) {
-                        ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
-                        ("#else", Some(true)) => instanced = Some(false),
-                        ("#endif", Some(_)) => instanced = None,
-                        _ => return instanced != Some(true) && !directive.starts_with('#'),
-                    }
-                    false
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let lighting_source = [
-            super::probe_weights::SHADER_SOURCE.to_owned(),
-            shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_light_scattering.wgsl"
-            )),
-            shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
-            include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_parallel_receiver.wgsl"
-            )),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_local_receiver.wgsl"
-            )),
-            include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
-        ]
-        .join("\n")
-        .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
-        let source = format!(
-            "{lighting_source}\n{}\n{}\n{}\n{fog}",
-            include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
-            include_str!("../../../assets/shaders/dh2_fog_alpha.wgsl"),
-            include_str!("../../../assets/shaders/dh2_particles.wgsl")
-        );
+        let depth_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("particle depth"),
+            bind_group_layouts: &[Some(&view_layout), Some(&material_layout)],
+            immediate_size: 0,
+        });
+        let source = particle_shader_source();
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("particle colour"),
             source: ShaderSource::Wgsl(source.into()),
         });
         Self {formats, view_layout, material_layout, fog_layout, lighting_layout,
-            pipeline_layout, shader, pipelines: HashMap::new()}
+            pipeline_layout, depth_layout, shader, pipelines: HashMap::new()}
     }
+}
+
+/// The FX colour pass shader: shared lighting and fog modules with the
+/// particle programs.
+pub fn particle_shader_source() -> String {
+    let fog = include_str!("../../../assets/shaders/dh2_fog_material.wgsl")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("#import"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
+    // Directives are stripped; only the particle-surface instancing branch
+    // (never defined for the FX pass) is removed with its body.
+    let shared_source = |source: &str| {
+        let mut instanced = None;
+        source
+            .lines()
+            .filter(|line| {
+                let directive = line.trim_start();
+                match (directive, instanced) {
+                    ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
+                    ("#else", Some(true)) => instanced = Some(false),
+                    ("#endif", Some(_)) => instanced = None,
+                    _ => return instanced != Some(true) && !directive.starts_with('#'),
+                }
+                false
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let lighting_source = [
+        super::probe_weights::SHADER_SOURCE.to_owned(),
+        shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_light_scattering.wgsl"
+        )),
+        shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
+        include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_parallel_receiver.wgsl"
+        )),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_local_receiver.wgsl"
+        )),
+        include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
+    ]
+    .join("\n")
+    .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
+    let source = format!(
+        "{lighting_source}\n{}\n{}\n{}\n{fog}",
+        include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
+        include_str!("../../../assets/shaders/dh2_fog_alpha.wgsl"),
+        include_str!("../../../assets/shaders/dh2_particles.wgsl")
+    );
+    source
 }
 
 /// Mutable level buffers and material bindings, separate from device programs.
@@ -523,12 +666,21 @@ pub struct ParticlePass {
     bilinear: Sampler,
     _unused_volume: Texture,
     unused_volume_view: TextureView,
+    /// 2D stand-in for texture slots a material's program never samples
+    /// (a flipbook material has no opacity image).
+    _unused_image: Texture,
+    unused_image_view: TextureView,
     _unused_shadow: Texture,
     unused_shadow_view: TextureView,
     comparison: Sampler,
     _unused_cube: Texture,
     unused_cube_view: TextureView,
-    materials: HashMap<(String, crate::render_state::RenderState, bool), MaterialGpu>,
+    /// Keyed by material, state, phase and strip geometry.
+    materials: HashMap<(String, crate::render_state::RenderState, ParticlePhase, bool), MaterialGpu>,
+    /// r_particleAlphaTestDepth and r_particleAlphaTestLit: the opaque
+    /// passes' particleAlphaTest (140321860 / 14031dce0 set the parameter
+    /// from these cvars per pass; capture: 0.035 prepass, 0.01569 colour).
+    opaque_alpha_tests: [f32; 2],
     // Host: pipeline specialization is independent of image/material binding
     // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
     pipeline_requests: usize,
@@ -541,6 +693,12 @@ pub struct ParticlePass {
     colour_format: TextureFormat,
     depth_format: TextureFormat,
     instance_bytes: Vec<u8>,
+    /// bevy_backend: the frame's strip vertices in one buffer, created at
+    /// the first strip draw, grown to the next power of two and released
+    /// with the pass. The original appends to its per-renderer dynamic
+    /// idTriangles (1402107b0) within the frame's vertex budget.
+    strip_vertices: Option<Buffer>,
+    strip_bytes: Vec<u8>,
 }
 fn buffer_entry(binding: u32, uniform: bool) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
@@ -587,6 +745,42 @@ fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 impl ParticlePass {
+    /// Both opaque programs of every non-isAlpha material, before play.
+    pub fn prepare_opaque_materials<'a>(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        surface_sampler: &Sampler,
+    ) -> Result<usize, String> {
+        if self.material_sampler != Some(surface_sampler.id()) {
+            self.rebind_materials(images, device, queue, surface_sampler)?;
+            self.material_sampler = Some(surface_sampler.id());
+        }
+        let mut created = 0;
+        for source in materials.filter(|material| material.opaque) {
+            for (phase, state) in [(ParticlePhase::OpaqueDepth, opaque_depth_state(source.state)),
+                (ParticlePhase::OpaqueColour, opaque_colour_state(source.state))] {
+                let key = (source.name.clone(), state, phase, false);
+                if self.materials.contains_key(&key) { continue; }
+                let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, phase, false)?;
+                self.materials.insert(key, material);
+                created += 1;
+            }
+        }
+        Ok(created)
+    }
+
+    /// The cvar values the opaque passes bind as particleAlphaTest. A change
+    /// rebuilds the opaque materials, whose parameters carry the value.
+    pub fn set_opaque_alpha_tests(&mut self, values: [f32; 2]) {
+        if values != self.opaque_alpha_tests {
+            self.opaque_alpha_tests = values;
+            self.materials.retain(|key, _| !matches!(key.2, ParticlePhase::OpaqueDepth | ParticlePhase::OpaqueColour));
+        }
+    }
+
     /// The GPU binding is a cache, not an effect owner. Call at effect/level
     /// retirement after definitions and live instances have released their
     /// references; active sources keep their existing bindings and pipelines.
@@ -775,6 +969,22 @@ impl ParticlePass {
             &[0; 4],
         );
         let unused_volume_view = unused_volume.create_view(&default());
+        let unused_image = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("unused particle image binding"),
+                size: Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            &[0; 4],
+        );
+        let unused_image_view = unused_image.create_view(&default());
         // Dormant fixed-layout binding for unlit scenes with no probe network.
         let unused_cube = device.create_texture_with_data(
             queue,
@@ -839,12 +1049,15 @@ impl ParticlePass {
             bilinear: sampler(AddressMode::Repeat, MipmapFilterMode::Nearest),
             _unused_volume: unused_volume,
             unused_volume_view,
+            _unused_image: unused_image,
+            unused_image_view,
             _unused_shadow: unused_shadow,
             unused_shadow_view,
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             _unused_cube: unused_cube,
             unused_cube_view,
             materials: HashMap::new(),
+            opaque_alpha_tests: [0.035, 0.01569],
             pipeline_requests: 0,
             pipeline_creations: 0,
             binding_refreshes: 0,
@@ -855,6 +1068,8 @@ impl ParticlePass {
             colour_format,
             depth_format,
             instance_bytes: Vec::with_capacity(max_instances * 96),
+            strip_vertices: None,
+            strip_bytes: Vec::new(),
         })
     }
 
@@ -893,9 +1108,9 @@ impl ParticlePass {
             )?;
             views.insert(name.as_str(), view);
         }
-        let opacity = views
-            .get("fx/opacity")
-            .ok_or("particle opacity image absent")?;
+        // The material omits fx/opacity only when its program never samples
+        // it (flipbook volume or radial ramp).
+        let opacity = views.get("fx/opacity").unwrap_or(&self.unused_image_view);
         let volume_view = if let Some(volume) = &source.volume {
             let view = images.acquire(
                 device,
@@ -963,32 +1178,37 @@ impl ParticlePass {
                     binding: 0,
                     resource: parameters.binding().ok_or("particle uniforms absent")?,
                 },
+                // particle/fire reuses the slots: fire_ball (1), fire_light
+                // (2), fire_smoke (3), lookup_light (4), lookup_fire (5).
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::TextureView(opacity),
+                    resource: BindingResource::TextureView(
+                        if source.fire { views.get("fx/fire_ball").unwrap_or(opacity) } else { opacity },
+                    ),
                 },
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(
-                        views.get("fx/disto1").unwrap_or(opacity),
+                        views.get(if source.fire { "fx/fire_light" } else if source.liquid { "fx/flowmap" } else { "fx/disto1" })
+                            .unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::TextureView(
-                        views.get("fx/disto2").unwrap_or(opacity),
+                        views.get(if source.fire { "fx/fire_smoke" } else { "fx/disto2" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 4,
                     resource: BindingResource::TextureView(
-                        views.get("fx/diffuse").unwrap_or(opacity),
+                        views.get(if source.fire { "fx/lookup_light" } else { "fx/diffuse" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 5,
                     resource: BindingResource::TextureView(
-                        views.get("fx/lookup").unwrap_or(opacity),
+                        views.get(if source.dissolve || source.fire { "fx/lookup_fire" } else { "fx/lookup" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
@@ -1028,7 +1248,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 19,
                     resource: BindingResource::TextureView(
-                        views.get(if source.scrolling_water { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
+                        views.get(if source.scrolling_water || source.liquid || source.water || source.fire { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 20,
@@ -1048,7 +1268,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 11,
                     resource: BindingResource::TextureView(
-                        views.get("fx/macrouvmap").unwrap_or(opacity),
+                        views.get(if source.liquid { "fx/reflexion" } else { "fx/macrouvmap" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
@@ -1066,7 +1286,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 10,
                     resource: BindingResource::TextureView(
-                        views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
+                        views.get(if source.liquid { "fx/liquid_mask" } else { "fx/opacity_scroll_mask" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry { binding: 28, resource: BindingResource::TextureView(
@@ -1130,21 +1350,37 @@ impl ParticlePass {
         state: crate::render_state::RenderState,
         accumulation: bool,
         anisotropic_sampler: &Sampler,
-        masking: bool,
+        phase: ParticlePhase,
+        strip: bool,
     ) -> Result<MaterialGpu, String> {
+        let masking = phase == ParticlePhase::Masking;
+        let opaque = matches!(phase, ParticlePhase::OpaqueDepth | ParticlePhase::OpaqueColour);
+        if opaque != source.opaque {
+            return Err(format!("particle {} program does not match the material's isAlpha class: {}",
+                if opaque { "opaque" } else { "alpha" }, source.name));
+        }
+        if opaque && !(source.water || source.liquid) {
+            return Err(format!("opaque particle zPrePass is connected for the water and liquid programs only: {}", source.name));
+        }
         if masking && (!source.masking_uses_main || source.distortion) {
             return Err(format!("particle masking program requires separate preparation: {}", source.name));
         }
         let accumulation = accumulation && !source.distortion;
-        let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
+        let mut resolved = MaterialParameters::resolve(&source)?;
+        match phase {
+            ParticlePhase::OpaqueDepth => resolved.alpha_test = self.opaque_alpha_tests[0],
+            ParticlePhase::OpaqueColour => resolved.alpha_test = self.opaque_alpha_tests[1],
+            _ => {}
+        }
+        let mut parameters = UniformBuffer::from(resolved);
         parameters.write_buffer(device, queue);
         let binding = self.material_binding(images, device, queue, &source, &parameters, anisotropic_sampler)?;
-        let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
+        let lighting_mode = if source.distortion || source.liquid || source.dissolve || source.add_liquid { 0 } else { source.option("fx/opt/use_lighting")? };
         let water_options = if source.scrolling_water {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, lighting_mode, water_options, masking);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4) | (u8::from(source.fire) << 5), phase, strip);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1160,7 +1396,7 @@ impl ParticlePass {
                 },
                 TextureFormat::Rg16Float,
             ];
-            let targets = (0..if accumulation { 2 } else { 1 })
+            let targets = (0..if phase == ParticlePhase::OpaqueDepth { 0 } else if accumulation { 2 } else { 1 })
                 .map(|index| {
                     let blend = blends.targets[index].ok_or("particle colour target absent")?;
                     Ok(Some(ColorTargetState {
@@ -1171,8 +1407,8 @@ impl ParticlePass {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let depth = crate::render_state::depth_stencil_state(&state);
-            if depth.depth_write {
-                return Err("particle alpha colour state must disable depth writes".into());
+            if depth.depth_write != (phase == ParticlePhase::OpaqueDepth) {
+                return Err("particle colour state must disable depth writes; the zPrePass must write".into());
             }
             if depth.stencil_enabled && !self.depth_format.has_stencil_aspect() {
                 return Err(
@@ -1183,21 +1419,53 @@ impl ParticlePass {
             let constants = [("particle_lighting_mode", f64::from(lighting_mode)),
                 ("particle_distortion_mode", f64::from(u32::from(source.distortion))),
                 ("particle_scrolling_water", f64::from(u32::from(source.scrolling_water))),
+                ("particle_liquid", f64::from(u32::from(source.liquid))),
+                ("particle_dissolve", f64::from(u32::from(source.dissolve))),
+                ("particle_add_liquid", f64::from(u32::from(source.add_liquid))),
+                ("particle_fire", f64::from(u32::from(source.fire))),
+                ("particle_water", f64::from(u32::from(source.water))),
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
                 ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
-                ("particle_masking", f64::from(u32::from(masking)))];
+                ("particle_masking", f64::from(u32::from(masking))),
+                ("particle_opaque", f64::from(u32::from(opaque)))];
+            // Vertex format 4 (1402d0dc0 list +0x178).
+            let strip_attributes = [
+                VertexAttribute { format: VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                VertexAttribute { format: VertexFormat::Float16x4, offset: 0xc, shader_location: 1 },
+                VertexAttribute { format: VertexFormat::Snorm8x4, offset: 0x14, shader_location: 2 },
+                VertexAttribute { format: VertexFormat::Snorm8x4, offset: 0x18, shader_location: 3 },
+                VertexAttribute { format: VertexFormat::Unorm8x4, offset: 0x1c, shader_location: 4 },
+                VertexAttribute { format: VertexFormat::Float16x4, offset: 0x20, shader_location: 5 },
+            ];
+            let strip_layout = [RawVertexBufferLayout {
+                array_stride: 40,
+                step_mode: VertexStepMode::Vertex,
+                attributes: &strip_attributes,
+            }];
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-                label: Some("particle sprite colour"),
-                layout: Some(&self.programs.pipeline_layout),
+                label: Some(match (strip, phase == ParticlePhase::OpaqueDepth) {
+                    (true, true) => "particle strip depth",
+                    (true, false) => "particle strip colour",
+                    (false, true) => "particle sprite depth",
+                    (false, false) => "particle sprite colour",
+                }),
+                layout: Some(if phase == ParticlePhase::OpaqueDepth { &self.programs.depth_layout } else { &self.programs.pipeline_layout }),
                 vertex: RawVertexState {
                     module: &self.programs.shader,
-                    entry_point: Some("particle_vertex"),
+                    entry_point: Some(match (strip, phase == ParticlePhase::OpaqueDepth) {
+                        (true, true) => "particle_strip_depth_vertex",
+                        (true, false) => "particle_strip_vertex",
+                        (false, true) => "particle_depth_vertex",
+                        (false, false) => "particle_vertex",
+                    }),
                     compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
-                    buffers: &[],
+                    buffers: if strip { &strip_layout } else { &[] },
                 },
                 fragment: Some(RawFragmentState {
                     module: &self.programs.shader,
-                    entry_point: Some(if source.distortion {
+                    entry_point: Some(if phase == ParticlePhase::OpaqueDepth {
+                        "particle_depth_fragment"
+                    } else if source.distortion {
                         "particle_distortion_fragment"
                     } else if accumulation {
                         "particle_accumulation_fragment"
@@ -1207,7 +1475,11 @@ impl ParticlePass {
                     compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                     targets: &targets,
                 }),
+                // bevy_backend: the original draws trail strips through the
+                // shared index buffer 1402d1ae0(registry, 2); a triangle
+                // strip gives the same triangles without the index buffer.
                 primitive: PrimitiveState {
+                    topology: if strip { PrimitiveTopology::TriangleStrip } else { PrimitiveTopology::TriangleList },
                     front_face,
                     cull_mode,
                     ..default()
@@ -1250,7 +1522,7 @@ impl ParticlePass {
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
     ) -> Result<usize, String> {
-        self.prepare_materials_bounded(images, device, queue, materials, cvars, surface_sampler, None)
+        self.prepare_materials_bounded(images, device, queue, materials, &Default::default(), cvars, surface_sampler, None)
             .map(|(created, _)| created)
     }
 
@@ -1264,6 +1536,7 @@ impl ParticlePass {
         device: &RenderDevice,
         queue: &RenderQueue,
         materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        strips: &std::collections::HashSet<String>,
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
         max_created: Option<usize>,
@@ -1275,16 +1548,19 @@ impl ParticlePass {
         let mut created = 0;
         let transparencies = crate::rendering::particles::transparency::ParticleTransparency::new(cvars);
         for material in materials {
+            if material.opaque { continue; }
             let mut transparency = transparencies.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
-            for water in [false, true] {
+            // Trail materials also get their strip pipelines before play.
+            let strip_variants: &[bool] = if strips.contains(&material.name) { &[false, true] } else { &[false] };
+            for (water, &strip) in [false, true].into_iter().flat_map(|water| strip_variants.iter().map(move |strip| (water, strip))) {
                 let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
-                let key = (material.name.clone(), state, false);
+                let key = (material.name.clone(), state, ParticlePhase::Colour, strip);
                 if self.materials.contains_key(&key) { continue; }
                 if max_created.is_some_and(|limit| created >= limit) {
                     return Ok((created, false));
                 }
-                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler, false)?;
+                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler, ParticlePhase::Colour, strip)?;
                 self.materials.insert(key, gpu);
                 created += 1;
             }
@@ -1310,10 +1586,10 @@ impl ParticlePass {
         let mut created = 0;
         for source in materials {
             let state = crate::render_state::masking_surface_draw_state(source.state);
-            let key = (source.name.clone(), state, true);
+            let key = (source.name.clone(), state, ParticlePhase::Masking, false);
             if self.materials.contains_key(&key) { continue; }
             if max_created.is_some_and(|limit| created >= limit) { return Ok((created, false)); }
-            let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, true)?;
+            let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, ParticlePhase::Masking, false)?;
             self.materials.insert(key, material);
             created += 1;
         }
@@ -1329,7 +1605,206 @@ impl ParticlePass {
         input: ParticleViewInputs<'_>,
         draws: &[ParticleDraw],
     ) -> Result<(), String> {
-        self.record_mode(images, device, queue, encoder, input, draws, false)
+        self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::Colour)
+    }
+
+    /// The opaque colour pass of non-isAlpha particle surfaces, after the
+    /// world's opaque pass and before atmosphere: EQUAL against the depth
+    /// their zPrePass wrote. `input.colour`/`input.depth` are the view's
+    /// lit target and its depth. Runs on its own pass instance so its
+    /// uploads never share buffers with the alpha pass of the same frame.
+    pub fn record_opaque(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        input: ParticleViewInputs<'_>,
+        draws: &[ParticleDraw],
+    ) -> Result<(), String> {
+        self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::OpaqueColour)
+    }
+
+    /// One record per instance (1eaa40's layout of the rewrite's particle
+    /// buffer): centre/axes, packed parameters, clip plane and clip fade.
+    fn upload_instances(&mut self, queue: &RenderQueue, draws: &[ParticleDraw]) {
+        self.instance_bytes.clear();
+        for (tag, draw) in draws.iter().enumerate() {
+            for instance in &draw.instances {
+                for v in [
+                    Vec3::from_array(instance.position).extend(instance.axes[0][0]),
+                    Vec3::from_array(instance.axes[1]).extend(instance.axes[0][1]),
+                    Vec3::from_array(instance.axes[2]).extend(instance.axes[0][2]),
+                ] {
+                    self.instance_bytes
+                        .extend(v.to_array().into_iter().flat_map(f32::to_le_bytes));
+                }
+                self.instance_bytes.extend(
+                    [
+                        instance.parameters.colour,
+                        instance.parameters.flipbook_seed_uv,
+                        instance.parameters.size,
+                        tag as u32,
+                    ]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes),
+                );
+                self.instance_bytes.extend(
+                    draw.clip_plane
+                        .to_array()
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes),
+                );
+                self.instance_bytes.extend(
+                    [draw.clip_fade_distance, if draw.mesh.is_some() {1.} else {0.}, draw.masking_factor, 0.]
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes),
+                );
+            }
+        }
+        if !self.instance_bytes.is_empty() {
+            queue.write_buffer(&self.instances, 0, &self.instance_bytes);
+        }
+    }
+
+    /// The frame's strip vertices (vertex format 4) in one buffer.
+    fn upload_strips(&mut self, device: &RenderDevice, queue: &RenderQueue, draws: &[ParticleDraw]) {
+        self.strip_bytes.clear();
+        for draw in draws {
+            for vertex in &draw.strip {
+                self.strip_bytes.extend(vertex.position.iter().flat_map(|v| v.to_le_bytes()));
+                self.strip_bytes.extend(vertex.texcoord.iter().flat_map(|v| v.to_le_bytes()));
+                self.strip_bytes.extend(vertex.normal.to_le_bytes());
+                self.strip_bytes.extend(vertex.tangent.to_le_bytes());
+                self.strip_bytes.extend(vertex.colour.to_le_bytes());
+                self.strip_bytes.extend(vertex.texcoord5.iter().flat_map(|v| v.to_le_bytes()));
+            }
+        }
+        if !self.strip_bytes.is_empty() {
+            let needed = self.strip_bytes.len() as u64;
+            if self.strip_vertices.as_ref().is_none_or(|buffer| buffer.size() < needed) {
+                self.strip_vertices = Some(device.create_buffer(&BufferDescriptor {
+                    label: Some("particle strip vertices"),
+                    size: needed.next_power_of_two(),
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            queue.write_buffer(self.strip_vertices.as_ref().unwrap(), 0, &self.strip_bytes);
+        }
+    }
+
+    /// The world zPrePass of non-isAlpha particle surfaces (1402fcff0's model
+    /// partition): depth only, before the screen shadows and the opaque
+    /// fog-depth snapshot consume the prepass depth. `depth` is the view's
+    /// depth attachment.
+    pub fn record_opaque_depth(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        input: ParticleDepthInputs<'_>,
+        draws: &[ParticleDraw],
+    ) -> Result<(), String> {
+        if draws.is_empty() {
+            return Ok(());
+        }
+        if draws.iter().any(|draw| !draw.material.opaque) {
+            return Err("particle zPrePass draws must be opaque surfaces".into());
+        }
+        let count = draws.iter().map(|d| d.instances.len()).sum::<usize>();
+        if count > self.max_instances || draws.len() > self.max_draws {
+            return Err("particle draw exceeds admitted declaration capacity".into());
+        }
+        let sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
+        if self.material_sampler != Some(sampler.id()) {
+            self.rebind_materials(images, device, queue, &sampler)?;
+            self.material_sampler = Some(sampler.id());
+        }
+        for draw in draws {
+            let strip = !draw.strip.is_empty();
+            let key = (draw.material.name.clone(), opaque_depth_state(draw.material.state), ParticlePhase::OpaqueDepth, strip);
+            if !self.materials.contains_key(&key) {
+                let material = self.material(images, device, queue, draw.material.clone(), key.1, false,
+                    &sampler, ParticlePhase::OpaqueDepth, strip)?;
+                self.materials.insert(key, material);
+            }
+        }
+        // The colour pass of the same frame rewrites these values; the
+        // zPrePass programs read only the view projection, camera and time.
+        self.view.set(ViewParameters {
+            game_world_from_clip: Mat4::IDENTITY,
+            scene_grid: UVec4::ZERO,
+            sun_direction: Vec4::ZERO,
+            sun_colour: Vec4::ZERO,
+            clip_from_game_world: Mat4::from_cols_array_2d(&input.matrices.view_projection).transpose(),
+            camera_time: Vec3::from_array(input.matrices.position).extend(input.local_time),
+            inverse_z: Vec3::from_array(input.inverse_z).extend(0.),
+            exposure_extent: Vec4::new(0., 0., input.extent[0] as f32, input.extent[1] as f32),
+        });
+        self.view.write_buffer(device, queue);
+        self.upload_instances(queue, draws);
+        if count == 0 {
+            return Ok(());
+        }
+        self.upload_strips(device, queue, draws);
+        if self.view_bindings.as_ref().is_none_or(|v| v.0 != input.adaptation.id()) {
+            let bindings = self.grids.iter()
+                .map(|grid| self.geometry_binding(device, &grid.vertices, input.adaptation)).collect();
+            self.view_bindings = Some((input.adaptation.id(), bindings));
+        }
+        for draw in draws {
+            let Some((source, model)) = &draw.mesh else { continue };
+            if !self.meshes.contains_key(source) {
+                self.meshes.insert(source.clone(), (mesh_geometry(device, model)?, None));
+            }
+            if self.meshes[source].1.as_ref().is_none_or(|entry| entry.0 != input.adaptation.id()) {
+                let binding = self.geometry_binding(device, &self.meshes[source].0.vertices, input.adaptation);
+                self.meshes.get_mut(source).unwrap().1 = Some((input.adaptation.id(), binding));
+            }
+        }
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("particle zPrePass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: input.depth,
+                depth_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
+                stencil_ops: self.depth_format.has_stencil_aspect()
+                    .then_some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let mut first = 0u32;
+        let mut strip_first = 0u32;
+        for draw in draws {
+            let level = draw.grid_level.min(5) as usize;
+            let strip = draw.strip.len() as u32;
+            let material = &self.materials[&(draw.material.name.clone(), opaque_depth_state(draw.material.state),
+                ParticlePhase::OpaqueDepth, strip != 0)];
+            pass.set_pipeline(&material.pipeline);
+            if strip != 0 {
+                pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[0], &[]);
+                pass.set_bind_group(1, &material.binding, &[]);
+                pass.set_vertex_buffer(0, *self.strip_vertices.as_ref().unwrap().slice(u64::from(strip_first) * 40..));
+                pass.draw(0..strip, first..first + 1);
+                first += draw.instances.len() as u32;
+                strip_first += strip;
+                continue;
+            }
+            let (geometry, binding) = if let Some((source, _)) = &draw.mesh {
+                let cached = &self.meshes[source]; (&cached.0, &cached.1.as_ref().unwrap().1)
+            } else { (&self.grids[level], &self.view_bindings.as_ref().unwrap().1[level]) };
+            pass.set_bind_group(0, binding, &[]);
+            pass.set_bind_group(1, &material.binding, &[]);
+            pass.set_index_buffer(*geometry.indices.slice(..), IndexFormat::Uint16);
+            let instances = draw.instances.len() as u32;
+            pass.draw_indexed(0..geometry.count, 0, first..first + instances);
+            first += instances;
+        }
+        Ok(())
     }
 
     /// 1403222f0's mask submission shares the ordinary particle buffers and
@@ -1348,7 +1823,7 @@ impl ParticlePass {
         if draws.iter().any(|draw| draw.masking_factor > 0.0 && draw.material.distortion) {
             return Err("distortion particle masking specialization is not connected".into());
         }
-        self.record_mode(images, device, queue, encoder, input, draws, true)
+        self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::Masking)
     }
 
     fn record_mode(
@@ -1359,17 +1834,24 @@ impl ParticlePass {
         encoder: &mut CommandEncoder,
         input: ParticleViewInputs<'_>,
         draws: &[ParticleDraw],
-        masking: bool,
+        phase: ParticlePhase,
     ) -> Result<(), String> {
         if draws.is_empty() {
             return Ok(());
         }
-        let draw_state = |draw: &ParticleDraw| if masking {
-            crate::render_state::masking_surface_draw_state(draw.material.state)
-        } else { draw.state };
-        let accumulation = !masking && draws.iter().find(|draw| !draw.material.distortion)
+        let masking = phase == ParticlePhase::Masking;
+        let opaque = phase == ParticlePhase::OpaqueColour;
+        if draws.iter().any(|draw| draw.material.opaque != opaque) {
+            return Err("particle draws of both isAlpha classes share one pass".into());
+        }
+        let draw_state = |draw: &ParticleDraw| match phase {
+            ParticlePhase::Masking => crate::render_state::masking_surface_draw_state(draw.material.state),
+            ParticlePhase::OpaqueColour => opaque_colour_state(draw.material.state),
+            _ => draw.state,
+        };
+        let accumulation = phase == ParticlePhase::Colour && draws.iter().find(|draw| !draw.material.distortion)
             .is_some_and(|draw| draw.transparency.mode != 0);
-        if !masking && draws
+        if phase == ParticlePhase::Colour && draws
             .iter()
             .any(|draw| !draw.material.distortion && (draw.transparency.mode != 0) != accumulation)
         {
@@ -1416,7 +1898,7 @@ impl ParticlePass {
         for draw in draws {
             if masking && !(draw.masking_factor > 0.0) { continue; }
             let state = draw_state(draw);
-            let key = (draw.material.name.clone(), state, masking);
+            let key = (draw.material.name.clone(), state, phase, !draw.strip.is_empty());
             if !self.materials.contains_key(&key) {
                 let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
                 let material = self.material(
@@ -1427,7 +1909,8 @@ impl ParticlePass {
                         state,
                         accumulation,
                         &surface_sampler,
-                        masking,
+                        phase,
+                        !draw.strip.is_empty(),
                     )?;
                 self.materials.insert(key, material);
             }
@@ -1472,44 +1955,11 @@ impl ParticlePass {
             exposure: input.camera_exposure,
         });
         self.fog_view.write_buffer(device, queue);
-        self.instance_bytes.clear();
-        for (tag, draw) in draws.iter().enumerate() {
-            for instance in &draw.instances {
-                for v in [
-                    Vec3::from_array(instance.position).extend(instance.axes[0][0]),
-                    Vec3::from_array(instance.axes[1]).extend(instance.axes[0][1]),
-                    Vec3::from_array(instance.axes[2]).extend(instance.axes[0][2]),
-                ] {
-                    self.instance_bytes
-                        .extend(v.to_array().into_iter().flat_map(f32::to_le_bytes));
-                }
-                self.instance_bytes.extend(
-                    [
-                        instance.parameters.colour,
-                        instance.parameters.flipbook_seed_uv,
-                        instance.parameters.size,
-                        tag as u32,
-                    ]
-                    .into_iter()
-                    .flat_map(u32::to_le_bytes),
-                );
-                self.instance_bytes.extend(
-                    draw.clip_plane
-                        .to_array()
-                        .into_iter()
-                        .flat_map(f32::to_le_bytes),
-                );
-                self.instance_bytes.extend(
-                    [draw.clip_fade_distance, if draw.mesh.is_some() {1.} else {0.}, draw.masking_factor, 0.]
-                        .into_iter()
-                        .flat_map(f32::to_le_bytes),
-                );
-            }
-        }
+        self.upload_instances(queue, draws);
         if count == 0 {
             return Ok(());
         }
-        queue.write_buffer(&self.instances, 0, &self.instance_bytes);
+        self.upload_strips(device, queue, draws);
         let transparency = ShaderBuffer::from(
             draws
                 .iter()
@@ -1789,7 +2239,7 @@ impl ParticlePass {
             })]
         };
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some(if masking { "particle masking" } else { "particle colour" }),
+            label: Some(if masking { "particle masking" } else if opaque { "particle opaque colour" } else { "particle colour" }),
             color_attachments: &colour_attachments,
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: input.depth,
@@ -1809,14 +2259,25 @@ impl ParticlePass {
         pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
         pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
         let mut first = 0u32;
+        let mut strip_first = 0u32;
         for draw in draws {
+            let strip = draw.strip.len() as u32;
             if draw.material.distortion || (masking && !(draw.masking_factor > 0.0)) {
-                first += draw.instances.len() as u32; continue;
+                first += draw.instances.len() as u32; strip_first += strip; continue;
             }
             let level = draw.grid_level.min(5) as usize;
-            let material = &self.materials[&(draw.material.name.clone(), draw_state(draw), masking)];
+            let material = &self.materials[&(draw.material.name.clone(), draw_state(draw), phase, strip != 0)];
             pass.set_pipeline(&material.pipeline);
-            pass.set_stencil_reference(if masking { 0 } else { draw.stencil_reference });
+            pass.set_stencil_reference(if masking || opaque { 0 } else { draw.stencil_reference });
+            if strip != 0 {
+                pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[0], &[]);
+                pass.set_bind_group(1, &material.binding, &[]);
+                pass.set_vertex_buffer(0, *self.strip_vertices.as_ref().unwrap().slice(u64::from(strip_first) * 40..));
+                pass.draw(0..strip, first..first + 1);
+                first += draw.instances.len() as u32;
+                strip_first += strip;
+                continue;
+            }
             let (geometry,binding)=if let Some((source,_))=&draw.mesh {
                 let cached=&self.meshes[source]; (&cached.0,&cached.1.as_ref().unwrap().1)
             } else {(&self.grids[level],&self.view_bindings.as_ref().unwrap().1[level])};
@@ -1828,7 +2289,7 @@ impl ParticlePass {
             first += count;
         }
         drop(pass);
-        if !masking && !self.reported_mesh_submission {
+        if phase == ParticlePhase::Colour && !self.reported_mesh_submission {
             let meshes=draws.iter().filter(|draw|draw.mesh.is_some()&&!draw.material.distortion).collect::<Vec<_>>();
             if !meshes.is_empty() {
                 bevy::log::info!(draws=meshes.len(),instances=meshes.iter().map(|draw|draw.instances.len()).sum::<usize>(),
@@ -1842,7 +2303,7 @@ impl ParticlePass {
                 .unwrap()
                 .record_resolve(device, queue, encoder, &input)?;
         }
-        if !masking && draws.iter().any(|draw| draw.material.distortion) {
+        if phase == ParticlePhase::Colour && draws.iter().any(|draw| draw.material.distortion) {
             if self.distortion.as_ref().is_none_or(|(extent, compressed, _, _)|
                 *extent != input.extent || *compressed != input.compressed_hdr) {
                 let format = if input.compressed_hdr { TextureFormat::Rg11b10Ufloat } else { TextureFormat::Rgba16Float };
@@ -1867,11 +2328,21 @@ impl ParticlePass {
             pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
             pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
             let mut first = 0;
+            let mut strip_first = 0u32;
             for draw in draws {
                 let count = draw.instances.len() as u32;
-                if draw.material.distortion {
+                let strip = draw.strip.len() as u32;
+                if draw.material.distortion && strip != 0 {
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state, ParticlePhase::Colour, true)];
+                    pass.set_pipeline(&material.pipeline);
+                    pass.set_stencil_reference(draw.stencil_reference);
+                    pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[0], &[]);
+                    pass.set_bind_group(1, &material.binding, &[]);
+                    pass.set_vertex_buffer(0, *self.strip_vertices.as_ref().unwrap().slice(u64::from(strip_first) * 40..));
+                    pass.draw(0..strip, first..first + 1);
+                } else if draw.material.distortion {
                     let level = draw.grid_level.min(5) as usize;
-                    let material = &self.materials[&(draw.material.name.clone(), draw.state, false)];
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state, ParticlePhase::Colour, false)];
                     pass.set_pipeline(&material.pipeline);
                     pass.set_stencil_reference(draw.stencil_reference);
                     let (geometry,binding)=if let Some((source,_))=&draw.mesh {
@@ -1883,6 +2354,7 @@ impl ParticlePass {
                     pass.draw_indexed(0..geometry.count, 0, first..first+count);
                 }
                 first += count;
+                strip_first += strip;
             }
             drop(pass);
             let prepared = hdr.prepare(device, queue, encoder, input.colour, input.extent,
@@ -1929,3 +2401,4 @@ impl Drop for ParticlePass {
         }
     }
 }
+

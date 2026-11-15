@@ -13,13 +13,13 @@ pub struct SpawnVector {
     pub worldspace: bool,
 }
 impl SpawnVector {
-    fn new(value: [f32; 3]) -> Self {
+    pub(super) fn new(value: [f32; 3]) -> Self {
         Self {
             value: VectorParameter::constant(value),
             worldspace: false,
         }
     }
-    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+    pub(super) fn edit(&mut self, fields: &Fields) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_value" => particles::vector_parameter(&mut self.value, scope(value)?)?,
@@ -47,7 +47,7 @@ impl Default for ParticleEvent {
     }
 }
 impl ParticleEvent {
-    fn edit(&mut self, fields: &Fields, life_event: bool) -> Result<(), String> {
+    pub(super) fn edit(&mut self, fields: &Fields, life_event: bool) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_name" => self.name = atom(value)?.to_owned(),
@@ -103,10 +103,44 @@ impl ParticleEvents {
     }
 }
 
+/// arkParticleSystemDescStructures::arkParentSpawnStage at stage +0x200
+/// (m_spawn +0x1d8), initialized by 1f8b80: m_stageName +0x200,
+/// m_spawnOnlyFromStage +0x208, m_lifeRestriction +0x210 (0.9 with its
+/// minimum endpoint 0.1), m_initialVelocity +0x2d8 (1) and
+/// m_velocityRedirectionAngle +0x3a0 (30). 140201760 links the named stage.
+pub struct ParentSpawnStage {
+    pub stage_name: String,
+    pub life_restriction: ScalarParameter,
+    pub initial_velocity: ScalarParameter,
+    pub velocity_redirection_angle: ScalarParameter,
+}
+impl Default for ParentSpawnStage {
+    fn default() -> Self {
+        let mut life_restriction = ScalarParameter::constant(f32::from_bits(0x3f66_6666));
+        life_restriction.range[1] = f32::from_bits(0x3dcc_cccd);
+        Self {
+            stage_name: String::new(),
+            life_restriction,
+            initial_velocity: ScalarParameter::constant(1.),
+            velocity_redirection_angle: ScalarParameter::constant(30.),
+        }
+    }
+}
+
+/// arkParticleSystemDescStructures::arkPhysicsShapesSpawn (0x198 bytes).
+pub struct PhysicsShapesSpawn {
+    pub enabled: bool,
+    pub normal_offset: ScalarParameter,
+    pub normal_to_velocity: ScalarParameter,
+}
+
 pub struct ParticleStageAsset {
     pub name: String,
     pub enabled: bool,
     pub worldspace: bool,
+    /// arkSorting m_mode (stage +0x1910): 0 NONE, 1 BACK_TO_FRONT,
+    /// 2 FRONT_TO_BACK (enum 141a10070).
+    pub sorting: u8,
     pub enable_wind: bool,
     pub enable_velocity_inheritance: bool,
     pub emitter: EmitterDefinition,
@@ -117,9 +151,14 @@ pub struct ParticleStageAsset {
     pub infinite_life: bool,
     pub warmup: [f32; 2],
     pub spawn_only_from_stage: bool,
+    pub spawn_stage: ParentSpawnStage,
     pub use_event_location: bool,
     pub event_velocity: ScalarParameter,
     pub event_normal: ScalarParameter,
+    /// m_physicsShapesSpawn (spawn_t +0x598, arkPhysicsShapesSpawn
+    /// 141576f00): m_enabled +0, m_normalOffset +8, m_normalToVelocity
+    /// +0xd0 (default 141d94b90).
+    pub physics_shapes_spawn: PhysicsShapesSpawn,
     pub location: SpawnVector,
     pub velocity: SpawnVector,
     pub spawn_mesh: crate::gameplay::particles::mesh::SpawnMesh,
@@ -137,6 +176,10 @@ pub struct ParticleStageAsset {
     pub spawn_fields: Vec<super::particle_field::ParticleField>,
     pub vector_fields: Vec<super::particle_field::ParticleField>,
     pub acceleration_fields: Vec<super::particle_field::ParticleField>,
+    /// Stage +0x1628.
+    pub attractors: Vec<super::particle_attractor::ParticleAttractor>,
+    /// Stage +0x1938.
+    pub trails: Vec<super::particle_trail::ParticleTrailAsset>,
 }
 impl Default for ParticleStageAsset {
     fn default() -> Self {
@@ -144,6 +187,7 @@ impl Default for ParticleStageAsset {
             name: String::new(),
             enabled: true,
             worldspace: true,
+            sorting: 0,
             enable_wind: false,
             enable_velocity_inheritance: false,
             emitter: EmitterDefinition {
@@ -166,9 +210,15 @@ impl Default for ParticleStageAsset {
             infinite_life: false,
             warmup: [0.; 2],
             spawn_only_from_stage: true,
+            spawn_stage: ParentSpawnStage::default(),
             use_event_location: true,
             event_velocity: ScalarParameter::constant(0.),
             event_normal: ScalarParameter::constant(0.),
+            physics_shapes_spawn: PhysicsShapesSpawn {
+                enabled: false,
+                normal_offset: ScalarParameter::constant(0.),
+                normal_to_velocity: ScalarParameter::constant(0.),
+            },
             location: SpawnVector::new([0.; 3]),
             velocity: SpawnVector::new([0., 0., 1.]),
             spawn_mesh: Default::default(),
@@ -186,11 +236,52 @@ impl Default for ParticleStageAsset {
             spawn_fields: Vec::new(),
             vector_fields: Vec::new(),
             acceleration_fields: Vec::new(),
+            attractors: Vec::new(),
+            trails: Vec::new(),
         }
     }
 }
 
-fn unsigned(value: &Value) -> Result<u32, String> {
+/// 1f82c0's allocation estimate for an arkStandardCycles block (stages and
+/// declaration trails).
+pub fn standard_cycles_capacity(
+    emitter: &EmitterDefinition,
+    life: &ScalarParameter,
+    infinite_life: bool,
+    burst: bool,
+    burst_event: &str,
+    maximum_burst_events: u32,
+) -> Result<u64, String> {
+    use crate::float::{add, divide, multiply, truncate_i64};
+    let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
+    if !infinite_life {
+        let life = multiply(life.curve.maximum_key_value(0.)?, life.range[0].max(life.range[1]));
+        if !burst {
+            let count = multiply(emitter.rate.maximum_rate()?, life).ceil();
+            return Ok(ceil(multiply(add(count, 1.), f32::from_bits(0x3f86_6666))));
+        }
+        let duration = emitter.duration[0].min(emitter.duration[1]);
+        let mut cycles = divide(life, duration).ceil();
+        if emitter.cycles != 0 && emitter.cycles as f32 <= cycles {
+            cycles = emitter.cycles as f32;
+        }
+        let count = truncate_i64(multiply(emitter.rate.maximum_burst(), cycles)) as u64;
+        return Ok(if burst_event.is_empty() {
+            count
+        } else {
+            (count as u32).wrapping_mul(maximum_burst_events) as u64
+        });
+    }
+    let per_cycle = if burst {
+        ceil(emitter.rate.maximum_burst())
+    } else {
+        ceil(multiply(emitter.duration[0].max(emitter.duration[1]), emitter.rate.maximum_rate()?))
+    };
+    let count = (per_cycle as u32).wrapping_mul(emitter.cycles);
+    Ok(if burst_event.is_empty() { count } else { count.wrapping_mul(maximum_burst_events) } as u64)
+}
+
+pub(super) fn unsigned(value: &Value) -> Result<u32, String> {
     atom(value)?
         .parse()
         .map_err(|e| format!("invalid particle unsigned integer: {e}"))
@@ -200,46 +291,11 @@ impl ParticleStageAsset {
     /// 1f82c0's allocation estimate. The ordinary stage owner (1efcc0) caps
     /// it at 8192 slots, shared by sprite and mesh renderers.
     pub fn estimated_capacity(&self) -> Result<u64, String> {
-        use crate::float::{add, divide, multiply, truncate_i64};
-        let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
-        if !self.infinite_life {
-            let life = multiply(
-                self.life.curve.maximum_key_value(0.)?,
-                self.life.range[0].max(self.life.range[1]),
-            );
-            if !self.burst {
-                let count = multiply(self.emitter.rate.maximum_rate()?, life).ceil();
-                return Ok(ceil(multiply(add(count, 1.), f32::from_bits(0x3f86_6666))));
-            }
-            let duration = self.emitter.duration[0].min(self.emitter.duration[1]);
-            let mut cycles = divide(life, duration).ceil();
-            if self.emitter.cycles != 0 && self.emitter.cycles as f32 <= cycles {
-                cycles = self.emitter.cycles as f32;
-            }
-            let count = truncate_i64(multiply(self.emitter.rate.maximum_burst(), cycles)) as u64;
-            return Ok(if self.burst_event.is_empty() {
-                count
-            } else {
-                (count as u32).wrapping_mul(self.maximum_burst_events) as u64
-            });
-        }
-        let per_cycle = if self.burst {
-            ceil(self.emitter.rate.maximum_burst())
-        } else {
-            ceil(multiply(
-                self.emitter.duration[0].max(self.emitter.duration[1]),
-                self.emitter.rate.maximum_rate()?,
-            ))
-        };
-        let count = (per_cycle as u32).wrapping_mul(self.emitter.cycles);
-        Ok(if self.burst_event.is_empty() {
-            count
-        } else {
-            count.wrapping_mul(self.maximum_burst_events)
-        } as u64)
+        standard_cycles_capacity(&self.emitter, &self.life, self.infinite_life, self.burst,
+            &self.burst_event, self.maximum_burst_events)
     }
 
-    fn spawn(&mut self, fields: &Fields) -> Result<(), String> {
+    pub(super) fn spawn(&mut self, fields: &Fields) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_cycles" => self.emitter.cycles = unsigned(value)?,
@@ -275,6 +331,9 @@ impl ParticleStageAsset {
                 )?,
                 "m_spawnMesh" => particle_emission_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
                 "m_velocityMesh" => particle_emission_mesh::velocity_edit(&mut self.velocity_mesh, scope(value)?)?,
+                // arkInitialAngularOrientation (spawn_t +0xf38): m_value +0,
+                // m_worldspace +0x110, m_rotationOrder +0x114.
+                "m_velocityCycleOrientation" => spawn_orientation(&mut self.velocity_orientation, scope(value)?)?,
                 "m_velocityPeriodicOrientation" => {
                     for (name, value) in scope(value)? {
                         let parameter = match name.as_str() {
@@ -295,13 +354,37 @@ impl ParticleStageAsset {
                 "m_eventNormal" => {
                     particles::scalar_parameter(&mut self.event_normal, scope(value)?)?
                 }
+                "m_physicsShapesSpawn" => {
+                    let spawn = &mut self.physics_shapes_spawn;
+                    for (name, value) in scope(value)? {
+                        match name.as_str() {
+                            "m_enabled" => spawn.enabled = boolean(value)?,
+                            "m_normalOffset" => particles::scalar_parameter(&mut spawn.normal_offset, scope(value)?)?,
+                            "m_normalToVelocity" => particles::scalar_parameter(&mut spawn.normal_to_velocity, scope(value)?)?,
+                            _ => return Err(format!("unknown physics shapes spawn field {name}")),
+                        }
+                    }
+                }
                 "m_spawnStage" => {
                     for (name, value) in scope(value)? {
                         match name.as_str() {
                             "m_spawnOnlyFromStage" => self.spawn_only_from_stage = boolean(value)?,
+                            "m_stageName" => self.spawn_stage.stage_name = atom(value)?.to_owned(),
+                            "m_lifeRestriction" => particles::scalar_parameter(
+                                &mut self.spawn_stage.life_restriction,
+                                scope(value)?,
+                            )?,
+                            "m_initialVelocity" => particles::scalar_parameter(
+                                &mut self.spawn_stage.initial_velocity,
+                                scope(value)?,
+                            )?,
+                            "m_velocityRedirectionAngle" => particles::scalar_parameter(
+                                &mut self.spawn_stage.velocity_redirection_angle,
+                                scope(value)?,
+                            )?,
                             _ => {
                                 return Err(format!(
-                                    "unresolved particle parent-stage field {name}"
+                                    "unknown particle parent-stage field {name}"
                                 ))
                             }
                         }
@@ -314,6 +397,33 @@ impl ParticleStageAsset {
     }
 }
 
+/// arkInitialAngularOrientation: m_value +0, m_worldspace +0x110,
+/// m_rotationOrder +0x114 (defaults 1f8940).
+pub(super) fn spawn_orientation(
+    orientation: &mut crate::gameplay::particles::spawn::SpawnOrientation,
+    fields: &Fields,
+) -> Result<(), String> {
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_value" => particles::vector_parameter(&mut orientation.angles, scope(value)?)?,
+            "m_worldspace" => orientation.worldspace = boolean(value)?,
+            "m_rotationOrder" => {
+                orientation.order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
+                    mode => return Err(format!("unknown angular orientation rotation order {mode}")),
+                }
+            }
+            _ => return Err(format!("unknown angular orientation field {name}")),
+        }
+    }
+    Ok(())
+}
+
 /// Read an ordinary stage. Meshes, trails, attractors and fields need their
 /// concrete producers before this reader can admit declarations using them.
 pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
@@ -323,6 +433,21 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
         match name.as_str() {
             "m_enabled" => result.enabled = boolean(value)?,
             "m_worldspace" => result.worldspace = boolean(value)?,
+            "m_sorting" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_mode" => {
+                            result.sorting = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                                "NONE" => 0,
+                                "BACK_TO_FRONT" => 1,
+                                "FRONT_TO_BACK" => 2,
+                                mode => return Err(format!("unknown particle sorting mode {mode}")),
+                            }
+                        }
+                        _ => return Err(format!("unknown particle sorting field {name}")),
+                    }
+                }
+            }
             "m_enableWind" => result.enable_wind = boolean(value)?,
             "m_enableVelocityInheritance" => result.enable_velocity_inheritance = boolean(value)?,
             "m_main" => {
@@ -354,6 +479,12 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
                 super::particle_field::field,
             )?,
             "m_meshes" => descriptor_list(&mut result.meshes, scope(value)?, super::particle_mesh::mesh)?,
+            "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::trail)?,
+            "m_attractors" => descriptor_list(
+                &mut result.attractors,
+                scope(value)?,
+                super::particle_attractor::attractor,
+            )?,
             "m_sprites" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

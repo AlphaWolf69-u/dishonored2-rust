@@ -15,7 +15,6 @@ pub(crate) struct HeadWaterSnapshot {
 }
 pub(super) struct HeadQueries {
     queries: OceanHeightQueries,
-    requests: OceanQueryQueue,
     readbacks: OceanQueryReadbacks,
     handles: [OceanQueryHandle; 4],
     points: [Option<[[f32; 2]; 5]>; 4],
@@ -31,7 +30,6 @@ impl HeadQueries {
         Self {
             texture_ids,
             queries: OceanHeightQueries::new(device, textures),
-            requests: OceanQueryQueue::new(),
             readbacks: OceanQueryReadbacks::new(device),
             handles: [OceanQueryHandle::INVALID; 4],
             points: [None; 4],
@@ -60,7 +58,8 @@ impl HeadQueries {
         };
         if frame.head_water_surface.is_some() {
             let mut samples = [[0.; 4]; 5];
-            if let Some(count) = self.requests.take(
+            let mut shared = crate::rendering::ocean::ocean_query_manager().lock().map_err(|_| "ocean query manager poisoned")?;
+            if let Some(count) = shared.queue.take(
                 &mut self.handles[self.cursor],
                 self.readbacks.completed_rings(),
                 &mut samples,
@@ -79,7 +78,7 @@ impl HeadQueries {
             if let Some(points) = frame.head_wave_points {
                 // Gameplay registration sees the preceding renderer ring.
                 // 3032b0 assigns that ring+1, the ring submitted below.
-                let handle = self.requests.register((self.ring + 3) & 3, &points)?;
+                let handle = shared.queue.register((self.ring + 3) & 3, &points)?;
                 self.handles[self.cursor] = handle;
                 self.points[self.cursor] = Some(points);
                 if !handle.is_invalid() {
@@ -104,10 +103,11 @@ impl HeadQueries {
             return Ok(());
         }
         self.take_snapshot(frame)?;
+        let mut shared = crate::rendering::ocean::ocean_query_manager().lock().map_err(|_| "ocean query manager poisoned")?;
         self.queries.record_pending(
             queue,
             encoder,
-            &mut self.requests,
+            &mut shared.queue,
             &mut self.readbacks,
             surface,
             water_level,
@@ -117,7 +117,11 @@ impl HeadQueries {
         self.ring = (self.ring + 1) & 3;
         self.recorded = Some(frame.matrices.frame);
         // Publish only after the frame's CPU simulation has consumed its ring.
-        self.readbacks.read_current_mapped(device, self.ring, &self.requests)?;
+        self.readbacks.read_current_mapped(device, self.ring, &shared.queue)?;
+        // The other clients read the same completed rings and register
+        // into the ring the next submission records.
+        shared.completed = self.readbacks.completed_rings().map(<[[f32; 4]]>::to_vec);
+        shared.register_ring = (self.ring + 3) & 3;
         Ok(())
     }
 }
@@ -139,7 +143,8 @@ impl OceanScene {
             && result.ocean_level.is_some() {
             if let Some(queries) = self.head_queries.as_ref() {
                 let mut samples = [[0.; 4]; 5];
-                if let Some(count) = queries.requests.peek(
+                let shared = crate::rendering::ocean::ocean_query_manager().lock().map_err(|_| "ocean query manager poisoned")?;
+                if let Some(count) = shared.queue.peek(
                     queries.handles[queries.cursor], queries.readbacks.completed_rings(), &mut samples,
                 )? {
                     if count != 5 { return Err("swimming wave query did not return five points".into()); }
@@ -158,7 +163,15 @@ impl OceanScene {
         encoder: &mut CommandEncoder,
         frame: &WaterFrame,
     ) -> Result<(), String> {
-        if self.head_queries.is_some() || frame.head_wave_points.is_some() {
+        // Other clients' points (Havok particle ocean queries) also need
+        // the query pipeline.
+        let clients = crate::rendering::ocean::ocean_query_manager()
+            .lock()
+            .map_err(|_| "ocean query manager poisoned")?
+            .queue
+            .pending_points()
+            .len();
+        if self.head_queries.is_some() || frame.head_wave_points.is_some() || clients != 0 {
             let settings = &frame.ocean_environment.surface;
             let textures = OceanHeightTextures {
                 noise: &self.noise,

@@ -165,6 +165,76 @@ impl OceanQueryQueue {
     }
 }
 
+/// The game's single ocean query manager (DAT_1432eb1b8) as its clients
+/// share it: the queue, CPU copies of the four completed readback rings,
+/// the ring new registrations join, and whether an ocean is active
+/// (140302d20). The renderer submits and reads it back once per frame.
+#[derive(Default)]
+pub struct SharedOceanQueries {
+    pub queue: OceanQueryQueue,
+    pub completed: [Vec<[f32; 4]>; 4],
+    pub register_ring: usize,
+    pub active: bool,
+}
+
+pub type OceanQueryLink = std::sync::Arc<std::sync::Mutex<SharedOceanQueries>>;
+
+/// The process's one manager, as the game's global (DAT_1432eb1b8).
+pub fn ocean_query_manager() -> &'static OceanQueryLink {
+    static MANAGER: std::sync::OnceLock<OceanQueryLink> = std::sync::OnceLock::new();
+    MANAGER.get_or_init(Default::default)
+}
+
+/// A client's multi-point ocean query (a Havok particle stage's +0x6e8,
+/// 14064e5d0/14064e640): one point per body slot, a float4 result
+/// (height, normal) per point, and the handles of each of four frames.
+pub struct OceanMultiQuery {
+    pub positions: Vec<[f32; 2]>,
+    pub results: Vec<[f32; 4]>,
+    rings: [Vec<OceanQueryHandle>; 4],
+    ring: usize,
+}
+
+impl OceanMultiQuery {
+    /// 1401e5c00: positions at the origin, heights at -FLT_MAX.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            positions: vec![[0.; 2]; capacity],
+            results: vec![[-f32::MAX, 0., 0., 0.]; capacity],
+            rings: Default::default(),
+            ring: 0,
+        }
+    }
+
+    /// 14064e640 with an active ocean: this ring's results from four frames
+    /// ago fill the result slots in handle order (14064de80, 32 per
+    /// handle), then every position is registered again in batches of 32
+    /// (14064e040; a batch that does not fit keeps an invalid handle).
+    pub fn exchange(&mut self, shared: &mut SharedOceanQueries) -> Result<(), String> {
+        if self.positions.is_empty() || !shared.active {
+            return Ok(());
+        }
+        let SharedOceanQueries { queue, completed, register_ring, .. } = shared;
+        let completed = completed.each_ref().map(Vec::as_slice);
+        let mut offset = 0;
+        for handle in &mut self.rings[self.ring] {
+            if handle.is_invalid() {
+                continue;
+            }
+            let output = self.results.get_mut(offset..).ok_or("ocean query results overflow")?;
+            queue.take(handle, completed, output)?;
+            offset += 32;
+        }
+        self.rings[self.ring].clear();
+        for batch in self.positions.chunks(32) {
+            let handle = queue.register(*register_ring, batch)?;
+            self.rings[self.ring].push(handle);
+        }
+        self.ring = (self.ring + 1) & 3;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[path = "queries/tests.rs"]
 mod tests;

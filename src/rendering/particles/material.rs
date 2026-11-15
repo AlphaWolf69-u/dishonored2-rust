@@ -116,9 +116,30 @@ pub struct ParticleMaterial {
     pub distortion: bool,
     /// `particle/scrolling_water` uses its own texture and normal evaluation.
     pub scrolling_water: bool,
+    /// `particle/liquid`: flow-mapped opacity through a lookup ramp, BC5
+    /// normals distorting the diffuse UV, an optional screen reflexion map;
+    /// unlit and unfogged.
+    pub liquid: bool,
+    /// `particle/dissolve`: distorted opacity through the lookup_fire ramp,
+    /// alpha from the alpha_Adjust smoothstep; fully fogged.
+    pub dissolve: bool,
+    /// `particle/fire`: fire ball, light and smoke masks through the
+    /// lookup_fire (and optional lookup_light) ramps, normal-distorted;
+    /// unlit and fully fogged.
+    pub fire: bool,
+    /// `particle/add_liquid`: thresholded sum of two panned distortion
+    /// layers, fog-seeded panning and per-pixel fog.
+    pub add_liquid: bool,
+    /// `particle/water` and `particle/blood` (the same fragment): opacity
+    /// thresholds, a banded normal and normal-distorted diffuse.
+    pub water: bool,
     /// 1402d5210 derives the mask variant from MAIN only when no distinct
     /// authored masking program is present. Such programs need their own owner.
     pub masking_uses_main: bool,
+    /// Not isAlpha (2d5210's class test on the MAIN blend state): the
+    /// renderer is a model surface drawn in the zPrePass and the opaque
+    /// colour pass, not in the FX colour pass.
+    pub opaque: bool,
     pub state: crate::render_state::RenderState,
     /// Material+4a high three bits, consumed by declaration analysis1c4460.
     pub darkvision_layer: u8,
@@ -168,9 +189,14 @@ impl ParticleMaterial {
             .ok_or_else(|| format!("particle main program absent: {name}"))?;
         let distortion = program.eq_ignore_ascii_case("particle/dist_blur");
         let scrolling_water = program.eq_ignore_ascii_case("particle/scrolling_water");
+        let liquid = program.eq_ignore_ascii_case("particle/liquid");
+        let dissolve = program.eq_ignore_ascii_case("particle/dissolve");
+        let fire = program.eq_ignore_ascii_case("particle/fire");
+        let add_liquid = program.eq_ignore_ascii_case("particle/add_liquid");
+        let water = program.eq_ignore_ascii_case("particle/water") || program.eq_ignore_ascii_case("particle/blood");
         let masking_uses_main = crate::material::authored_program_override(&bytes, "maskingProgram")
             .is_none_or(|masking| masking.eq_ignore_ascii_case(&program));
-        if !distortion && !scrolling_water && !program.eq_ignore_ascii_case("particle/add_default") {
+        if !distortion && !scrolling_water && !liquid && !dissolve && !fire && !add_liquid && !water && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
         let definition = library
@@ -179,9 +205,16 @@ impl ParticleMaterial {
         let defaults = definition.defaults.clone();
         let text = crate::entities::declaration_text(&bytes);
         let state = crate::render_state::material_render_state(&text, definition.render_state())?;
-        let mut parameters = crate::entities::material_float_parameters(&text, |name| {
-            library.parameter_kinds.get(name.as_bytes()) == Some(&RenderParameterKind::Uniform)
-        })?
+        // A legacy parms block may name its stageSort symbolically
+        // (sortCoverage, sortTrans); resolve it as material declarations do.
+        let empty_block = SerializedParameterBlock { flags: 0, parameters: Vec::new() };
+        let shared = std::cell::RefCell::new(&mut *library);
+        let mut parameters = crate::entities::material_float_parameters_with_stage_sort(
+            &text,
+            |name| shared.borrow().parameter_kinds.get(name.as_bytes()) == Some(&RenderParameterKind::Uniform),
+            |name| shared.borrow_mut().registered_float_vector(catalog, &empty_block, name.as_bytes(), None)
+                .map_err(|error| error.to_string()),
+        )?
         .into_iter()
         .map(|(name, words)| SerializedParameter {
             name: name.into_bytes(),
@@ -234,6 +267,59 @@ impl ParticleMaterial {
                 options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
             }
         }
+        if liquid {
+            for name in ["fx/opt/use_flow_map", "fx/opt/use_flow_mask", "fx/opt/use_reflexion"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+            // The installed program reads an undeclared diffuseAlbedo under
+            // this option, so the original cannot compile it.
+            if options["fx/opt/view_dependent_fade"] != 0 {
+                return Err(format!("particle/liquid view_dependent_fade does not compile in the original: {name}"));
+            }
+            // add_default's lighting option has no effect on this unlit
+            // program; 14 installed liquid materials still author it.
+            options.insert("fx/opt/use_lighting".into(), 0);
+        }
+        if water {
+            for name in ["fx/opt/liquid_alpha_fb_animated", "fx/opt/use_mesh"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+        }
+        if add_liquid {
+            for name in ["fx/opt/fade_threshold", "fx/opt/no_opacity_map"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+            // The program has no lighting; the option belongs to add_default.
+            options.insert("fx/opt/use_lighting".into(), 0);
+        }
+        if fire {
+            let name = "fx/opt/use_lookup_light";
+            options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            // The fire program has no lighting; the option belongs to add_default.
+            options.insert("fx/opt/use_lighting".into(), 0);
+        }
+        if dissolve {
+            for name in ["fx/opt/tile_alpha", "fx/opt/use_mesh"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+            // Vertex lighting level 3 references an undeclared n in the
+            // installed program; no installed dissolve material is lit.
+            if options["fx/opt/use_lighting"] != 0 {
+                return Err(format!("lit particle/dissolve is not connected: {name}"));
+            }
+        }
+        let opaque = !crate::material::shadow_is_alpha(
+            state[0],
+            library.option_value(program.as_bytes(), &overrides, b"isDecal")? != 0,
+            library.option_value(program.as_bytes(), &overrides, b"decalType")? as u32,
+            library.option_value(program.as_bytes(), &overrides, b"skyType")? as u32,
+        );
+        // The rewrite connects the opaque zPrePass/colour programs of the
+        // water programs (particle/blood) with pixel lighting, and of the
+        // unlit particle/liquid.
+        if opaque && !(liquid || (water && options["fx/opt/use_lighting"] == 1)) {
+            return Err(format!("opaque particle program {program} is not connected: {name}"));
+        }
         let empty = EnvironmentRenderParameters::default();
         let darkvision_layer =
             library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8 & 7;
@@ -257,6 +343,25 @@ impl ParticleMaterial {
         let mut extra_uniforms = scroll_uniforms.to_vec();
         if distortion { extra_uniforms.extend(["fogStart", "fogEnd", "fogScale"]); }
         if scrolling_water { extra_uniforms.push("liquid_Disto_amount"); }
+        if dissolve { extra_uniforms.extend(["distoStrength", "alpha_Adjust"]); }
+        if fire {
+            extra_uniforms.extend(["fire_distortion", "lookup_adjust", "fire_intensity", "fire_light_color",
+                "fire_light_intensity", "fire_smoke_color"]);
+        }
+        if water {
+            extra_uniforms.extend(["liquid_Threshold", "liquid_nm_thresholds", "liquid_inner_alpha",
+                "liquid_Disto_amount", "liquid_default_alpha"]);
+        }
+        if add_liquid {
+            extra_uniforms.extend(["distoStrength", "liquid_Threshold", "fogStart", "fogEnd", "fogScale"]);
+        }
+        if liquid {
+            extra_uniforms.extend(["flowmap_strength", "liquid_outer_alpha", "liquid_inner_alpha",
+                "fresnel_power", "fresnel_intensity", "fresnel_color", "liquid_Disto_amount"]);
+            if options["fx/opt/use_reflexion"] != 0 {
+                extra_uniforms.extend(["liquid_Disto_reflx", "liquid_rflx_intensity"]);
+            }
+        }
         if options["fx/opt/use_macrouv"] != 0 {
             extra_uniforms.push("macroUvAmount");
         }
@@ -276,6 +381,14 @@ impl ParticleMaterial {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let mut images = BTreeMap::new();
+        // fx/opacity is not sampled when a flipbook volume replaces it
+        // (add_default's TextureColor, the water and dist_blur flipbook
+        // branches) or when add_default/dist_blur build opacity with
+        // RadialRamp; installed materials of both kinds point fx/opacity
+        // at a flipbook volume, which is not a 2D image.
+        let flipbook_volume = !scrolling_water && !liquid && !dissolve && !fire && !add_liquid && options["fx/opt/use_flipbook"] != 0;
+        let radial_opacity = !scrolling_water && !liquid && !dissolve && !fire && !add_liquid && !water
+            && options["fx/opt/radial_ramp"] != 0;
         for (image, option) in [
             ("fx/opacity", None),
             ("fx/disto1", Some("fx/opt/uv_disto1")),
@@ -290,8 +403,43 @@ impl ParticleMaterial {
             ),
             ("particleFresnelLUT", Some("fx/opt/fresnel/uselut")),
         ] {
+            if (flipbook_volume || radial_opacity) && image == "fx/opacity" {
+                continue;
+            }
             let water_required = scrolling_water && matches!(image, "fx/disto1" | "fx/disto2" | "fx/diffuse");
-            if (!water_required && option.is_some_and(|name| options[name] == 0))
+            // particle/liquid samples only opacity, lookup and diffuse here,
+            // whatever add_default's options say.
+            if liquid && !matches!(image, "fx/opacity" | "fx/lookup" | "fx/diffuse") {
+                continue;
+            }
+            // The water programs sample opacity (or the flipbook) and diffuse.
+            if water && !matches!(image, "fx/opacity" | "fx/diffuse") {
+                continue;
+            }
+            if water && image == "fx/diffuse" {
+                images.insert(image.into(), image_resources.image(catalog, &scopes.image_source(image)?)?);
+                continue;
+            }
+            // particle/fire samples none of add_default's images.
+            if fire {
+                continue;
+            }
+            // particle/dissolve samples opacity and the distortion layers.
+            if dissolve && !matches!(image, "fx/opacity" | "fx/disto1" | "fx/disto2") {
+                continue;
+            }
+            // particle/add_liquid always samples disto1; disto2 and diffuse
+            // follow their options.
+            if add_liquid && !matches!(image, "fx/opacity" | "fx/disto1" | "fx/disto2" | "fx/diffuse") {
+                continue;
+            }
+            if add_liquid && image == "fx/disto1" {
+                let source = scopes.image_source(image)?;
+                images.insert(image.to_ascii_lowercase(), image_resources.image(catalog, &source)?);
+                continue;
+            }
+            let liquid_required = liquid && matches!(image, "fx/lookup" | "fx/diffuse");
+            if (!water_required && !liquid_required && option.is_some_and(|name| options[name] == 0))
                 || (image.starts_with("particleFresnel") && options["fx/opt/fresnel"] == 0)
             {
                 continue;
@@ -299,13 +447,35 @@ impl ParticleMaterial {
             let source = scopes.image_source(image)?;
             images.insert(
                 image.to_ascii_lowercase(),
-                image_resources.image(catalog, &source)?,
+                image_resources.image(catalog, &source).map_err(|error| format!("{image} {error}"))?,
             );
         }
-        if scrolling_water {
+        if dissolve {
+            images.insert("fx/lookup_fire".into(), image_resources.image(catalog, &scopes.image_source("fx/lookup_fire")?)?);
+        }
+        if fire {
+            for image in ["fx/normals", "fx/fire_ball", "fx/fire_light", "fx/fire_smoke", "fx/lookup_fire"] {
+                images.insert(image.into(), image_resources.image(catalog, &scopes.image_source(image)?)?);
+            }
+            if options["fx/opt/use_lookup_light"] != 0 {
+                images.insert("fx/lookup_light".into(), image_resources.image(catalog, &scopes.image_source("fx/lookup_light")?)?);
+            }
+        }
+        if water && options["fx/opt/use_flipbook"] == 0 {
             images.insert("fx/normals".into(), image_resources.image(catalog, &scopes.image_source("fx/normals")?)?);
         }
-        let lighting = if !distortion && options["fx/opt/use_lighting"] != 0 {
+        if scrolling_water || liquid {
+            images.insert("fx/normals".into(), image_resources.image(catalog, &scopes.image_source("fx/normals")?)?);
+        }
+        if liquid {
+            for (image, option) in [("fx/flowmap", "fx/opt/use_flow_map"), ("fx/liquid_mask", "fx/opt/use_flow_mask"),
+                ("fx/reflexion", "fx/opt/use_reflexion")] {
+                if options[option] != 0 {
+                    images.insert(image.into(), image_resources.image(catalog, &scopes.image_source(image)?)?);
+                }
+            }
+        }
+        let lighting = if !distortion && !liquid && options["fx/opt/use_lighting"] != 0 {
             let mut read_option =
                 |name: &str| library.option_value(program.as_bytes(), &overrides, name.as_bytes());
             // These owners still need the shared surface-map evaluator. Never
@@ -325,14 +495,6 @@ impl ParticleMaterial {
             }
             let gloss = scopes.vector("wardRoughness")?;
             let pixel = if options["fx/opt/use_lighting"] == 1 {
-                if !crate::material::shadow_is_alpha(
-                    state[0],
-                    read_option("isDecal")? != 0,
-                    read_option("decalType")? as u32,
-                    read_option("skyType")? as u32,
-                ) {
-                    return Err("opaque particle pixel-lighting inputs are not connected".into());
-                }
                 let self_shadowed_bump = read_option("useSelfShadowedBumpMap")? != 0;
                 let fuzz = if read_option("fuzz/enable")? != 0 {
                     Some([
@@ -430,7 +592,8 @@ impl ParticleMaterial {
             let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
             // Scrolling water derives its normal from fx/normals; its source
             // does not execute the ordinary material bump-map fetch.
-            let bump = !scrolling_water && read_option("hasBumpMap")? != 0;
+            // The water programs build their own normal from fx/normals.
+            let bump = !scrolling_water && !water && read_option("hasBumpMap")? != 0;
             let detail_bump = if bump && read_option("hasDetailBumpMap")? != 0 {
                 Some([
                     scopes.vector("detailBumpmapTiling")?[0],
@@ -488,12 +651,12 @@ impl ParticleMaterial {
         } else {
             None
         };
-        let volume = if !scrolling_water && options["fx/opt/use_flipbook"] != 0 {
+        let volume = if !scrolling_water && !liquid && !dissolve && !fire && !add_liquid && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbook")?)?)
         } else {
             None
         };
-        let distortion_volume = if distortion && options["fx/opt/use_flipbook"] != 0 {
+        let distortion_volume = if (distortion || water) && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbooknormals")?)?)
         } else { None };
         // 1402d4e20 / 1402eab10: all material consumers raise one image's
@@ -507,7 +670,13 @@ impl ParticleMaterial {
             name: name.to_owned(),
             distortion,
             scrolling_water,
+            liquid,
+            dissolve,
+            fire,
+            add_liquid,
+            water,
             masking_uses_main,
+            opaque,
             state,
             darkvision_layer,
             options,

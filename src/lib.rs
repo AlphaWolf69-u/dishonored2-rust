@@ -1,6 +1,6 @@
 //! Shared original-data formats, verified engine rules and client integration.
 mod sorting;
-mod float;
+pub mod float;
 pub mod colour;
 pub mod storage;
 pub mod flash;

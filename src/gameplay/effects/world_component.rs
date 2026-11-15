@@ -14,7 +14,7 @@ pub trait WorldFxComponentHost {
     fn play(&mut self) -> Result<Option<u32>, String>;
     fn target_present(&self) -> bool;
     fn target_alive(&mut self) -> Result<bool, String>;
-    fn update_target_pose(&mut self) -> Result<(), String>;
+    fn update_target_pose(&mut self, handle: u32) -> Result<(), String>;
     fn request_stop(&mut self, handle: u32) -> Result<(), String>;
     fn update_source_velocity(&mut self) -> Result<(), String>;
     /// 4b1ad0 transfers completion ownership and clears source/model pointers.
@@ -62,7 +62,7 @@ impl WorldFxComponent {
                         self.stop_requested = true;
                     }
                 } else {
-                    host.update_target_pose()?;
+                    host.update_target_pose(handle)?;
                 }
             }
             host.update_source_velocity()?;

@@ -5,6 +5,14 @@ override particle_scrolling_water:u32=0u;
 override particle_water_alpha_mask_spec:u32=0u;
 override particle_water_mesh:u32=0u;
 override particle_masking:u32=0u;
+override particle_liquid:u32=0u;
+override particle_dissolve:u32=0u;
+override particle_add_liquid:u32=0u;
+override particle_fire:u32=0u;
+override particle_water:u32=0u;
+// A non-isAlpha (blend ONE ZERO) particle material drawn as an opaque model
+// surface: lightContext AO and the screen-shadow route, no vertex fog.
+override particle_opaque:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -69,6 +77,17 @@ struct ParticleMaterialParameters {
     fuzz:vec4<f32>,
     translucency_phase:vec4<f32>,
     translucency_ramp:array<vec4<f32>,3>,
+    liquid:array<vec4<f32>,3>,
+    liquid_options:vec4<u32>,
+    dissolve:vec4<f32>,
+    dissolve_options:vec4<u32>,
+    fire:array<vec4<f32>,2>,
+    fire_options:vec4<u32>,
+    add_liquid:vec4<f32>,
+    add_liquid_options:vec4<u32>,
+    water:vec4<f32>,
+    water_thresholds:vec4<f32>,
+    water_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -122,26 +141,34 @@ struct ParticleFragment {
     @location(17) @interpolate(flat) particle_center:vec3<f32>,
     @location(18) world_bitangent:vec3<f32>,
 }
-@vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
-    @builtin(instance_index) instance_index:u32)->ParticleFragment {
-    let instance=particle_instances[instance_index];
-    let grid=particle_grid[vertex];
+fn particle_sprite_position(grid:ParticleGeometryVertex,instance:ParticleInstance)->vec3<f32> {
     let axis_x=vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w);
     let basis=mat3x3(axis_x,instance.axis_y.xyz,instance.axis_z.xyz);
     var position=instance.center.xyz+instance.axis_y.xyz*grid.position.y+instance.axis_z.xyz*grid.position.z;
     if instance.clip_fade.y!=0.0 {
         position=instance.center.xyz+basis*grid.position.xyz;
     }
-    let clip=particle_view.clip_from_game_world*vec4(position,1.0);
-    let word=instance.parameters.y;
+    return position;
+}
+fn particle_sprite_coordinates(grid:ParticleGeometryVertex,word:u32)->vec4<f32> {
     var uv=grid.uv.xy;
     uv.x=uv.x*select(1.0,-1.0,(word&(1u<<30u))!=0u)+select(0.0,1.0,(word&(1u<<30u))!=0u);
     uv.y=uv.y*select(1.0,-1.0,(word&(1u<<31u))!=0u)+select(0.0,1.0,(word&(1u<<31u))!=0u);
+    return vec4(uv,unpack2x16float(word&0xffffu).x,f32((word>>16u)&0x3fffu)*(1.0/16383.0));
+}
+@vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
+    @builtin(instance_index) instance_index:u32)->ParticleFragment {
+    let instance=particle_instances[instance_index];
+    let grid=particle_grid[vertex];
+    let axis_x=vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w);
+    let basis=mat3x3(axis_x,instance.axis_y.xyz,instance.axis_z.xyz);
+    let position=particle_sprite_position(grid,instance);
+    let clip=particle_view.clip_from_game_world*vec4(position,1.0);
     var output:ParticleFragment;
     output.position=clip;
-    output.texture_coordinates=vec4(uv,unpack2x16float(word&0xffffu).x,
-        f32((word>>16u)&0x3fffu)*(1.0/16383.0));
-    if particle_distortion_mode!=0u {
+    output.texture_coordinates=particle_sprite_coordinates(grid,instance.parameters.y);
+    if particle_distortion_mode!=0u || particle_add_liquid!=0u {
+        // particles::Fog(eyeDist) from fogStart/fogEnd/fogScale.
         let f=particle_material.distortion_fog;
         output.texture_coordinates.w=clamp(exp2(-clamp(clip.w-f.x,0.0,f.y)*f.z),0.0,1.0);
     }
@@ -158,6 +185,34 @@ struct ParticleFragment {
         output.world_tangent=normalize(basis*grid.tangent.xyz);
         world_bitangent=normalize(basis*grid.bitangent.xyz);
     }
+    let bitangent_sign=select(1.0,grid.tangent.w,instance.clip_fade.y!=0.0);
+    return particle_vertex_finish(output,position,clip,world_bitangent,bitangent_sign,instance);
+}
+
+// The renderprog's $isZPrePass vertex program: position, texcoords, legacy
+// colour and the clip plane. The zPrePass has no lighting or fog outputs.
+@vertex fn particle_depth_vertex(@builtin(vertex_index) vertex:u32,
+    @builtin(instance_index) instance_index:u32)->ParticleFragment {
+    let instance=particle_instances[instance_index];
+    let grid=particle_grid[vertex];
+    let position=particle_sprite_position(grid,instance);
+    var output:ParticleFragment;
+    output.position=particle_view.clip_from_game_world*vec4(position,1.0);
+    output.texture_coordinates=particle_sprite_coordinates(grid,instance.parameters.y);
+    output.colour=grid.colour*unpack4x8unorm(instance.parameters.x);
+    output.world_position=position;
+    output.particle_center=instance.center.xyz;
+    output.clip_plane=instance.clip_plane;
+    output.fade_radius=vec3(instance.clip_fade.x,unpack2x16float(instance.parameters.z).x,instance.clip_fade.z);
+    return output;
+}
+
+// The vertex tail shared by the instanced sprite path and the
+// non-instanced strip path (vertex format 4): lighting, fog, clip plane
+// and transparency inputs.
+fn particle_vertex_finish(input:ParticleFragment,position:vec3<f32>,clip:vec4<f32>,
+    world_bitangent:vec3<f32>,bitangent_sign:f32,instance:ParticleInstance)->ParticleFragment {
+    var output=input;
     if particle_lighting_mode==1u {
         let root=particle_root_lighting[instance.parameters.w];
         var sh:array<vec3<f32>,9>;
@@ -180,7 +235,6 @@ struct ParticleFragment {
     }
     // Pixel-context reconstructs B using the authored tangent sign. Particle
     // render roots have modelMtxInverted=+1, even for mirrored instance axes.
-    let bitangent_sign=select(1.0,grid.tangent.w,instance.clip_fade.y!=0.0);
     output.world_bitangent=cross(output.world_normal,output.world_tangent)*bitangent_sign;
     if particle_lighting_mode>=2u {
         let root=particle_root_lighting[instance.parameters.w];
@@ -202,6 +256,55 @@ struct ParticleFragment {
     output.transparency_parameters=transparency.parameters;
     output.transparency_mode=transparency.mode.x;
     output.lighting_record=instance.parameters.w;
+    return output;
+}
+
+// Non-instanced particle geometry (the renderprog's !$useDirectInstancing
+// branch, vertex format 4): texcoords and colour pass straight through from
+// VERTEX_TEXCOORD4 and VERTEX_COLOR, the particle centre and radius come
+// from VERTEX_TEXCOORD5, and the surface is already in world space. The
+// instance record carries only the draw's clip, fade and record index.
+struct ParticleStripVertex {
+    @builtin(instance_index) instance_index:u32,
+    @location(0) position:vec3<f32>,
+    @location(1) texcoord:vec4<f32>,
+    @location(2) normal:vec4<f32>,
+    @location(3) tangent:vec4<f32>,
+    @location(4) colour:vec4<f32>,
+    @location(5) centre:vec4<f32>,
+}
+@vertex fn particle_strip_vertex(input:ParticleStripVertex)->ParticleFragment {
+    let instance=particle_instances[input.instance_index];
+    let position=input.position;
+    let clip=particle_view.clip_from_game_world*vec4(position,1.0);
+    var output:ParticleFragment;
+    output.position=clip;
+    output.texture_coordinates=input.texcoord;
+    if particle_distortion_mode!=0u || particle_add_liquid!=0u {
+        let f=particle_material.distortion_fog;
+        output.texture_coordinates.w=clamp(exp2(-clamp(clip.w-f.x,0.0,f.y)*f.z),0.0,1.0);
+    }
+    output.colour=input.colour;
+    output.world_position=position;
+    output.particle_center=input.centre.xyz;
+    output.world_normal=normalize(input.normal.xyz);
+    output.world_tangent=normalize(input.tangent.xyz);
+    let world_bitangent=normalize(cross(output.world_normal,output.world_tangent)*input.tangent.w);
+    var finished=particle_vertex_finish(output,position,clip,world_bitangent,input.tangent.w,instance);
+    finished.fade_radius.y=input.centre.w;
+    return finished;
+}
+// The strip program's $isZPrePass vertex outputs (vertex format 4).
+@vertex fn particle_strip_depth_vertex(input:ParticleStripVertex)->ParticleFragment {
+    let instance=particle_instances[input.instance_index];
+    var output:ParticleFragment;
+    output.position=particle_view.clip_from_game_world*vec4(input.position,1.0);
+    output.texture_coordinates=input.texcoord;
+    output.colour=input.colour;
+    output.world_position=input.position;
+    output.particle_center=input.centre.xyz;
+    output.clip_plane=instance.clip_plane;
+    output.fade_radius=vec3(instance.clip_fade.x,input.centre.w,instance.clip_fade.z);
     return output;
 }
 fn particle_pan(coordinates:vec4<f32>,layer:ParticleTextureLayer)->vec2<f32> {
@@ -234,7 +337,306 @@ fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:
     }
     return 1.0;
 }
+// particles::Distortion before it adds the texture coordinates: the
+// UV offset in XY and the distortion mask in Z.
+fn particle_distortion(coordinates:vec4<f32>)->vec3<f32> {
+    let material=particle_material;
+    var distorted=vec3(0.0);
+    if material.distort_options.x!=0u {
+        var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
+        distorted.z=one.x;
+        if material.distort_options.z!=0u {one.y=one.x;}
+        distorted=vec3(one*material.layers[0].strength.xy,distorted.z);
+        if material.distort_options.y!=0u {
+            var two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(coordinates,material.layers[1])).xy;
+            let mask=two.x;
+            if material.distort_options.w!=0u {two.y=two.x;}
+            if material.colour_options.x!=0u {
+                distorted=vec3(distorted.xy*two*material.layers[1].strength.xy,distorted.z*mask);
+            } else {distorted+=vec3(two*material.layers[1].strength.xy,mask);}
+        }
+    }
+    return distorted;
+}
+// particle/dissolve fragment (unlit: no installed dissolve material is lit).
+// The lookup_fire ramp uses the lookup binding slot.
+fn particle_dissolve_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    // use_mesh meshes have no vertex colour.
+    let legacy=select(input.colour,vec4(1.0),material.dissolve_options.y!=0u);
+    let offset=particle_distortion(coordinates).xy;
+    let uv=coordinates.xy+offset*max(0.0,1.0-legacy.w)*material.dissolve.x;
+    var opacity:f32;
+    if material.dissolve_options.x!=0u {
+        opacity=textureSample(particle_opacity,particle_bilinear,uv).x;
+    } else {
+        opacity=textureSample(particle_opacity,linear_clamp,uv).x;
+    }
+    let ramp=clamp(opacity+legacy.w-1.0,0.0,1.0);
+    var colour=textureSample(particle_lookup,particle_trilinear,vec2(ramp,0.5)).rgb;
+    var alpha=smoothstep(material.dissolve.y,material.dissolve.z,ramp);
+    // AdjustColor(legacy_color.xxxx): RGB and alpha scale by the vertex red.
+    colour*=legacy.x*material.colour_adjust.rgb*material.colour_adjust.a;
+    alpha*=legacy.x;
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u);
+    let normal=face*normalize(input.world_normal);
+    alpha*=particle_fresnel_opacity(input,coordinates,normal,face*normalize(input.world_tangent),
+        face*normalize(input.world_bitangent),normal);
+    alpha*=material.dissolve.w;
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    if particle_masking!=0u {
+        if alpha<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    // Dissolve applies the vertex fog fully, without the
+    // particleFogScatterPower blend of add_default.
+    let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
+// particle/fire fragment: the normal map distorts the fire ball and light
+// masks; legacy colour x drives the fire ball through lookup_fire, y the
+// light (lookup_light or a lookup_fire sample at fire_light_color), z the
+// smoke. Unlit, fog from the vertex applied fully. Slots: fire_ball in
+// opacity, fire_light and fire_smoke in the distortion layers,
+// lookup_light in diffuse, lookup_fire in lookup, normals in the bump slot.
+fn particle_fire_colour(input:ParticleFragment)->ParticleColour {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    let legacy=input.colour;
+    let normals=textureSample(particle_bump,particle_trilinear,coordinates.xy).xy*vec2(material.fire[0].x)*vec2(legacy.x);
+    let uv=clamp(coordinates.xy+normals,vec2(0.0),vec2(1.0));
+    let ball=pow(textureSample(particle_opacity,particle_trilinear,uv).x,1.0/2.2);
+    let light=textureSample(particle_distortion_one,particle_trilinear,uv).x;
+    let smoke=textureSample(particle_distortion_two,particle_trilinear,coordinates.xy).x;
+    let power=clamp(ball-1.0+legacy.x,0.0,1.0);
+    let ramp=power*power*power*power;
+    let fireball=pow(textureSample(particle_lookup,particle_trilinear,vec2(ramp,0.5)).rgb,vec3(material.fire[0].y))
+        *vec3(ramp)*vec3(material.fire[0].z);
+    let fireball_alpha=clamp(ramp,0.0,1.0);
+    var light_colour:vec3<f32>;
+    if material.fire_options.x!=0u {
+        let level=clamp(light*legacy.y,0.0,1.0);
+        light_colour=textureSample(particle_diffuse,particle_trilinear,vec2(level,0.5)).rgb*vec3(legacy.y)*vec3(level)
+            *vec3(material.fire[0].w);
+    } else {
+        light_colour=textureSample(particle_lookup,particle_trilinear,vec2(material.fire[1].w,0.5)).rgb*vec3(legacy.y)
+            *vec3(light)*vec3(material.fire[0].w);
+    }
+    let smoke_colour=material.fire[1].xyz*vec3(smoke)*vec3(legacy.z);
+    let smoke_alpha=smoke*legacy.z;
+    var colour=mix(fireball,smoke_colour,vec3(light))+light_colour;
+    var alpha=clamp((fireball_alpha+smoke_alpha)*legacy.w,0.0,1.0);
+    // AdjustColor(legacy_color.xxxx) on the colour only.
+    colour*=legacy.x*material.colour_adjust.rgb*material.colour_adjust.a;
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    if particle_masking!=0u {
+        if alpha<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
+// particle/add_liquid fragment: two panned distortion layers, a
+// threshold on their sum for opacity, and per-pixel fog. texcoords.w is
+// the vertex Fog(eyeDist), which the panning uses as its time seed.
+fn particle_add_liquid_colour(input:ParticleFragment)->ParticleColour {
+    let material=particle_material;
+    let texcoords=input.texture_coordinates;
+    let legacy=input.colour;
+    var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(texcoords,material.layers[0])).xy;
+    if material.distort_options.z!=0u {one.y=one.x;}
+    var two=vec2(0.0);
+    if material.distort_options.y!=0u {
+        two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(texcoords,material.layers[1])).xy;
+        if material.distort_options.w!=0u {two.y=two.x;}
+    }
+    // Without disto2 its zero still contributes 2*0-1, as authored.
+    var offset=(one*2.0-1.0)+(two*2.0-1.0);
+    if material.colour_options.x!=0u {offset=(one*2.0-1.0)*(two*2.0-1.0);}
+    offset*=material.add_liquid.xy/2.0;
+    var colour=vec3(1.0);
+    if material.colour_options.y!=0u {
+        colour=textureSample(particle_diffuse,particle_trilinear,texcoords.xy*material.layers[2].tiling_pan.xy+offset).rgb;
+    }
+    var threshold=material.add_liquid.z;
+    if material.add_liquid_options.x!=0u {threshold+=1.0-clamp(legacy.w,0.0,1.0);}
+    var alpha=clamp((one.x+two.x-threshold)*2.0,0.0,1.0);
+    if material.add_liquid_options.y==0u {
+        // PanAndReadDistUV(texcoords + uv_offset.xyyy) also shifts the seed.
+        let shifted=texcoords+vec4(offset.x,offset.y,offset.y,offset.y);
+        alpha*=textureSample(particle_opacity,particle_trilinear,particle_pan(shifted,material.layers[2])).x;
+    }
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    if particle_masking!=0u {
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    // The output alpha is the texture alpha; the program computes but does
+    // not write the vertex-alpha product.
+    let adjusted=colour*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a;
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    let p=input.world_position;
+    let rgb=material_fog_pixel(adjusted*exposure*particle_view.exposure_extent.x,input.position,
+        vec3(p.x,p.z,-p.y),input.lighting_record);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
+// particles::SoftContact (fx/opt/use_softcontact 1 linear, 2 cubic,
+// 3 spherical) against the scene depth.
+fn particle_soft_contact(input:ParticleFragment,distance:f32)->f32 {
+    let material=particle_material;
+    if material.fade_options.z==0u {return 1.0;}
+    let uv=input.position.xy/particle_view.exposure_extent.zw;
+    let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
+    let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
+    if material.fade_options.z==3u {
+        // particles::Opacity_Spherical halves GetParticleRadius before
+        // integrating the density over the scene-clipped back hemisphere.
+        let radius=input.fade_radius.y*0.5;
+        let radial_distance=length(input.particle_center-input.world_position);
+        let ratio=radial_distance/radius;
+        let back=distance+sqrt(radius*radius-radial_distance*radial_distance);
+        let thickness=min(linear,back)-distance;
+        return shadow_saturate(1.0-exp(-material.depth_fade_lookup.x*(1.0-ratio)*thickness));
+    }
+    var difference=max(0.0,linear-distance);
+    if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
+    return shadow_saturate(difference/material.depth_fade_lookup.x);
+}
+// particle/liquid fragment. The flow map, liquid mask, normal map and
+// reflexion map use the flowmap/scroll-mask/bump/macro-UV binding slots.
+// particle/liquid up to its zPrePass return: flow, mask, opacity ramp,
+// normals and the clip plane with its fade. Shared by both programs.
+struct ParticleLiquid {alpha:f32,uv_flow:vec2<f32>,lookup:vec2<f32>,fresnel:f32,distortion:vec2<f32>,}
+fn particle_liquid_surface(input:ParticleFragment)->ParticleLiquid {
+    let material=particle_material;
+    let liquid=material.liquid;
+    let options=material.liquid_options;
+    let texcoords=input.texture_coordinates;
+    let legacy=input.colour;
+    var uv_flow=vec2(0.0);
+    if options.x!=0u {
+        let flow=pow(textureSample(particle_distortion_one,particle_trilinear,texcoords.xy).xy,vec2(1.0/2.2))*2.0-1.0;
+        uv_flow=flow*liquid[0].x*(legacy.x*2.0-1.0);
+    }
+    var alpha_mask=1.0;
+    if options.y!=0u {
+        // The mask scrolls vertically with the vertex green; without
+        // reflexion it covers half the texture height.
+        let mask_v=select(texcoords.y*0.5,texcoords.y,options.z!=0u)+legacy.y;
+        alpha_mask=textureSample(particle_scroll_mask,particle_trilinear,vec2(texcoords.x,mask_v)).x;
+    }
+    let fade=pow(legacy.w,0.5);
+    var ramp=pow(textureSample(particle_opacity,particle_trilinear,texcoords.xy+uv_flow).x,2.2)-0.01;
+    ramp-=1.0-fade;
+    var alpha=clamp(ramp,0.0,1.0);
+    ramp*=fade;
+    let lookup=clamp(textureSample(particle_lookup,particle_trilinear,vec2(ramp,0.5)).xy,vec2(0.0),vec2(1.0));
+    let alpha_outer=abs((lookup.y+lookup.x)*liquid[0].y);
+    alpha*=liquid[0].z+alpha_outer*liquid[0].y;
+    alpha=clamp(alpha*10.0,0.0,1.0)*alpha_mask;
+    // UnpackBC5NormalMap: signed XY, Z = 1.001-saturate(dot(XY,XY)).
+    let xy=textureSample(particle_bump,particle_trilinear,texcoords.xy+uv_flow).xy;
+    let tangent_normal=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
+    let a=abs(tangent_normal.x);let b=abs(tangent_normal.y);
+    let fresnel=clamp(pow(a*a+b*b,liquid[0].w),0.0,1.0)*alpha;
+    let distortion=tangent_normal.xy*(lookup.x-lookup.y);
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    return ParticleLiquid(alpha,uv_flow,lookup,fresnel,distortion);
+}
+fn particle_liquid_colour(input:ParticleFragment)->ParticleColour {
+    let material=particle_material;
+    let liquid=material.liquid;
+    let options=material.liquid_options;
+    let texcoords=input.texture_coordinates;
+    let legacy=input.colour;
+    let surface=particle_liquid_surface(input);
+    var alpha=surface.alpha;
+    let distortion=surface.distortion;
+    var colour=textureSample(particle_diffuse,particle_trilinear,texcoords.xy+distortion*liquid[1].y).rgb+
+        surface.fresnel*liquid[1].x*liquid[2].rgb;
+    // AdjustColor(overbright.xxxx, color): RGB scales by the vertex red only.
+    colour*=legacy.x*material.colour_adjust.rgb*material.colour_adjust.a;
+    if options.z!=0u {
+        // The screen-space reflexion stand-in: the interpolated vertex
+        // normal plus the distorted tangent normal (Z=1), unnormalized input.
+        let normals=normalize(input.world_normal+vec3(distortion,1.0));
+        let reflexion=textureSample(particle_macro_uv,particle_trilinear,texcoords.xy+normals.xy*liquid[1].z).rgb;
+        colour+=reflexion*liquid[1].w;
+    }
+    alpha*=particle_soft_contact(input,1.0/input.position.w);
+    if particle_masking!=0u {
+        if alpha<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    // ComputeAutoExposure, without add_default's fog blend.
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    return ParticleColour(vec4(colour*exposure*particle_view.exposure_extent.x,alpha),colour);
+}
+// particle/water and particle/blood READ ALPHA AND NORMALS, NORMALS TRICK and
+// DIFFUSE: thresholded opacity, a three-band normal trick and diffuse
+// distorted by the normal. Shared by the zPrePass and colour programs.
+struct ParticleWater {colour:vec4<f32>,normal:vec3<f32>,}
+fn particle_water_sample(input:ParticleFragment)->ParticleWater {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    let water=material.water;
+    let legacy=select(input.colour,vec4(1.0),material.water_options.y!=0u);
+    let pan=material.layers[2].tiling_pan.zw*particle_view.camera_time.w;
+    var alpha:f32;
+    var normal_xy:vec2<f32>;
+    if material.animation_options.x!=0u {
+        alpha=textureSample(particle_animation,linear_clamp,coordinates.xyz).x;
+        normal_xy=textureSample(particle_distortion_animation,linear_clamp,coordinates.xyz).xy;
+        if material.water_options.x!=0u {alpha=clamp(alpha-1.0+legacy.w,0.0,1.0);}
+    } else {
+        alpha=clamp(textureSample(particle_opacity,particle_trilinear,coordinates.xy+pan).x-1.0+legacy.w,0.0,1.0);
+        normal_xy=textureSample(particle_bump,particle_trilinear,coordinates.xy+pan).xy;
+    }
+    let threshold=clamp(alpha,0.0,1.0);
+    alpha=smoothstep(0.0,water.x,alpha);
+    // UnpackBC5NormalMap, then the authored band scaling of XY.
+    var water_normal=normalize(vec3(normal_xy,1.001-clamp(dot(normal_xy,normal_xy),0.0,1.0)));
+    let bands=material.water_thresholds;
+    let first=smoothstep(bands.x,bands.y,threshold);
+    let trick=vec2(1.0-first,first*(1.0-smoothstep(bands.y,bands.z,threshold)));
+    water_normal=vec3(water_normal.xy*(trick.x-trick.y),water_normal.z);
+    let inner=water.y*legacy.w;
+    alpha*=(trick.x+trick.y)*inner+(1.0-inner);
+    let diffuse=textureSample(particle_diffuse,particle_trilinear,
+        coordinates.xy*material.layers[2].tiling_pan.xy+water_normal.xy*water.z+pan);
+    return ParticleWater(vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,
+        clamp(alpha,0.0,1.0)*water.w),water_normal);
+}
 fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
+    if particle_liquid!=0u {return particle_liquid_colour(input);}
+    if particle_dissolve!=0u {return particle_dissolve_colour(input,front_face);}
+    if particle_add_liquid!=0u {return particle_add_liquid_colour(input);}
+    if particle_fire!=0u {return particle_fire_colour(input);}
     let material=particle_material;
     let coordinates=input.texture_coordinates;
     let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u &&
@@ -244,6 +646,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     let bitangent=face*normalize(input.world_bitangent);
     var colour=vec4(1.0);
     var scrolling_normal=vec3(0.0,0.0,1.0);
+    var water_normal=vec3(0.0,0.0,1.0);
     if particle_scrolling_water!=0u {
         // particle/scrolling_water samples both distortion layers regardless
         // of add_default's UV-distortion options.
@@ -261,22 +664,12 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         let legacy=select(input.colour,vec4(1.0),particle_water_mesh!=0u);
         let alpha=textureSample(particle_opacity,particle_trilinear,opacity_uv).x*legacy.a;
         colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,alpha);
+    } else if particle_water!=0u {
+        let sampled=particle_water_sample(input);
+        colour=sampled.colour;
+        water_normal=sampled.normal;
     } else {
-    var distorted=vec3(0.0);
-    if material.distort_options.x!=0u {
-        var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
-        distorted.z=one.x;
-        if material.distort_options.z!=0u {one.y=one.x;}
-        distorted=vec3(one*material.layers[0].strength.xy,distorted.z);
-        if material.distort_options.y!=0u {
-            var two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(coordinates,material.layers[1])).xy;
-            let mask=two.x;
-            if material.distort_options.w!=0u {two.y=two.x;}
-            if material.colour_options.x!=0u {
-                distorted=vec3(distorted.xy*two*material.layers[1].strength.xy,distorted.z*mask);
-            } else {distorted+=vec3(two*material.layers[1].strength.xy,mask);}
-        }
-    }
+    var distorted=particle_distortion(coordinates);
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
     if material.surface_options.x!=0u {
         let tile=material.macro_fresnel.y;
@@ -327,28 +720,12 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     if material.fade_options.y!=0u {
         colour.a*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
     }
-    if material.fade_options.z!=0u {
-        let uv=input.position.xy/particle_view.exposure_extent.zw;
-        let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
-        let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
-        if material.fade_options.z==3u {
-            // particles::Opacity_Spherical halves GetParticleRadius before
-            // integrating the density over the scene-clipped back hemisphere.
-            let radius=input.fade_radius.y*0.5;
-            let radial_distance=length(input.particle_center-input.world_position);
-            let ratio=radial_distance/radius;
-            let back=distance+sqrt(radius*radius-radial_distance*radial_distance);
-            let thickness=min(linear,back)-distance;
-            colour.a*=shadow_saturate(1.0-exp(-material.depth_fade_lookup.x*(1.0-ratio)*thickness));
-        } else {
-            var difference=max(0.0,linear-distance);
-            if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
-            colour.a*=shadow_saturate(difference/material.depth_fade_lookup.x);
-        }
-    }
+    colour.a*=particle_soft_contact(input,distance);
     var lighting_normal=normal;
     if particle_scrolling_water!=0u && particle_lighting_mode!=0u {
         lighting_normal=normalize(scrolling_normal.x*tangent+scrolling_normal.y*bitangent+scrolling_normal.z*normal);
+    } else if particle_water!=0u && particle_lighting_mode!=0u {
+        lighting_normal=normalize(water_normal.x*tangent+water_normal.y*bitangent+water_normal.z*normal);
     } else if material.normal_options.x!=0u {
         let uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
         var xy=textureSample(particle_bump,particle_surface_anisotropic,uv).xy;
@@ -365,7 +742,8 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal,tangent,bitangent,normal);
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}
-    if particle_scrolling_water==0u && input.fade_radius.x>0.0 {
+    // The water programs clip without the ClipPlaneFadeDistance fade.
+    if particle_scrolling_water==0u && particle_water==0u && input.fade_radius.x>0.0 {
         colour.a*=smoothstep(0.0,input.fade_radius.x,plane_dot);
     }
     if particle_masking!=0u {
@@ -403,7 +781,11 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         if particle_lighting_mode==1u {
             let packed=PackedIrradiance(input.light_basis_z.z,
                 vec4(input.light_basis_x,input.light_basis_y.x),vec4(input.light_basis_y.yz,input.light_basis_z.xy));
-            let ambient=unpack_diffuse(packed,lighting_normal,face*tangent,face*bitangent,face*normal,1.0,false);
+            // lightContext::ComputeAmbientOcclusion: an isAlpha particle has
+            // neutral AO; an opaque one reads the screen AO, which scales both
+            // the ambient diffuse and the IBL specular.
+            let occlusion_ao=ambient_occlusion(input.position.xy,1.0,particle_opaque==0u);
+            let ambient=unpack_diffuse(packed,lighting_normal,face*tangent,face*bitangent,face*normal,occlusion_ao,false);
             var sheen=material.pixel_parameters.x;
             if material.pixel_options.y!=0u {sheen=textureSample(particle_sheen,particle_trilinear,lighting_uv).x*2.0-1.0;}
             let surface=ward_surface(lighting_normal,view_direction,roughness,mapped.diffuse,
@@ -423,7 +805,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
             }
             let self_shadow=ParticleSelfShadow(occlusion,particle_hl2_basis(tangent,bitangent,normal),normal);
             let lighting=particle_pixel_lights(surface,input.world_position,normal,input.position,translucency,fuzz_mask,self_shadow);
-            var specular_colour=lighting.specular+particle_hq_reflection(input.world_position,lighting_normal,
+            var specular_colour=lighting.specular+occlusion_ao*particle_hq_reflection(input.world_position,lighting_normal,
                 view_direction,roughness*roughness,mapped.reflectance,root[0].w,input.reflection_gain,self_shadow);
             // HQ_FetchGloss sets pixelCtx.diffuseAlbedo.a to1 after reading
             // gloss from it. The outer add_default opacity remains separate.
@@ -462,12 +844,35 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         lit_colour=mix(colour.rgb,lit_colour,colour.a);
     }
     var rgb=lit_colour*particle_view.exposure_extent.x;
+    // Only isAlpha programs export particleFogColor; the opaque surface is
+    // fogged later with the rest of the opaque scene.
+    if particle_opaque!=0u {return ParticleColour(vec4(rgb,colour.a),albedo);}
     let fogged=material_fog_composite(rgb,input.fog);
-    rgb=mix(rgb,fogged,material.radial_exposure_fog.z);
+    // The water programs apply the vertex fog fully, without the
+    // particleFogScatterPower blend of add_default.
+    rgb=mix(rgb,fogged,select(material.radial_exposure_fog.z,1.0,particle_water!=0u));
     return ParticleColour(vec4(rgb,colour.a),albedo);
 }
 @fragment fn particle_fragment(input:ParticleFragment,@builtin(front_facing) front_face:bool)->@location(0) vec4<f32> {
     return particle_colour(input,front_face).colour;
+}
+// The water programs' $isZPrePass fragment: the colour program's alpha
+// without SoftContact or FresnelOpacity, the clip plane, then ClipAlpha with
+// the depth pass's particleAlphaTest. The rewrite's world prepass has no
+// motion-vector target, so the psMotionVector export is not written.
+@fragment fn particle_depth_fragment(input:ParticleFragment) {
+    var alpha:f32;
+    if particle_liquid!=0u {
+        // particle/liquid's zPrePass returns after the clip-plane fade.
+        alpha=particle_liquid_surface(input).alpha;
+    } else {
+        alpha=particle_water_sample(input).colour.a;
+        if particle_material.fade_options.y!=0u {
+            alpha*=smoothstep(particle_material.depth_fade_lookup.y,particle_material.depth_fade_lookup.z,1.0/input.position.w);
+        }
+        if dot(input.clip_plane,vec4(input.world_position,1.0))<0.0 {discard;}
+    }
+    if alpha<max(particle_material.alpha_test,0.0001) {discard;}
 }
 struct ParticleAccumulation {@location(0) colour:vec4<f32>,@location(1) opacity:vec4<f32>,}
 @fragment fn particle_accumulation_fragment(input:ParticleFragment,@builtin(front_facing) front_face:bool)->ParticleAccumulation {

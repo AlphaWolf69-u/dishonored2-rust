@@ -36,6 +36,10 @@ pub struct StageSimulation {
     /// stable when particles die or the free list reuses a previous slot.
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     pub meshes: Vec<Vec<Option<MeshInitialState>>>,
+    /// One arkParticleTrailRenderer per descriptor trail (stage +0xd0),
+    /// with a record per particle slot. A dead particle's record stays so
+    /// its slot's next start keeps the stale age (see TrailRecord::start).
+    pub trails: Vec<Vec<Option<super::trail::TrailRecord>>>,
     mesh_cursor: usize,
     periodic_orientation: super::periodic::PeriodicOrientationState,
     inherited_velocity: super::spawn::SpawnVelocity,
@@ -44,12 +48,28 @@ pub struct StageSimulation {
     pub owner_pose: ReferenceFrame,
     /// 1fa780 initializes the source/target point to world zero.
     pub target_position: [f32; 3],
+    /// Stage +0x110: the system stage named by m_spawnStage.m_stageName,
+    /// linked by 140201760 after every enabled stage exists.
+    pub parent: Option<usize>,
+    /// Stage +0x1c8, one state per descriptor attractor.
+    attractors: Vec<super::attractor::AttractorState>,
     fields: [Vec<super::field::FieldState>; 3],
     field_velocity: Vec<[f32; 3]>,
+    /// The owner's physics shapes (system +0x1d78) for m_physicsShapesSpawn;
+    /// None spawns as usual.
+    pub owner_shapes: Option<Arc<super::shape_spawn::OwnerShapes>>,
+}
+
+/// The linked parent stage (stage +0x110): its live particles and its own
+/// mutable seed (+0x27c), which 1f4930 advances while choosing a parent.
+pub struct ParentStage<'a> {
+    pub particles: &'a ParticleStage,
+    pub seed: &'a mut u32,
 }
 
 struct Bindings<'a> {
     definition: &'a ParticleStageAsset,
+    parent: Option<ParentStage<'a>>,
     events: &'a mut super::events::StageEvents,
     fields: &'a mut [Vec<super::field::FieldState>; 3],
     field_velocity: &'a mut [[f32; 3]],
@@ -57,11 +77,13 @@ struct Bindings<'a> {
     particles: &'a mut ParticleStage,
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
     meshes: &'a mut [Vec<Option<MeshInitialState>>],
+    trails: &'a mut [Vec<Option<super::trail::TrailRecord>>],
     owner_basis: [[f32; 3]; 3],
     lod: usize,
     mesh_cursor: &'a mut usize,
     periodic_orientation: &'a mut super::periodic::PeriodicOrientationState,
     inherited_velocity: &'a super::spawn::SpawnVelocity,
+    owner_shapes: Option<&'a super::shape_spawn::OwnerShapes>,
 }
 
 impl EmitterBindings for Bindings<'_> {
@@ -155,7 +177,57 @@ impl EmitterBindings for Bindings<'_> {
             0.5,
         );
         velocity = super::spawn::spray(velocity, cone, seed);
-        let position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
+        // 1f3f10 runs after 1dbbe0's shape sampling. Without a matching
+        // parent particle the emitter origin is added instead, and
+        // m_spawnOnlyFromStage marks the new particle dead by its age.
+        let mut killed = false;
+        let mut parented = false;
+        if let Some(parent) = self.parent.as_mut() {
+            let spawn = &definition.spawn_stage;
+            let restriction = &spawn.life_restriction;
+            let upper = restriction.curve.minimum.times.is_empty();
+            let maximum = restriction.curve.maximum.sample_key_spline(context.cycle_fraction)?;
+            let minimum = if upper {
+                maximum
+            } else {
+                restriction.curve.minimum.sample_key_spline(context.cycle_fraction)?
+            };
+            match parent.particles.pick_parent(
+                multiply(maximum, restriction.range[1]),
+                multiply(minimum, restriction.range[0]),
+                parent.seed,
+            ) {
+                None => killed = definition.spawn_only_from_stage,
+                Some(slot) => {
+                    let source = parent.particles.get(slot).ok_or("parent particle slot is empty")?.state;
+                    position = std::array::from_fn(|i| add(source.position[i], position[i]));
+                    parented = true;
+                    let angle = spawn.velocity_redirection_angle.sample(context.cycle_fraction, seed)?;
+                    let scale = spawn.initial_velocity.sample(context.cycle_fraction, seed)?;
+                    let redirected = super::spawn::spray(source.velocity.map(|v| multiply(scale, v)), angle, seed);
+                    velocity = std::array::from_fn(|i| add(velocity[i], redirected[i]));
+                }
+            }
+        }
+        if !parented {
+            position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
+        }
+        // 1401f4e00: on the owner's physics shapes, relative to the
+        // emitter origin and in the stage's axes unless it is worldspace.
+        if definition.physics_shapes_spawn.enabled {
+            if let Some(owner) = self.owner_shapes {
+                let (point, normal_velocity) =
+                    super::shape_spawn::spawn(&definition.physics_shapes_spawn, owner, context.cycle_fraction, seed)?;
+                let mut offset: [f32; 3] = std::array::from_fn(|i| crate::float::subtract(point[i], context.pose.position[i]));
+                let mut extra = normal_velocity;
+                if !definition.worldspace {
+                    offset = space.transform(offset, true);
+                    extra = space.transform(extra, true);
+                }
+                position = std::array::from_fn(|i| add(offset[i], position[i]));
+                velocity = std::array::from_fn(|i| add(extra[i], velocity[i]));
+            }
+        }
         let mut particle_seed = crate::random::lcg_step(seed);
         let mut motion_seed = particle_seed;
         if let Some(field) = super::field::sample(
@@ -176,6 +248,9 @@ impl EmitterBindings for Bindings<'_> {
             accumulated_velocity: [0.; 3],
             seed: particle_seed,
         };
+        if killed {
+            particle.state.age = f32::MAX;
+        }
         let mut field_velocity = [0.; 3];
         if let Some(field) = super::field::sample(
             &self.fields[1],
@@ -255,6 +330,29 @@ impl EmitterBindings for Bindings<'_> {
             state.advance(&descriptor.appearance,&descriptor.flipbook,age,context.remaining_delta,&mut update_seed)?;
             slots[slot]=Some(state);
         }
+        // 1f4e00: each trail renderer starts its record on the same seed
+        // chain (1402117d0) and advances it by the remaining delta
+        // (140211bc0), which draws nothing from the particle seed.
+        let owner = ReferenceFrame { position: self.owner_position, basis: self.owner_basis };
+        for (descriptor, slots) in definition.trails.iter().zip(self.trails.iter_mut()) {
+            if slots.is_empty() {
+                continue;
+            }
+            if self.definition.constant_seed {
+                sprite_seed = particle_seed;
+            }
+            let (position, basis) = if !definition.worldspace && descriptor.worldspace {
+                super::trail::to_world(&super::trail::owner_transform(owner), birth_state.position, owner.basis)
+            } else {
+                (birth_state.position, owner.basis)
+            };
+            let previous_age = slots[slot].as_ref().map_or(0., |record| record.age);
+            let mut record = super::trail::TrailRecord::start(
+                previous_age, descriptor, None, true, context.cycle_fraction, position, basis, &mut sprite_seed,
+            )?;
+            record.advance(descriptor, age, context.cycle_fraction, context.remaining_delta, position, basis)?;
+            slots[slot] = Some(record);
+        }
         self.events.birth(
             &birth_state,
             seed,
@@ -273,6 +371,7 @@ impl StageSimulation {
         self.particles.flush();
         self.events.pending.clear();
         for meshes in &mut self.meshes { for mesh in meshes { *mesh=None; } }
+        for trails in &mut self.trails { for trail in trails { *trail = None; } }
         for sprites in &mut self.sprites {
             for sprite in sprites {
                 *sprite = None;
@@ -288,6 +387,7 @@ impl StageSimulation {
         self.prepare_pose(delta, pose);
         let mut bindings = Bindings {
             definition: &self.declaration.stages[self.index],
+            parent: None,
             events: &mut self.events,
             fields: &mut self.fields,
             field_velocity: &mut self.field_velocity,
@@ -295,11 +395,13 @@ impl StageSimulation {
             particles: &mut self.particles,
             sprites: &mut self.sprites,
             meshes: &mut self.meshes,
+            trails: &mut self.trails,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut self.mesh_cursor,
             periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
+            owner_shapes: self.owner_shapes.as_deref(),
         };
         self.emitter.advance_clock(delta, &mut bindings)?;
         self.commit_pose(pose);
@@ -327,6 +429,14 @@ impl StageSimulation {
             .collect::<Vec<Vec<Option<SpriteInitialState>>>>();
         let mut meshes = definition.meshes.iter()
             .map(|_| (0..capacity).map(|_| None).collect()).collect::<Vec<Vec<Option<MeshInitialState>>>>();
+        // 1efcc0 creates a renderer for each enabled trail with a material.
+        let mut trails = definition.trails.iter()
+            .map(|trail| if trail.enabled && trail.material.is_some() {
+                (0..capacity).map(|_| None).collect()
+            } else {
+                Vec::new()
+            })
+            .collect::<Vec<Vec<Option<super::trail::TrailRecord>>>>();
         // 1efcc0 retains the first draw as its cycle seed and the second as
         // its mutable spawn seed. Periodic orientation precedes field setup.
         let cycle_seed = crate::random::lcg_step(system_seed);
@@ -344,11 +454,19 @@ impl StageSimulation {
                 .map(|definition| super::field::FieldState::new(definition, &mut spawn_seed))
                 .collect()
         });
+        // 1efcc0 resets the attractors right after the field states; each
+        // keeps a copy of the stage seed without advancing it.
+        let attractors = definition
+            .attractors
+            .iter()
+            .map(|attractor| super::attractor::AttractorState::new(attractor, spawn_seed))
+            .collect();
         let mut field_velocity = vec![[0.; 3]; capacity];
         let mut events = super::events::StageEvents::new(&declaration, index);
         let mut mesh_cursor = 0;
         let inherited_velocity = super::spawn::SpawnVelocity::default();
         let mut bindings = Bindings {
+            parent: None,
             events: &mut events,
             fields: &mut fields,
             field_velocity: &mut field_velocity,
@@ -357,11 +475,13 @@ impl StageSimulation {
             particles: &mut particles,
             sprites: &mut sprites,
             meshes: &mut meshes,
+            trails: &mut trails,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut mesh_cursor,
             periodic_orientation: &mut periodic_orientation,
             inherited_velocity: &inherited_velocity,
+            owner_shapes: None,
         };
         let emitter = ParticleEmitter::new(
             Arc::new(definition.emitter.clone()),
@@ -380,14 +500,18 @@ impl StageSimulation {
             particles,
             sprites,
             meshes,
+            trails,
             mesh_cursor,
             periodic_orientation,
             inherited_velocity,
             events,
             owner_pose: pose,
             target_position: [0.; 3],
+            parent: None,
+            attractors,
             fields,
             field_velocity,
+            owner_shapes: None,
         })
     }
 
@@ -404,7 +528,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         wind: [f32; 3],
     ) -> Result<(), String> {
-        self.advance_frame_with_sources(delta, frame, wind, None)
+        self.advance_frame_with_sources(delta, frame, wind, None, None)
     }
 
     pub fn advance_frame_with_sources(
@@ -413,6 +537,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         wind: [f32; 3],
         source: Option<&super::spawn::SpawnVelocity>,
+        mut parent: Option<ParentStage<'_>>,
     ) -> Result<(), String> {
         use crate::float::subtract;
         self.owner_pose = frame.pose;
@@ -451,7 +576,11 @@ impl StageSimulation {
             if !step.is_finite() || step <= 0. {
                 return Err("particle cycle produces an invalid outer time slice".into());
             }
-            self.advance_chunk(step, frame, source_velocity, wind)?;
+            let chunk_parent = parent.as_mut().map(|parent| ParentStage {
+                particles: parent.particles,
+                seed: &mut *parent.seed,
+            });
+            self.advance_chunk(step, frame, source_velocity, wind, chunk_parent)?;
             remaining = subtract(remaining, step);
         }
         self.commit_pose(frame.pose);
@@ -544,6 +673,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         source_velocity: [f32; 3],
         wind: [f32; 3],
+        parent: Option<ParentStage<'_>>,
     ) -> Result<(), String> {
         let declaration = self.declaration.clone();
         let definition = &declaration.stages[self.index];
@@ -585,10 +715,26 @@ impl StageSimulation {
                 )?;
             }
         }
+        // 1f5620 prepares the attractors after the fields, sharing their
+        // cycle-seed copy and drawing random targets from the stage seed.
+        for (state, attractor) in self.attractors.iter_mut().zip(&definition.attractors) {
+            state.prepare(
+                attractor,
+                origin,
+                &space,
+                self.emitter.cycle.fraction,
+                &mut cycle_seed,
+                &mut self.emitter.seed,
+                delta,
+            )?;
+        }
+        let attractors = &self.attractors;
         let field_velocity = &mut self.field_velocity;
         let fields = &self.fields;
         let sprites = &mut self.sprites;
         let meshes = &mut self.meshes;
+        let trails = &mut self.trails;
+        let fraction = self.emitter.cycle.fraction;
         let events = &mut self.events;
         let event_seed = &mut self.emitter.seed;
         self.particles.advance_with_events(
@@ -654,6 +800,17 @@ impl StageSimulation {
                         state.advance(&mesh.appearance,&mesh.flipbook,particle.age,delta,seed)?;
                     }
                 }
+                // 1f5620 -> 140211bc0 after the sprite and mesh updates.
+                for (trail, slots) in definition.trails.iter().zip(trails.iter_mut()) {
+                    if let Some(record) = slots.get_mut(index).and_then(Option::as_mut) {
+                        let (position, basis) = if !definition.worldspace && trail.worldspace {
+                            super::trail::to_world(&super::trail::owner_transform(frame.pose), particle.position, frame.pose.basis)
+                        } else {
+                            (particle.position, frame.pose.basis)
+                        };
+                        record.advance(trail, particle.age, fraction, delta, position, basis)?;
+                    }
+                }
                 Ok(())
             },
             |particle, previous_age, alive| {
@@ -667,8 +824,20 @@ impl StageSimulation {
                 );
                 Ok(())
             },
+            |particle, seed, step, accumulated| {
+                for (state, attractor) in attractors.iter().zip(&definition.attractors) {
+                    if let Some(pull) = state.pull(particle.position, particle.velocity) {
+                        let scale = attractor.strength_over_life.sample_particle_rate(particle.age, seed)?;
+                        for i in 0..3 {
+                            accumulated[i] = add(multiply(multiply(pull[i], scale), step), accumulated[i]);
+                        }
+                    }
+                }
+                Ok(())
+            },
         )?;
         let mut bindings = Bindings {
+            parent,
             events: &mut self.events,
             fields: &mut self.fields,
             field_velocity: &mut self.field_velocity,
@@ -677,17 +846,17 @@ impl StageSimulation {
             particles: &mut self.particles,
             sprites: &mut self.sprites,
             meshes: &mut self.meshes,
+            trails: &mut self.trails,
             owner_basis: frame.pose.basis,
             lod: frame.lod,
             mesh_cursor: &mut self.mesh_cursor,
             periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
+            owner_shapes: self.owner_shapes.as_deref(),
         };
         let free = bindings.particles.capacity() - bindings.particles.len();
-        // 1ffff0 calls ordinary emission after integration. The parent's
-        // spawnOnlyFromStage flag is not a blanket disable for this path:
-        // it only participates in linked parent-stage setup. Such links are
-        // still rejected by the reader until their producer is connected.
+        // 1ffff0 calls ordinary emission after integration. Each spawned
+        // particle consults the linked parent stage (1f3f10) when one exists.
         if definition.burst && !definition.burst_event.is_empty() {
             let mut inputs = std::mem::take(&mut bindings.particles.inputs);
             self.emitter.event_burst(

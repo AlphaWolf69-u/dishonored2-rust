@@ -681,6 +681,11 @@ pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, 
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
     }
+    // Block-compressed records store each level padded to whole blocks
+    // (installed 256x2 lookups carry 256x4 BC payloads), and D3D requires
+    // the top level of a BC texture in whole blocks: the texture takes the
+    // padded size.
+    let block = info.format.block_width();
     let mut at = 62usize;
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
