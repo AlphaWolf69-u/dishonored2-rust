@@ -14,6 +14,30 @@ use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 
 use crate::platform::performance_counter as platform;
+use crate::gameplay::entity_lifetime::EntityId;
+use std::collections::HashMap;
+
+struct EntityClock { timespace: u32, offset: f64, remaining: Option<f32>, managed_override: bool }
+impl EntityClock {
+    fn advance(&mut self, clock: &GameClock, bent: bool, step: f32) {
+        if !self.managed_override { return; }
+        let unbent = if let Some(remaining) = self.remaining.as_mut() {
+            let active = bent && step < *remaining;
+            if *remaining < f32::from_bits(0x7149_f2ca) { *remaining -= step; }
+            if !active { self.remaining = None; }
+            active
+        } else { false };
+        if self.timespace > 1 { return; }
+        let timespace = u32::from(unbent);
+        if self.remaining.is_none() { self.managed_override = false; }
+        if timespace == self.timespace { return; }
+        let old = if self.timespace == 0 { 3 } else { 4 };
+        let new = if timespace == 0 { 3 } else { 4 };
+        let elapsed = (clock.previous_time(old).unwrap_or(0.0) - self.offset) as f32;
+        self.offset = clock.previous_time(new).unwrap_or(0.0) - f64::from(elapsed);
+        self.timespace = timespace;
+    }
+}
 
 struct PerformanceCounter {
     origin: i64,
@@ -56,6 +80,12 @@ struct LoadedClock {
     /// transition I/O/callback lifecycle is not silently emulated here.
     common_counter: i32,
     advanced: bool,
+    /// 80d8c0/80f040: the player root's timed unbent request. This is a
+    /// duration in game-local unquantized time, not an extra time factor.
+    player_override: Option<f32>,
+    player_timespace: u32,
+    player_clock_offset: f64,
+    entity_clocks: HashMap<EntityId, EntityClock>,
 }
 
 impl LoadedClock {
@@ -82,6 +112,32 @@ impl LoadedClock {
             rate_cap: self.timing.frame_rate(),
             grow_step_limit: self.controls.limit_step_variation,
         });
+        if self.advanced {
+            let bent = self.clock.rates(3).is_some_and(|v| v[0] < 1.0)
+                || self.clock.rates(4).is_some_and(|v| v[0] < 1.0);
+            // 8af320 passes clock group4 to 80f040, including the
+            // current unbent scaling; it is not the wall-clock delta.
+            let step = self.clock.delta(4).unwrap_or(0.0);
+            let unbent = if let Some(remaining) = self.player_override.as_mut() {
+                let active = bent && step < *remaining;
+                if *remaining < f32::from_bits(0x7149_f2ca) { *remaining -= step; }
+                if !active { self.player_override = None; }
+                active
+            } else { false };
+            let timespace = u32::from(unbent);
+            if timespace != self.player_timespace {
+                // 87d050 (and its 87ce70 counterpart): retain the entity's
+                // local elapsed time while switching native clock groups.
+                let previous_group = if self.player_timespace == 0 { 3 } else { 4 };
+                let next_group = if timespace == 0 { 3 } else { 4 };
+                let previous = self.clock.previous_time(previous_group).unwrap_or(0.0);
+                let next = self.clock.previous_time(next_group).unwrap_or(0.0);
+                let elapsed = (previous - self.player_clock_offset) as f32;
+                self.player_clock_offset = next - f64::from(elapsed);
+                self.player_timespace = timespace;
+            }
+            for entity in self.entity_clocks.values_mut() { entity.advance(&self.clock, bent, step); }
+        }
         Ok(())
     }
 }
@@ -100,6 +156,58 @@ impl ClockRuntime {
     }
     pub fn advanced(&self) -> bool {
         self.0.as_ref().is_ok_and(|state| state.advanced)
+    }
+    /// 140059890 publication, using the existing byte-exact easing owner.
+    pub fn set_rate_target(&mut self, group: usize, value: f32, ease: f32) -> Result<(), String> {
+        self.0.as_mut().map_err(|error| error.clone())?.clock.set_rate_target(group, value, ease)
+    }
+    /// 14080d8c0: an indefinite request cannot be replaced by a shorter
+    /// request until the last world-time lease has restored normal time.
+    pub fn set_player_time_override(&mut self, duration: f32) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|error| error.clone())?;
+        if state.player_override != Some(f32::from_bits(0x7149_f2ca)) { state.player_override = Some(duration); }
+        Ok(())
+    }
+    pub fn player_timespace(&self) -> Result<u32, &str> {
+        self.0.as_ref().map(|state| state.player_timespace).map_err(String::as_str)
+    }
+    pub fn player_delta(&self) -> Result<f32, &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        state.clock.entity_delta(state.player_timespace).ok_or("player clock timespace is invalid")
+    }
+    pub fn player_time(&self) -> Result<f64, &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let group = if state.player_timespace == 0 { 3 } else { 4 };
+        Ok(state.clock.time(group).ok_or("player clock group is absent")? - state.player_clock_offset)
+    }
+    /// Actual entity roots register once, then their component/model owners
+    /// query this same timespace selection. No entity is fabricated here.
+    pub fn register_entity_time(&mut self, entity: EntityId, timespace: u32) -> Result<(), String> {
+        if timespace > 3 { return Err("entity timespace is outside 0..4".into()); }
+        self.0.as_mut().map_err(|e| e.clone())?.entity_clocks.entry(entity)
+            .or_insert(EntityClock { timespace, offset: 0.0, remaining: None, managed_override: false });
+        Ok(())
+    }
+    pub fn unregister_entity_time(&mut self, entity: EntityId) {
+        if let Ok(state) = &mut self.0 { state.entity_clocks.remove(&entity); }
+    }
+    pub fn set_entity_time_override(&mut self, entity: EntityId, duration: f32) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        let record = state.entity_clocks.get_mut(&entity).ok_or("entity clock root is not registered")?;
+        if record.remaining != Some(f32::from_bits(0x7149_f2ca)) { record.remaining = Some(duration); }
+        record.managed_override = true;
+        Ok(())
+    }
+    pub fn entity_delta(&self, entity: EntityId) -> Result<f32, &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let record = state.entity_clocks.get(&entity).ok_or("entity clock root is not registered")?;
+        state.clock.entity_delta(record.timespace).ok_or("entity timespace is invalid")
+    }
+    pub fn entity_time(&self, entity: EntityId) -> Result<f64, &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let record = state.entity_clocks.get(&entity).ok_or("entity clock root is not registered")?;
+        let group = [3, 4, 2, 0][record.timespace as usize];
+        Ok(state.clock.time(group).ok_or("entity clock group is absent")? - record.offset)
     }
 }
 
@@ -123,6 +231,10 @@ impl FromWorld for ClockRuntime {
                 controls,
                 common_counter: 0,
                 advanced: false,
+                player_override: None,
+                player_timespace: 0,
+                player_clock_offset: 0.0,
+                entity_clocks: HashMap::new(),
             })
         })();
         if let Err(error) = &state {
