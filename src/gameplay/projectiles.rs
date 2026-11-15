@@ -105,18 +105,18 @@ pub enum Response { None, BounceOnce, Stick, Break, UncannyDeflect, Bounce }
 pub struct Contact {
     pub player: bool,
     pub npc: bool,
-    pub rigid: bool,
+    pub world: bool,
     pub can_stick: bool,
     pub can_break: bool,
     pub angle: f32,
     pub stick_blocked_by_pickable: bool,
-    pub special_skip: bool,
-    pub deflection: u32,
+    pub absorbed_by_armor: bool,
+    pub desired_deflection: u32,
     pub npc_break_probability: Option<f32>,
 }
 pub struct ContactFlags {
-    pub stuck: bool,
-    pub break_on_npc: bool,
+    pub always_break_on_hit: bool,
+    pub always_stick_to_npcs: bool,
     pub pinned_limb: bool,
     pub bounce_once: bool,
 }
@@ -125,16 +125,16 @@ pub struct ContactFlags {
 pub fn response(declaration: &Declaration, contact: &Contact, flags: &mut ContactFlags,
     mut random: impl FnMut() -> f32) -> Response {
     let mut result = Response::Break;
-    if !contact.special_skip {
-        if contact.deflection == 0 {
+    if !contact.absorbed_by_armor {
+        if contact.desired_deflection == 0 {
             if !contact.player {
                 result = Response::Bounce;
                 let required = if contact.npc { declaration.required_npc_stick_angle } else { declaration.required_stick_angle };
                 if contact.can_stick && contact.angle >= required && !contact.stick_blocked_by_pickable { result = Response::Stick; }
                 if contact.can_break && declaration.can_break {
                     let unbroken = result;
-                    if flags.stuck { result = Response::Break; }
-                    if !flags.stuck || contact.npc && flags.break_on_npc {
+                    if flags.always_break_on_hit { result = Response::Break; }
+                    if !flags.always_break_on_hit || contact.npc && flags.always_stick_to_npcs {
                     let chance = if !contact.can_stick {
                         if contact.angle < declaration.bounce_angle { declaration.break_chance_not_stickable } else { 100. }
                     } else if contact.npc { contact.npc_break_probability.unwrap_or(declaration.break_chance_npc) }
@@ -143,12 +143,12 @@ pub fn response(declaration: &Declaration, contact: &Contact, flags: &mut Contac
                     }
                 }
             }
-        } else if contact.deflection == 3 { result = Response::None; }
-        else if contact.deflection == 4 { result = Response::UncannyDeflect; }
+        } else if contact.desired_deflection == 3 { result = Response::None; }
+        else if contact.desired_deflection == 4 { result = Response::UncannyDeflect; }
     }
-    if flags.pinned_limb && (!contact.rigid || result != Response::Stick) { result = Response::Break; }
+    if flags.pinned_limb && (!contact.world || result != Response::Stick) { result = Response::Break; }
     if flags.bounce_once && !contact.can_stick && result == Response::Break && !contact.player
-        && (!contact.npc || !contact.special_skip) {
+        && (!contact.npc || !contact.absorbed_by_armor) {
         flags.bounce_once = false;
         result = Response::BounceOnce;
     }
