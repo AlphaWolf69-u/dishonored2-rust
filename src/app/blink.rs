@@ -1,7 +1,6 @@
 //! Blink's real player/world adapter. Prepared selected declarations stay
 //! with the selection acquisition; casts reuse the player collision shapes,
 //! shared PlayerWorld queries and native sensor2 mantle instance.
-use std::cell::RefCell;
 use bevy_math::{Mat3, Vec3};
 use crate::{assets::entities::Value, gameplay::{
     collision_filter::QueryFilter,
@@ -14,19 +13,32 @@ use crate::{assets::entities::Value, gameplay::{
 }};
 use super::{interactions::Interactions, physics_scene::PhysicsScene};
 
+#[derive(Clone)]
 pub(super) struct Prepared {
     settings: BlinkSettings,
     motion: BlinkMotionSettings,
     mantle: MantleDecl,
 }
+#[derive(Clone)]
+pub(super) struct PlayerSettings {
+    motion: BlinkMotionSettings,
+    mantle: MantleDecl,
+}
 impl Prepared {
+    /// Compact typed projection retained by the existing player-action
+    /// acquisition owner; no generic declaration tree or rig is duplicated.
+    pub fn player(blinking: &[(String, Value)], mantle: &[(String, Value)]) -> Result<PlayerSettings, String> {
+        if blinking.is_empty() || mantle.is_empty() { return Err("Blink requires its Blinking state and BlinkToMantle component".into()); }
+        Ok(PlayerSettings { motion: BlinkMotionSettings::read(blinking)?, mantle: crate::gameplay::player::decls::mantle_sensor(mantle)? })
+    }
+    pub fn with_power(power: &[(String, Value)], player: &PlayerSettings) -> Result<Self, String> {
+        let mask = crate::gameplay::player::decls::layer_mask(power, "m_collisionMask", 0x20b)?;
+        Ok(Self { settings: BlinkSettings::read(power, mask)?, motion: player.motion.clone(), mantle: player.mantle })
+    }
     /// Called by the selected equipment acquisition worker. Sensor2's
     /// 1403a52a0 ctor derives the ordinary MantleDecl and sets sensorID2.
     pub fn read(power: &[(String, Value)], blinking: &[(String, Value)], mantle: &[(String, Value)]) -> Result<Self, String> {
-        if blinking.is_empty() || mantle.is_empty() { return Err("Blink requires its Blinking state and BlinkToMantle component".into()); }
-        let mask = crate::gameplay::player::decls::layer_mask(power, "m_collisionMask", 0x20b)?;
-        Ok(Self { settings: BlinkSettings::read(power, mask)?, motion: BlinkMotionSettings::read(blinking)?,
-            mantle: crate::gameplay::player::decls::mantle_sensor(mantle)? })
+        Self::with_power(power, &Self::player(blinking, mantle)?)
     }
 }
 
@@ -34,12 +46,12 @@ pub(super) struct Runtime {
     pub blink: Blink,
     motion: BlinkMotionSettings,
     mantle: Option<MantleSensor>,
-    hits: RefCell<Vec<WorldHit>>,
+    hits: Vec<WorldHit>,
 }
 impl Runtime {
     pub fn new(prepared: Prepared, physics: &PlayerPhysics) -> Self {
         Self { blink: Blink::new(prepared.settings), motion: prepared.motion,
-            mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: RefCell::new(Vec::new()) }
+            mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new() }
     }
     /// Run after the real player view exists, while UsePower is aiming.
     /// The returned target is consumed by the established FX owner; it does
@@ -50,7 +62,7 @@ impl Runtime {
         let Some(mantle) = self.mantle.as_mut() else { return false };
         let shapes = shape_info(&player.physics);
         let input = input(player, view, &shapes);
-        let mut world = World { queries, collision, live, interactions, scene, physics: &player.physics, mantle, hits: &self.hits };
+        let mut world = World { queries, collision, live, interactions, scene, physics: &player.physics, mantle, hits: &mut self.hits };
         self.blink.aim(&mut world, &input);
         true
     }
@@ -97,20 +109,20 @@ struct World<'a> {
     scene: Option<&'a PhysicsScene>,
     physics: &'a PlayerPhysics,
     mantle: &'a mut MantleSensor,
-    hits: &'a RefCell<Vec<WorldHit>>,
+    hits: &'a mut Vec<WorldHit>,
 }
 impl BlinkWorld for World<'_> {
-    fn sweep(&self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
-        let mut hits = self.hits.borrow_mut(); hits.clear();
+    fn sweep(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
+        self.hits.clear();
         self.queries.cast_shape(QueryFilter::layers(mask, 0x40), self.physics.posture_body(slot),
-            Mat3::IDENTITY, from, direction * length, 0.0, &mut hits, None);
-        hits.iter().min_by(|a,b| a.value.total_cmp(&b.value)).map(hit)
+            Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
+        self.hits.iter().min_by(|a,b| a.value.total_cmp(&b.value)).map(hit)
     }
-    fn sweep_all(&self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, out: &mut Vec<Hit>) {
-        let mut hits = self.hits.borrow_mut(); hits.clear();
+    fn sweep_all(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, out: &mut Vec<Hit>) {
+        self.hits.clear();
         self.queries.cast_shape(QueryFilter::layers(mask, 0x40), self.physics.posture_body(slot),
-            Mat3::IDENTITY, from, direction * length, 0.0, &mut hits, None);
-        out.extend(hits.iter().map(hit));
+            Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
+        out.extend(self.hits.iter().map(hit));
     }
     fn blink_breakable(&self, hit: &Hit) -> Option<EntityId> {
         if !self.collision.physics_material(hit.key).is_some_and(|material| material.can_blink_through()) { return None; }

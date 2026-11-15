@@ -26,8 +26,8 @@ pub struct MantleTarget { pub position: Vec3, pub axis: Mat3 }
 pub trait BlinkWorld {
     /// 14061e500/14061e6c0 use the indicated shape from the player's 20
     /// acquired slots and arkCollisionQueryFilter(mask, group=0x40).
-    fn sweep(&self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit>;
-    fn sweep_all(&self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, hits: &mut Vec<Hit>);
+    fn sweep(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit>;
+    fn sweep_all(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, hits: &mut Vec<Hit>);
     /// 14061e1a0 permits a body only when material flag 0x04 is set AND
     /// that body's entity has the breakable component. Return that identity.
     fn blink_breakable(&self, hit: &Hit) -> Option<crate::gameplay::entity_lifetime::EntityId>;
@@ -141,7 +141,7 @@ impl Blink {
             exit_state: target.state, posture: target.shape, mantle: target.mantle,
         })
     }
-    fn distance(&self, world: &dyn BlinkWorld, slot: usize, from: Vec3, direction: Vec3, length: f32) -> f32 {
+    fn distance(&self, world: &mut dyn BlinkWorld, slot: usize, from: Vec3, direction: Vec3, length: f32) -> f32 {
         world.sweep(slot, self.settings.collision_mask, from, direction, length).map_or(length, |hit| hit.fraction * length)
     }
     /// Full targeting pass. It uses the owned scratch collector across
@@ -238,7 +238,7 @@ impl Blink {
         self.target.as_ref().unwrap()
     }
     /// 14061f9e0: downward/upward sweeps select the fitting player posture.
-    fn clearance(&self, world: &dyn BlinkWorld, input: &BlinkInput<'_>, mut candidate: Vec3) -> (Vec3, usize, bool, Vec3) {
+    fn clearance(&self, world: &mut dyn BlinkWorld, input: &BlinkInput<'_>, mut candidate: Vec3) -> (Vec3, usize, bool, Vec3) {
         let ground = self.distance(world, 2, candidate, -Vec3::Z, self.settings.ground_search_distance);
         let ceiling = self.distance(world, 2, candidate, Vec3::Z, self.settings.ceiling_search_distance);
         let mut shape = input.current_shape;
