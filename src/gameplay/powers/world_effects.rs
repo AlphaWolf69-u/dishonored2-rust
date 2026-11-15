@@ -72,6 +72,15 @@ impl BendTimeSettings {
 /// missing/nonpositive relativity index uses the declaration's percentage.
 #[derive(Clone, Copy)]
 pub struct BendTimeAttributes { pub time_factor: f32, pub duration: f32, pub relativity: f32 }
+impl BendTimeAttributes {
+    /// Tags are the executable's arkAttributeUnique names corresponding to
+    /// the indices retained at +c4/+c8/+cc by 14061c980.
+    pub fn read(attributes: &crate::gameplay::player::states::Attributes) -> Self {
+        Self { time_factor: attributes.get("ARK_ATTRIBUTE_BENDTIME_TIMEFACTOR"),
+            duration: attributes.get("ARK_ATTRIBUTE_BENDTIME_DURATION"),
+            relativity: attributes.get("ARK_ATTRIBUTE_BENDTIME_RELATIVITY") }
+    }
+}
 
 /// Real engine owner operations required by the power. Hosts must reject
 /// admission until all are present, including the timer/message receiver.
