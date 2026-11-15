@@ -9102,3 +9102,31 @@ animations resume their required work; no speed or memory saving is claimed.
   prewarm completes, and Start/overlap/Stop/tails complete without forced ack.
   Retry performs no additional steady-state work once resources are ready.
   Runtime confirmation of this final source batch is still pending.
+
+
+2026-11-15 FX admission root-cause correction:
+
+The6e17 build passed all three configurations and actual early UI exit, but
+its focused FX run still timed out with proxy1100v0 pipeline=None. No missing
+GPU mesh retry receipt occurred. That proposed repair did not match its
+prediction and has been removed from all three Bevy material owners.
+Evidence: artifacts/active-resource-build-20261115T013532Z-c6a95bc3/result.json
+and active-resource-runtime-20261115T015245Z-96504593/result.json.
+
+Concrete host root: RenderVisibleEntitiesClass CPU pairs are sorted by
+MainEntity (visibility/mod.rs preparation), while entity_pair_is_visible
+binary-searched the whole(render_entity,main_entity) tuple. The two world
+allocators have independent order. Pending material prerequisites therefore
+lose their retry despite remaining visible. DirtySpecializations uses this
+membership check for both specialization and queuing. Search by the actual
+MainEntity sort key and still verify the matching render entity, just as
+its neighboring main-entity lookup already does. No visibility is forced,
+no new readiness signal or cache is added. Native1fbad0/31ad30 prepared
+surface publication and232220 acquisition remain the source behavior;
+this is an explicitly host-only lookup correction.
+
+Prediction: a genuinely visible pending proxy remains eligible after its
+material prerequisite is ready; existing pipeline/prewarm acknowledgment and
+actual Start/overlap/Stop/restart/tail paths then progress. Membership remains
+logarithmic, with no new storage or GPU work. Actual focused confirmation is
+pending; the failed prior observations are preserved unchanged.

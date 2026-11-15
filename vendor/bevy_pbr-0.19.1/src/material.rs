@@ -1018,20 +1018,6 @@ pub(crate) fn specialize_material_meshes(
                     continue;
                 };
                 let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
-                    // Host: GPU mesh preparation can finish after this real
-                    // entity's only visibility/change event. Retain the same
-                    // pending owner as for other asynchronous prerequisites.
-                    view_pending_mesh_material_queues
-                        .current_frame
-                        .insert((*render_entity, *visible_entity));
-                    // Optional receipt for the first actual missing-mesh retry
-                    // in this owner. No identity cache or steady-state work.
-                    static RETRY_RECEIPT: std::sync::Once = std::sync::Once::new();
-                    RETRY_RECEIPT.call_once(|| {
-                        if std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref() == Ok("1") {
-                            eprintln!("HOST_MESH_SPECIALIZATION_RETRY owner=main entity={visible_entity:?} mesh={:?}", mesh_instance.mesh_asset_id());
-                        }
-                    });
                     continue;
                 };
                 let Some(material) = render_materials.get(material_instance.asset_id) else {
