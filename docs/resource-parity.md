@@ -10570,6 +10570,44 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   remain with the canonical upgrade animation receiver; no replacement clip
   or fabricated successful lookup is supplied.
 
+### FarReach body/hand leaves and traveling beam (2026-11-15)
+
+- Owners: canonical Rig/Clips demand acquisition; existing body/arm pose
+  owners; `gameplay/player/body/grapple.rs` owns compact input/beam state.
+  Definition fields follow `1417396d0` (+1c0/+1c8/+1e0/+1e8), with input
+  entry defaults from `14076f960`. The paused-leaf alias projection reads
+  supplied canonical tree text and retains only aliases, not another tree
+  resource/cache or copied clip bank.
+- `ported`: Camera mode8 steering `1407f5d50`, Set/EndGrapple `140774680` /
+  `140775260`, ApplyGrapple `140776840`. Shared frame indices use the BODY
+  clips' frame counts and are passed unchanged to both arms. Installed body
+  and arm roots apply Left then Up after Midnight; body lean remains above
+  that layer. Zero blend does not sample or demand these clips.
+- `ported`: `140774d90` starts the beam at its actual left-arm rig tag,
+  initially with tip and origin coincident. `140776490` advances the tip
+  from the actual entity delta and supplied cast speed. `1407766b0` returns
+  the real remaining distance while retargeting preserves it. Normalization
+  uses `f32::MIN_POSITIVE` (verified `141ae3c60`), without a fabricated
+  target/hand position or cast timer.
+- `host`: typed Start/Update/Stop requests bridge those exact body operations
+  to the canonical EntityFX/reserve owner. Stop `140775210` requires callback
+  detachment and tail retirement there; the body does not create a second FX
+  instance/lease owner. Queue drains preserve capacity. Stick/Unstick's actual
+  owned-entity visibility events are applied before render publication in
+  the same player frame, without another body/arm pose evaluation.
+- Integration dependencies: the owned FarReach loader must append actual
+  body/arm paused clips through their existing alias snapshots, resolve the
+  beam tag with the actual left-arm Rig, install Prepared only after atomic
+  bank checks, and acquire the declared beam FX through the existing scope.
+  The family app owner starts on actual accepted cast, queries remaining
+  distance before state27 admission, and uses source cancel/exit lifetime;
+  no permanently visible beam is substituted. NPC catch/tentacle physics is
+  outside this body/hand path.
+- Prediction: extra paused sampling only while its authored layer is active;
+  shared rigs/clip banks, no new per-frame string/resource acquisition and no
+  duplicate posing owner. No measured performance claim. Validation: source,
+  installed tree text and whitespace review only; no tests/builds/launches.
+
 ### Player-wide hard and code body-part requests (2026-11-15)
 
 - Owner: `gameplay/player/body_parts.rs`, stored once in `Player` and borrowed

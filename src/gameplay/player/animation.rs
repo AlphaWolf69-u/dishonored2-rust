@@ -6,8 +6,8 @@
 //!
 //! `locoBobAdditives = body ⊕ bobAmount·bob ⊕ additives`, then the root's
 //! lean layers (`body.rs`). Supported AnimBasic additives are implemented
-//! here; Midnight playback lives in player::midnight. Grapple and versus
-//! remain separate integrations.
+//! here; Midnight playback lives in player::midnight. Paused grapple leaves
+//! share this sampler; versus retains its separate input producer.
 use crate::edge_animation::{slerp, EdgeAnimation};
 use crate::edge_skeleton::JointRestPose;
 use std::collections::HashMap;
@@ -17,6 +17,28 @@ use std::collections::HashMap;
 pub struct Pose {
     pub joints: Vec<JointRestPose>,
     pub weights: Vec<u8>,
+}
+
+/// Paused additive leaves driven by shared frame inputs (776840). Frames
+/// belong to the body driver; each receiving tree samples its own clip.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PausedAdditives {
+    pub clips: [Option<usize>; 2],
+    pub frames: [f32; 2],
+    pub blend: f32,
+}
+impl PausedAdditives {
+    pub fn apply(&self, pose: &mut Pose, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<(), String> {
+        if self.blend <= 0.0 { return Ok(()); }
+        for (clip, frame) in self.clips.into_iter().zip(self.frames) {
+            if let Some(index) = clip {
+                let animation = animations.get(index).ok_or("paused additive clip is not admitted")?;
+                let layer = sample(animation, rest, frame / animation.frame_rate)?;
+                blend_add(pose, &layer, self.blend);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Executor op 2: sample at `time`, remove root motion per the clip's

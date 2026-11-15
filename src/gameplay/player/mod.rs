@@ -833,6 +833,11 @@ impl Player {
         if let Some(weapon) = &mut self.weapon {
             weapon.think(self.machine.ranged_is_charging());
         }
+        let mut equipment_events = std::mem::take(&mut self.powers.grapple_equipment_events);
+        for event in equipment_events.drain(..) {
+            self.set_owned_equipment_hidden(matches!(event, grapple_state::EquipmentEvent::Stick));
+        }
+        self.powers.grapple_equipment_events = equipment_events;
         self.breath.update(dt);
         self.mana.update(dt, &self.attributes, self.mana_replenishes);
         self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
@@ -900,6 +905,7 @@ impl Player {
             self.camera.update_fov(dt, base_fov, speed_state);
         }
         // Body DEFAULT (FUN_140777280).
+        self.body.set_grapple_control(self.camera.grapple_control());
         let input_velocity = self.physics.input_velocity();
         let supported = self.controller.support_state != SupportState::Unsupported;
         let ground_normal = self.physics.ground_ray_normal_average;
@@ -918,6 +924,7 @@ impl Player {
             let input = MotionInput { linear: self.requests.linear, angular: self.requests.angular };
             self.physics.step(world, dt, input);
         }
+        self.update_grapple_beam(dt);
     }
 
     /// FUN_1407583e0 for the player slave of the mantle dummy (orientation

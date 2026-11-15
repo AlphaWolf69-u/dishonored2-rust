@@ -159,6 +159,7 @@ pub const MODE_AND_ARMS: i32 = 0;
 pub const MODE_ANIMATED: i32 = 2;
 pub const MODE_CONSTRAINED: i32 = 3;
 pub const MODE_CONSTRAINED_WITH_ARMS: i32 = 6;
+pub const MODE_GRAPPLE: i32 = 8;
 pub const MODE_CATFALL: i32 = 14;
 pub const MODE_DROWNING: i32 = 15;
 pub const MODE_KEEP_PREVIOUS: i32 = 18;
@@ -291,6 +292,15 @@ impl PlayerCamera {
                 *body_yaw = 0.0;
             }
         }
+    }
+
+    /// 7f5d50 writes paused grapple inputs; mode blend weights multiply
+    /// steering before SetGrapple clamps it. Exiting mode8 clears the layer.
+    pub fn grapple_control(&self) -> Option<[f32; 2]> {
+        let weight = self.poses.iter().find_map(|&(mode, weight, _)| (mode == MODE_GRAPPLE).then_some(weight))?;
+        let [pitch_low, pitch_high, yaw_high, yaw_low] = self.constraints;
+        Some([((self.yaw_offset - yaw_low) / (yaw_high - yaw_low) * 2.0 - 1.0) * weight,
+            ((self.pitch - pitch_low) / (pitch_high - pitch_low) * 2.0 - 1.0) * weight])
     }
 
     /// The DEFAULT stage FUN_1407f6140 up to the FOV: modes, look

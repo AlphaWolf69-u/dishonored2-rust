@@ -10,7 +10,7 @@
 //! groups (cast target 1 / 2) over loco ⊕ additives.
 //!
 //! Equipment locomotion uses the authored stance/equipment pairs and
-//! transitions. Hit reactions, grapple/versus additives and weapon-lowering
+//! transitions and paused grapple leaves. Hit reactions/versus and weapon-lowering
 //! bind rotation remain separate layers.
 use super::animation::{blend_add, AnimBasicCommand, AnimBasicNode, LocoNode, Pose};
 use super::midnight::Midnight;
@@ -46,6 +46,7 @@ pub struct Arm {
     pub animation_aliases: std::collections::HashMap<String, usize>,
     pub loco: LocoNode,
     pub additives: AnimBasicNode,
+    pub grapple: super::animation::PausedAdditives,
     /// The equip state's jump additive items (body+0x90 / +0xa0 table).
     pub jump_items: [Option<usize>; 6],
     /// +0x2b0 m_speedInterpolation.
@@ -69,7 +70,7 @@ impl Arm {
         jump_items: [Option<usize>; 6],
     ) -> Self {
         let stances = loco.data.stances.keys().map(|stance| (stance.clone(), stance.clone())).collect();
-        Self { sound_settings: None, model, visible, bind_joint, bind, skeleton, animations, animation_aliases: Default::default(), loco, additives, jump_items, speed_interpolation: 0.0,
+        Self { sound_settings: None, model, visible, bind_joint, bind, skeleton, animations, animation_aliases: Default::default(), loco, additives, grapple: Default::default(), jump_items, speed_interpolation: 0.0,
             equipment: "Empty".into(), equipment_stances: [("Empty".into(), stances)].into(),
             equipment_jump_items: [("Empty".into(), jump_items)].into() }
     }
@@ -138,7 +139,8 @@ impl Arm {
         if let Some(additives) = self.additives.evaluate(&self.animations, &s.rest)? {
             blend_add(&mut pose, &additives, 1.0);
         }
-        let pose = midnight.evaluate_node(target, pose, &self.animations, &s.rest)?;
+        let mut pose = midnight.evaluate_node(target, pose, &self.animations, &s.rest)?;
+        self.grapple.apply(&mut pose, &self.animations, &s.rest)?;
         let matrices = edge_skeleton::pose_matrices(&pose.joints, &s.hierarchy, &s.root)?;
         Ok(matrices
             .iter()

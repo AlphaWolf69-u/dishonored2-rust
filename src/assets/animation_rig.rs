@@ -428,6 +428,41 @@ impl Clips<'_> {
     }
 }
 
+/// Read authored paused-leaf aliases by their input entry, without retaining
+/// another generic animation-tree parse. The caller holds the canonical
+/// declaration-text lease and resolves aliases with its existing Clips owner.
+pub fn paused_leaf_aliases(tree: &str, frame_inputs: [&str; 2]) -> Result<[Option<String>; 2], String> {
+    let tokens = crate::entities::declaration_lexemes(tree)?;
+    let mut aliases = [None, None];
+    let mut index = 0;
+    while index < tokens.len() {
+        if tokens[index] != "pauseleaf" { index += 1; continue; }
+        let open = index + 2;
+        if tokens.get(open) != Some(&"{") { return Err("animation tree pauseleaf has no opening scope".into()); }
+        let mut end = open + 1;
+        let mut depth = 1;
+        while end < tokens.len() && depth != 0 {
+            match tokens[end] { "{" => depth += 1, "}" => depth -= 1, _ => {} }
+            end += 1;
+        }
+        if depth != 0 { return Err("unterminated animation tree pauseleaf".into()); }
+        let fields = &tokens[open + 1..end - 1];
+        let value = |key| fields.windows(2).find(|pair| pair[0] == key).map(|pair| pair[1].trim_matches('"'));
+        if let (Some(input), Some(alias)) = (value("currentframe"), value("aliasname")) {
+            if let Some(input) = input.strip_prefix("inputs.") {
+                for (slot, expected) in frame_inputs.iter().enumerate() {
+                    if input == *expected {
+                        if aliases[slot].is_some() { return Err(format!("multiple paused leaves use input {input}")); }
+                        aliases[slot] = Some(alias.to_owned());
+                    }
+                }
+            }
+        }
+        index = end;
+    }
+    Ok(aliases)
+}
+
 /// An md6's animBasic list as an AnimBasicNode.
 pub fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]) -> Result<crate::gameplay::player::animation::AnimBasicNode, String> {
     anim_basic_cancellable(clips, fields, None)

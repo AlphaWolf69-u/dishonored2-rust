@@ -4,8 +4,9 @@
 //! and the pose the camera reads `camera_jnt` from (`animation.rs`).
 //!
 //! The jump/land camera additives play through the animBasic node
-//! (`animation.rs`). Arms, footsteps, hit reactions, follow slope and the
-//! swim branch are not ported.
+//! (`animation.rs`). Arms, footsteps, follow slope and swimming retain their
+//! existing owners; grapple paused leaves and beam requests are in `grapple`.
+pub mod grapple;
 use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNode, LocoNode, PlayMode, Pose};
 use super::camera::BodyPose;
 use super::arms::Arm;
@@ -396,6 +397,11 @@ pub struct Body {
     /// the tree root) and the frames ApplyLean scrubs them to.
     pub lean_clips: [Option<usize>; 2],
     lean_frames: [f32; 2],
+    pub grapple: super::animation::PausedAdditives,
+    grapple_definition: Option<std::sync::Arc<grapple::Definition>>,
+    grapple_tag: Option<(usize, Vec3, Mat3)>,
+    grapple_beam: Option<grapple::Beam>,
+    grapple_beam_requests: Vec<grapple::BeamRequest>,
 }
 
 /// The midnight cast's md6s (CONDMD6): the body's, then the arms'.
@@ -502,6 +508,11 @@ impl Body {
             lean: Lean { limits: [1.0; 2], ..Lean::default() },
             lean_clips: [None; 2],
             lean_frames: [0.0; 2],
+            grapple: Default::default(),
+            grapple_definition: None,
+            grapple_tag: None,
+            grapple_beam: None,
+            grapple_beam_requests: Vec::new(),
         }
     }
 
@@ -680,6 +691,7 @@ impl Body {
         // The midnight blendarray over locoBobAdditives, then its snapshot
         // blender.
         let mut pose = self.midnight.evaluate(pose, &self.animations, &skeleton.rest)?;
+        self.grapple.apply(&mut pose, &self.animations, &skeleton.rest)?;
 
         // The tree root's blendarray adds its first children last: leafLeanUp,
         // then leafLeanLeft, both ADD_RIGHT 1.0 at their scrubbed frame.
