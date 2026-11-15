@@ -10551,6 +10551,9 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   one owning Player shared across main/swimming state machines. These hooks
   add no per-frame allocation, clip acquisition or second pose evaluation;
   validation remains source/whitespace review, without builds or tests.
+- Bone-only equipment attachment queries (`140752900` after the tag-info
+  lookup) read the actual entity's retained rendered world palette through
+  `equipment_joint_world`; they do not pose or acquire a second rig.
 
 ### Player-wide hard and code body-part requests (2026-11-15)
 

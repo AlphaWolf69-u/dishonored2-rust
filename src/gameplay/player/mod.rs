@@ -1261,6 +1261,14 @@ impl Player {
         Some((position + rotation * local_position, rotation * local_rotation))
     }
 
+    /// 752900's bone-only binding fallback reads the same retained world
+    /// palette as tagged attachments. It never evaluates another pose.
+    pub fn equipment_joint_world(&self, entity: crate::gameplay::entity_lifetime::EntityId, joint: usize) -> Option<(Vec3, Mat3)> {
+        let rows = self.arm_render.iter().find(|entry| entry.managed_entity == Some(entity))?.joints.get(joint)?;
+        Some((Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
+            Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2]))))
+    }
+
     /// Audio without a joint attachment uses its entity's origin and axis
     /// (140709ee0 / 1400c5b70). Bound arms use the same frame as their model
     /// (1407506d0), before shoulder controls modify individual joints.
