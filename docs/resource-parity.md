@@ -9657,3 +9657,51 @@ and HUD inventory movie are not completed by these owner APIs. Existing reading,
 character eligibility, Journal history and timed/suppressed modifiers are kept.
 Next step is wire each gameplay producer to these methods and validate against
 original runtime captures when user-authorized gameplay is available.
+
+### Inventory-demanded first-person equipment model lifetime (2026-11-15)
+
+Owners: `app/player_arms.rs` remains the sole first-person surface/material,
+probe-query, depth-hack and GPU skinning owner. Its focused
+`app/player_equipment.rs` child retains removed equipment model leases until
+the existing render queue acknowledges submitted GPU work. Gameplay equipment
+poses live in `gameplay/player/equipment.rs`, using the existing canonical
+`assets/animation_rig` and `edge_animation` owners and the same animBasic and
+Midnight executors as the arms.
+
+Evidence: `1408542b0` casts the inventory equipment entities (+70/+68) with
+masks 8/16 only when the actual entity has a tree (+f0). It does not cast an
+arm skeleton in place of that equipment. `1406fea90`/`1406fe490` layer Midnight
+on that entity tree; `1406e4af0` supplies the existing animBasic executor.
+Attachment depth inheritance remains `14087e0a0`/`14087b760`; ordinary model
+material/lighting and bounds texture demand remain `14031ad30`, `14031a510`,
+`14031a410`, `140a764c0`. Component construction/destruction is separately
+`140619e30`, `14061a120`/`14061a1d0`; inventory admission remains the inventory
+owner's responsibility, not a renderer-created inventory.
+
+Prediction: one surface mesh per actually admitted equipment surface, one
+joint entity per actual rig palette entry once first posed, one retained
+inverse-bind handle per model. Equipment appends world poses to the same
+ArmRender list and contributes visible material demands through the existing
+owner. No arsenal enumeration, second geometry/material/probe cache, or
+per-frame archive reads are introduced. Whole surface validation precedes
+entity publication, so invalid skin streams cannot leave a partly spawned
+model. Unequip removes actual surfaces and joints, stops render demand, and
+retains their exact mesh/material/model/skeleton/inverse-bind leases until
+extraction and submitted-work completion. Level exit continues to use the
+existing outgoing render-world acknowledgement before dropping PlayerArms.
+No resident-byte, CPU-time, GPU-time or frame-rate improvement is claimed.
+
+Status: **source-backed implementation + host GPU retirement**, pending
+parent integration and integrated compilation. Parent must call
+`install_equipment_retirement`, acquire only the admitted entity's actual rig
+and BMD6 model via their existing owners, publish with
+`PlayerArms::add_equipment_model`, cancel any superseded acquisition before
+publication, and remove with `remove_equipment_model`. The sampler accepts
+an authored animBasic input plus Midnight and explicit Body/Arm binding; it
+does not invent an idle alias/playback mode or replace a required tree with a
+rigid pose. Tree nodes beyond the configured animBasic/Midnight projection
+need their source-backed implementation before admission. No tests, builds,
+visible launches, or visual verification were performed for this change, per
+the current user instructions. Existing body/arm shading and swimming/mantle
+publication continue through their original shared path; output equivalence
+has not been measured in this change.
