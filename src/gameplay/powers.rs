@@ -5,6 +5,8 @@
 use crate::{assets::entities::Value, gameplay::{options::decl::atom, player::{mana::Mana, states::Attributes}}};
 pub mod windblast;
 pub mod action;
+pub mod world_effects;
+pub mod traversal;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -97,7 +99,7 @@ impl Cast {
     /// Called only by the real family cast callback after the effect owner
     /// accepts the target. 14061bea0 records the timestamp and charges once.
     /// Native bonecharm random rolls are evaluated by the shared RNG owner;
-    /// pass its resulting cost multiplier (half cost or free) explicitly.
+    /// pass its resulting cost multiplier (double cost or free) explicitly.
     pub fn commit(&mut self, now: f64, mana: &mut Mana, attributes: &Attributes,
         cost_factor: f32, random_cost_factor: f32, replenish: bool) -> Option<f32> {
         if self.phase != Phase::Aiming { return None; }
@@ -118,10 +120,21 @@ impl Cast {
 
 /// 14061bea0's two conditional random rolls, in their original order. The
 /// caller supplies the shared game's RNG (not a per-power private seed).
-/// A successful half-cost roll suppresses the free-cast roll entirely.
-pub fn random_cost_factor(half_chance: f32, free_chance: f32, mut next_u32: impl FnMut() -> u32) -> f32 {
+/// A successful double-cost roll suppresses the free-cast roll entirely.
+/// Constant 141ab3b20 is 2.0 (Ghidra bytes 00 00 00 40).
+pub fn random_cost_factor(double_chance: f32, free_chance: f32, mut next_u32: impl FnMut() -> u32) -> f32 {
     let roll = |value: u32| ((value >> 10 & 0x7fff) % 101) as i32;
-    if half_chance as i32 != 0 && roll(next_u32()) < half_chance as i32 { return 0.5; }
+    if double_chance as i32 != 0 && roll(next_u32()) < double_chance as i32 { return 2.0; }
     if free_chance as i32 != 0 && roll(next_u32()) < free_chance as i32 { return 0.0; }
     1.0
+}
+
+/// Attribute lookup uses the constructor fallback for a missing index,
+/// which differs from Attributes::get's general zero fallback.
+pub fn cost_factor(attributes: &Attributes) -> f32 {
+    attributes.0.get("ARK_ATTRIBUTE_POWER_COST_FACTOR").copied().unwrap_or(1.0)
+}
+pub fn attribute_random_cost_factor(attributes: &Attributes, next_u32: impl FnMut() -> u32) -> f32 {
+    random_cost_factor(attributes.get("ARK_ATTRIBUTE_POWER_DOUBLE_COST_CHANCE"),
+        attributes.get("ARK_ATTRIBUTE_POWER_FREE_CHANCE"), next_u32)
 }

@@ -1,6 +1,6 @@
 //! Authored power and upgrade metadata used by the journal.
-//! Item ownership remains with the shared inventory; these definitions are
-//! loaded only while preparing the journal.
+//! Item ownership remains with the shared inventory. Level setup resolves
+//! these definitions once for casting and Journal snapshots.
 use std::collections::HashMap;
 use crate::assets::{archive::Catalog, entities::{self, Value}};
 use crate::gameplay::options::decl::{atom, enum_key, list_items, scope};
@@ -153,8 +153,8 @@ fn upgrades(catalog: &Catalog, fields: &[(String, Value)], mapping: &HashMap<Str
     Ok(out)
 }
 
-/// Resolve the selected character's power-system upgrade topology once per
-/// journal presentation; quantity and modifier state are queried separately.
+/// Standalone acquisition for consumers without an already resolved player
+/// component; the running client uses definitions_from_system instead.
 pub fn definitions<'a>(catalog: &Catalog, character: &str, items: impl IntoIterator<Item = &'a str>) -> Result<(Vec<Power>, String), String> {
     let read = |path: &str| -> Result<Option<String>, String> {
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(entities::owned_declaration_text))

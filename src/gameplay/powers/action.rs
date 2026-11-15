@@ -1,6 +1,6 @@
 //! arkPlayerStateUsePower scene lifecycle, 140856160/4e0/c50.
 //! All handles refer to real prepared Midnight scenes from the arm owner.
-use super::{Cast, Phase, Settings};
+use super::{Cast, Phase};
 
 pub trait Scenes {
     type Error;
