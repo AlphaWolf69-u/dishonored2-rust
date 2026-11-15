@@ -681,7 +681,11 @@ impl Player {
             if let Some(declaration) = &self.fall_damage {
                 let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
                 parameters.amount = amount;
-                parameters.ignore_armor = amount == f32::MAX;
+                if amount == f32::MAX {
+                    // 8658c0 calls 780ae0: preserve authored FALL and add
+                    // INSTANTKILL for the fatal-height sentinel.
+                    parameters.damage_type.0 |= crate::gameplay::damage::DamageType::INSTANT_KILL.0;
+                }
                 self.receive_damage(&parameters);
             }
         }
