@@ -1,6 +1,9 @@
 //! 12871a0 unfiltered packed-AABB traversal used by c91680.
 use super::*;
 
+#[derive(Default)]
+pub struct OverlapWorkspace { pending:Vec<usize>,leaves:Vec<usize> }
+
 fn intersects(a: QuantizedBounds, b: QuantizedBounds) -> bool {
     let low_a = u32::from(a.min[0]) | u32::from(a.min[1]) << 16;
     let low_b = u32::from(b.min[0]) | u32::from(b.min[1]) << 16;
@@ -30,15 +33,24 @@ impl HybridBroadphase {
         &self,
         bounds: PackedBodyBounds,
         packing: &PackedQuantization,
-        mut accept_tree: impl FnMut(usize) -> bool,
-        mut accept_body: impl FnMut(usize, u32) -> bool,
+        accept_tree: impl FnMut(usize) -> bool,
+        accept_body: impl FnMut(usize, u32) -> bool,
         output: &mut Vec<u32>,
     ) -> Result<(), String> {
+        self.filtered_overlaps_with_workspace(bounds,packing,&mut OverlapWorkspace::default(),accept_tree,accept_body,output)
+    }
+
+    /// Same12871a0 traversal with scratch retained by a repeating consumer.
+    pub fn filtered_overlaps_with_workspace(
+        &self,bounds:PackedBodyBounds,packing:&PackedQuantization,workspace:&mut OverlapWorkspace,
+        mut accept_tree:impl FnMut(usize)->bool,mut accept_body:impl FnMut(usize,u32)->bool,
+        output:&mut Vec<u32>,
+    )->Result<(),String> {
         let query = packing.query_bounds(bounds);
         let start = output.len();
         let result = (|| {
-            let mut pending = Vec::new();
-            let mut leaves = Vec::new();
+            let pending = &mut workspace.pending;
+            let leaves = &mut workspace.leaves;
             for (layer, tree) in self.query_trees().iter().enumerate() {
                 if !accept_tree(layer) {
                     continue;
@@ -67,7 +79,7 @@ impl HybridBroadphase {
                         PointNodeChildren::Leaf { block } => leaves.push(block),
                     }
                 }
-                for &block in &leaves {
+                for &block in leaves.iter() {
                     for body in tree
                         .blocks
                         .get(block)

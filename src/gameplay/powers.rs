@@ -4,6 +4,7 @@
 //! (including UsePower release, 1408566f0) execute and pay for the effect.
 use crate::{assets::entities::Value, gameplay::{options::decl::atom, player::{mana::Mana, states::Attributes}}};
 pub mod windblast;
+pub mod blast;
 pub mod action;
 pub mod world_effects;
 pub mod traversal;

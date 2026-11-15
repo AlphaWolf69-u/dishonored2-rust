@@ -93,6 +93,14 @@ struct DestructionProgress {
 const TIMESPACE_PROFILE_REMOVED: usize = 0;
 
 impl WorldStorage {
+    ///091270/090fc0 reach the existing body-publication owner. Keep the
+    /// world mutation fence and its real geometry/activation callbacks.
+    pub(crate) fn apply_body_impulse<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32, impulse: [f32; 4], point: Option<[f32; 4]>) -> Result<bool, String> {
+        if !self.publication_idle() { return Err("body publication must finish before an impulse".into()); }
+        self.edit_bodies(geometry, events, |creation|
+            creation.world.apply_impulse(id, impulse, point, creation.callbacks))
+    }
     /// GameLocal 1400932d0: use the two real timespaces only for the game world;
     /// acoustic and other hknpWorld consumers keep their constructor library.
     pub(crate) fn initialize_game_timespaces(&mut self) -> Result<(), String> {

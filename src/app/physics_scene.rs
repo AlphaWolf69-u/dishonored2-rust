@@ -42,6 +42,7 @@ pub(super) mod document_hierarchy;
 pub(super) mod preparation;
 mod document_pickup;
 mod damage;
+pub(super) mod windblast;
 pub(super) mod rigid_actor;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;

@@ -145,7 +145,15 @@ fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
 pub fn entity_component(entity: &str, kind: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String>
 {
-    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let chain = entity_chain(entity, &mut read)?;
+    entity_component_from_chain(&chain, kind, read)
+}
+
+/// Dynamic entity families prepare their actual descriptor once and resolve
+/// their component from that same retained chain, without reading it twice.
+pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String> {
+    let entries = component_entries(chain);
     let mut result = None;
     let mut cache = HashMap::new();
     for (_, entry) in entries {
