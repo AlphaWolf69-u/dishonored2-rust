@@ -215,6 +215,11 @@ pub struct HavokStageSimulation {
     fields: [Vec<super::field::FieldState>; 3],
     /// The level collision for the spawn queries (+0x400, 1401db580).
     pub spawn_world: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
+    /// +0x6e8: the bodies' ocean height query, sized by 1401e5c00 when
+    /// m_killOnOceanCollision is set or the ocean event has listeners.
+    ocean: Option<crate::rendering::ocean::OceanMultiQuery>,
+    /// The ocean query manager the query exchanges with each post-step.
+    pub ocean_link: Option<crate::rendering::ocean::OceanQueryLink>,
     /// The owner's physics shapes (system +0x1d78) for m_physicsShapesSpawn.
     pub owner_shapes: Option<Arc<super::shape_spawn::OwnerShapes>>,
     /// The dynamic world bodies PhysicsCollide's moving-body part collides
@@ -270,6 +275,8 @@ struct HavokEventLists {
     stop: HavokSubscription,
     death: HavokSubscription,
     life: Vec<HavokSubscription>,
+    /// +0x788 ocean collision.
+    ocean: HavokSubscription,
 }
 
 /// Every listener's handler with the event's position, velocity and normal.
@@ -370,7 +377,10 @@ impl HavokStageSimulation {
                 stop: HavokSubscription::new(&declaration, &definition.events.stop),
                 death: HavokSubscription::new(&declaration, &definition.events.death),
                 life: definition.events.life.iter().map(|event| HavokSubscription::new(&declaration, event)).collect(),
+                ocean: HavokSubscription::new(&declaration, &definition.events.ocean_collision),
             },
+            ocean: None,
+            ocean_link: None,
             deliveries: Vec::new(),
             fx_pending: Vec::new(),
             attractors: Vec::new(),
@@ -401,6 +411,10 @@ impl HavokStageSimulation {
             let seed = &mut result.emitter.seed;
             result.fields = [&stage.spawn_fields, &stage.vector_fields, &stage.acceleration_fields]
                 .map(|definitions| definitions.iter().map(|definition| super::field::FieldState::new(definition, seed)).collect());
+        }
+        // 1401e5c00 (from 140201760, after the event links).
+        if result.definition().collisions.kill_on_ocean_collision || result.events.ocean.listened() {
+            result.ocean = Some(crate::rendering::ocean::OceanMultiQuery::new(capacity));
         }
         result.attractors = result
             .definition()
@@ -524,6 +538,7 @@ impl HavokStageSimulation {
                 inherited_velocity: &self.inherited_velocity,
                 mesh_cursor: &mut self.mesh_cursor,
                 owner_shapes: self.owner_shapes.as_deref(),
+                spawn_fields: &self.fields[0],
                 emitted: &mut self.pending,
             };
             if burst {
@@ -860,6 +875,12 @@ impl HavokStageSimulation {
         let (kill, stop, sleep) = (reaction.kill_on_collision, reaction.stop_on_collision, reaction.sleep_on_collision);
         let first_contacts = if kill { 3 } else { 2 };
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
+        // 14064e640: this frame's ocean query exchange.
+        if let (Some(query), Some(link)) = (self.ocean.as_mut(), self.ocean_link.as_ref()) {
+            let mut shared = link.lock().map_err(|_| "ocean query manager poisoned")?;
+            query.exchange(&mut shared)?;
+        }
+        let kill_on_ocean = definition.collisions.kill_on_ocean_collision;
         for body in bodies {
             let index = body as usize;
             let mut killed = self.kill_all;
@@ -947,6 +968,28 @@ impl HavokStageSimulation {
                 }),
             );
             if !killed && self.inside(position) {
+                // The ocean query: the point is queried again, and a body
+                // below the height of its slot's last result fires the
+                // ocean event (1401e3c40) and dies with
+                // m_killOnOceanCollision.
+                if let Some(query) = self.ocean.as_mut() {
+                    query.positions[index] = [position[0], position[1]];
+                    let result = query.results[index];
+                    if position[2] < result[0] {
+                        let ocean = &self.events.ocean;
+                        if ocean.listened() {
+                            let draw = ((crate::random::lcg_step(&mut self.emitter.seed) >> 10) & 0x7fff) as i32;
+                            if draw < ocean.threshold {
+                                let normal = [result[1], result[2], result[3]];
+                                deliver(ocean, &mut self.deliveries, &mut self.fx_pending, [position, [v[0], v[1], v[2]], normal]);
+                            }
+                        }
+                        if kill_on_ocean {
+                            self.dead.push(body);
+                            continue;
+                        }
+                    }
+                }
                 // 1401e40c0: life events crossed this step, no draw.
                 for event in &self.events.life {
                     if previous_age <= event.life && event.life <= age {
@@ -1161,6 +1204,8 @@ struct Spawner<'a> {
     mesh_cursor: &'a mut usize,
     emitted: &'a mut Vec<PendingSpawn>,
     owner_shapes: Option<&'a super::shape_spawn::OwnerShapes>,
+    /// +0x668: the spawn field states.
+    spawn_fields: &'a [super::field::FieldState],
 }
 
 /// bevy_backend: the level collision map stands in for the hknp world the
@@ -1268,9 +1313,13 @@ impl EmitterBindings for Spawner<'_> {
         if queries.position_sphere_query && self.sphere_hit(position, f32::from_bits(0x3dcc_cccd))? {
             return Ok(0);
         }
-        let particle_seed = crate::random::lcg_step(seed);
+        let mut particle_seed = crate::random::lcg_step(seed);
         let inherited = self.inherited_velocity.at_point(position);
         velocity = std::array::from_fn(|i| add(velocity[i], inherited[i]));
+        // 140215dc0: the spawn vector fields at age 0 on the body's seed.
+        if let Some(field) = super::field::sample(self.spawn_fields, &asset.spawn_fields, position, 0., &mut particle_seed)? {
+            velocity = std::array::from_fn(|i| add(velocity[i], field[i]));
+        }
         // 1401db350: a ray along the velocity (from the system's height when
         // falling, unless the flag is cleared) that hits the level drops it.
         if queries.velocity_ray_cast {

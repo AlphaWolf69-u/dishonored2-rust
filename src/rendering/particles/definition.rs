@@ -445,27 +445,16 @@ fn havok_stage_admission(
             return Err("Havok particle self collisions (SolveSelfContacts) are not ported".into());
         }
     }
-    if !asset.spawn_fields.is_empty() {
-        return Err("Havok particle spawn vector fields are not ported".into());
-    }
-    if asset.vector_fields.iter().chain(&asset.acceleration_fields).any(|field| field.target_position || field.cycle_reset) {
+    if asset.spawn_fields.iter().chain(&asset.vector_fields).chain(&asset.acceleration_fields).any(|field| field.target_position || field.cycle_reset) {
         return Err("Havok particle vector fields at the system target or with cycle resets are not connected".into());
     }
     if asset.enable_wind && declaration.wind.enabled {
         return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());
     }
-    // Birth, collision, stop, death and life events are published
-    // (1401e3df0, 1401e3ee0, 1401e40c0); the ocean query is not ported.
-    if !stage.events.ocean_collision.name.is_empty() {
-        return Err("Havok particle ocean collision events are not connected".into());
-    }
     // 1401e6420 subscribes a Havok stage to events naming its burst event;
     // its event-driven emission is not ported.
     if asset.burst && !asset.burst_event.is_empty() {
         return Err("Havok particle event bursts are not connected".into());
-    }
-    if stage.collisions.kill_on_ocean_collision {
-        return Err("Havok particle ocean collisions are not connected".into());
     }
     Ok(())
 }

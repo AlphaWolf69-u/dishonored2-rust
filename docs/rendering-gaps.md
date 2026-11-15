@@ -811,11 +811,25 @@ loses w. Remaining, in order:
   entities) never get a list in the original either; the other users are
   character and power FX the rewrite does not start, so no host fills
   `owner_shapes` yet.
+- Havok spawn vector fields connected: 1401e7040 samples the spawn fields
+  (140215dc0 at age 0) after the inherited velocity, on the body's seed,
+  which the gravity slice and the spawn record then use.
+- Havok ocean collisions connected: a stage with m_killOnOceanCollision
+  or ocean-event listeners sizes its ocean query (+0x6e8, 1401e5c00:
+  points at the origin, heights -FLT_MAX). Each post-step exchanges it
+  with the ocean query manager (14064e640: this ring's results from four
+  frames ago, then every point again in batches of 32); a live body below
+  its slot's height fires the ocean event (1401e3c40, with the result's
+  normal) and dies with the kill flag. The manager is the process-wide
+  `ocean::ocean_query_manager` (the game's single DAT_1432eb1b8) that the
+  swimming head queries also use, active while an ocean is enabled
+  (140302d20). Not yet seen in the rewrite with an ocean on screen.
 - Remaining refusals: opaque pixel-lit particles (46, see particle/blood),
   SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
-  140fd5d00), ocean collisions (1), spawn vector fields (1).
+  140fd5d00). FX census 2026-11-15: 75 failing particle declarations, 46
+  opaque and 29 self contacts.
 - Moving world bodies connected (`havok_fx::dynamic_collide`): the
   PhysicsCollide begin pass (140fbf850: active dynamic bodies near the
   system join the lists of the bodies whose swept box, grown by twice the

@@ -132,6 +132,7 @@ impl ParticleSystems {
             if system.effect.active {
                 for stage in &mut system.havok_stages {
                     stage.moving = moving.clone();
+                    stage.ocean_link = Some(crate::rendering::ocean::ocean_query_manager().clone());
                     let queries = &stage.definition().spawn_collisions;
                     if queries.position_sphere_query || queries.velocity_ray_cast {
                         stage.spawn_world = spawn_world.clone();

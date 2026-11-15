@@ -749,6 +749,11 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                 context.command_encoder(),
                 &depth.texture,
             )?;
+            // 140302d20: the ocean query manager serves clients while an
+            // ocean is enabled.
+            if let Ok(mut shared) = crate::rendering::ocean::ocean_query_manager().lock() {
+                shared.active = water_frame.ocean_environment.view.enabled && !water_frame.ocean_render_settings.skip;
+            }
             if current.ocean.is_some() || (water_frame.ocean_environment.view.enabled && !water_frame.ocean_render_settings.skip) {
                 if current.ocean.is_none() {
                     let source = resources.water_images.as_ref().ok_or("ocean image sources unavailable")?;
