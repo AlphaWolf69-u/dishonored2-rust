@@ -47,6 +47,10 @@ pub struct PhysicsMaterial {
     pub restitution: f32,
     /// Flag byte +0x80 (`flags::*`).
     pub flags: u8,
+    /// Projectile contact settings +0x78 (08b640/6262d0), independent of
+    /// the traversal flags at +0x80.
+    pub projectile_can_stick: bool,
+    pub projectile_can_break: bool,
     pub collision: CollisionSettings,
 }
 
@@ -66,6 +70,8 @@ impl PhysicsMaterial {
             static_friction: 0.5,
             restitution: 0.,
             flags: flags::ALLOW_MANTLE | flags::ALLOW_VAULT,
+            projectile_can_stick: true,
+            projectile_can_break: true,
             collision: CollisionSettings::default(),
         }
     }
@@ -128,6 +134,18 @@ pub fn physics_material(
         }
     }
     material.collision = collision_settings_fields(name, &fields)?;
+    if let Some(value) = field(&fields, "m_projectileContactSettings") {
+        let settings = scope(Some(value)).ok_or_else(|| format!("invalid projectile contact settings in {path}"))?;
+        for (key, slot) in [("m_canStick", &mut material.projectile_can_stick),
+            ("m_canBreak", &mut material.projectile_can_break)] {
+            match atom(settings, key) {
+                Some("true" | "1") => *slot = true,
+                Some("false" | "0") => *slot = false,
+                None => {},
+                Some(value) => return Err(format!("invalid {key} = {value} in {path}")),
+            }
+        }
+    }
     Ok(material)
 }
 
