@@ -151,6 +151,31 @@ actual actor/mode/link/roster components, entity spawning, targeting and
 retirement. Missing owners remain failed admission; no synthetic targets or
 unrelated temporary attribute modifiers stand in for them.
 
+Player-state integration now owns the selected mutable `Cast` and real
+prepared action scene leases (`player::power_states::Runtime`); the app
+power resource retains metadata/Journal eligibility only. `Kind::UsePower`
+reads the shared native action declaration and dispatches only an actual
+`ActionRuntime` execution request (`140854dc0`, `1408555a0`, `140856c50`),
+including real out-of-mana scenes. The family dispatcher accepts an actual
+effect before payment. The retail health-overcast gate `140399620` is a
+constant false, not a missing attribute to guess. `14061bc20` applies the
+camera rotation percentage only for gamepad input (`141b9b5d0=-100`).
+
+Blink state12 integration requests actual velocity through the existing
+physics owner, disables/re-enables Jump with native counted eAction masks
+(`1407f86f0`/`1407f87e0`, 47 signed byte counts), selects posture4, owns a
+counted gravity disable and restores only native falling/sprint/slide/vault
+velocity branches. The final navigation posture and dedicated sensor2
+Mantle handoff retain their real owners (`140857300`, `140858010`,
+`140868e60`, `1403a52a0`). The Bevy host republishes retained angular-zero
+and instant motion-limit values because its request projection rebuilds
+each frame; this is `host:` representation, not another movement algorithm.
+Contact cancellation still requires the actual proxy manifold; an empty
+fabricated contact list is not verification. BlinkAttack assassination
+selection and full breakable chunk/FX owners remain unsupported; target
+bypass is limited to actual admitted breakable receivers and native
+material flags. No performance measurements or gameplay captures were run.
+
 ### GPU heap occupancy attribution (2026-11-09)
 
 Prediction before extending the existing opt-in allocator snapshot: prior

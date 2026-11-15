@@ -12,6 +12,7 @@ pub trait Scenes {
 #[derive(Default)]
 pub struct Action { entry: Option<u32>, loop_scene: Option<u32> }
 impl Action {
+    pub fn scene_handle(&self) -> u32 { self.loop_scene.or(self.entry).unwrap_or(0) }
     /// 140856160 chooses the sliding variant only when it is present.
     /// Call only after inventory, player-state and family admission succeed.
     pub fn begin<S: Scenes>(&mut self, cast: &mut Cast, sliding: bool, scenes: &mut S) -> Result<bool, S::Error> {

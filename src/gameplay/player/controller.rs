@@ -132,6 +132,8 @@ pub struct Controller {
     /// the not-yet-connected possession subsystem.
     possession_state: i32,
     allowed: u64,
+    /// Per-eAction enable counts at controller+0xb80 (47 actions).
+    action_enable_counts: [i8; 47],
     pressed: u64,
     released: u64,
     held: u64,
@@ -180,6 +182,7 @@ impl Controller {
             mapping,
             possession_state: POSSESSION_STATES_COUNT,
             allowed: !0,
+            action_enable_counts: [1; 47],
             pressed: 0,
             released: 0,
             held: 0,
@@ -206,6 +209,25 @@ impl Controller {
     }
 
     pub fn possession_state(&self) -> i32 { self.possession_state }
+
+    /// 1407f86f0: disabling one owner must preserve other owners' counts.
+    pub fn disable_actions(&mut self, mask: u64) {
+        for (index, count) in self.action_enable_counts.iter_mut().enumerate() {
+            let bit = 1u64 << index;
+            if mask & bit == 0 { continue; }
+            if *count == 1 { self.allowed &= !bit; }
+            *count = count.wrapping_sub(1);
+        }
+    }
+    /// 1407f87e0, paired with every accepted DisableAction lease.
+    pub fn enable_actions(&mut self, mask: u64) {
+        for (index, count) in self.action_enable_counts.iter_mut().enumerate() {
+            let bit = 1u64 << index;
+            if mask & bit == 0 { continue; }
+            if *count == 0 { self.allowed |= bit; }
+            *count = count.wrapping_add(1);
+        }
+    }
 
     pub fn down(&self, action: i32) -> bool {
         self.held & self.allowed & bit(action) != 0

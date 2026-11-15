@@ -80,7 +80,7 @@ impl Cast {
     pub fn admission(&self, now: f64, mana: &Mana, attributes: &Attributes, replenish: bool, context: &AdmissionContext) -> Admission {
         if !context.owned || !context.family_available || mana.magic_suppressed(attributes) { return Admission::Unavailable; }
         let cost = self.cost(now, context.cost_factor);
-        let available = if context.check_recharge_target { mana.regen_target(attributes, replenish) } else { mana.current() };
+        let available = if context.check_recharge_target && mana.has_potion_target() { mana.regen_target(attributes, replenish) } else { mana.current() };
         if mana.lock_flags() & 1 != 0 { return Admission::Allowed; }
         if mana.lock_flags() & 2 != 0 {
             return if available == 0.0 { Admission::Unavailable } else { Admission::Allowed };
