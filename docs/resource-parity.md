@@ -10201,3 +10201,37 @@ Validation in this batch: original decompilation/installed metadata and static
 integration review. No performance/output-equivalence claim: tests and visible
 launches were not run, per the user's instructions. Combined compilation is
 reserved for the completed coherent feature batch.
+### Equipment switch state and owned animation lifetime (2026-11-15)
+
+Prediction: source equipment requests retain each actual still-owned animation
+entity once and swap the selected tree only at admitted state callbacks. No
+compressed clip payloads, model geometry, material identities, or sound sources
+are re-decoded by this state owner. There is no measured optimization claim.
+
+- `ported`: `gameplay/player/equipment_states.rs` implements request identity,
+  source-state counted restrictions, remembered equipment, separate outgoing
+  unequip/incoming equip phases, and native scene-finished callbacks from
+  140835520/590, 140835e00, 140835cf0, 1408363f0, 140836920/b40,
+  140836ad0, 140836f60, and callback140837240. The callback was recovered
+  read-only from instructions: only the matching nonzero scene handle finishes.
+- `ported`: state53/64 EquipChange, Draw54/65 (140831670/1408319e0),
+  and Undraw81 hold/admission (1408469a0/140846c00) use authored data and
+  controller bindings. Equip/unequip scene choice uses the shared equipment
+  declaration reader; no synthesized animation-duration timer is used.
+- `ported`: inventory619380 creates actual still-owned runtimes; 619640
+  destroys them on depletion. Inactive tree playback and compressed clip
+  leases survive hand switches; renderer geometry retires through its shared
+  descriptor and submission acknowledgement owner. No unowned arsenal is
+  created by this registry.
+- `host`: loading presentation pauses the gameplay clock. Only requests that
+  explicitly carry the original skip-equip and skip-unequip flags0x30 run
+  their zero-duration equipment callbacks during loading. No unrelated player
+  state, physics, input or animation clock is simulated. Source inventory
+  auto-event619760→7f8d60 supplies flags0x120/0x130, requesterNULL91;
+  keyboard7fb350 uses0x20/0x30 from the actual swimming-controller state.
+- `blocked: non-arm equipment and unattached default-item producers`: head
+  slot4's separate direct-inventory path and a defaultEquipment requiring a
+  not-yet-admitted inventory entity are not replaced by arm entities or fake
+  quantities. Their actual producer must register the source entity first.
+- Validation: source inspection and Rust syntax parsing only; no compilation,
+  tests, gameplay launches, visual comparisons or performance measurements.
