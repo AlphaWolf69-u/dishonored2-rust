@@ -198,7 +198,7 @@ impl Player {
     /// Move the single selected Cast into the player. Shared immutable
     /// prepared scenes retain their existing resource owner leases.
     pub fn equip_power(&mut self, cast: Cast, scenes: Scenes) -> bool {
-        if self.powers.active || self.machine.is_active(StateId::BLINKING) { return false; }
+        if self.powers.active { return false; }
         self.powers.selected = Some(cast); self.powers.scenes = scenes;
         self.powers.action_button = self.controller.mapping.iter().find(|mapping| mapping.state == StateId::USE_POWER).map_or(0, |mapping| mapping.action);
         true
