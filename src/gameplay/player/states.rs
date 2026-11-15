@@ -1289,6 +1289,13 @@ impl StateMachine {
     pub fn request(&mut self, id: StateId) {
         self.queue.push(Command::Request(id));
     }
+    /// 140803280's current-mode gate for the parameterized Blink request.
+    /// Its target/shape payload supplies CanActivate; other queued requests
+    /// still undergo the normal batch arbitration and rejection callback.
+    pub fn blink_request_allowed(&self) -> bool {
+        self.state(StateId::BLINKING).is_some_and(|state| matches!(state.decl.kind, Kind::Blinking))
+            && self.active.iter().all(|&active| self.rule(active, StateId::BLINKING).allow)
+    }
 
     pub fn request_equipment_left(&mut self, flags: u32, source: StateId) {
         self.queue.push(Command::RequestEquipment { side: 0, flags, source });
@@ -1877,6 +1884,7 @@ impl StateMachine {
         let mut accepted: Vec<(StateId, Option<f32>)> = Vec::new();
         let mut quits = Vec::new();
         let mut read_note_requested = false;
+        let mut blink_requested = false;
         for command in queue {
             match command {
                 Command::RequestEquipment { side, flags, source } => {
@@ -1907,7 +1915,10 @@ impl StateMachine {
                     read_note_requested = true;
                     self.accept(StateId::READ_NOTE, None, &snapshot, &mut accepted, frame);
                 }
-                Command::Request(id) => self.accept(id, None, &snapshot, &mut accepted, frame),
+                Command::Request(id) => {
+                    blink_requested |= id == StateId::BLINKING;
+                    self.accept(id, None, &snapshot, &mut accepted, frame);
+                },
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
                 Command::RequestCatFall(damage) => self.accept(StateId::CATFALL, Some(damage), &snapshot, &mut accepted, frame),
             }
@@ -1950,6 +1961,13 @@ impl StateMachine {
             self.activate(index, speed, frame);
         }
         if read_note_requested { self.read_note.reject(); }
+        if blink_requested && !self.is_active(StateId::BLINKING) {
+            // A rejected parameterized request returns its real payload to
+            // the world owner; no timeout or synthetic state owns it.
+            frame.powers.blink_pending = false;
+            frame.powers.blink_finished = true;
+            frame.powers.blink_aborted = true;
+        }
         if !self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.primary)) {
             let mut id = self.default_state;
             for _ in 0..8 {

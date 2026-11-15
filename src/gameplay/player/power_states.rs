@@ -228,8 +228,8 @@ impl Player {
         if let Some(cast) = self.powers.selected.as_mut() {
             if self.powers.active { self.powers.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
             let mut scenes = PreparedScenes { scenes: &self.powers.scenes, fallback: &self.scenes,
-                midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms),
-                animations: super::body::cast(&self.body.animations, &self.body.arms), sounds: &mut self.powers.sound_events };
+                midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment),
+                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events };
             self.powers.action.stop(&mut scenes); cast.finish();
         }
         self.powers.active = false; self.powers.cancel = false;
@@ -320,7 +320,7 @@ impl Player {
         true
     }
     pub fn begin_blink(&mut self, motion: BlinkMotion) -> bool {
-        if self.machine.state(StateId::BLINKING).is_none() || self.powers.blink_pending
+        if !self.machine.blink_request_allowed() || self.powers.blink_pending
             || self.machine.is_active(StateId::BLINKING) { return false; }
         self.powers.blink = Some(motion); self.powers.blink_pending = true;
         self.machine.request(StateId::BLINKING); true
