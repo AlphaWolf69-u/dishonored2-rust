@@ -47,6 +47,7 @@ impl LevelLifetime {
         // The source read callback is synchronous. Finish its already accepted
         // host cursor while the real components and render/audio owners remain.
         super::interactions::finish_accepted_pickups(world)?;
+        super::player_actions::retire_effects(world)?;
         super::power_world::retire(world)?;
         // Poll while all actual support owners remain published. Pending and
         // errors preserve the sole registry, component pools and body world.

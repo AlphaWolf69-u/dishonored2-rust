@@ -335,7 +335,8 @@ fn player_declarations_with_listener(
     let mut swimming_states = Vec::new();
     for name in list_items(&swimming_mode, "m_states") {
         let Some(kind) = kind_of(&name) else { continue };
-        if kind == "playerstateswimming" || kind == "playerstateswimmantle" || kind == "playerstatedead" {
+        if matches!(kind, "playerstateswimming" | "playerstateswimmantle" | "playerstatedead"
+            | "playerstateequipchange" | "playerstatedraw" | "playerstateundraw") {
             swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
         }
     }

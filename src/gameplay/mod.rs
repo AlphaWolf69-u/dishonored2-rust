@@ -14,6 +14,7 @@ pub mod usable;
 pub mod player;
 pub mod powers;
 pub mod player_statistics;
+pub mod projectiles;
 pub mod shape_cast;
 pub mod message_box;
 pub mod options;

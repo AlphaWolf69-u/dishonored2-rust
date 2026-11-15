@@ -410,6 +410,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .add_systems(
             Update,
             (
+              (
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::interaction_focus::apply_inventory_modifiers,
@@ -417,11 +418,15 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::runtime_materials::equipment_admission::advance,
                 super::power_world::update,
                 super::power_execution::before_frame,
+              ).chain(),
+              (
                 super::player::update_player,
+                super::runtime_materials::equipment_admission::publish_callbacks,
                 super::power_execution::after_frame,
                 super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
+              ).chain(),
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
                 super::machinery::update_machinery,
