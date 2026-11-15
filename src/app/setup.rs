@@ -2117,7 +2117,7 @@ pub(super) fn prepare(
             crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
         let surface_failures = prepare_particle_surfaces(sources.world_meshes(), &mut resolver, meshes,
-            &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials,
+            &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials, &mut vegetation_meshes,
             |surface| particle_surfaces.push(super::particle_surface::publish(commands, surface)));
         for error in surface_failures { eprintln!("Particle surface: {error}"); }
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
@@ -2297,6 +2297,7 @@ pub(super) fn prepare_particle_surfaces(
     resources: &mut crate::rendering::particles::definition::ParticleResources,
     world_images: &mut std::collections::HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     dynamic_materials: &mut HashSet<super::MaterialHandle>,
+    vegetation: &mut VegetationMeshInputs,
     mut prepared: impl FnMut(super::particle_surface::PreparedSurface),
 ) -> Vec<String> {
     let mut failures = Vec::new();
@@ -2355,6 +2356,11 @@ pub(super) fn prepare_particle_surfaces(
             super::shadow_preparation::retain_model_shadow_position(&mut prepared_mesh, &positions);
         }
         let mesh = meshes.add(prepared_mesh);
+        // Vegetation shadow programs also read the raw colour and normal.
+        if shadow.is_some() {
+            let packed = super::particle_surface::local_packed(grid.clone().and_then(Result::ok), &model);
+            vegetation.prepare(resolver.needs_vegetation_channels(&resolved_handle), &mesh, meshes, &positions, &packed);
+        }
         let instanced = resolver.probe_materials.add(instanced);
         if !bindings.is_empty() && bindings.len() == images.len() {
             world_images.entry(material.clone()).or_insert(bindings);

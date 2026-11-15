@@ -65,6 +65,16 @@ pub(super) fn local_positions(grid: Option<u32>, model: &ParticleModel) -> Vec<[
     }
 }
 
+/// The packed vertex channels (normal, tangent, colour) the prepared mesh
+/// stores, for the vegetation shadow inputs.
+pub(super) fn local_packed(grid: Option<u32>, model: &ParticleModel) -> Vec<[u8; 16]> {
+    match grid {
+        Some(level) => vec![[0u8, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+            crate::rendering::particles::geometry::SpriteGrid::new(level).vertices.len()],
+        None => model.vertices.iter().map(|v| v.attributes[4..20].try_into().unwrap()).collect(),
+    }
+}
+
 /// The game-local box of `positions`.
 pub(super) fn local_bounds(positions: &[[f32; 3]]) -> [[f32; 3]; 2] {
     let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];

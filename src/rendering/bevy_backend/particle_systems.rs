@@ -185,9 +185,12 @@ impl ParticleSystems {
     ) -> Result<(Vec<ParticleDraw>, Vec<super::particle_system::WorldMeshDraw>), String> {
         let mut draws = Vec::new();
         let mut world_meshes = Vec::new();
-        for system in self.slots.iter_mut().flatten() {
+        for (slot, system) in self.slots.iter_mut().enumerate() {
+            let Some(system) = system else { continue };
             if let Some(pose) = system.draw_pose(frame) {
+                let first = world_meshes.len();
                 system.publish_draws(frame, context(pose)?, &mut draws, &mut world_meshes)?;
+                for draw in &mut world_meshes[first..] { draw.system = slot; }
             }
         }
         Ok((draws, world_meshes))

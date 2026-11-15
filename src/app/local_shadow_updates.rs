@@ -431,12 +431,19 @@ pub(super) fn publish_local_shadow_draws(
                     &vegetation,
                     &mut shadow_textures,
                 )?);
-                // Particle surfaces are dynamic model casters (capture events
-                // 20259-27780 draw the eotw stink bug into the local atlas).
+                // FX systems' surfaces (capture events 20259-27780 draw the
+                // eotw stink bug into the local atlas), side-culled by their
+                // system bounds as 329120 culls model casters. They are drawn
+                // with the per-frame layer: the static local cache has no
+                // invalidation for moving static-bucket owners yet.
                 if light.refresh_dynamic {
                     if let Some((_, casters)) = particle_casters.current.as_ref() {
+                        let side: [f32; 16] = std::array::from_fn(|i| clip[i / 4][i % 4]);
+                        let surfaces = casters.iter()
+                            .filter(|caster| !render_model::transformed_aabb_clip_cull(&side, caster.bounds[0], caster.bounds[1]).culled)
+                            .flat_map(|caster| caster.surfaces.iter());
                         instances.extend(shadow_updates::prepare_particle_shadow_instances(
-                            casters, clip, bias, 0.0, dimensions, &materials, &images, &mut shadow_textures,
+                            surfaces, clip, bias, 0.0, dimensions, &clocks, &materials, &images, &vegetation, &mut shadow_textures,
                         )?);
                     }
                 }

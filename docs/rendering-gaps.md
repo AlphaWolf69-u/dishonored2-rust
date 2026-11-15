@@ -95,16 +95,31 @@ shows the bug's surface (stinkbug01.lwo, world material) in the zPrePass
 (5582), the opaque pass (40648), the parallel cascades (8287, 12954, 32193)
 and the local-light atlas (20259-27780).
 
-The rewrite publishes each frame's world-material particle instances as
-`ParticleShadowCaster`s (proxy mesh, the resolved material when its caster
-admission bit 0 is set, game-space instance rows and bounds) and draws them
-after the dynamic model bucket of every cascade and of each dynamically
-refreshed local-light face, with the material's rigid shadow program.
-bevy_backend: one draw per particle instance where the original issues one
-direct-instanced draw per renderer; no shadow cull-distance or partial-update
-cutoff is applied to particle casters yet. Vegetation-program particle
-materials refuse their shadow (wind inputs are not prepared for particle
-meshes).
+Each FX particle system is a model owner of its own (1401fcaa0 initializes
+it; 201480 writes its bounds into +0x1840/+0x1850 and its caster record with
+the model rule). The base constructor leaves +0x18bc = 8, +0x18bd bit3
+clear and +0x1c30 = 1, and no FX path sets the dynamic-caster bit: systems
+are static-bucket model casters admitted by their renderer surfaces'
+material +0x48 bit0, with the 1.0-radius cull-distance rule.
+
+The rewrite publishes every world-material renderer draw with its system
+slot and system bounds. `collect_particle_casters` builds one caster per
+system (`prepare_model_caster_info(bounds, 1, 8, 0, rigid, surfaces)`,
+then FUN_140330020's sort/cull distance); the parallel collector merges
+their surfaces into the static model bucket (partial-update cutoff, cascade
+cull by system bounds, radial sort with the models). Local-light faces draw
+admitted systems culled by their bounds with the per-frame layer.
+bevy_backend: one draw per instance where the original issues one
+direct-instanced draw per renderer surface, and instances outside a cascade
+or face are skipped (same depth). Measured at the eotw fly cluster:
+particle shadow draws 3.4/13.1/9.7/1.2 per frame with the instance cull
+versus 4.2/16.0/13.9/2.0 without (DH2_DEBUG_PARTICLE_SHADOWS).
+
+Open: the original's local-light cache handling of moving static-bucket
+owners is not traced; the rewrite's static local cache has no invalidation
+for them, so particle systems stay on the per-frame local layer. The
+vegetation particle shadow path (Dust District leaves) is wired but not yet
+exercised at runtime.
 
 ## Not gaps
 
