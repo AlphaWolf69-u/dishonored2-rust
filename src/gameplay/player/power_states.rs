@@ -58,6 +58,7 @@ pub struct Runtime {
     action_state: ActionRuntime,
     action_button: i32,
     execution_requested: bool,
+    mana_potion_requested: bool,
     pub blink_mantle_sensor: Option<super::sensors::MantleSensor>,
     pub mantle_sensor_swapped: bool,
     pub blink_from_sprinting: bool,
@@ -120,6 +121,16 @@ pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -
             check_recharge_target: false, cost_factor: runtime.cost_factor,
             health_overcast: runtime.health_overcast, health: frame.health });
     if admission != Admission::Allowed {
+        // 856160 uses the actual mana-potion owner only when the current
+        // target also cannot fund this cast. It still plays failure/quit.
+        if admission == Admission::InsufficientMana
+            && crate::platform::console::shared().read().cvars.int("ark_inventory_mana_potion_autouse").unwrap_or(1) != 0
+            && cast.admission(runtime.now, frame.mana, frame.attributes, frame.mana_replenishes,
+                &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
+                    check_recharge_target: true, cost_factor: runtime.cost_factor,
+                    health_overcast: runtime.health_overcast, health: frame.health }) == Admission::InsufficientMana {
+            runtime.mana_potion_requested = true;
+        }
         let failed = if sliding { decl.out_of_mana_slide.as_deref().or(decl.out_of_mana.as_deref()) } else { decl.out_of_mana.as_deref() };
         if let Some(path) = failed { if let Err(error) = scenes.start(path) { scenes.midnight.last_start_error = Some(error); } }
         return false;
@@ -325,6 +336,7 @@ impl Player {
     pub fn power_release_ready(&self) -> bool {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.phase() == Phase::Aiming)
     }
+    pub fn take_power_mana_potion_request(&mut self) -> bool { std::mem::take(&mut self.powers.mana_potion_requested) }
     pub fn take_power_execution_request(&mut self) -> bool { std::mem::take(&mut self.powers.execution_requested) && self.power_release_ready() }
     /// 8566f0 calls8551c0 at the real family ExecuteFinished boundary.
     /// Finish immediately after the accepted callback; an automatic family
