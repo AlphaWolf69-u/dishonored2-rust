@@ -4571,6 +4571,9 @@ required. No tests or compiler were run for this isolated source change.
 
 ### Music-track clip timing (source implementation, 2026-11-05)
 
+Historical acquisition-only status below; the 2026-11-15 music playback
+section records the completed scheduler and current live resource owner.
+
 `gameplay::sound::music_clip` ports 141159840 / 141159fd0 / 1411588a0's
 40-byte serialized clip to six-word sample timing conversion. It uses the
 actual engine rate, preserves double arithmetic and operand order, skips
@@ -4581,9 +4584,9 @@ an invalid integer divisor rather than substituting a duration.
 
 This record retains no media/decoder and allocates nothing on success.
 Prediction: new music scheduling support, no walking CPU or resident-memory
-gain. Full track/segment/container playback remains unimplemented; this is
+gain. At this acquisition stage, full track/segment/container playback was unimplemented; this was
 not a claim of audible music. The acquisition batch compiled in a85088d;
-clip sample conversion has not yet been exercised by scheduled playback.
+clip sample conversion had not yet been exercised by scheduled playback.
 Existing bank/media owners stay authoritative. No tests were run.
 
 The bank owner now exposes `music_track_prelude`: borrowed source descriptors,
@@ -4618,7 +4621,7 @@ duration plus variable-length cue records. Cue labels, children and stinger
 arrays borrow bank storage; no temporary label String or secondary encoded
 buffer is retained. Bounds checks cover counted arrays and variable labels.
 Music-node meter/stinger interpretation, marker sample conversion, transitions
-and scheduled playback remain separate work; serialized fields are not used
+and scheduled playback were then separate work; serialized fields were not used
 as guessed runtime settings. Compiled acquisition coverage is recorded below.
 
 Music switch-container acquisition now follows 141151320's transition rules
@@ -5707,7 +5710,7 @@ Original provenance: arkDeclMidnightScene ctor140193a10 and declaration registry
 
 ### Player Midnight sound-event ownership follow-up (2026-11-09)
 
-Audit correction: the earlier sound-event owner integration missed player Midnight prepare_sounds, which directly read declarations and parsed IDs once per scene. The music Definition parser also has a direct ID reader, but no production caller currently constructs that definition; it is not claimed as an integrated music lifecycle. Original SFX constructor140188470 and copy140188490 retain the declaration pointer at+8 (reflection1415c4ff0); sound-event registration141352070 and common lookup1400607f0 establish its shared identity.
+Audit correction: the earlier sound-event owner integration missed player Midnight prepare_sounds, which directly read declarations and parsed IDs once per scene. At this audit stage the music Definition parser had no production caller; its completed live ownership and compact event references are recorded in the 2026-11-15 music section. Original SFX constructor140188470 and copy140188490 retain the declaration pointer at+8 (reflection1415c4ff0); sound-event registration141352070 and common lookup1400607f0 establish its shared identity.
 
 Prediction before implementation: route production player scene sound resolution through assets::wwise::event_resources, preserving its existing per-scene ID table, cast filtering, key schedule and copied playback IDs. Repeated paths already present in that owner should require no additional source reads or declaration decodes; new paths acquire one immutable scoped generation. Original resources have no inherited sound-event sources in the installed inventory. No per-frame work, voice lifetime or bank/media change, and no CPU speed claim without release measurement. Compare actual requested reference/ID sequences in the windowless player preparation, with the former direct resolver selected in the same executable. Mutable overlays retain the owner's existing bypass. Existing pure format-reader callers remain available for offline inspection.
 
