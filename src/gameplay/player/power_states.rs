@@ -52,10 +52,13 @@ pub struct Runtime {
     input_pressure: f32,
     input_analog: bool,
     cooldown_bypass: bool,
+    lifecycle: Vec<PowerLifecycle>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct PowerInputs { pub held: bool, pub pressure: f32, pub analog: bool }
+#[derive(Clone, Copy, Debug)]
+pub enum PowerLifecycle { Began(i32), Finished { id: i32, committed: bool } }
 
 struct PreparedScenes<'a, 'b> {
     scenes: &'a Scenes,
@@ -105,7 +108,8 @@ pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -
             runtime.action_state.activate(&decl.action, false);
             // Base state+0x24 is separate from UsePower's +0x50/+0x54.
             runtime.action_state.after_scene(0, &decl.action);
-            runtime.active = true; runtime.cancel = false; runtime.execution_requested = false; true
+            runtime.active = true; runtime.cancel = false; runtime.execution_requested = false;
+            runtime.lifecycle.push(PowerLifecycle::Began(cast.settings.id)); true
         },
         Ok(false) => false,
         Err(error) => { scenes.midnight.last_start_error = Some(error); false },
@@ -134,6 +138,7 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
 pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
     let runtime = &mut *frame.powers;
     if let Some(cast) = runtime.selected.as_mut() {
+        if runtime.active { runtime.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
         let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events };
         if let Err(error) = runtime.action.finish(cast, sliding, &mut scenes) {
             scenes.midnight.last_start_error = Some(error);
@@ -199,6 +204,7 @@ impl Player {
     pub fn power_cast_active(&self, id: i32) -> bool {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id && cast.phase() != Phase::Idle)
     }
+    pub fn take_power_lifecycle_events(&mut self) -> Vec<PowerLifecycle> { std::mem::take(&mut self.powers.lifecycle) }
     pub fn set_power_admission(&mut self, now: f64, owned: bool, family_available: bool, health_overcast: bool, cost_factor: f32) {
         self.powers.now = now; self.powers.owned = owned; self.powers.family_available = family_available;
         self.powers.health_overcast = health_overcast; self.powers.cost_factor = cost_factor;
