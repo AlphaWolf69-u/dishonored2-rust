@@ -15,7 +15,6 @@ materials (potion and oil liquids), not by FX particles.
 | `arkhair` | 134 materials | none: character hair program; needed once characters render |
 | `arkeyeball` | 23 materials | none: character eye program |
 | Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
-| World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
 | `particle/filing_container` | 8 model materials (potion and oil liquids) | none: opaque mesh program (`blend ONE ZERO`, sortCoverage); no FX particle uses it |
 
@@ -847,8 +846,10 @@ loses w. Remaining, in order:
   constructor has no caller), so the partition has one group and
   constraints would solve in creation order.
 - Opaque particle surfaces connected (see "Opaque particle surfaces"):
-  FX census 2026-11-15 after this: 0 failing particle declarations
-  (one effect still names a sound declaration without an engine ID).
+  FX census 2026-11-15 after this: 0 failing particle declarations.
+  Game-defined AI sound events (`sound_events/game_defined`) carry no
+  m_EngineID; 1400b3750 constructs it with m_ID 0, so they load with ID 0.
+  FX census: 8909 effects, 0 failing; 2175 particles, 0 failing.
 - Former refusals: SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/

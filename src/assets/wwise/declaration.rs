@@ -35,8 +35,11 @@ impl SoundEventDeclaration {
             if value.is_finite() { Ok(value) } else { Err(invalid("non-finite sound-event property")) }
         };
         Ok(Self {
-            id: atom(child(edit, "m_EngineID"), "m_ID").ok_or_else(|| invalid("sound declaration has no engine ID"))?
-                .parse().map_err(|_| invalid("invalid sound event engine ID"))?,
+            // 1400b3750 -> 1400b36e0 constructs m_EngineID (+0x58) with m_ID 0;
+            // game-defined AI stimulus events (sound_events/game_defined)
+            // author only m_gameProperties and keep that zero.
+            id: atom(child(edit, "m_EngineID"), "m_ID").map_or(Ok(0), str::parse)
+                .map_err(|_| invalid("invalid sound event engine ID"))?,
             game_properties: atom(edit, "m_gameProperties")
                 .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL")).map(str::to_owned),
             game_defined: boolean("m_isGameDefined")?, spatialized: boolean("m_Spatialized")?,
