@@ -264,7 +264,8 @@ pub(super) fn publish(
     world
         .resource_mut::<super::player_arms::PlayerArms>()
         .attachments
-        .publish(child, weapon, &tag, prepared, visible)
+        .publish(child, weapon, &tag, prepared, visible)?;
+    super::equipment_identity::mark_rendered(world, child)
 }
 
 pub(super) fn set_visible(
@@ -302,6 +303,36 @@ pub(super) fn visible(world: &World, weapon: EntityId) -> bool {
     world
         .get_resource::<super::player_arms::PlayerArms>()
         .is_some_and(|arms| arms.attachments.visible(child))
+}
+
+/// Startup observes the complete selected-child path, including source IO
+/// before it reaches the shared material worker. No animation completion is
+/// required to enter gameplay.
+pub(super) fn startup_pending(world: &World) -> bool {
+    let Some(owner) = world.get_resource::<Attachments>() else {
+        return false;
+    };
+    !owner.cancelled.is_empty()
+        || owner.live.values().any(|entry| {
+            entry.pending.is_some()
+                || entry.child.is_none()
+                || entry.child.is_some_and(|id| {
+                    world
+                        .get_resource::<super::player_arms::PlayerArms>()
+                        .is_none_or(|arms| !arms.attachments.has(id))
+                })
+        })
+}
+
+pub(super) fn startup_error(world: &World) -> Option<String> {
+    let owner = world.get_resource::<Attachments>()?;
+    owner.live.values().find_map(|entry| {
+        entry.failed.clone().or_else(|| {
+            entry.child.and_then(|id| {
+                super::runtime_materials::equipment_admission::attachment_failure(world, id)
+            })
+        })
+    })
 }
 
 /// The caller passes the current player animation owner's actual tag frame.
@@ -350,10 +381,7 @@ fn withdraw(
             None => {
                 // This child never published any render model. Its cancelled
                 // prepared batches remain with the shared material worker.
-                super::equipment_identity::detach(world, child)?;
-                if !super::equipment_identity::retirement_pending(world, child) {
-                    super::equipment_identity::retire_acknowledged(world, child)?;
-                }
+                super::equipment_identity::await_unrendered_retirement(world, child)?;
             }
         }
         entry.child = None;

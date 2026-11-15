@@ -22,12 +22,21 @@ struct Entry {
     runtime_flags: u8,
     frame: Option<crate::gameplay::reference_frame::ReferenceFrame>,
     time_scale: f32,
+    audio: Option<crate::gameplay::sound::Emitter>,
+    audio_acknowledged: bool,
+    rendered: bool,
+    identity_retired: bool,
+    graph_retired: bool,
+}
+struct PendingRetirement {
+    id: EntityId,
+    render: Option<super::player_arms::RetiredModel>,
 }
 #[derive(Resource)]
 struct Identities {
     types: Arc<ComponentTypes>,
     entries: HashMap<EntityId, Entry>,
-    pending: Vec<(EntityId, super::player_arms::RetiredModel)>,
+    pending: Vec<PendingRetirement>,
 }
 
 /// Setup publication calls this before LevelLifetime captures its resources.
@@ -176,6 +185,11 @@ fn admit(
             runtime_flags: if ammo { 0x10 } else { runtime_flags },
             frame: None,
             time_scale: 1.0,
+            audio: None,
+            audio_acknowledged: false,
+            rendered: false,
+            identity_retired: false,
+            graph_retired: false,
         },
     );
     Ok(id)
@@ -198,6 +212,41 @@ pub(super) fn equipment(world: &World, identity: &str) -> Option<EntityId> {
 
 pub(super) fn id(world: &World, identity: &str) -> Option<EntityId> {
     equipment(world, identity)
+}
+
+/// Bind only after the actual equipment declaration prepared cpntAudio.
+/// `part` is the source's captured equipment casting bit (8/16).
+pub(super) fn bind_audio(world: &mut World, id: EntityId, part: u8) -> Result<(), String> {
+    if part != 8 && part != 16 {
+        return Err("equipment audio has no native casting part".into());
+    }
+    let mut owner = world.resource_mut::<Identities>();
+    let entry = owner
+        .entries
+        .get_mut(&id)
+        .ok_or("equipment audio generation is absent")?;
+    if entry.key.ammo || !entry.linked {
+        return Err("equipment audio has no live component actor".into());
+    }
+    let emitter = crate::gameplay::sound::Emitter::Equipment { entity: id, part };
+    if entry.audio.is_some_and(|old| old != emitter) {
+        return Err("equipment audio owner changed casting part".into());
+    }
+    entry.audio = Some(emitter);
+    Ok(())
+}
+
+pub(super) fn mark_rendered(world: &mut World, id: EntityId) -> Result<(), String> {
+    let mut owner = world.resource_mut::<Identities>();
+    let entry = owner
+        .entries
+        .get_mut(&id)
+        .ok_or("equipment render generation is absent")?;
+    if !entry.linked {
+        return Err("cannot publish a detached equipment model".into());
+    }
+    entry.rendered = true;
+    Ok(())
 }
 
 /// The real equipment animation/binding owner supplies its entity frame and
@@ -274,13 +323,34 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<(),
     if entry.linked {
         return Err("equipment retirement preceded hierarchy detach".into());
     }
-    super::entity_graphs::retire(world, id)?;
-    if world
-        .resource_mut::<LiveEntities>()
-        .retire_for_world_shutdown(id)
-        .is_none()
+    if entry.audio.is_some() && !entry.audio_acknowledged {
+        return Err("equipment identity retirement preceded its audio acknowledgement".into());
+    }
+    if entry.rendered
+        && !owner.pending.iter().any(|pending| {
+            pending.id == id
+                && pending
+                    .render
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.complete())
+        })
     {
+        return Err("rendered equipment retirement has no completed GPU receipt".into());
+    }
+    let identity_retired = entry.identity_retired;
+    let audio = entry.audio;
+    retire_graph(world, id)?;
+    if !identity_retired && world.resource_mut::<LiveEntities>().retire(id).is_none() {
         return Err("equipment identity still owns children or managed references".into());
+    }
+    world
+        .resource_mut::<Identities>()
+        .entries
+        .get_mut(&id)
+        .ok_or("equipment retirement record disappeared")?
+        .identity_retired = true;
+    if let Some(emitter) = audio {
+        super::audio::forget_retired_component_object(world, emitter)?;
     }
     world.resource_mut::<Identities>().entries.remove(&id);
     Ok(())
@@ -297,33 +367,110 @@ pub(super) fn await_render_retirement(
     if !owner.entries.contains_key(&id) {
         return Err("render retirement has no owned equipment generation".into());
     }
-    if !owner.pending.iter().any(|(pending, _)| *pending == id) {
-        owner.pending.push((id, receipt));
+    if !owner.pending.iter().any(|pending| pending.id == id) {
+        owner.pending.push(PendingRetirement {
+            id,
+            render: Some(receipt),
+        });
     }
     drop(owner);
     // Retain the real receipt before a fallible hierarchy callback. A retry
     // must never mistake already withdrawn surfaces for an unrendered child.
-    detach(world, id)
+    detach(world, id)?;
+    retire_graph(world, id)
+}
+
+fn retire_graph(world: &mut World, id: EntityId) -> Result<(), String> {
+    let done = world
+        .resource::<Identities>()
+        .entries
+        .get(&id)
+        .ok_or("equipment graph retirement record disappeared")?
+        .graph_retired;
+    if !done {
+        super::entity_graphs::retire(world, id)?;
+        world
+            .resource_mut::<Identities>()
+            .entries
+            .get_mut(&id)
+            .ok_or("equipment graph retirement record disappeared")?
+            .graph_retired = true;
+    }
+    Ok(())
 }
 
 pub(super) fn retirement_pending(world: &World, id: EntityId) -> bool {
     world
         .get_resource::<Identities>()
-        .is_some_and(|owner| owner.pending.iter().any(|(pending, _)| *pending == id))
+        .is_some_and(|owner| owner.pending.iter().any(|pending| pending.id == id))
+}
+
+/// No submitted receipt is required only when this actor never published a
+/// draw model. Preserve any earlier real receipt on a withdrawal retry.
+pub(super) fn await_unrendered_retirement(world: &mut World, id: EntityId) -> Result<(), String> {
+    let mut owner = world.resource_mut::<Identities>();
+    if !owner.entries.contains_key(&id) {
+        return Err("unrendered equipment generation is absent".into());
+    }
+    if !owner.pending.iter().any(|pending| pending.id == id) {
+        if owner.entries.get(&id).is_some_and(|entry| entry.rendered) {
+            return Err("rendered equipment lost its real GPU retirement receipt".into());
+        }
+        owner.pending.push(PendingRetirement { id, render: None });
+    }
+    drop(owner);
+    detach(world, id)?;
+    retire_graph(world, id)
 }
 
 /// Ordinary per-frame completion polling by the existing admission owner.
 /// Retire children first, even when one submission acknowledged both models.
 pub(super) fn poll_retirements(world: &mut World) -> Result<bool, String> {
+    // Queue every independent object's Stop before consuming the canonical
+    // FIFO; a per-object frame barrier would serialize ordinary map teardown.
+    let count = world
+        .get_resource::<Identities>()
+        .map_or(0, |owner| owner.pending.len());
+    let mut have_audio = false;
+    for index in 0..count {
+        let audio = world.get_resource::<Identities>().and_then(|owner| {
+            let pending = owner.pending.get(index)?;
+            let entry = owner.entries.get(&pending.id)?;
+            (!entry.audio_acknowledged).then_some((pending.id, entry.audio?))
+        });
+        if let Some((id, emitter)) = audio {
+            have_audio = true;
+            let acknowledged = super::audio::retire_component_object(world, emitter)?;
+            if acknowledged {
+                world
+                    .resource_mut::<Identities>()
+                    .entries
+                    .get_mut(&id)
+                    .ok_or("equipment audio retirement record disappeared")?
+                    .audio_acknowledged = true;
+            }
+        }
+    }
+    if have_audio {
+        super::audio::poll_object_retirements(world)?;
+    }
     loop {
         let Some(owner) = world.get_resource::<Identities>() else {
             return Ok(true);
         };
-        let next = owner.pending.iter().find_map(|(id, receipt)| {
-            (receipt.complete()
-                && owner.entries.get(id).is_some_and(|entry| !entry.linked)
-                && !owner.entries.values().any(|entry| entry.key.parent == *id))
-            .then_some(*id)
+        let next = owner.pending.iter().find_map(|pending| {
+            (pending
+                .render
+                .as_ref()
+                .is_none_or(|receipt| receipt.complete())
+                && owner.entries.get(&pending.id).is_some_and(|entry| {
+                    !entry.linked && (entry.audio.is_none() || entry.audio_acknowledged)
+                })
+                && !owner
+                    .entries
+                    .values()
+                    .any(|entry| entry.key.parent == pending.id))
+            .then_some(pending.id)
         });
         let Some(id) = next else {
             return Ok(owner.pending.is_empty());
@@ -333,7 +480,7 @@ pub(super) fn poll_retirements(world: &mut World) -> Result<bool, String> {
         let index = owner
             .pending
             .iter()
-            .position(|(pending, _)| *pending == id)
+            .position(|pending| pending.id == id)
             .ok_or("equipment retirement receipt disappeared")?;
         owner.pending.swap_remove(index);
     }
