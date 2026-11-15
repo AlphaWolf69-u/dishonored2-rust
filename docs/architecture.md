@@ -2867,3 +2867,29 @@ persistent services; `app::level_prepare` performs map CPU acquisition;
 immutable UI image ownership lives in `flash::bitmap_resources`, not in either
 screen controller. Loading and pause players execute on the same UI worker so
 library/font registrations can be reused while movie state is replaced.
+
+## Audiographs and mission progression
+
+`assets/speech.rs` owns immutable localized bark, character and voice metadata
+under Catalog declaration markers. It resolves the audiocard's authored line
+event IDs; encoded media, streaming blocks and decoded output remain owned by
+the existing Wwise subsystem. `app/audio/audiographs.rs` owns playback cursors,
+completion subscriptions and cancelled preparation jobs. Physical machines
+retain their usable entity, and Journal replay uses the menu sound object.
+The ordinary audio retirement fence drains this work before marker purge.
+
+`gameplay/gameflow/program.rs` owns one compact executable program for the
+worldspawn's actual manager, shared mission definitions and separate mutable
+continuation stacks. The existing Kiscule manager submits authored requests and
+receives native state notifications. `app/objectives.rs` publishes resulting
+progress; neither the loading hint nor the selected map invents mission state.
+Legacy explicit lookups also acquire this same owner.
+
+`app/objective_markers.rs` borrows existing entity poses, render placements,
+bounds and demand-only joint frames. `app/hud_movie/{objectives,markers}.rs`
+binds the installed movie, queues actual task/portrait changes and recycles a
+single marker buffer across the worker boundary. Journal snapshots share
+immutable definitions and copy mutable maps only on a real change; Journal
+images use the existing per-open image owner. Level teardown closes the movies,
+retires entity/graph subscriptions and then drops these level-owned adapters.
+Unimplemented NPC/spawner producers are not replaced by guessed progress.
