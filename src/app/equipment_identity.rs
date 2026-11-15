@@ -35,6 +35,7 @@ struct PendingRetirement {
 #[derive(Resource)]
 struct Identities {
     types: Arc<ComponentTypes>,
+    player: Option<EntityId>,
     entries: HashMap<EntityId, Entry>,
     pending: Vec<PendingRetirement>,
 }
@@ -49,8 +50,10 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         .and_then(|scene| scene.catalog.as_ref())
         .ok_or("equipment identity has no class metadata source")?;
     let types = ComponentTypes::acquire(catalog)?;
+    let player = super::player_lifetime::id(world);
     world.insert_resource(Identities {
         types,
+        player,
         entries: HashMap::new(),
         pending: Vec::new(),
     });
@@ -65,7 +68,19 @@ pub(super) fn admit_equipment(
     declaration: &str,
     class: &str,
 ) -> Result<EntityId, String> {
-    let parent = super::player_lifetime::id(world).ok_or("equipment has no live player owner")?;
+    // The native callback host temporarily borrows PlayerState out of World;
+    // its constructed actor and this same managed generation remain alive.
+    let parent = world
+        .get_resource::<Identities>()
+        .and_then(|owner| owner.player)
+        .ok_or("equipment has no live player owner")?;
+    if world
+        .get_resource::<LiveEntities>()
+        .and_then(|live| live.stage(parent))
+        != Some(Stage::Spawned)
+    {
+        return Err("equipment player generation is stale".into());
+    }
     admit(world, identity, declaration, class, parent, false)
 }
 

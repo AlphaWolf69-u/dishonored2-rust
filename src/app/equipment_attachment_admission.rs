@@ -39,11 +39,27 @@ struct Attachments {
     live: HashMap<EntityId, Entry>,
     cancelled: Vec<Pending>,
     closing: bool,
+    // Shared handles to the one source owner, captured while the setup batch
+    // is fully published. Equipment callbacks temporarily borrow PlayerActions
+    // out of World; they must not create a second cache to acquire a child.
+    source: Option<(
+        Arc<crate::archive::Catalog>,
+        Arc<Mutex<crate::assets::equipment::Sources>>,
+    )>,
 }
 
 /// Root setup invokes before LevelLifetime records its resource IDs.
 pub(super) fn initialize(world: &mut World) {
-    world.init_resource::<Attachments>();
+    if world.contains_resource::<Attachments>() {
+        return;
+    }
+    let source = world
+        .get_resource::<super::player_actions::PlayerActions>()
+        .map(|actions| actions.equipment_attachment_source());
+    world.insert_resource(Attachments {
+        source,
+        ..Default::default()
+    });
 }
 
 /// Called by the native selected-ammunition change, never for every inventory
@@ -99,10 +115,10 @@ pub(super) fn select(
         if live.stage(weapon_id) != Some(Stage::Spawned) {
             return Err("ammunition weapon generation is stale".into());
         }
-        let (catalog, sources) = world
-            .get_resource::<super::player_actions::PlayerActions>()
-            .ok_or("ammunition has no canonical equipment sources")?
-            .equipment_attachment_source();
+        let (catalog, sources) = owner
+            .source
+            .clone()
+            .ok_or("ammunition has no canonical equipment sources")?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancellation = cancelled.clone();
         let requested = path.to_owned();

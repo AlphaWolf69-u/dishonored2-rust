@@ -17,6 +17,32 @@ pub(crate) struct Descriptor {
     pub geometry: Arc<bmodel::ModelSource>,
 }
 
+impl Descriptor {
+    /// The material worker snapshots only this child's actual surface inputs.
+    /// Geometry-family details stay with the model/source owner.
+    pub(crate) fn material_requests(&self) -> Vec<String> {
+        let mut paths = self
+            .geometry
+            .surfaces
+            .iter()
+            .enumerate()
+            .filter(|(_, surface)| !surface.positions.is_empty() && !surface.indices.is_empty())
+            .map(|(index, surface)| {
+                self.placement
+                    .custom_materials
+                    .get(index)
+                    .and_then(Option::as_deref)
+                    .unwrap_or(&surface.material_path)
+            })
+            .filter(|path| !crate::material::is_null_material(path))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths.dedup();
+        paths
+    }
+}
+
 /// Weak declaration projections only. Geometry acquisition stays with the
 /// canonical BML/BTRI owner; this table never pins an unselected ammunition.
 #[derive(Default)]

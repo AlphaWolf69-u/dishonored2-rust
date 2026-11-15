@@ -134,7 +134,10 @@ impl Models {
         &mut self,
         renders: &[ArmRender],
         visibility: &mut Query<&mut Visibility>,
-        transforms: &mut Query<&mut GlobalTransform, With<Mesh3d>>,
+        transforms: &mut Query<
+            (&mut Transform, &mut GlobalTransform),
+            (With<Mesh3d>, Without<Camera3d>),
+        >,
         probes: Option<&crate::probe_lighting::ProbeLightingSet>,
         mut lighting: Option<&mut model_motion::ModelProbeLighting>,
         patches: &mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,
@@ -185,13 +188,14 @@ impl Models {
                 // models, with this actual weapon-tag world frame.
                 let rows = render_model::affine_rows(frame.position, frame.basis, placement.scale);
                 let matrix = std::array::from_fn(|index| rows[index / 4][index % 4]);
-                let global = GlobalTransform::from(
-                    super::super::view_geometry::game_affine_to_view(&matrix),
-                );
+                let transform = super::super::view_geometry::game_affine_to_view(&matrix);
+                let global = GlobalTransform::from(transform);
                 for part in &model.prepared.surfaces {
-                    *transforms
+                    let (mut local, mut published) = transforms
                         .get_mut(part.entity)
-                        .map_err(|_| "ammunition surface transform is absent")? = global;
+                        .map_err(|_| "ammunition surface transform is absent")?;
+                    *local = transform;
+                    *published = global;
                 }
             } else {
                 model.bounds = None;
