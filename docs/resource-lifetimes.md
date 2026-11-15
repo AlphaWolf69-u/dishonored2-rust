@@ -9,56 +9,82 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
-## Reopened runtime lifecycle audit (2026-11-15)
+## Completed current-resource lifecycle audit (2026-11-15)
 
-Owner source021c7586 verified initial acquisition and retirement only. The
-game/tools dev build, default library, paired scope/cancellation/history and
-source/output comparisons pass. All36 installed variants complete actual
-publication/retirement and independent initial GPU acquisition/removal with
-no acquisition errors. Graph/hierarchy owners close, outgoing map GPU owners
-return to their intended host/common baseline, and Catalog/common/shader
-owners release at final shutdown. Full evidence is in the parity ledger.
+The audit is complete for the resource owners and consumers currently implemented
+in the rewrite. This covers installed-file acquisition, CPU/GPU publication,
+streaming demand, reuse, cancellation, live replacement, tails and final release.
+It does not claim that unimplemented gameplay/resource consumers now exist.
+The original addresses and each host deviation remain in resource-parity.md.
 
-The fixes cover canonical component retirement, sleeping/attached/hidden
-readable bodies, managed-parent resolution, scoped scene/shape/faction reuse,
-playing-event/cookie ownership, modal boundary release, and compiled cloth
-metadata/noncloth base selection. The latter reads only compact demanded
-headers and standard generated meshes directly from installed archives. It
-adds no extracted files or cloth simulation approximation. Unimplemented
-cloth dynamics/rendering and other unimplemented game consumers remain
-explicitly separate from supported resource-owner completion.
+Coverage is concrete: all36 installed variants passed initial publication and
+retirement; the detailed EotW runtime trace records151 positively consumed kinds
+out of459 coverage rows, with zero missing ledger owners.151 is not an all36
+consumed-kind union. The14 family groups in the current parity matrix reconcile
+those kinds with their typed owners. Earlier all36 scope and13 paired source
+comparisons remain unchanged; current live observations add the paths below.
 
-Measured scoped counts: retirement1697 to2 passes; common coin reads3 to1;
-midnight projection decodes65 to39 with matching recorded content. These do
-not imply whole-process RAM, gameplay CPU or FPS gains. The all36 route does
-not execute gameplay frames or certify every live effect/visibility transition.
-Historical sections below retain their original source cohorts and limits.
-
-The whole audit remains active. Initial all36 acceptance must not be used as
-proof of active streaming, effects, output consumption or replacement. Current
-runtime closure work uses the same production App schedules with image output
-and no native window, display changes, synthetic clock or fake acknowledgement.
-No tests are written or run. Source fixes are not called verified until their
-actual runtime observations finish.
+The following is the authoritative current disposition. It supersedes historical
+pending/review predictions below only for the explicitly named supported paths.
+No tests or visual inspection were performed, and no visible client was launched.
 
 | Runtime path | Current disposition |
 |---|---|
-| Moving-view fine-mip demand, pressure, withdrawal/revival and GPU handoff | Reuse recorded EotW walking inputs and actual streamer/render graph; pending production observation |
-| Pending ordinary sounds, watched generations and output End/cookies | Source defect fixed: reserve ID/cookie before deferred preparation and cancel queued posts on Stop; actual output-consumer observation pending |
-| Accepted pickup/read and usable animation at map shutdown | Source defect fixed: drain the retained accepted-pickup cursor before component Stop, without replaying inventory/notifications; actual pending-action observation pending |
-| Active world/screen FX tails and temporary view gaps | Production-owner observer implemented; actual authored Start/Stop/overlap/restart/tail/map-clear observation pending |
-| Warm FX family addition and cancelled reacquisition of a purged live generation | API corrected: prepare requested role before restoring registry pin. Complete current-producer census proves both additional-role and retired-live-generation reacquisition unreachable in current gameplay; source proof and census close applicability without fabricated requests |
-| Live quality/viewport target replacement and pending readbacks | Active offscreen production adapter and precise allocation attribution being implemented; prior initial GPU sweeps do not cover live target replacement |
-| Movie-worker image acquisition interrupted by close/map transition/quit | Actual worker/exit observation pending; existing joined-close and live VM collection evidence retained |
-| Live UI view replacement | Existing native snapshot semantics are correct; installed census finds215 UI identities and zero cross-role matches across8036 scene/env sources. Do not invent a scene/UI alias to manufacture a production case |
-| Whole-map acquisition cancellation, blocked handoff and outgoing render acknowledgement | Real acquisition/exit phase observers added; complete offscreen cancellation/retry sequence pending |
-| Nonempty mutable shape subscriptions | Count real prepared subscriptions across installed maps; no supported mutation/destroyed-signal producer exists. Do not fabricate a mutable source or mutation event |
+| Moving fine-mip demand, pressure, withdrawal/revival and GPU handoff | Complete/host for G's114 post-playing read/upload/commit chains and7147 exit/return cycles across521 slots. Actual pressure reductions/reupgrades occurred during loading, not the moving walk. Scene withdrawal retains reads until commit; no walk cancellation is claimed. |
+| Ordinary sound cookies/watch generations and actual output End | B/C complete the actual output/capacity/watch/EOF paths. Cold watched+uncached ordinary producer is N/A per F (zero production watched callers); no false cold success. |
+| Accepted portable readable/pickup and usable owner shutdown | B actual readable quit completes with accepted_pickups=0; nonempty pending cursor at exit was not observed. Source-backed canonical drain, A typed component teardown and existing usable cancellation/Stop ownership are retained. Full interaction/gameplay families excluded. |
+| Active world FX admission, overlap, temporary view gap, Stop/restart/tails | Accepted/host at3c1997: actual WORLD fly Start/overlap/view gap/restart; candle natural tail drain and source release; decal tail retained until map clear, then pools/source leases0. Late material-owner transfer fixed. Fly sound intentionally persists under native Stop (authored looping, no Stop event); earlier natural-drain timeout stays failed, not rewritten as passed. See H/I. |
+| FX warm additional role / purged-but-live reacquisition | Source API correction retained; complete current-producer census makes both scenarios N/A. No manual purge or fabricated role pairing. |
+| Live quality/viewport targets and pending readback Drop | C/D complete all seven fenced quality/resize states on EotW and Dust; real callback owners retire. Luminance485→5 quality creations, resize7→7, palette errors33/3→0. Opaque driver bytes remain unknown. |
+| UI pending image reply, live movie/map epochs and final worker join | Actual early-quit reply drain passes; B EotW→Dust→EotW preserves one live worker, releases outgoing checkpoint leases, then joins at host destruction. Destructor wake was not observed (wakes0), not silently claimed. |
+| Active scene/UI image view replacement | Native snapshot semantics retained;215 UI identities and zero cross-role matches across8036 sources make the proposed authored race inapplicable. Existing wrapper-replacement evidence is not mislabeled active movie rendering. |
+| Whole-map worker/publication/active-read cancellation and render acknowledgement | B passes real full-App exit-worker, exit-published and exit-reading;16 inflight/14 queued/one active read snapshot precedes canonical closure. A separately covers source read cancellation and retry. |
+| Nonempty mutable shape subscriptions | All36 actual snapshots are empty and there is no supported mutation emitter. Source-backed detach is retained; nonempty runtime case is N/A. |
 
-Ordinary managed-entity removal currently has no production entity-release
-host. An unused FX reference-removal helper is future consumer integration,
-not evidence of an active-map leak: current map shutdown already clears FX.
-Fatal invariant exits explicitly remain unsuccessful process aborts; they are
-not converted to successful retirement or an infinite hidden retry loop.
+Evidence (local artifacts, with independent source cohorts preserved):
+
+- A: `final-resource-acceptance-summary-20261114.json` and
+  `coherent-all-level-lifetimes-20261114-20261114T210550Z-51108984/result.json`:
+  all36 initial owner/GPU publication and retirement, with paired owner evidence.
+- B: `active-resource-runtime-20261115T000412Z-dfa8d355/result.json`:
+  real worker/publication/active-read exit, UI map reuse, audio output, water
+  transitions and28 fenced quality/resize samples. Its interrupted FX is not passed.
+- C/D: `active-resource-runtime-20261115T010155Z-08c70159/result.json` and
+  `luminance-and-skin-runtime-comparison-20261115.json`: quality485→5 texture
+  creations per map, resize7→7; palette-length errors33/3→0. No whole-frame CPU,
+  FPS or process-memory claim follows from these scoped counts.
+- E: `resource-consumed-kind-owners-20261115.json`: exact consumed-kind inventory.
+- F: `audio-ordinary-watched-applicability-20261115.json`,
+  `fx-current-consumer-role-census-20261115.json`,
+  `ui-scene-uri-census-20261115-v3.json`: source/census-backed applicability,
+  not fabricated nonempty runtime passes.
+- G: `streaming-per-slot-lifecycle-evidence-20261115.json`,
+  `fx-cancel-revive-source-disposition-20261115.json`, and corrected
+  `active-resource-runtime-20261115T000412Z-dfa8d355/gpu-return-state-summary.json`.
+  Four GPU hosts balance1,118,986 creates/frees and end with zero live resources.
+  Occupied heap slack is not empty heaps; transient snapshot/log mismatches are
+  retained and opaque driver allocations remain unknown.
+- H: `active-resource-build-20261115T031259Z-a3542766/result.json`,
+  `active-resource-runtime-20261115T033353Z-2b65f66b/result.json` and the two
+  successful quality rows in `active-resource-runtime-20261115T032435Z-d115ec6e/result.json`:
+  final3c1997 tools/default-library/normal-game checks, actual FX closure,
+  and14 additional fenced quality samples with zero renderer errors. Final
+  quality creates exactly5 luminance pyramid textures per map (a separate sampler
+  index buffer is not another texture). This confirms the late FX handoff repair.
+- I: `fly-retained-tail-native-disposition-20261115.json`: installed declarations
+  and native0b3850/2302a0 establish intentional persistent sound retention with no
+  authored Stop. The fly natural-drain timeout remains failed; its real canonical
+  cleanup is successful. No expiry or forced audio completion was invented.
+
+Current-producer absence is explicit for ordinary watched+cold sound graphs,
+nonempty mutable subscriptions, cross-role FX warm additions/purged-live requests,
+and active scene/UI identity collisions. Their API/source dispositions remain
+separate from actual runtime observations. Readable exit had accepted_pickups=0;
+nonempty pending accepted-cursor teardown is source-backed, not claimed observed.
+General active-map managed entity deletion, unsupported cloth/cinematic/physics/
+music/equipment/player-state consumers and broader original feature parity remain
+separate feature work. No existing supported owner defect remains identified by
+this audit; future consumers must integrate with the same owners.
 
 ## Current integrated scope (2026-11-11)
 
