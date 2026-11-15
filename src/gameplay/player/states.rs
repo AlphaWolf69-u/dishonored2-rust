@@ -1928,6 +1928,15 @@ impl StateMachine {
                 Command::RequestCatFall(damage) => self.accept(StateId::CATFALL, Some(damage), &snapshot, &mut accepted, frame),
             }
         }
+        // 857a30 consumes the saved Falling instance before that instance
+        // can receive a new 865b90 request. This host batches request hooks
+        // before deactivation, so resolve that one exit callback first;
+        // otherwise a new FALLING request would erase its existing debt.
+        if self.is_active(StateId::BLINKING)
+            && (quits.contains(&StateId::BLINKING)
+                || accepted.iter().any(|&(id, _)| self.rule(StateId::BLINKING, id).quit)) {
+            self.land_blink_fall_debt(frame);
+        }
         for &(id, _) in &accepted {
             if id == StateId::BLINKING {
                 frame.powers.blink_from_sprinting = self.is_active(StateId::SPRINTING);
@@ -2547,7 +2556,11 @@ impl StateMachine {
                 self.pending_sounds.append(&mut frame.powers.sound_events);
                 return;
             },
-            Kind::Blinking => { super::power_states::deactivate_blink(frame); return; },
+            Kind::Blinking => {
+                self.land_blink_fall_debt(frame);
+                super::power_states::deactivate_blink(frame);
+                return;
+            },
             Kind::SwimMantle => return,
             Kind::Mantle(_) => {
                 // FUN_14085fd40.
@@ -3522,7 +3535,7 @@ impl StateMachine {
         self.states[index].jump.timer += frame.dt;
     }
 
-    /// Falling Update FUN_140865c50 (landing without catfall and damage).
+    /// Falling Update865c50 accumulates physical motion before Land8658c0.
     fn falling_update(&mut self, index: usize, decl: &FallingDecl, frame: &mut Frame) {
         let id = self.states[index].decl.id;
         let fall = &mut self.states[index].fall;
@@ -3530,7 +3543,7 @@ impl StateMachine {
         fall.last_origin = frame.origin;
         let accumulated = fall.accumulated_height;
         let from = self.states[index].in_air;
-        if (frame.physics.ground_distance == f32::MAX && frame.physics.ground.state == SupportState::Unsupported)
+        if (frame.physics.ground_distance >= f32::MAX && frame.physics.ground.state == SupportState::Unsupported)
             || frame.controller.is_slip_falling
         {
             if from.from_jumping && frame.physics.gravity_velocity.z > 0.0 {
@@ -3542,17 +3555,7 @@ impl StateMachine {
             frame.physics.ground_query_length = frame.velocity.z.abs() * frame.dt + self.states[index].decl.navigation.max_ground_distance;
             return;
         }
-        // Land() FUN_1408658c0: fall damage, then CATFALL above
-        // m_catFallHeight. The same player's health owner consumes the damage.
-        let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
-        if damage > 0.0 { self.pending_fall_damage = Some(damage); }
-        self.states[index].fall.accumulated_height = 0.0;
-        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
-            self.states[index].fall.catfall_taken = true;
-            self.quit(id);
-            self.queue.push(Command::RequestCatFall(damage));
-            return;
-        }
+        if self.land_falling(index, decl, frame) { return; }
         self.quit(id);
         let slide_speed = frame.velocity.truncate().length();
         let crouch_action = frame.controller.sneak_action;
@@ -3575,6 +3578,44 @@ impl StateMachine {
         // The landing camera additive.
         let crouch = frame.controller.toggled(crouch_action);
         frame.jump_anim.end(crouch, false);
+    }
+
+    /// 857a30/838600 call Land on the actual mode's stored Falling instance
+    /// even after it was deactivated. 7fdaa0 reads the physics proxy's
+    /// support result (+48 -> +20), independently of controller support.
+    pub(super) fn land_falling_if_contact(&mut self, frame: &mut Frame) -> bool {
+        if frame.physics.ground_distance >= f32::MAX
+            && frame.physics.ground.state == SupportState::Unsupported { return false; }
+        let Some(index) = self.index(StateId::FALLING) else { return false; };
+        let Kind::Falling(decl) = self.states[index].decl.kind.clone() else { return false; };
+        self.land_falling(index, &decl, frame)
+    }
+
+    fn land_blink_fall_debt(&mut self, frame: &mut Frame) {
+        if !frame.powers.blink_from_falling { return; }
+        // 857a30 clears its saved pointer after the conditional Land call.
+        // Do not accumulate Blink's position delta or reset an airborne fall.
+        frame.powers.blink_from_falling = false;
+        self.land_falling_if_contact(frame);
+    }
+
+    /// Land8658c0 owns damage/CatFall and clears only the consumed height.
+    /// Navigation choices and landing-camera work belong to Update865c50;
+    /// Blink and Grapple exits must not run those ordinary update branches.
+    fn land_falling(&mut self, index: usize, decl: &FallingDecl, frame: &mut Frame) -> bool {
+        let accumulated = self.states[index].fall.accumulated_height;
+        let id = self.states[index].decl.id;
+        let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
+        if damage > 0.0 { self.pending_fall_damage = Some(damage); }
+        self.states[index].fall.catfall_taken = false;
+        self.states[index].fall.accumulated_height = 0.0;
+        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
+            self.states[index].fall.catfall_taken = true;
+            self.quit(id);
+            self.queue.push(Command::RequestCatFall(damage));
+            return true;
+        }
+        false
     }
 }
 
