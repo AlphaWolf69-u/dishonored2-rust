@@ -1,5 +1,11 @@
 #import bevy_pbr::mesh_view_bindings::{view,lights}
 #import dh2_ward::{ward_surface,WardTranslucency,ward_translucency,rgb_to_hsv,hsv_to_rgb}
+#ifdef DH2_HAIR
+#import dh2_direct::{HairSurface,hair_surface,hair_shift,hair_kajiya,hair_specular_mask}
+#import dh2_surface::{hair_flow_map,hair_noise_mask}
+#import dh2_indirect::{MaterialLightingValues,evaluate_mapped_diffuse_response}
+#import dh2_ward::ward_sheen_color
+#endif
 #ifdef DH2_SKIN
 #import dh2_direct::{SkinSurface,skin_surface,skin_direct_diffuse,ward_inverse_roughness_squared}
 #import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask}
@@ -143,7 +149,8 @@ fn fragment(
     var skin_albedo=vec3<f32>(1.0);
     var skin_ambient_normal=vec3<f32>(0.0);
     var skin_kernel=0.0;
-    if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u || compiled_misc.z == 11u {
+    var hair_ibl_tangent=vec3<f32>(0.0);
+    if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u || compiled_misc.z == 11u || compiled_misc.z == 12u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
         uv = vertex_output.uv;
@@ -257,6 +264,76 @@ fn fragment(
             skin_kernel=width/(-view_z);
         }
 #endif
+#ifdef DH2_HAIR
+        {
+            // arkHair standard pass. Albedo is the raw diffuse sample at
+            // $texcoords (alpha already clipped at hairAlphaTest).
+            let albedo=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv));
+            let flags=surface.hair_flags.x;
+            let face_factor=select(1.0,-1.0,!is_front && (compiled_misc.w & 4u)!=0u);
+            let vertex_normal=normalize(face_factor*vertex_output.world_normal);
+            var tangent=vec3<f32>(0.0);var bitangent=vec3<f32>(0.0);
+#ifdef VERTEX_TANGENTS
+            tangent=vertex_output.world_tangent.xyz;
+#ifdef DH2_AUTHORED_BASIS
+            bitangent=vertex_output.world_bitangent;
+#else
+            bitangent=cross(vertex_output.world_normal,tangent)*vertex_output.world_tangent.w;
+#endif
+            if compiled_misc.x!=0u {
+                // HQ_FetchAndComputeNormalAndTBN re-derives T and B from the
+                // bumped normal and the vertex bitangent.
+                tangent=normalize(cross(bitangent,pbr_input.N));
+                bitangent=cross(pbr_input.N,tangent);
+            }
+#endif
+            let specular_texture=textureSampleGrad(hair_specular_mask,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv)).rgb;
+            var transmittance=specular_texture;
+            if !((flags&2u)!=0u && (flags&8u)!=0u) {
+                var hsv=rgb_to_hsv(albedo.rgb);
+                hsv.x+=surface.hair[2].y;
+                hsv.y=min(hsv.y*surface.hair[2].x,1.0);
+                hsv.z=min(hsv.z+0.25*surface.hair[2].x,1.0);
+                transmittance=hsv_to_rgb(hsv);
+            }
+            var specular_mask=vec3(albedo.a);
+            if (flags&2u)!=0u {specular_mask*=specular_texture;}
+            else {specular_mask*=clamp(albedo.g*2.0,0.0,1.0);}
+            var flow_angle=radians(surface.hair[0].w);
+            if (flags&1u)!=0u {
+                let ts_flow=unpack_bc5_normal_map(textureSampleGrad(hair_flow_map,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv)).rg);
+                var ws_flow=ts_flow.x*tangent+ts_flow.y*bitangent+ts_flow.z*vertex_normal;
+                ws_flow/=length(ws_flow)+1e-6;
+                if compiled_misc.x!=0u {flow_angle+=acos(clamp(dot(pbr_input.N,ws_flow),-1.0,1.0));}
+                else {flow_angle+=acos(clamp(ts_flow.z,-1.0,1.0));}
+            }
+            var noise_mask=1.0;
+            if (flags&4u)!=0u {
+                let noise_uv=uv*surface.hair[1].w;
+                noise_mask=textureSampleGrad(hair_noise_mask,surface_sampler,noise_uv,dpdx(noise_uv),dpdy(noise_uv)).x;
+            }
+            let kajiya=cos(flow_angle)*tangent+sin(flow_angle)*bitangent;
+            let fresnel_strength=bitcast<f32>(surface.hair_flags.y);
+            let roughness=authored.roughness;
+            hair_surface=HairSurface(pbr_input.N,roughness,pbr_input.V,surface.direct.y,
+                vertex_normal,fresnel_strength,kajiya,surface.hair[4].y,
+                albedo.rgb,0.0,ward_sheen_color(albedo.rgb,surface.direct.x),noise_mask,
+                (1.0/3.14159265358979323846)*specular_mask,((flags>>4u)&1u)|(((flags>>5u)&1u)<<1u),
+                transmittance,surface.hair[0].x,
+                vec4(surface.hair[0].y,surface.hair[0].z,surface.hair[1].x,surface.hair[1].y),surface.hair[1].z,
+                surface.hair[3],surface.hair[2].w);
+            // ComputeAmbientLighting: INVPI * albedo * Fdr(IOR 1.55); an
+            // alpha surface's ambient occlusion is 1.
+            let ratio=(1.55-1.0)/(1.55+1.0);
+            specular_reflectance=vec3(ratio*ratio);
+            diffuse_response=evaluate_mapped_diffuse_response(MaterialLightingValues(albedo.rgb,
+                vec3(1.55),specular_reflectance,fresnel_strength),roughness);
+            pbr_input.diffuse_occlusion=vec3(1.0);
+            hair_ibl_tangent=hair_shift(kajiya,pbr_input.N,surface.hair[0].z);
+            // Lit pass output alpha: opaque above hairAlphaTestOpaque.
+            pbr_input.material.base_color=vec4(albedo.rgb,select(albedo.a,1.0,albedo.a>=surface.hair[4].w));
+        }
+#endif
         if compiled_misc.z==6u {
             let clip_w=(view.clip_from_world*vertex_output.world_position).w;
             var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz,clip_w);
@@ -341,13 +418,21 @@ fn fragment(
         skin_ambient_out=indirect;
         indirect=vec3(0.0);
 #endif
-        if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u || compiled_misc.z==11u {
+        if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u || compiled_misc.z==11u || compiled_misc.z==12u {
             var reflection_indices_gain=vec4(0.0);
             var reflection_barycentrics=vec2(0.0);
 #ifdef DH2_VERTEX_PROBE
             reflection_indices_gain=vertex_output.reflection_indices_gain;
             reflection_barycentrics=vertex_output.reflection_barycentrics;
 #endif
+#ifdef DH2_HAIR
+            // BRDF_hair::ComputeIndirect: HQ_ComputeIBL at hairIBL squared,
+            // weighted by the primary Kajiya-Kay lobe on the reflected view.
+            let hair_view=normalize(view.world_position-vertex_output.world_position.xyz);
+            indirect+=hair_kajiya(hair_ibl_tangent,reflect(-hair_view,pbr_input.N),hair_view,surface.hair[0].x)
+                *reflected_light(probe_index,vertex_output.world_position.xyz,pbr_input.N,hair_view,
+                surface.hair[4].x,specular_reflectance,true,reflection_indices_gain,reflection_barycentrics);
+#else
             indirect+=pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
                 pbr_input.N,normalize(view.world_position-vertex_output.world_position.xyz),
                 pbr_input.material.perceptual_roughness,specular_reflectance,
@@ -358,6 +443,7 @@ fn fragment(
                 *surface.skin[1].w
 #endif
                 ;
+#endif
         }
     }
 

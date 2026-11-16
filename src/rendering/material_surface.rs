@@ -57,6 +57,32 @@ pub enum Program {
     /// arkSSSRender: BRDF_skin lighting whose diffuse irradiance is blurred
     /// by the material's sssProgram (arkSSSBlur) before taking the albedo.
     Skin = 11,
+    /// arkHair: BRDF_hair (two shifted Kajiya-Kay lobes on the flow-map
+    /// tangent), drawn as an alpha surface.
+    Hair = 12,
+}
+
+/// arkHair / BRDF_hair inputs. Defaults are the installed renderParm
+/// declarations; images are bound only when their compile option is set.
+#[derive(Debug, Clone)]
+pub struct HairInputs {
+    /// primarySpecularPower, primarySpecularIntensity, primarySpecularShift.
+    pub primary: [f32; 3],
+    /// secondarySpecularPower, secondarySpecularIntensity, secondarySpecularShift.
+    pub secondary: [f32; 3],
+    /// specularFlowAngle (degrees).
+    pub flow_angle: f32,
+    /// specularNoiseMaskScale.
+    pub noise_mask_scale: f32,
+    /// hairIBL: the IBL roughness before HQ_ComputeIBL squares it.
+    pub ibl: f32,
+    pub fresnel_strength: f32,
+    pub translucency_coef: [f32; 4],
+    /// translucency/intensity, distortion, power, min.
+    pub translucency: [f32; 4],
+    pub flow_map: String,
+    pub specular_mask: String,
+    pub noise_mask: String,
 }
 
 /// arkSSSRender / BRDF_skin inputs beyond the arkDefault layer fields.
@@ -142,6 +168,7 @@ pub struct Surface {
     pub emissive_intensity: f32,
     pub emissive_clip: [f32; 2],
     pub skin: SkinInputs,
+    pub hair: HairInputs,
     /// arkVegetation translucencyMap, bound when translucency/enable is set
     /// and translucencyUseVertexColor is clear (renderParm defaults 0 and 1).
     pub vegetation_translucency_map: Option<String>,
@@ -284,6 +311,7 @@ impl Surface {
             Some("arksimplesprite") => Program::SimpleSprite,
             Some("arkboatvolume") => Program::BoatVolume,
             Some("arksssrender") => Program::Skin,
+            Some("arkhair") => Program::Hair,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
@@ -412,6 +440,26 @@ impl Surface {
             vegetation_translucency_map: (number(&v, "translucency/enable", 0) != 0
                 && number(&v, "translucencyusevertexcolor", 1) == 0)
                 .then(|| image(&v, "translucencymap").unwrap_or_else(|| "_default".into())),
+            hair: HairInputs {
+                primary: [vector(&v, "primaryspecularpower", [1.0])[0],
+                    vector(&v, "primaryspecularintensity", [1.0])[0],
+                    vector(&v, "primaryspecularshift", [0.0])[0]],
+                secondary: [vector(&v, "secondaryspecularpower", [1.0])[0],
+                    vector(&v, "secondaryspecularintensity", [1.0])[0],
+                    vector(&v, "secondaryspecularshift", [0.0])[0]],
+                flow_angle: vector(&v, "specularflowangle", [0.0])[0],
+                noise_mask_scale: vector(&v, "specularnoisemaskscale", [0.0])[0],
+                ibl: vector(&v, "hairibl", [0.5])[0],
+                fresnel_strength: vector(&v, "fresnelstrength", [1.0])[0],
+                translucency_coef: vector(&v, "translucencycoef", [1.4, 0.033, 0.15, 0.5]),
+                translucency: [vector(&v, "translucency/intensity", [0.0])[0],
+                    vector(&v, "translucency/distortion", [0.2])[0],
+                    vector(&v, "translucency/power", [8.0])[0],
+                    vector(&v, "translucency/min", [0.0])[0]],
+                flow_map: image(&v, "hairflowmap").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
+                specular_mask: image(&v, "hairspecularmask").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
+                noise_mask: image(&v, "hairspecularnoisemask").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
+            },
             skin: SkinInputs {
                 ward2: vector(&v, "wardroughness2", [0.0, 0.5]),
                 ward3: vector(&v, "wardroughness3", [0.0, 0.5]),
@@ -441,6 +489,9 @@ impl Surface {
     pub fn texture_parameter_name(&self, role: usize) -> &'static str {
         match role {
             0 if self.program() == Program::SimpleSprite => "texturemap",
+            34 if self.program() == Program::Hair => "hairflowmap",
+            35 if self.program() == Program::Hair => "hairspecularmask",
+            36 if self.program() == Program::Hair => "hairspecularnoisemask",
             34 => "sss/skinfresnellookup",
             35 => "diffuselookup",
             36 => "sss/mask",
@@ -557,6 +608,12 @@ impl Surface {
             if let Some(name) = &self.vegetation_translucency_map {
                 bindings.push((38, name.as_str()));
             }
+        }
+        if self.program() == Program::Hair {
+            // The compile options gating these samples are resolved with the
+            // program library at material load; binding all three is harmless.
+            bindings.extend([(34, self.hair.flow_map.as_str()), (35, self.hair.specular_mask.as_str()),
+                (36, self.hair.noise_mask.as_str())]);
         }
         if self.program() == Program::Skin {
             for (role, name) in [

@@ -65,6 +65,16 @@ pub struct SurfaceUniform {
     /// .x = 1: drawn as a particle renderer surface with direct instancing
     /// (material bank2, useDirectInstancing; 1402bace0 binds the instances).
     pub particle_instances: UVec4,
+    /// arkHair (program 12): primary power/intensity/shift and
+    /// specularFlowAngle; secondary power/intensity/shift and
+    /// specularNoiseMaskScale; translucencyCoef; translucency/intensity,
+    /// distortion, power, min; hairIBL, r_hairLuminanceHack,
+    /// r_hairAlphaTestLit, r_hairAlphaTestOpaque.
+    pub hair: [Vec4; 5],
+    /// Resolved arkHair options: .x bit 0 useFlowMap, bit 1 useSpecularMask,
+    /// bit 2 useSpecularNoiseMask, bit 3 hairTranslucencyType, bit 4
+    /// translucency/enable, bit 5 twoSidedLighting; .y fresnelStrength bits.
+    pub hair_flags: UVec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -242,6 +252,15 @@ impl From<&Surface> for SurfaceUniform {
             vegetation_translucency: Vec4::ZERO,
             vegetation_options: Vec4::ZERO,
             particle_instances: UVec4::ZERO,
+            hair: [
+                Vec4::new(s.hair.primary[0], s.hair.primary[1], s.hair.primary[2], s.hair.flow_angle),
+                Vec4::new(s.hair.secondary[0], s.hair.secondary[1], s.hair.secondary[2], s.hair.noise_mask_scale),
+                Vec4::from_array(s.hair.translucency_coef),
+                Vec4::from_array(s.hair.translucency),
+                // The cvar thresholds are written at material load.
+                Vec4::new(s.hair.ibl, 1.0, 0.0, 0.0),
+            ],
+            hair_flags: UVec4::new(0, s.hair.fresnel_strength.to_bits(), 0, 0),
         }
     }
 }

@@ -40,6 +40,8 @@ struct SurfaceUniform {
     vegetation_translucency:vec4<f32>,
     vegetation_options:vec4<f32>,
     particle_instances:vec4<u32>,
+    hair:array<vec4<f32>,5>,
+    hair_flags:vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -96,6 +98,12 @@ const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAG
 @group(#{MATERIAL_BIND_GROUP}) @binding(170) var skin_fresnel_lookup:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(172) var sss_mask:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(173) var fuzz_mask:texture_2d<f32>;
+#endif
+#ifdef DH2_HAIR
+// arkHair image roles 34 and 36: hairFlowMap and hairSpecularNoiseMask
+// (role 35, hairSpecularMask, is declared with BRDF_hair in dh2_direct).
+@group(#{MATERIAL_BIND_GROUP}) @binding(170) var hair_flow_map:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(172) var hair_noise_mask:texture_2d<f32>;
 #endif
 // translucency/mask (arkSSSRender) or translucencyMap (arkVegetation).
 @group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;

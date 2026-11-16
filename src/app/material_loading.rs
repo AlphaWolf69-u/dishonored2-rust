@@ -713,7 +713,7 @@ impl MaterialResolver<'_> {
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
-        if matches!(uniform.misc.z, 1 | 2 | 6) {
+        if matches!(uniform.misc.z, 1 | 2 | 6 | 12) {
             match self.float_vectors(bytes,["sheen","sheenImportance"]) {
                 Ok(v) => uniform.direct = Vec4::new(v[0][0],v[1][0],0.0,0.0),
                 Err(error) => eprintln!("Surface direct-light parameters unavailable {path}: {error}"),
@@ -1028,6 +1028,64 @@ impl MaterialResolver<'_> {
                 }
                 Err(error) => {
                     eprintln!("Skin program options unavailable {path}: {error}");
+                    return None;
+                }
+            }
+        }
+        if surface.program() == material_surface::Program::Hair {
+            // arkHair's compile switches resolve through its options block,
+            // the material and the registered renderParm defaults.
+            let options = (|| -> Result<[u32; 7], String> {
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let main = surface.main_program.as_deref().ok_or("hair MAIN is absent")?;
+                let overrides = material_option_overrides(library, bytes)?;
+                let mut option =
+                    |name: &[u8]| library.option_value(main.as_bytes(), &overrides, name);
+                Ok([
+                    u32::from(option(b"useFlowMap")? != 0),
+                    u32::from(option(b"useSpecularMask")? != 0),
+                    u32::from(option(b"useSpecularNoiseMask")? != 0),
+                    u32::from(option(b"hairTranslucencyType")? != 0),
+                    u32::from(option(b"translucency/enable")? != 0),
+                    u32::from(option(b"twoSidedLighting")? != 0),
+                    u32::from(option(b"hasBumpMap")? != 0),
+                ])
+            })();
+            match options {
+                Ok([flow, mask, noise, translucency_type, translucency, two_sided, bump]) => {
+                    uniform.hair_flags.x = flow | (mask << 1) | (noise << 2) | (translucency_type << 3)
+                        | (translucency << 4) | (two_sided << 5);
+                    uniform.misc.x = bump;
+                    if translucency != 0 && two_sided == 0 && surface.hair.translucency[0] != 0.0 {
+                        // BRDF_hair's one-sided translucency reads shadow-map
+                        // depth (GetShadowMapZandPos); that path is not ported.
+                        eprintln!("Hair shadow-depth translucency unported: {path}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Hair program options unavailable {path}: {error}");
+                    return None;
+                }
+            }
+            // The engine binds hairAlphaTest/hairAlphaTestOpaque and
+            // hairLuminanceHack per pass from these cvars (14031dce0).
+            let console = crate::platform::console::shared().read();
+            let value = |name: &str| console.cvars.float(name);
+            match (value("r_hairLuminanceHack"), value("r_hairAlphaTestLit"), value("r_hairAlphaTestOpaque")) {
+                (Some(hack), Some(lit), Some(opaque)) => {
+                    uniform.hair[4].y = hack;
+                    uniform.hair[4].z = lit;
+                    uniform.hair[4].w = opaque;
+                    // The lit pass clips at hairAlphaTest = r_hairAlphaTestLit.
+                    uniform.alpha.x = lit;
+                }
+                _ => {
+                    eprintln!("Hair cvars are not registered: {path}");
                     return None;
                 }
             }
