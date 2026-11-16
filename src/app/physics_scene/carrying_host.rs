@@ -474,6 +474,9 @@ impl CarryHost<'_> {
                             crate::assets::physworld::query_geometry::QueryGeometry::Polytope(
                                 polytope,
                             ) => polytope.vertices.as_slice(),
+                            crate::assets::physworld::query_geometry::QueryGeometry::Convex(
+                                convex,
+                            ) => convex.vertices.as_slice(),
                             _ => &[],
                         };
                         let prepared = prepare_instance(
@@ -563,12 +566,22 @@ impl CarryHost<'_> {
                         },
                     )?;
                 }
-                crate::assets::physworld::query_geometry::QueryGeometry::Polytope(polytope) => {
+                crate::assets::physworld::query_geometry::QueryGeometry::Polytope(_)
+                | crate::assets::physworld::query_geometry::QueryGeometry::Convex(_) => {
+                    let (source_vertices, source_radius) = match &query_shape.geometry {
+                        crate::assets::physworld::query_geometry::QueryGeometry::Polytope(
+                            polytope,
+                        ) => (polytope.vertices.as_slice(), polytope.radius),
+                        crate::assets::physworld::query_geometry::QueryGeometry::Convex(convex) => {
+                            (convex.vertices.as_slice(), convex.radius)
+                        }
+                        _ => unreachable!(),
+                    };
                     let vertices = if state.scaled {
                         self.state.vertices.clear();
                         self.state
                             .vertices
-                            .extend(polytope.vertices.iter().map(|vertex| {
+                            .extend(source_vertices.iter().map(|vertex| {
                                 std::array::from_fn(|lane| {
                                     if lane < 3 {
                                         vertex[lane] * state.transform.scale[lane]
@@ -580,7 +593,7 @@ impl CarryHost<'_> {
                             }));
                         self.state.vertices.as_slice()
                     } else {
-                        polytope.vertices.as_slice()
+                        source_vertices
                     };
                     let request = WorldConvexRequest {
                         cast: ConvexCast {
@@ -590,7 +603,7 @@ impl CarryHost<'_> {
                                 radius: if state.scaled {
                                     state.radius
                                 } else {
-                                    polytope.radius
+                                    source_radius
                                 },
                             },
                             transform: state.transform.world_from_local,

@@ -46,6 +46,8 @@ pub(super) mod breakable;
 pub(super) mod carrying_host;
 pub(super) mod carrying_resources;
 pub(super) mod sound_volumes;
+pub(super) mod damage_zone;
+mod occluded_sensor;
 pub(super) mod damage;
 mod loot;
 pub(super) mod document_hierarchy;
@@ -59,6 +61,7 @@ mod interaction_components;
 pub(super) mod interaction_queries;
 pub(super) mod level_bodies;
 pub(super) mod player_reference;
+mod equipment_reference;
 pub(super) mod preparation;
 pub(super) mod projectiles;
 pub(super) mod rigid_actor;
@@ -117,8 +120,8 @@ pub(super) struct PhysicsScene {
         crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 18],
-    classes: [i32; 18],
+    factories: [u32; 19],
+    classes: [i32; 19],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -142,6 +145,8 @@ pub(super) struct PhysicsScene {
     prepared_breakables: Vec<super::runtime_entities::PreparedBreakable>,
     prepared_sound_volumes: Vec<super::runtime_entities::PreparedSoundVolume>,
     sound_volumes: ComponentPool<crate::gameplay::sound::volume_control::Component>,
+    damage_zones: ComponentPool<crate::gameplay::damage_zone::Component>,
+    damage_zone_effects: HashMap<(u64, u32), damage_zone::FxState>,
     projectiles: ComponentPool<super::projectiles::Component>,
     level_bodies: ComponentPool<level_bodies::PhysicsWorldComponent>,
     animations: ComponentPool<runtime_animation::AnimBaseComponent>,
@@ -171,6 +176,7 @@ pub(super) struct PhysicsScene {
     area_range: [i32; 2],
     dependency_ranges: [[i32; 2]; 2],
     queries: CollisionQueries<WorldPointRequest, ShapePointContact>,
+    sensor_queries: Option<occluded_sensor::SensorQueries>,
     executor: WorldPointQuery,
     retirement: Option<lifetime::Retirement>,
     gameplay_component_drain: Option<lifetime::Retirement>,
@@ -423,6 +429,7 @@ impl PhysicsScene {
             factory(b"arkCpntAnimBase")?,
             factory(b"arkCpntHealthDoor")?,
             factory(b"arkCpntSoundVolumeControl")?,
+            factory(b"arkCpntDamageZone")?,
         ];
         let names = types
             .classes()
@@ -447,8 +454,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 18];
-        for i in 0..18 {
+        let mut classes = [0; 19];
+        for i in 0..19 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -503,6 +510,11 @@ impl PhysicsScene {
             .collect::<HashMap<_, _>>();
         let constants = crate::assets::physics_material::MaterialConstants::acquire(catalog)?;
         let mut materials = crate::gameplay::materials::MaterialOwner::new(constants, 16)?;
+        //0932d0 writes08b6d0's code-resource declaration into preset0+60.
+        //The registered descriptor142283fc8 names default_preset; ordinary
+        //surfaces with no physics override legitimately keep material ID0.
+        let default_preset = materials.declaration_with_texts(catalog, "default_preset", texts)?;
+        materials.bind_default_preset(default_preset)?;
         let declaration =
             materials.declaration_with_texts(catalog, "narrow_phase_trigger", texts)?;
         let trigger_material = materials.resolve(declaration, |_, _, _, _| {
@@ -559,6 +571,8 @@ impl PhysicsScene {
             prepared_breakables: Vec::new(),
             prepared_sound_volumes: Vec::new(),
             sound_volumes: types.create_pool(factories[17], &cvars.cvars)?,
+            damage_zones: types.create_pool(factories[18], &cvars.cvars)?,
+            damage_zone_effects: HashMap::new(),
             throwables: types.create_pool(factories[12], &cvars.cvars)?,
             projectiles: types.create_pool(factories[13], &cvars.cvars)?,
             level_bodies: types.create_pool(factories[14], &cvars.cvars)?,
@@ -605,6 +619,7 @@ impl PhysicsScene {
             area_range,
             dependency_ranges,
             queries: CollisionQueries::default(),
+            sensor_queries: Some(occluded_sensor::SensorQueries::default()),
             executor: WorldPointQuery::new(u32::MAX)?,
             retirement: None,
             gameplay_component_drain: None,
@@ -1287,6 +1302,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.health_doors.get(handle.slot).map(|v| &v.base.owner)
         } else if handle.class_id == self.classes[17] {
             self.sound_volumes.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[18] {
+            self.damage_zones.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -1332,6 +1349,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.health_doors.get_mut(handle.slot).map(|v| &mut v.base.owner)
         } else if handle.class_id == self.classes[17] {
             self.sound_volumes.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[18] {
+            self.damage_zones.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -1591,6 +1610,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.health_doors.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[17] {
                     self.sound_volumes.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[18] {
+                    self.damage_zones.schedule(handle.slot)?;
                 } else {
                     return Err("scheduled physics component class is unsupported".into());
                 }

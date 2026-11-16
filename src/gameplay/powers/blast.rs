@@ -315,11 +315,18 @@ impl CapsuleQuery {
         }
         let shape = shapes.get(item)?;
         match &shape.geometry {
-            QueryGeometry::Polytope(polytope) => {
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) => {
+                let (vertices, radius) = match &shape.geometry {
+                    QueryGeometry::Polytope(polytope) => {
+                        (polytope.vertices.as_slice(), polytope.radius)
+                    }
+                    QueryGeometry::Convex(convex) => (convex.vertices.as_slice(), convex.radius),
+                    _ => unreachable!(),
+                };
                 let support = self.support.prepare(ConvexSupportInput {
                     shape_type: shape.header.shape_type,
-                    vertices: &polytope.vertices,
-                    radius: polytope.radius,
+                    vertices,
+                    radius,
                     scaled: state.scaled.then_some(ConvexSupportScale {
                         scale: state.transform.scale[..3].try_into().unwrap(),
                         offset: state.transform.offset[..3].try_into().unwrap(),
@@ -425,6 +432,7 @@ impl CapsuleQuery {
                     let child = shapes.get(instance.shape)?;
                     let vertices = match &child.geometry {
                         QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                        QueryGeometry::Convex(p) => p.vertices.as_slice(),
                         _ => &[],
                     };
                     let prepared = prepare_instance(

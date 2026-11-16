@@ -194,6 +194,7 @@ mod player_lifetime;
 mod power_execution;
 mod player_damage;
 mod entity_messages;
+mod damage_zones;
 mod player_statistics;
 mod blink;
 mod far_reach;

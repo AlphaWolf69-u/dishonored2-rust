@@ -1,4 +1,4 @@
-//! 752900/878fd0 binding admission for the actual ancestors of readables.
+//! 752900/878fd0 binding admission for actual admitted scene actors.
 //! The renderer owns sampled joint frames; this owner retains identities and
 //! local offsets only, never another skin, clip, physics world or model cache.
 use super::*;
@@ -46,36 +46,142 @@ impl DocumentHierarchy {
     }
 }
 
-pub(in crate::app) fn joint_requests(document: &entities::Document,
-    interactions: Option<&super::super::interactions::Interactions>, models: &[entities::PlacedModel])
-    -> Result<Vec<(usize, String, Option<String>)>, String> {
-    let Some(interactions) = interactions else { return Ok(Vec::new()); };
-    let authored = entities::resolved_entity_binds(document).into_iter().map(|binding| (binding.entity_id.clone(), binding))
-        .collect::<HashMap<_, _>>();
-    let placements = models.iter().enumerate().map(|(index, model)| (model.id.as_str(), index)).collect::<HashMap<_, _>>();
-    let mut requests = Vec::new();
-    for readable in &interactions.readable {
+///The same parent-first closure is used by joint preparation and actual actor
+///admission. A binding added by one concrete component family must not miss
+///its parent's tag/joint demand merely because it is not a readable.
+fn ordered_bindings<'a>(
+    authored: &HashMap<String, entities::EntityBind>,
+    seeds: impl Iterator<Item = &'a str>,
+) -> Result<Vec<String>, String> {
+    let mut requested = std::collections::HashSet::new();
+    let mut ordered = Vec::new();
+    for seed in seeds {
         let mut path = Vec::new();
-        let mut next = readable.entity.as_str();
+        let mut next = seed;
         while let Some(binding) = authored.get(next) {
-            if path.contains(&next) { return Err("cyclic readable entity binding".into()); }
-            path.push(next);
-            if let Some(tag) = &binding.tag {
-                let placement = *placements.get(binding.parent.as_str()).ok_or("bound tag parent render placement absent")?;
-                // 879890 selects the parent md6 property group by the bound
-                // child's model; a child without one uses _info.
-                let group = placements.get(next).map(|&child| models[child].resource_path.clone());
-                if !requests.iter().any(|(index, name, old)| *index == placement && name == tag && *old == group) {
-                    requests.push((placement, tag.clone(), group));
-                }
+            if path.iter().any(|name: &String| name == next) {
+                return Err("cyclic entity binding".into());
             }
+            path.push(next.to_owned());
             next = &binding.parent;
+        }
+        for name in path.into_iter().rev() {
+            if requested.insert(name.clone()) {
+                ordered.push(name);
+            }
+        }
+    }
+    Ok(ordered)
+}
+
+///878470 tests the actual parent's model type, independently of visibility.
+///A hidden model can be absent from render placements while still owning an
+///MD6 skeleton; resolve its authored descriptor rather than inventing a root.
+fn binding_model_path<'a>(catalog:&archive::Catalog,definition:&entities::Definition,
+    projection:Option<&'a entities::PlacedModel>)->Result<Option<std::borrow::Cow<'a,str>>,String>{
+    if let Some(model)=projection{return Ok(Some(std::borrow::Cow::Borrowed(&model.resource_path)));}
+    Ok(entities::model_descriptor(definition,|path|crate::assets::declaration_texts::read_common_or_catalog(catalog,path))?
+        .map(|model|std::borrow::Cow::Owned(model.resource_path)))
+}
+
+pub(in crate::app) fn joint_requests(
+    document: &entities::Document,
+    interactions: Option<&super::super::interactions::Interactions>,
+    models: &[entities::PlacedModel],
+) -> Result<Vec<(usize, String, Option<String>)>, String> {
+    let Some(interactions) = interactions else {
+        return Ok(Vec::new());
+    };
+    let authored = entities::resolved_entity_binds(document)
+        .into_iter()
+        .map(|binding| (binding.entity_id.clone(), binding))
+        .collect::<HashMap<_, _>>();
+    let placements = models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| (model.id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let declarations = document
+        .definitions
+        .iter()
+        .filter(|definition| definition.kind == "component")
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<HashMap<_, _>>();
+    let definitions=document.definitions.iter().filter(|definition|definition.kind=="entity")
+        .map(|definition|(definition.id.as_str(),definition)).collect::<HashMap<_,_>>();
+    let mut seeds = interactions
+        .readable
+        .iter()
+        .map(|readable| readable.entity.as_str())
+        .chain(
+            interactions
+                .actors
+                .iter()
+                .map(|actor| actor.entity.as_str()),
+        )
+        .collect::<Vec<_>>();
+    //These are precisely the source families which allocate additional Scene
+    //headers before prepare_document_hierarchy: document rigid/Throwable,
+    //audio, and trigger placements (including their water/wind components).
+    //Read class identity only; this does not decode or retain a second asset.
+    for definition in document
+        .definitions
+        .iter()
+        .filter(|definition| definition.kind == "entity")
+    {
+        let entries = entities::scene_motion::child(
+            entities::scene_motion::child(&definition.fields, "edit"),
+            "m_componentDecls",
+        );
+        for (_, value) in entries
+            .iter()
+            .filter(|(slot, _)| slot.starts_with("item_add["))
+        {
+            let Some(entry) = entities::scope(Some(value)) else {
+                continue;
+            };
+            if matches!(
+                entities::components::entry_class(entry, &declarations)?.as_deref(),
+                Some("cpntrigidbody" | "cpntthrowable" | "cpntrigidbodythrowable" | "cpntaudio" | "cpnttrigger")
+            ) {
+                seeds.push(definition.id.as_str());
+                break;
+            }
+        }
+    }
+    let mut requests = Vec::new();
+    for name in ordered_bindings(&authored, seeds.into_iter())? {
+        let binding = &authored[&name];
+        if let Some(tag) = &binding.tag {
+            let parent=definitions.get(binding.parent.as_str()).ok_or("bound parent source absent")?;
+            let model=binding_model_path(&interactions.catalog,parent,placements.get(binding.parent.as_str()).map(|&index|&models[index]))?;
+            if model.as_deref().and_then(crate::bmd6::declaration_path).is_none(){continue;}
+            let placement = *placements
+                .get(binding.parent.as_str())
+                .ok_or_else(||format!("hidden MD6 bound parent has no prepared pose owner: {}",binding.parent))?;
+            // 879890 selects the parent md6 property group by the bound
+            // child's model; a child without one uses _info.
+            let child=definitions.get(binding.entity_id.as_str()).ok_or("bound child source absent")?;
+            let group=binding_model_path(&interactions.catalog,child,placements.get(binding.entity_id.as_str()).map(|&index|&models[index]))?
+                .map(std::borrow::Cow::into_owned);
+            if !requests
+                .iter()
+                .any(|(index, name, old)| *index == placement && name == tag && *old == group)
+            {
+                requests.push((placement, tag.clone(), group));
+            }
         }
     }
     Ok(requests)
 }
 
 impl PhysicsScene {
+    pub(in crate::app) fn bound_render_entities(&self) -> impl Iterator<Item = &str> {
+        self.document_hierarchy.bindings.iter()
+            .filter(|binding| self.rigid_placements.contains_key(&binding.child))
+            .map(|binding| self.entities[binding.child].name.as_str())
+    }
+
     pub(super) fn validate_document_hierarchy(&self, live: &LiveEntities, child: usize) -> Result<(), String> {
         let entity = self.entities.get(child).ok_or("bound document entity absent")?;
         let expected = self.document_hierarchy.bindings.iter().find(|binding| binding.child == child);
@@ -139,20 +245,7 @@ impl PhysicsScene {
             .collect::<HashMap<_, _>>();
         let placements = models.iter().enumerate().map(|(index, model)| (model.id.as_str(), index))
             .collect::<HashMap<_, _>>();
-        let mut requested = std::collections::HashSet::new();
-        let mut ordered = Vec::new();
-        for entity in &self.entities {
-            let mut path = Vec::new();
-            let mut next = entity.name.as_str();
-            while let Some(binding) = authored.get(next) {
-                if path.iter().any(|name: &String| name == next) { return Err("cyclic readable entity binding".into()); }
-                path.push(next.to_owned());
-                next = &binding.parent;
-            }
-            for name in path.into_iter().rev() {
-                if requested.insert(name.clone()) { ordered.push(name); }
-            }
-        }
+        let ordered = ordered_bindings(&authored, self.entities.iter().map(|entity| entity.name.as_str()))?;
         for name in ordered {
             let binding = &authored[&name];
             for name in [&binding.parent, &binding.entity_id] {
@@ -180,11 +273,23 @@ impl PhysicsScene {
             self.document_hierarchy.render_frames.insert(parent, self.entities[parent].frame.pose);
             self.document_hierarchy.render_frames.insert(child, self.entities[child].frame.pose);
             let placement = placements.get(binding.parent.as_str()).copied();
-            let (joint, offset, orientation) = if let Some(tag) = &binding.tag {
-                let placement = placement.ok_or("bound tag parent has no render placement")?;
-                let group = placements.get(binding.entity_id.as_str()).map(|&child| models[child].resource_path.as_str());
-                let selected = joint_frames.resolve(placement, group, tag)?.ok_or_else(|| format!("bound parent joint absent: {}:{tag}", binding.parent))?;
-                if selected.from_tag {
+            //752900 bypasses tag/bone lookup when878470 rejects type2.
+            let skeletal=if binding.tag.is_some(){
+                let parent_source=definitions.get(binding.parent.as_str()).ok_or("bound parent source absent")?;
+                binding_model_path(&interactions.catalog,parent_source,placement.map(|index|&models[index]))?
+                    .as_deref().and_then(crate::bmd6::declaration_path).is_some()
+            }else{false};
+            let (joint, offset, orientation) = if let Some(tag) = binding.tag.as_ref().filter(|_|skeletal) {
+                let placement = placement.ok_or_else(||format!("hidden MD6 bound parent has no prepared pose owner: {}",binding.parent))?;
+                let child_source=definitions.get(binding.entity_id.as_str()).ok_or("bound child source absent")?;
+                let group=binding_model_path(&interactions.catalog,child_source,placements.get(binding.entity_id.as_str()).map(|&index|&models[index]))?;
+                let selected = joint_frames.resolve(placement, group.as_deref(), tag)?.ok_or_else(|| format!("bound parent joint absent: {}:{tag}", binding.parent))?;
+                if selected.joint < 0 {
+                    //752900 retains -1 when the actual tag and bone are both
+                    //absent, then753182 computes ordinary parent-local binding.
+                    let (offset, orientation) = relative_binding(self.entities[parent].frame.pose, self.entities[child].frame.pose);
+                    (-1, offset, orientation)
+                } else if selected.from_tag {
                     self.entities[child].frame.pose = joint_frames.bound_frame(placement, selected.joint, 0,
                         selected.offset, selected.orientation, self.entities[parent].frame.pose)?
                         .ok_or("prepared tag frame is absent")?;

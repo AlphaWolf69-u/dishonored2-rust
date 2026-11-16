@@ -30,6 +30,7 @@ pub(super) fn from_resolved(
     fields: &[(String, entities::Value)],
     read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Resolved, String> {
+    let result = (|| {
     let mut animation = None;
     let mut defaults = DeclarationScheduling::from_base_flags(0);
     if kind == "cpntaudio" {
@@ -45,7 +46,9 @@ pub(super) fn from_resolved(
                 scheduling: scheduling.clone(),
             })),
         ),
-        "cpntrigidbodythrowable" => {
+        //Installed entityDef references use .cpntrigidbodythrowable; placed
+        //map component records serialize the same actual class cpntThrowable.
+        "cpntrigidbodythrowable" | "cpntthrowable" => {
             let value = assets::throwable::Definition::from_resolved(
                 catalog,
                 entity,
@@ -63,6 +66,8 @@ pub(super) fn from_resolved(
             let value = Arc::new(assets::breakable::Definition::read(&fields)?);
             ("arkCpntBreakable", Kind::Breakable(value))
         }
+        "cpntdamagezone"=>("arkCpntDamageZone",Kind::DamageZone(Arc::new(
+            crate::gameplay::damage_zone::Definition::read(catalog,fields)?))),
         "cpntsoundvolumecontrol" => (
             "arkCpntSoundVolumeControl",
             Kind::SoundVolume(Arc::new(
@@ -167,7 +172,7 @@ pub(super) fn from_resolved(
                 .is_some_and(|name| name.eq_ignore_ascii_case(native.as_bytes()))
         })
         .ok_or_else(|| format!("{entity}: installed component factory {native} is absent"))?;
-    Ok(Resolved {
+    Ok::<_, String>(Resolved {
         component: Component {
             slot: slot.to_owned(),
             declaration: declaration.to_owned(),
@@ -179,6 +184,8 @@ pub(super) fn from_resolved(
         },
         animation,
     })
+    })();
+    result.map_err(|error| format!("{entity}: component slot {slot}, declaration {declaration}: {error}"))
 }
 
 impl Component {
@@ -212,9 +219,10 @@ impl Component {
         let declarations = HashMap::new();
         let kind = entities::components::entry_class(&entry, &declarations)?
             .ok_or("attached component declaration has no class suffix")?;
+        let declaration_kind = catalog.component_declaration_kind(&kind)?.to_ascii_lowercase();
         let fields = entities::components::entry_fields(
             &entry,
-            &kind,
+            &declaration_kind,
             &declarations,
             &mut HashMap::new(),
             &mut read,

@@ -450,15 +450,17 @@ impl PrePhysicsWorld for RigidPostHost<'_> {
         Ok(self.live.children(self.entity(entity)?.shared)?.len())
     }
     fn child_entity(&self, entity: usize, index: usize) -> Result<usize, String> {
+        let parent = self.entity(entity)?;
         let id = *self
             .live
-            .children(self.entity(entity)?.shared)?
+            .children(parent.shared)?
             .get(index)
             .ok_or("bound descendant index is absent")?;
         self.indices
             .get(&id)
             .copied()
-            .ok_or_else(|| "bound descendant has no actual scene owner".into())
+            .ok_or_else(|| format!("bound descendant has no actual scene owner: parent={} {:?}, child={} {id:?}, child_index={index}",
+                parent.name, parent.shared, self.live.get(id).map_or("<stale generation>", |(name, _)|name)))
     }
     fn actor_for_entity(
         &mut self,

@@ -67,6 +67,19 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     pub fn get(&self, handle: usize) -> Option<&PhysicsMaterial> {
         self.declarations.get(handle).map(|definition| definition.material())
     }
+    ///0932d0 binds08b6d0's registered physicsMaterial code resource to the
+    ///existing preset0 record after world construction. Only record+60 is
+    ///written: this is not conversion, addition or replacement of its solver
+    ///coefficients. The same declaration owner retains the resource lease.
+    pub(crate) fn bind_default_preset(&mut self, handle: usize) -> Result<(), String> {
+        self.get(handle).ok_or("default physics material declaration is absent")?;
+        let identity = u64::try_from(handle).map_err(|_| "default physics material handle overflow")?
+            .checked_add(1).ok_or("default physics material handle overflow")?;
+        let preset = self.library.records.first_mut().ok_or("default physics material preset is absent")?;
+        preset.words[14] = identity as u32;
+        preset.words[15] = (identity >> 32) as u32;
+        Ok(())
+    }
     /// Admission appends canonical definitions even when physical records can
     /// share values. Contact dependency consumers observe this owner revision.
     pub(crate) fn declaration_revision(&self) -> usize { self.declarations.len() }

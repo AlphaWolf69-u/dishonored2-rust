@@ -86,6 +86,8 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
                 crate::gameplay::motion_info::calculate_compound_mass(config, shape.bounds),
             physworld::query_geometry::QueryGeometry::Polytope(polytope) =>
                 physworld::mass::convex::calculate(&polytope.vertices, polytope.radius, config, shape.bounds),
+            physworld::query_geometry::QueryGeometry::Convex(convex) =>
+                physworld::mass::convex::calculate(&convex.vertices, convex.radius, config, shape.bounds),
             physworld::query_geometry::QueryGeometry::CompressedMesh(_) =>
                 Err("compressed world mesh has no dynamic mass calculator".into()),
         }.map_err(|error| format!("{}: {error}", shape.path))
@@ -254,7 +256,7 @@ impl TriggerAssets {
         let header = root_shape.header;
         let is_mutable = match &root_shape.geometry {
             QueryGeometry::Compound(shape) => shape.is_mutable,
-            QueryGeometry::Polytope(_) | QueryGeometry::CompressedMesh(_) => false,
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) | QueryGeometry::CompressedMesh(_) => false,
         };
         let identity = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
         let bounds = query_shapes.bounds(query_shapes.root(), identity)?;

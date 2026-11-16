@@ -442,6 +442,26 @@ impl PhysicsScene {
             .set_thrown(thrown);
         Ok(true)
     }
+    ///7ed9a0/7ecc90 needs this owner's accepted step journal finished before
+    ///destruction. The host's global command dispatcher is not a prerequisite
+    ///for retiring unrelated actors: inspect their canonical component list.
+    pub(in crate::app) fn entity_has_pending_breakable_effect(&self, id: EntityId) -> bool {
+        self.shared_indices.get(&id).is_some_and(|&index| {
+            self.entities[index]
+                .components
+                .entries
+                .values()
+                .iter()
+                .filter_map(|&packed| ComponentHandle::from_packed(packed).ok())
+                .filter(|handle| handle.class_id == self.classes[11])
+                .any(|handle| {
+                    self.breakables
+                        .get(handle.slot)
+                        .is_some_and(|component| component.runtime.pending().is_some())
+                })
+        })
+    }
+
     /// The exclusive host borrows this source command, then acknowledges it
     /// only after its canonical entity/model/physics/FX operation succeeds.
     pub(in crate::app) fn pending_breakable_effect(

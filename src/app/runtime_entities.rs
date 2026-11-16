@@ -20,6 +20,7 @@ use std::{
 };
 
 mod placed;
+mod actor_class;
 pub(in crate::app) use placed::SoundVolume as PreparedSoundVolume;
 pub(in crate::app) use placed::{Child as PreparedBreakableChild, Prepared as PreparedBreakable};
 
@@ -103,6 +104,8 @@ struct Actor {
     children: Vec<EntityId>,
     release: Option<super::physics_scene::runtime_entities::Retirement>,
     stick: Option<Box<StickAdmission>>,
+    dynamic: Option<actor_class::Dynamic>,
+    breakable_class: Option<actor_class::Breakable>,
 }
 #[derive(Default)]
 struct StickAdmission {
@@ -134,7 +137,19 @@ pub(super) struct RuntimeEntities {
 fn key(definition: &Definition) -> PrototypeKey {
     scaled_key(definition, None)
 }
-///The actual idEntity/arkProjectile event tables contain no pickedUp301
+pub(in crate::app) fn spawn_class(world: &mut World, id: EntityId) -> Result<bool, String> {
+    actor_class::spawn(world, id)
+}
+///875290 calls the concrete +128 slot, then posts normal ARK_MSG_ACTIVATED C5.
+pub(super) fn activate(world: &mut World, id: EntityId) -> Result<(), String> {
+    with_scene(world, |world, scene, live, events| {
+        scene.activate_runtime_actor(world, live, events, id)
+    })
+}
+pub(in crate::app) fn activate_class(world: &mut World, id: EntityId) -> Result<bool, String> {
+    actor_class::activate(world, id)
+}
+///The actual idEntity/arkProjectile/idDynamicEntity/arkBreakable event tables contain no pickedUp301
 ///handler (8cf620/914fb0). Other concrete classes need their own proof.
 pub(super) fn picked_up_builtin_absent(world: &World, id: EntityId) -> Result<bool, String> {
     let live = world
@@ -173,7 +188,7 @@ pub(super) fn picked_up_builtin_absent(world: &World, id: EntityId) -> Result<bo
         return Err("pickedUp source class spelling differs from actual metadata".into());
     }
     match actual {
-        b"idEntity" | b"arkProjectile" => Ok(true),
+        b"idEntity" | b"arkProjectile" | b"idDynamicEntity" | b"arkBreakable" => Ok(true),
         _ => Err(format!(
             "pickedUp builtin dispatch is not verified for {}",
             String::from_utf8_lossy(actual)
@@ -206,10 +221,12 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         .catalog
         .clone()
         .ok_or("runtime entity catalog is absent")?;
-    let texts = world
-        .remove_resource::<super::level_prepare::PreparedPhysicsTexts>()
-        .ok_or("runtime entities require the prepared physics declaration owner")?
-        .0;
+    // Scene preparation has transferred the preload seed into ContactSounds.
+    // Runtime acquisition starts after that handoff and borrows the canonical
+    // common text snapshot. Typed declaration/shape owners still coalesce
+    // resident resources; do not duplicate or recover the consumed seed.
+    let language = crate::assets::lang::read_text_language(catalog.base())?;
+    let texts = crate::assets::declaration_texts::PhysicsSeed::new(&catalog, language);
     let source = Arc::new(Mutex::new(SourceWorker {
         shapes: crate::physworld::source::ShapeSources::new(&catalog),
         texts,
@@ -248,6 +265,7 @@ fn effect_paths(definition: &Definition) -> Vec<String> {
         match &component.kind {
             Kind::Projectile(value) => paths.extend(value.effect_paths().map(str::to_owned)),
             Kind::Breakable(value) => paths.extend(value.fx_paths().map(str::to_owned)),
+            Kind::DamageZone(value)=>paths.extend(value.effect_paths().map(str::to_owned)),
             _ => {}
         }
     }
@@ -301,10 +319,10 @@ fn request_inner(
     override_scale: Option<[f32; 3]>,
     admitted: &mut Vec<(PrototypeKey, Arc<str>)>,
 ) -> Result<(), String> {
-    if !matches!(definition.class.as_str(), "idEntity" | "arkProjectile") {
+    if !matches!(definition.class.as_str(), "idEntity" | "arkProjectile" | "idDynamicEntity" | "arkBreakable") {
         return Err(format!(
-            "runtime actor class {} has no actual constructor adapter",
-            definition.class
+            "runtime actor {} class {} has no actual constructor adapter",
+            definition.entity, definition.class
         ));
     }
     let scale = entity_scale(&definition, override_scale);
@@ -806,7 +824,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
 }
 /// Borrow the sole gameplay owners together; a missing later owner never
 /// drops owners already removed from World on an error path.
-fn with_scene<T>(
+pub(super) fn with_scene<T>(
     world: &mut World,
     callback: impl FnOnce(
         &mut World,
@@ -888,6 +906,10 @@ fn spawn_inner(
             children: Vec::new(),
             release: None,
             stick: None,
+            dynamic: (definition.class == "idDynamicEntity")
+                .then(|| actor_class::Dynamic::new(definition.hide_on_spawn)),
+            breakable_class: (definition.class == "arkBreakable")
+                .then(|| actor_class::Breakable::new(definition.navmesh_static_cutting)),
         },
     );
     let result: Result<(), String> = (|| {
@@ -927,7 +949,7 @@ fn spawn_inner(
         }
         with_scene(world, |world, scene, live, events| {
             scene.admit_runtime_actor(
-                world, live, events, id, definition, &resources, &items, &chunks, projectile,
+                world, live, events, id, definition.clone(), &resources, &items, &chunks, projectile,
                 false, false,
             )
         })?;
@@ -942,10 +964,12 @@ fn spawn_inner(
                 pending.extend(actor.children.iter().copied());
             }
         }
-        return Err(format!("runtime entity construction {id:?}: {error}"));
+        return Err(format!("runtime entity construction {} class {} {id:?}: {error}",
+            definition.entity, definition.class));
     }
     if model.is_some() {
-        super::world_models::update(world, id, options.frame, !options.hidden_disabled)?;
+        let visible = with_scene(world, |_, scene, live, _| scene.runtime_actor_visible(live, id))?;
+        super::world_models::update(world, id, options.frame, visible)?;
     }
     let mut owner = world.resource_mut::<RuntimeEntities>();
     let actor = owner
@@ -1161,6 +1185,8 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
             children: Vec::new(),
             release: None,
             stick: None,
+            dynamic: None,
+            breakable_class: None,
         });
         if !actor.removing {
             super::projectiles::begin_retirement(world, id);

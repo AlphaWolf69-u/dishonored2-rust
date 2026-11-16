@@ -117,3 +117,6 @@ pub mod explosions;
 pub mod compressed_mesh_query;
 
 pub mod water_forces;
+pub mod occluded_sensor;
+
+pub mod damage_zone;

@@ -10,6 +10,7 @@ use crate::gameplay::{
 use bevy::prelude::*;
 #[derive(Clone, Copy)]
 enum Function {
+    Activate,
     Remove,
     RemoveOrGhost,
     RemoveWhenHidden { retry_delay:f32, retries:i32 },
@@ -68,6 +69,11 @@ pub(super) fn enqueue_removal(
 ) -> Result<(), String> {
     enqueue(world, target, delay, Function::Remove)
 }
+///Reflected activate uses the same deferred function manager as removal;
+///875290 dispatches the concrete class hook and its normal C5 notification.
+pub(super) fn enqueue_activation(world: &mut World, target: EntityId, delay: f32) -> Result<(), String> {
+    enqueue(world, target, delay, Function::Activate)
+}
 ///883f60 -> idEntity8cf620 caseB2 ->876ff0. Keep this source event
 ///distinct from Remove; actual declared AITampering changes its result.
 pub(super) fn enqueue_remove_or_ghost(world: &mut World, target: EntityId, delay: f32) -> Result<(), String> {
@@ -110,6 +116,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             // source already removed this target; never resolve by recycled name.
             if world.resource::<LiveEntities>().get(entry.target).is_some() {
                 match entry.function {
+                    Function::Activate => super::runtime_entities::activate(world, entry.target)?,
                     Function::Remove => {
                         world.resource_mut::<LiveEntities>().request_removal(entry.target)?;
                         //884980 invokes the native function, then883d10 sends

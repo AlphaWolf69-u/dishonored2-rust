@@ -5,13 +5,6 @@ use crate::gameplay::{
     entity_events::EntityEvents,
     entity_lifetime::{EntityId, LiveEntities},
 };
-#[derive(Clone)]
-struct SourceSlot {
-    key: String,
-    map: Option<bool>,
-    inherited: Option<bool>,
-}
-
 impl PhysicsScene {
     /// Metadata certificates retain only class presence, not parsed source
     /// trees. Inherited source chains are resolved once per distinct resource.
@@ -20,69 +13,30 @@ impl PhysicsScene {
         catalog: &archive::Catalog,
         document: &entities::Document,
     ) -> Result<(), String> {
-        use entities::scene_motion::{atom, child};
+        use entities::components::ComponentList;
         let declarations = document
             .definitions
             .iter()
             .filter(|definition| definition.kind == "component")
             .map(|definition| (definition.id.as_str(), definition))
             .collect::<HashMap<_, _>>();
-        fn overlay(
-            slots: &mut Vec<SourceSlot>,
-            fields: &[(String, entities::Value)],
-            declarations: &HashMap<&str, &entities::Definition>,
-        ) -> Result<(), String> {
-            for (key, value) in child(child(fields, "edit"), "m_componentDecls") {
-                let Some(slot) = key
-                    .strip_prefix("item_add[")
-                    .or_else(|| key.strip_prefix("item_override["))
-                    .and_then(|key| key.strip_suffix(']'))
-                else {
-                    continue;
-                };
-                let entities::Value::Scope(entry) = value else {
-                    return Err("removal component metadata is not a scope".into());
-                };
-                if !entry
-                    .iter()
-                    .any(|(key, _)| key == "inheritedDecl" || key == "mapComponentDecl")
-                {
-                    continue;
-                }
-                let index =
-                    if let Some(index) = slots.iter().position(|current| current.key == slot) {
-                        index
-                    } else {
-                        slots.push(SourceSlot {
-                            key: slot.to_owned(),
-                            map: None,
-                            inherited: None,
-                        });
-                        slots.len() - 1
-                    };
-                if let Some(name) = atom(entry, "mapComponentDecl") {
-                    let declaration = declarations
-                        .get(name)
-                        .ok_or_else(|| format!("removal metadata map component absent: {name}"))?;
-                    slots[index].map =
-                        Some(declaration.class.eq_ignore_ascii_case("cpntAITampering"));
-                }
-                if let Some(name) = atom(entry, "inheritedDecl") {
-                    slots[index].inherited =
-                        Some(name.rsplit_once('.').is_some_and(|(_, class)| {
-                            class.eq_ignore_ascii_case("cpntAITampering")
-                        }));
-                }
+        //014850 skips entityDef parent lookup when the authored idStr is
+        //empty;022fd0 makes the same length check before generic inheritance.
+        //An explicit malformed value or a nonempty missing path is not that
+        //absence case and must remain an acquisition error.
+        fn parent(fields:&[(String,entities::Value)])->Result<Option<&str>,String>{
+            match entities::field(fields,"inherit"){
+                None=>Ok(None),
+                Some(entities::Value::Atom(value))=>Ok(Some(value.trim_matches('"')).filter(|name|!name.is_empty())),
+                Some(_)=>Err("removal metadata entity inheritance is not a string".into()),
             }
-            Ok(())
         }
         fn inherited(
             catalog: &archive::Catalog,
             name: &str,
-            declarations: &HashMap<&str, &entities::Definition>,
-            cache: &mut HashMap<String, Arc<Vec<SourceSlot>>>,
+            cache: &mut HashMap<String, Arc<ComponentList>>,
             stack: &mut Vec<String>,
-        ) -> Result<Arc<Vec<SourceSlot>>, String> {
+        ) -> Result<Arc<ComponentList>, String> {
             let path = format!("generated/decls/entitydef/{name}.decl");
             let key = path.replace('\\', "/").to_ascii_lowercase();
             if let Some(slots) = cache.get(&key) {
@@ -96,12 +50,14 @@ impl PhysicsScene {
                 .ok_or_else(|| format!("removal metadata source absent: {path}"))?;
             let fields =
                 entities::parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
-            let mut slots = if let Some(parent) = atom(&fields, "inherit") {
-                (*inherited(catalog, parent, declarations, cache, stack)?).clone()
+            let mut slots = if ComponentList::expands(&fields).map_err(|error|format!("{path}: {error}"))? {
+                if let Some(parent) = parent(&fields).map_err(|error|format!("{path}: {error}"))? {
+                    (*inherited(catalog, parent, cache, stack)?).clone()
+                } else { ComponentList::default() }
             } else {
-                Vec::new()
+                ComponentList::default()
             };
-            overlay(&mut slots, &fields, declarations)?;
+            slots.apply(&fields,true,&path)?;
             stack.pop();
             let slots = Arc::new(slots);
             cache.insert(key, slots.clone());
@@ -125,17 +81,24 @@ impl PhysicsScene {
             let Some(definition) = definitions.get(entity.name.as_str()) else {
                 continue;
             };
-            let mut slots = if let Some(parent) = atom(&definition.fields, "inherit") {
-                (*inherited(catalog, parent, &declarations, &mut cache, &mut Vec::new())?).clone()
-            } else {
-                Vec::new()
-            };
-            overlay(&mut slots, &definition.fields, &declarations)?;
-            self.removal_tampering[index] = Some(
-                slots
-                    .iter()
-                    .any(|slot| slot.map.or(slot.inherited).unwrap_or(false)),
-            );
+            let context=format!("removal metadata entity={}",entity.name);
+            let result=(||{
+                let mut slots=if ComponentList::expands(&definition.fields)?{
+                    if let Some(parent)=parent(&definition.fields)?{
+                        (*inherited(catalog,parent,&mut cache,&mut Vec::new())?).clone()
+                    }else{ComponentList::default()}
+                }else{ComponentList::default()};
+                slots.apply(&definition.fields,true,&context)?;
+                let mut tampering=false;
+                for(slot,fields)in slots.into_components(&context)?{
+                    let class=entities::components::entry_class(&fields,&declarations)
+                        .map_err(|error|format!("{context}: slot={slot} value={fields:?}: {error}"))?
+                        .ok_or_else(||format!("{context}: slot={slot} has no declaration class value={fields:?}"))?;
+                    tampering|=class.eq_ignore_ascii_case("cpntAITampering");
+                }
+                Ok(tampering)
+            })();
+            self.removal_tampering[index]=Some(result.map_err(|error:String|format!("{context}: {error}"))?);
         }
         Ok(())
     }

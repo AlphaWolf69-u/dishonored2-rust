@@ -1006,18 +1006,12 @@ pub(super) fn prepare_level(
     let mut marker_positions = super::objective_markers::Positions::prepare(catalog_for_machinery, entity_document.as_ref(), objectives.as_ref(),
         &placed_models, &mut joint_frames, &machinery, &usable_animations).map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
-    app.insert_resource(super::model_motion::BoundModels::new(
+    let mut bound_models = super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
-            .map(|document| crate::entities::resolved_entity_binds(document).into_iter().filter(|binding| {
-                // These real rigid components own808880 attachment publication
-                // after the final joint pose. Do not also apply the old rigid
-                // parent delta to them before that sampled frame exists.
-                !interactions.as_ref().is_some_and(|interactions| interactions.readable.iter()
-                    .any(|readable| readable.entity == binding.entity_id && readable.rigid.is_some()))
-            }).collect())
+            .map(crate::entities::resolved_entity_binds)
             .unwrap_or_default(),
-    ));
+    );
     app.insert_resource(
         super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(), entity_document.as_ref())
             .map_err(std::io::Error::other)?,
@@ -1033,6 +1027,7 @@ pub(super) fn prepare_level(
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
         let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref())
             .map_err(std::io::Error::other)?;
+        bound_models.exclude_canonical_bindings(physics.bound_render_entities());
         let marker_targets = std::mem::take(&mut marker_positions.targets);
         physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
         if !marker_targets.is_empty() {
@@ -1061,6 +1056,7 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(bound_models);
     app.insert_resource(marker_positions);
     app.insert_resource(joint_frames);
     if let Some(interactions) = interactions {

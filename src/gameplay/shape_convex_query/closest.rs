@@ -60,11 +60,17 @@ impl ShapeConvexQuery {
         let depth = self.active.len();
         self.active.push(item);
         let result = (|| match &shape.geometry {
-            QueryGeometry::Polytope(polytope) => {
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) => {
                 let support = self.support.prepare(ConvexSupportInput {
                     shape_type: shape.header.shape_type,
-                    vertices: &polytope.vertices,
-                    radius: polytope.radius,
+                    vertices: shape
+                        .geometry
+                        .convex_vertices()
+                        .ok_or("convex closest vertices absent")?,
+                    radius: shape
+                        .geometry
+                        .convex_radius()
+                        .ok_or("convex closest radius absent")?,
                     scaled: state.scaled.then_some(ConvexSupportScale {
                         scale: state.transform.scale[..3].try_into().unwrap(),
                         offset: state.transform.offset[..3].try_into().unwrap(),
@@ -200,6 +206,7 @@ impl Instances<'_, '_, '_> {
         let child = self.target.shapes.get(instance.shape)?;
         let vertices = match &child.geometry {
             QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+            QueryGeometry::Convex(p) => p.vertices.as_slice(),
             _ => &[],
         };
         let next = prepare_instance(

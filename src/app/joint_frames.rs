@@ -33,11 +33,25 @@ pub(super) struct JointFrames {
 }
 
 impl JointFrames {
+    ///53e610->09d1e0 copies skeleton+30 rest records into the animator;
+    ///09dc40/09e240 compose its hierarchy, then53e440 initializes phase0/3
+    ///banks from component+198. Actual started layers override that bank in
+    ///the same lower->scene->physics order used during gameplay.
+    fn initial_matrices(placement: usize, rig: &crate::assets::animation_rig::Rig,
+        machinery: &super::machinery::AmbientMachinery,
+        animations: &super::usable_animation::UsableAnimations)
+        -> Result<Vec<super::physics_skinning::Affine>, String> {
+        match machinery.initial_joint_matrices(placement, &rig.skeleton, animations)? {
+            Some(matrices) => Ok(matrices),
+            None => crate::edge_skeleton::pose_matrices(&rig.skeleton.rest, &rig.skeleton.hierarchy, &rig.root),
+        }
+    }
     pub(super) fn prepare(catalog: &Catalog, models: &[PlacedModel], requests: &[(usize, String, Option<String>)],
         machinery: &super::machinery::AmbientMachinery,
         animations: &super::usable_animation::UsableAnimations) -> Result<Self, String> {
         let mut result = Self::default();
         let mut rigs = HashMap::new();
+        let mut initial = HashMap::new();
         for (placement, name, group) in requests {
             let model = models.get(*placement).ok_or("joint attachment placement is absent")?;
             let rig = if let Some(rig) = animations.prepared_rig(*placement) { rig } else { match rigs.entry(model.resource_path.clone()) {
@@ -55,22 +69,27 @@ impl JointFrames {
                     joint: i16::try_from(joint).map_err(|_| "bound joint index exceeds signed representation")?,
                     offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true,
                 },
-                None => JointBinding { joint: i16::try_from(rig.joint(name)?)
-                    .map_err(|_| "bound joint index exceeds signed representation")?,
+                //752900/878470 retain joint=-1 when neither actual MD6 tag
+                //nor bone exists; the hierarchy then binds parent-relative.
+                None => JointBinding { joint: rig.skeleton.joint_names.iter().position(|joint| joint == name)
+                    .map(|joint| i16::try_from(joint).map_err(|_| "bound joint index exceeds signed representation"))
+                    .transpose()?.unwrap_or(-1),
                     offset: [0.; 3], orientation: [0., 0., 0., 1.], from_tag: false },
             };
             let frames = result.placements.entry(*placement).or_insert_with(|| PlacementFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
+            if binding.joint < 0 {
+                frames.bindings.insert((group.clone(), name.clone()), binding);
+                continue;
+            }
             if let std::collections::hash_map::Entry::Vacant(entry) = frames.joints.entry(binding.joint) {
-                // Native77b3b0 can hold an initial usable transition frame.
-                // Sample the actual prepared controller before considering
-                // physics-driven skin data; neither branch fabricates a pose.
-                let matrix = match animations.initial_joint_matrix(*placement, binding.joint, &rig.skeleton)? {
-                    Some(matrix) => Some(matrix),
-                    None => machinery.initial_joint_matrix(*placement, binding.joint, &rig.skeleton)?,
-                }
-                    .ok_or_else(|| format!("{} joint {name} has no prepared pose producer", model.id))?;
+                let matrices = match initial.entry(*placement) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Self::initial_matrices(*placement, &rig, machinery, animations)?),
+                };
+                let matrix = *usize::try_from(binding.joint).ok().and_then(|joint| matrices.get(joint))
+                    .ok_or("bound joint is outside initialized pose bank")?;
                 let initial = matrix_frame(matrix);
                 entry.insert(Frames { initial, current: initial });
             }
@@ -86,7 +105,7 @@ impl JointFrames {
         requests: &[(usize, String)], machinery: &super::machinery::AmbientMachinery,
         animations: &super::usable_animation::UsableAnimations) -> Result<(), String> {
         let mut rigs = HashMap::new();
-        let mut rest = HashMap::new();
+        let mut initial = HashMap::new();
         for (placement, name) in requests {
             if self.resolve(*placement, None, name)?.is_some() { continue; }
             let model = models.get(*placement).ok_or("marker placement is absent")?;
@@ -106,18 +125,12 @@ impl JointFrames {
             };
             let Some((joint, offset, orientation)) = rig.optional_tag_quaternion_in_group("_info", name)? else { continue; };
             let joint = i16::try_from(joint).map_err(|_| "marker joint exceeds signed representation")?;
-            let matrix = match animations.initial_joint_matrix(*placement, joint, &rig.skeleton)? {
-                Some(matrix) => matrix,
-                None => match machinery.initial_joint_matrix(*placement, joint, &rig.skeleton)? {
-                    Some(matrix) => matrix,
-                    None => {
-                        if !rest.contains_key(&rig.path) {
-                            rest.insert(rig.path.clone(), crate::edge_skeleton::pose_matrices(&rig.skeleton.rest, &rig.skeleton.hierarchy, &rig.root)?);
-                        }
-                        *rest[&rig.path].get(joint as usize).ok_or("marker tag joint is outside skeleton")?
-                    }
-                }
+            let matrices = match initial.entry(*placement) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Self::initial_matrices(*placement, &rig, machinery, animations)?),
             };
+            let matrix = *usize::try_from(joint).ok().and_then(|joint| matrices.get(joint))
+                .ok_or("marker tag joint is outside initialized pose bank")?;
             let initial = matrix_frame(matrix);
             let frames = self.placements.entry(*placement).or_insert_with(|| PlacementFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),

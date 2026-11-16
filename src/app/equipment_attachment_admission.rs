@@ -317,6 +317,22 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                     child
                 }
             };
+            //Publish the same actual752900 binding frame consumed by the
+            //attachment renderer. The shared actor traversal must not invent
+            //another joint pose or leave ammunition at its birth transform.
+            let binding = entry.binding.ok_or("ammunition binding disappeared")?;
+            let (parent, _) = super::equipment_identity::frame(world, weapon)
+                .ok_or("ammunition parent frame is absent")?;
+            let joint = binding.joint.and_then(|joint| {
+                world.get_resource::<super::player::PlayerState>()
+                    .and_then(|state| state.player.as_ref())
+                    .and_then(|player| player.equipment_joint_world(weapon, joint))
+            }).map(frame);
+            let Some(current) = binding.world(parent, joint) else { continue; };
+            let rate = world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+                .ok_or("ammunition publication clock is absent")?.entity_rates(child)
+                .map_err(str::to_owned)?[1];
+            super::equipment_identity::publish_frame(world, child, current, rate)?;
             if let Some(error) =
                 super::runtime_materials::equipment_admission::attachment_failure(world, child)
             {

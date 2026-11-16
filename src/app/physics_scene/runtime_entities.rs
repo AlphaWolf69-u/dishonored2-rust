@@ -16,6 +16,25 @@ pub(in crate::app) struct Retirement {
     rollback_done: bool,
 }
 impl PhysicsScene {
+    pub(in crate::app) fn runtime_actor_visible(&self, live: &LiveEntities, id: EntityId) -> Result<bool, String> {
+        live.get(id).ok_or("runtime visibility entity generation is stale")?;
+        let &index = self.shared_indices.get(&id).ok_or("runtime visibility header is absent")?;
+        Ok(self.entities[index].entity_flags & 1 == 0)
+    }
+    pub(in crate::app) fn activate_runtime_actor(&mut self, world: &mut bevy::prelude::World,
+        live: &mut LiveEntities, events: &mut EntityEvents, id: EntityId) -> Result<(), String> {
+        live.get(id).ok_or("activation entity generation is stale")?;
+        let &index = self.shared_indices.get(&id).ok_or("activation header is absent")?;
+        if self.entities[index].entity_flags & 8 == 0 { return Ok(()) }
+        if super::super::runtime_entities::activate_class(world, id)? {
+            let visible = self.entities[index].entity_flags & 1 != 0;
+            super::super::model_motion::set_entity_visible(world, live, id, visible)?;
+            self.entities[index].entity_flags ^= 1;
+        }
+        events.post(crate::gameplay::entity_events::Event { id: 0xc5, target: Some(id),
+            payload: crate::gameplay::entity_events::Payload::None });
+        Ok(())
+    }
     ///738740/738a20 require the published audio world and actual model bounds.
     ///Retain only resolved immutable data on the CPU preparation worker.
     pub(in crate::app) fn prepare_placed_sound_volumes(
@@ -473,6 +492,11 @@ impl PhysicsScene {
                 )?;
                 let immediate = declaration.scheduling.starts_on_spawn();
                 let handle = match &component.kind {
+                    Kind::DamageZone(definition)=>ComponentFactory{
+                        declaration:&declaration,pool:&mut self.damage_zones,registry:&mut registry,grow_one_at_a_time:false,
+                    }.create(&mut self.entities[index].components,immediate,|_,_,_|{
+                        Ok(crate::gameplay::damage_zone::Component::new(definition.clone()))
+                    },|_,_,_|Ok(()))?,
                     Kind::SoundVolume(definition) => ComponentFactory {
                         declaration: &declaration,
                         pool: &mut self.sound_volumes,
@@ -742,6 +766,11 @@ impl PhysicsScene {
                 live.initialize_entity_context(id, self.entities[index].components.phase)?;
                 live.spawned(id)?;
                 live.publish_spawn_tag(id, "MAIN")?;
+                //8ab180/199350 invokes the actual class Spawn descriptor
+                //before shared component Initialize/Start (8820f0 for Dynamic).
+                if super::super::runtime_entities::spawn_class(world, id)? {
+                    self.entities[index].entity_flags |= 1;
+                }
             } else if live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
                 return Err(
                     "runtime component append actor is not actual spawned generation".into(),

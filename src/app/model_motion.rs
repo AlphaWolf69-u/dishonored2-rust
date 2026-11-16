@@ -80,6 +80,14 @@ impl BoundModels {
 
     pub(super) fn entity_delta(&self, id: &str) -> Option<&[[f32; 4]; 3]> { self.entity_deltas.get(id) }
 
+    ///Claimed once during level preparation, after actual actor admission.
+    ///808880's canonical binding owner publishes these final sampled frames;
+    ///7506d0's legacy parent-delta adapter must not publish them as well.
+    pub(super) fn exclude_canonical_bindings<'a>(&mut self, entities: impl Iterator<Item = &'a str>) {
+        let entities = entities.collect::<hashbrown::HashSet<_>>();
+        self.binds.retain(|binding| !entities.contains(binding.entity_id.as_str()));
+    }
+
     fn children(&mut self, placements: &[crate::entities::PlacedModel]) -> &HashMap<usize, Vec<usize>> {
         self.children.get_or_insert_with(|| {
             let mut by_id = HashMap::<&str, Vec<usize>>::new();

@@ -773,6 +773,22 @@ impl Catalog {
         self.entry(path).map(|e| self.kinds[e.kind as usize].as_str())
     }
 
+    /// Component declaration extensions omit underscores retained by their
+    /// registered type names (cpntpickablesimple / cpntPickable_Simple).
+    /// Resolve that spelling against the existing authoritative index kinds,
+    /// without a second source-path index or an inferred generated directory.
+    pub(crate) fn component_declaration_kind(&self, suffix: &str) -> std::result::Result<&str, String> {
+        let matches = |kind: &&String| kind.get(..4).is_some_and(|prefix| prefix.eq_ignore_ascii_case("cpnt"))
+            && kind.bytes().filter(|byte| *byte != b'_').map(|byte| byte.to_ascii_lowercase())
+                .eq(suffix.bytes().filter(|byte| *byte != b'_').map(|byte| byte.to_ascii_lowercase()));
+        let mut candidates = self.kinds.iter().filter(matches);
+        let kind = candidates.next().ok_or_else(|| format!("component declaration type is absent: {suffix}"))?;
+        if candidates.next().is_some() {
+            return Err(format!("component declaration type spelling is ambiguous: {suffix}"));
+        }
+        Ok(kind)
+    }
+
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         self.read_cancellable(path, None)
     }

@@ -1046,7 +1046,7 @@ impl RigidBodyComponent {
     pub(super) fn resolve_creation_mass(
         &mut self,
         geometry: &TriggerAssets,
-        density: f32,
+        density: Option<f32>,
     ) -> Result<(), String> {
         use crate::gameplay::physics_world::body_creation::BodyCreationGeometry;
         if self.initialization != Initialization::GeometryReady {
@@ -1072,9 +1072,11 @@ impl RigidBodyComponent {
         } else {
             None
         };
-        info.mass = settings.descriptor_mass_override.unwrap_or_else(|| {
-            properties.expect("shape density mass was resolved").volume * density
-        });
+        info.mass = match settings.descriptor_mass_override {
+            Some(mass) => mass,
+            None => properties.expect("shape density mass was resolved").volume
+                * density.ok_or("rigid density mass requires its actual material declaration")?,
+        };
         if locked.into_iter().any(|value| value) {
             info.mass_distribution_lease = Some(std::sync::Arc::new(
                 crate::physworld::mass::rotation_locked_distribution(

@@ -572,7 +572,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if handle.class_id == self.scene.classes[17] {
+            if handle.class_id == self.scene.classes[18] {
+                self.scene.initialize_damage_zone(handle,self.live)
+            } else if handle.class_id == self.scene.classes[17] {
                 self.scene.initialize_sound_volume(
                     self.world.as_deref_mut().ok_or("sound volume Initialize requires its published world")?,
                     self.live, handle,
@@ -615,7 +617,10 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if handle.class_id == self.scene.classes[17] {
+            if handle.class_id == self.scene.classes[18] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_damage_zone(self.world.as_deref_mut().ok_or("DamageZone Start requires published world")?,self.live,handle)
+            } else if handle.class_id == self.scene.classes[17] {
                 self.scene.start(handle, registry)?;
                 self.scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Start payload absent")?.started = true;
                 Ok(())
@@ -769,6 +774,8 @@ impl PhysicsScene {
             membership!(self.health_doors)
         } else if handle.class_id == self.classes[17] {
             membership!(self.sound_volumes)
+        } else if handle.class_id == self.classes[18] {
+            membership!(self.damage_zones)
         } else {
             Err("component update class unsupported".into())
         }

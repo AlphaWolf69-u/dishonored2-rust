@@ -893,6 +893,19 @@ impl WorldStorage {
         )
     }
 
+    /// 0966e0's any-hit collector over this canonical world's published trees.
+    pub fn ray_any_hit<'a>(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<ShapeRayContact>, String> {
+        executor.any_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, query_flags, resolve)
+    }
+
     pub fn convex_query<'a>(
         &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
         request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,

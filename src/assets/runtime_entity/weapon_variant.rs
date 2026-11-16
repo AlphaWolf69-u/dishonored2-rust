@@ -64,9 +64,10 @@ pub(crate) fn weapon_variant(
                 entities::Value::Atom(override_decl.clone()),
             )];
             let mut source_paths = Vec::new();
+            let declaration_kind = catalog.component_declaration_kind(kind)?.to_ascii_lowercase();
             let fields = entities::components::entry_fields(
                 &entry,
-                kind,
+                &declaration_kind,
                 &HashMap::new(),
                 &mut HashMap::new(),
                 &mut |path| {

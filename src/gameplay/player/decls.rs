@@ -117,7 +117,7 @@ fn items_atoms(list: &Fields) -> Vec<String> {
 
 /// An arkCollisionLayerMask_t scope: each `m_<LAYER>` member sets or
 /// clears its bit of the constructor default.
-pub(crate) fn layer_mask(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
+pub(crate) fn layer_mask(fields: &[(String, Value)], key: &str, default: u32) -> Result<u32, String> {
     let Some(members) = scope(fields, key) else { return Ok(default) };
     let mut mask = default;
     for (member, value) in members {

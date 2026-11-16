@@ -1155,3 +1155,272 @@ pub(super) fn parse(source: Source) -> Result<Vec<Node>, String> {
     }
     Ok(result)
 }
+
+
+/// Fields projection of the existing00fe1f0 rules, shared by runtime admission
+/// and compact class metadata. No text serialization or second parse occurs.
+#[derive(Clone, Default)]
+pub(crate) struct ComponentList {
+    entries: Vec<(String, super::Value)>,
+}
+impl ComponentList {
+    pub(crate) fn expands(fields: &[(String, super::Value)]) -> Result<bool, String> {
+        match super::field(fields, "expandInheritance") {
+            None => Ok(true),
+            Some(super::Value::Atom(value)) => match value.trim_matches('"') {
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => Err(format!("invalid expandInheritance {value:?}")),
+            },
+            Some(value) => Err(format!("invalid expandInheritance {value:?}")),
+        }
+    }
+    pub(crate) fn apply(
+        &mut self,
+        fields: &[(String, super::Value)],
+        compact: bool,
+        context: &str,
+    ) -> Result<(), String> {
+        use super::Value;
+        let result = (|| {
+            if !Self::expands(fields)? {
+                self.entries.clear();
+            }
+            let Some(edit) = super::field(fields, "edit") else {
+                return Ok(());
+            };
+            let Value::Scope(edit) = edit else {
+                return Err(format!("edit is not a scope: {edit:?}"));
+            };
+            let Some(list) = super::field(edit, "m_componentDecls") else {
+                return Ok(());
+            };
+            let Value::Scope(list) = list else {
+                return Err(format!("component list is not a scope: {list:?}"));
+            };
+            let projected;
+            let incoming = if compact {
+                projected = list
+                    .iter()
+                    .map(|(key, value)| {
+                        let value = match value {
+                            Value::Atom(value) => Value::Atom(value.clone()),
+                            Value::Scope(fields) => Value::Scope(
+                                fields
+                                    .iter()
+                                    .map(|(name, value)| {
+                                        //First-child identity/order must survive metadata projection.
+                                        //An earlier inlineDecl must not make inheritedDecl first.
+                                        let value = if matches!(
+                                            name.as_str(),
+                                            "mapComponentDecl" | "inheritedDecl"
+                                        ) {
+                                            value.clone()
+                                        } else {
+                                            match value {
+                                                Value::Scope(_) => Value::Scope(Vec::new()),
+                                                Value::Atom(_) => Value::Atom(String::new()),
+                                            }
+                                        };
+                                        (name.clone(), value)
+                                    })
+                                    .collect(),
+                            ),
+                        };
+                        (key.clone(), value)
+                    })
+                    .collect::<Vec<_>>();
+                &projected
+            } else {
+                list
+            };
+            value_merge(&mut self.entries, incoming);
+            value_prune(&mut self.entries)?;
+            value_edits(&mut self.entries, false)?;
+            Ok(())
+        })();
+        result.map_err(|error: String| format!("{context}: {error}"))
+    }
+    pub(crate) fn into_components(
+        self,
+        context: &str,
+    ) -> Result<Vec<(String, Vec<(String, super::Value)>)>, String> {
+        use super::Value;
+        let mut result = Vec::new();
+        for (key, value) in self.entries {
+            if key == "item_begin" || key == "num" {
+                continue;
+            }
+            if key.starts_with("item_remove[") {
+                return Err(format!(
+                    "{context}: unsupported component edit operation key={key} value={value:?}"
+                ));
+            }
+            let Some(slot) = super::spawn::component_slot_identity(&key)
+                .map_err(|error| format!("{context}: key={key} value={value:?}: {error}"))?
+            else {
+                return Err(format!(
+                    "{context}: unknown component-list field key={key} value={value:?}"
+                ));
+            };
+            let mut fields = match value {
+                Value::Scope(fields) => fields,
+                Value::Atom(name) => {
+                    let name = name.trim_matches('"');
+                    //703ca0 admits scalar declaration pointers, including NULL.
+                    if name.is_empty() || name.eq_ignore_ascii_case("NULL") {
+                        continue;
+                    }
+                    let reference = if name.rsplit_once('.').is_some() {
+                        "inheritedDecl"
+                    } else {
+                        "mapComponentDecl"
+                    };
+                    vec![(reference.to_owned(), Value::Atom(name.to_owned()))]
+                }
+            };
+            //00c710 map selection discards siblings even when the selected
+            //nullable reference clears the slot; do not retain inherited class.
+            if super::field(&fields, "mapComponentDecl").is_some() {
+                fields.retain(|(key, _)| key == "mapComponentDecl");
+            }
+            let reference = super::field(&fields, "mapComponentDecl")
+                .or_else(|| super::field(&fields, "inheritedDecl"));
+            match reference {
+                //703ca0 starts a fresh declaration pointer at NULL. Without
+                //a declaration reference, inline edits cannot construct one.
+                None => continue,
+                Some(Value::Atom(name))
+                    if name.trim_matches('"').is_empty()
+                        || name.trim_matches('"').eq_ignore_ascii_case("NULL") =>
+                {
+                    continue
+                }
+                Some(Value::Scope(_)) => {
+                    return Err(format!(
+                        "{context}: component reference is not a string key={key} value={fields:?}"
+                    ))
+                }
+                _ => {}
+            }
+            if !fields.is_empty() {
+                result.push((slot, fields));
+            }
+        }
+        Ok(result)
+    }
+}
+fn value_merge(target: &mut Vec<(String, super::Value)>, incoming: &[(String, super::Value)]) {
+    use super::Value;
+    for (key, value) in incoming {
+        if let Some((_, old)) = target.iter_mut().find(|(name, _)| name == key) {
+            match (old, value) {
+                (Value::Scope(old), Value::Scope(new)) => value_merge(old, new),
+                (old, new) => *old = new.clone(),
+            }
+        } else {
+            target.push((key.clone(), value.clone()));
+        }
+    }
+}
+fn value_prune(nodes: &mut Vec<(String, super::Value)>) -> Result<(), String> {
+    use super::Value;
+    if let Some((_, value)) = nodes.iter().find(|(key, _)| key.starts_with("num")) {
+        let Value::Atom(count) = value else {
+            return Err(format!("array count is not scalar: {value:?}"));
+        };
+        let count = count
+            .parse::<i32>()
+            .map_err(|_| format!("invalid array count {count:?}"))?;
+        let mut error = None;
+        nodes.retain(|(key, value)| {
+            let Some(index) = key
+                .strip_prefix("item[")
+                .and_then(|key| key.strip_suffix(']'))
+            else {
+                return true;
+            };
+            if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+                error = Some(format!("invalid array index key={key} value={value:?}"));
+                return true;
+            }
+            match index.parse::<i32>() {
+                Ok(index) => index < count,
+                Err(problem) => {
+                    error = Some(format!("array index key={key}: {problem}"));
+                    true
+                }
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+    }
+    for (_, value) in nodes {
+        if let Value::Scope(fields) = value {
+            value_prune(fields)?;
+        }
+    }
+    Ok(())
+}
+fn value_edits(nodes: &mut Vec<(String, super::Value)>, inside_inline: bool) -> Result<(), String> {
+    use super::Value;
+    let mut index = nodes.len();
+    while index > 0 {
+        index -= 1;
+        let inline = inside_inline || nodes[index].0 == "inlineDecl";
+        if let Value::Scope(fields) = &mut nodes[index].1 {
+            value_edits(fields, inline)?;
+        }
+        let Some(entry) = edit_entry(&nodes[index].0)? else {
+            continue;
+        };
+        let (id, is_override) = match entry {
+            EditEntry::Add(_) => continue,
+            EditEntry::Override(id) => (id, true),
+            EditEntry::Item(id) => (id, false),
+        };
+        let mut matched = None;
+        for (candidate, (key, _)) in nodes.iter().enumerate() {
+            if candidate != index
+                && matches!(edit_entry(key)?,Some(EditEntry::Add(value)|EditEntry::Item(value)) if value==id)
+            {
+                matched = Some(candidate);
+                break;
+            }
+        }
+        let Some(candidate) = matched else {
+            if is_override && !inside_inline {
+                nodes.remove(index);
+            }
+            continue;
+        };
+        let source = nodes[index].1.clone();
+        match (&mut nodes[candidate].1, &source) {
+            (Value::Scope(old), Value::Scope(new)) => {
+                if new.is_empty() {
+                    old.clear();
+                }
+                let first = |fields: &[(String, Value)]| -> Result<Option<String>, String> {
+                    let Some((key, value)) = fields.first() else {
+                        return Ok(None);
+                    };
+                    if key != "inheritedDecl" {
+                        return Ok(None);
+                    }
+                    let Value::Atom(value) = value else {
+                        return Err(format!("first inheritedDecl is not scalar: {value:?}"));
+                    };
+                    Ok(Some(value.trim_matches('"').to_owned()))
+                };
+                if matches!((first(old)?,first(new)?),(Some(a),Some(b)) if a!=b) {
+                    old.clear();
+                }
+                value_merge(old, new);
+            }
+            (old, new) => *old = new.clone(),
+        }
+        nodes.remove(index);
+    }
+    Ok(())
+}

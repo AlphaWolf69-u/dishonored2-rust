@@ -128,19 +128,12 @@ pub(crate) fn player_listener_trace_path(path: &str) -> bool {
         || path.starts_with("generated/decls/cpntaudiolistener/")
 }
 
-pub(crate) fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
-    let mut entries: Vec<(String, Fields)> = Vec::new();
-    for fields in chain {
-        let Some(components) = scope(field(fields, "edit")).and_then(|edit| scope(field(edit, "m_componentDecls"))) else { continue };
-        for (key, value) in components {
-            let (Some(key), Some(entry)) = (component_key(key), scope(Some(value))) else { continue };
-            match entries.iter_mut().find(|(existing, _)| existing == key) {
-                Some((_, existing)) => overlay(existing, entry),
-                None => entries.push((key.to_owned(), entry.to_vec())),
-            }
-        }
+pub(crate) fn component_entries(chain: &[Fields]) -> Result<Vec<(String, Fields)>, String> {
+    let mut list = super::processed_decl::ComponentList::default();
+    for (index,fields) in chain.iter().enumerate() {
+        list.apply(fields, false, &format!("runtime component layer {index}"))?;
     }
-    entries
+    list.into_components("runtime entity component list")
 }
 
 /// Resolve one optional component through entity and component inheritance.
@@ -156,7 +149,7 @@ pub fn entity_component(entity: &str, kind: &str,
 /// their component from that same retained chain, without reading it twice.
 pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String> {
-    let entries = component_entries(chain);
+    let entries = component_entries(chain)?;
     let mut result = None;
     let mut cache = HashMap::new();
     for (_, entry) in entries {
@@ -173,7 +166,7 @@ pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
 pub fn entity_components_with_prefix(entity: &str, prefix: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<(String, Fields)>, String>
 {
-    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let entries = component_entries(&entity_chain(entity, &mut read)?)?;
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     for (_, entry) in entries {
@@ -213,10 +206,6 @@ const PLAYER_COMPONENTS: [&str; 21] = [
 
 fn kind_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(_, kind)| kind)
-}
-
-fn component_key(key: &str) -> Option<&str> {
-    key.strip_prefix("item_add[").or_else(|| key.strip_prefix("item_override[")).and_then(|rest| rest.strip_suffix(']'))
 }
 
 /// The entity def chain from the root ancestor to `name`.
@@ -273,7 +262,7 @@ fn player_declarations_with_listener(
 ) -> Result<PlayerDeclarations, String> {
     let entity = format!("models/characters/player/{character}/body.def");
     let chain = entity_chain(&entity, &mut read)?;
-    let entries = component_entries(&chain);
+    let entries = component_entries(&chain)?;
     let mut body_model = String::new();
     for fields in &chain {
         let Some(edit) = scope(field(fields, "edit")) else { continue };

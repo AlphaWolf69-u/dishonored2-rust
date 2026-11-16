@@ -149,11 +149,17 @@ impl ShapeConvexQuery {
         let shape = target.shapes.get(item)?;
         self.active.push(item);
         let result = (|| match &shape.geometry {
-            QueryGeometry::Polytope(polytope) => {
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) => {
                 let support = self.support.prepare(ConvexSupportInput {
                     shape_type: shape.header.shape_type,
-                    vertices: &polytope.vertices,
-                    radius: polytope.radius,
+                    vertices: shape
+                        .geometry
+                        .convex_vertices()
+                        .ok_or("convex cast vertices absent")?,
+                    radius: shape
+                        .geometry
+                        .convex_radius()
+                        .ok_or("convex cast radius absent")?,
                     scaled: state.scaled.then_some(ConvexSupportScale {
                         scale: state.transform.scale[..3].try_into().unwrap(),
                         offset: state.transform.offset[..3].try_into().unwrap(),
@@ -333,6 +339,7 @@ impl ShapeConvexQuery {
                                         let child = target.shapes.get(instance.shape)?;
                                         let vertices = match &child.geometry {
                                             QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                                            QueryGeometry::Convex(p) => p.vertices.as_slice(),
                                             _ => &[],
                                         };
                                         let next = prepare_instance(

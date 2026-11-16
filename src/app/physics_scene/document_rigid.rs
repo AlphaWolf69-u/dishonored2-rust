@@ -80,12 +80,13 @@ impl PhysicsScene {
                         .map_err(|_| "placed rigid timespace overflow")?,
                     |_, _, _, _| unreachable!("motion-property added signal was checked empty"),
                 )?;
-            // Resolve density before transferring the retained resource lease.
-            let material = self
-                .rigid_component(handle)?
-                .prepared_material()
-                .ok_or("placed rigid materials are absent")?;
-            let density = world.storage.materials.material_for_id(material)?.density;
+            //808ea0 queries092c10/cb95d0 only when declaration+bc has no
+            //positive mass override. A source preset material need not carry
+            //a declaration when its density is not consumed at all.
+            let density = if definition.settings.descriptor_mass_override.is_none() {
+                let material = component.prepared_material().ok_or("placed rigid materials are absent")?;
+                Some(world.storage.materials.material_for_id(material)?.density)
+            } else { None };
             let (_, resources) = rigid_pool_mut!(self, handle.class_id)?
                 .get_mut(handle.slot)
                 .ok_or("rigid component slot is absent")?

@@ -222,6 +222,22 @@ fn visit(
     let result = (|| {
         let shape = shapes.get(item)?;
         match &shape.geometry {
+            QueryGeometry::Convex(convex) => submit(Leaf {
+                input: ConvexSupportInput {
+                    shape_type: shape.header.shape_type,
+                    vertices: &convex.vertices,
+                    radius: shape.header.radius,
+                    scaled: state.scaled.then_some(ConvexSupportScale {
+                        scale: state.transform.scale[..3].try_into().unwrap(),
+                        offset: state.transform.offset[..3].try_into().unwrap(),
+                        radius: state.radius,
+                    }),
+                },
+                polytope: None,
+                frame: state.transform.world_from_local,
+                hit,
+                flags: shape.header.flags,
+            }),
             QueryGeometry::Polytope(polytope) => submit(Leaf {
                 input: ConvexSupportInput {
                     shape_type: shape.header.shape_type,
@@ -268,6 +284,7 @@ fn visit(
                         let child = shapes.get(instance.shape)?;
                         let vertices = match &child.geometry {
                             QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                            QueryGeometry::Convex(p) => p.vertices.as_slice(),
                             _ => &[],
                         };
                         let prepared = prepare_instance(

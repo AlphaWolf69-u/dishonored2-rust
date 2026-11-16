@@ -846,6 +846,7 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.scene.classes[18]{return self.scene.initialize_damage_zone(handle,self.live);}
         if handle.class_id==self.scene.classes[7]{return self.scene.initialize_loot(handle);}
         if handle.class_id==self.scene.classes[17]{
             return self.scene.initialize_sound_volume(
@@ -860,6 +861,10 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.scene.classes[18]{
+            self.scene.start(handle,registry)?;
+            return self.scene.start_damage_zone(self.world.as_deref_mut().ok_or("DamageZone Start requires published world")?,self.live,handle);
+        }
         if handle.class_id==self.scene.classes[7]{
             self.scene.start(handle,registry)?;
             return self.scene.start_loot(self.live,self.events,registry,handle);
@@ -1038,6 +1043,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_animation(handle)?;
         } else if handle.class_id == scene.classes[17] {
             scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Stop payload absent")?.started = false;
+        } else if handle.class_id == scene.classes[18] {
+            scene.stop_damage_zone(self.world.as_deref_mut(),handle)?;
         } else if scene.is_health_class(handle.class_id) {
             // Health Stop718240 clears the entity presence flag before
             // base7e7750; deinitialization must not leave a stopped receiver
@@ -1079,6 +1086,9 @@ impl ComponentReleaseWorld for Host<'_> {
                 return Ok(ReleaseStatus::Pending);
             }
         }
+        if handle.class_id==self.scene.classes[18]&&!self.scene.damage_zone_stop_complete(self.world.as_deref(),handle)?{
+            return Ok(ReleaseStatus::Pending);
+        }
         Ok(ReleaseStatus::Complete)
     }
 
@@ -1088,6 +1098,7 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, true)?;
+        if handle.class_id==self.scene.classes[18]{self.scene.deinitialize_damage_zone(handle)?;}
         if handle.class_id == self.scene.classes[17] {
             let component = self.scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Deinitialize payload absent")?;
             component.state.deinitialize();
@@ -1348,6 +1359,8 @@ impl ComponentReleaseWorld for Host<'_> {
                 handle,
                 scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume absent")?,
             )
+        } else if handle.class_id == scene.classes[18] {
+            entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
             Err("physics shutdown class is unsupported".into())
         }
@@ -1359,6 +1372,9 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         registry.ensure_no_update_references(handle)?;
+        if handle.class_id==self.scene.classes[18]&&!self.scene.damage_zone_stop_complete(self.world.as_deref(),handle)?{
+            return Err("DamageZone pool release precedes actual query/FX acknowledgement".into());
+        }
         if self.owner(handle)?.entity.is_some() {
             return Err("component remains linked at pool release".into());
         }
@@ -1470,6 +1486,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.health_doors.release(handle.slot)?;
         } else if handle.class_id == scene.classes[17] {
             scene.sound_volumes.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[18] {
+            scene.damage_zones.release(handle.slot)?;
         } else {
             return Err("physics pool release class is unsupported".into());
         }

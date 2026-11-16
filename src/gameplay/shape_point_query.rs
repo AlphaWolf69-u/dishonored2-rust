@@ -115,6 +115,11 @@ impl ShapePointQuery {
                 target.state.transform.world_from_local,
                 shape.radius,
             ),
+            QueryGeometry::Convex(shape) => super::convex_support::convex_bounds(
+                &shape.vertices,
+                target.state.transform.world_from_local,
+                shape.radius,
+            ),
         };
         let Some(mut sphere) = PointSphere::for_query(point, 0., bounds) else {
             return Ok(());
@@ -173,8 +178,10 @@ impl ShapePointQuery {
         let depth = self.active.len();
         self.active.push(item);
         let result: Result<(), String> = (|| match (&shape.geometry, handler) {
-            (QueryGeometry::Polytope(polytope), ClosestPointHandler::ConvexConvex) => {
-                let geometry = if !state.scaled && polytope.connectivity.is_some() {
+            (QueryGeometry::Polytope(_) | QueryGeometry::Convex(_), ClosestPointHandler::ConvexConvex) => {
+                let polytope = match &shape.geometry { QueryGeometry::Polytope(p) => Some(p), _ => None };
+                let geometry = if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some()) {
+                    let polytope = polytope.ok_or("polytope point connectivity absent")?;
                     let local = transform_point(relative, sphere.vertex);
                     if polytope.radius != 0.
                         || !local.iter().all(|v| v.is_finite())
@@ -189,8 +196,8 @@ impl ShapePointQuery {
                 } else {
                     let prepared = self.support.prepare(ConvexSupportInput {
                         shape_type: shape.header.shape_type,
-                        vertices: &polytope.vertices,
-                        radius: polytope.radius,
+                        vertices: shape.geometry.convex_vertices().ok_or("convex point vertices absent")?,
+                        radius: shape.geometry.convex_radius().ok_or("convex point radius absent")?,
                         scaled: state.scaled.then_some(ConvexSupportScale {
                             scale: [
                                 state.transform.scale[0],
@@ -359,6 +366,7 @@ impl InstanceVisitor<'_, '_> {
         let child = self.target.shapes.get(instance.shape)?;
         let vertices = match &child.geometry {
             QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+            QueryGeometry::Convex(p) => p.vertices.as_slice(),
             _ => &[],
         };
         let prepared = prepare_instance(
@@ -467,11 +475,11 @@ impl ShapePointQuery {
         }
         let shape = shapes.get(item)?;
         match &shape.geometry {
-            QueryGeometry::Polytope(polytope) => {
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) => {
                 let prepared = self.support.prepare(ConvexSupportInput {
                     shape_type: shape.header.shape_type,
-                    vertices: &polytope.vertices,
-                    radius: polytope.radius,
+                    vertices: shape.geometry.convex_vertices().ok_or("convex point vertices absent")?,
+                    radius: shape.geometry.convex_radius().ok_or("convex point radius absent")?,
                     scaled: state.scaled.then_some(ConvexSupportScale {
                         scale: [
                             state.transform.scale[0],
@@ -501,7 +509,7 @@ impl ShapePointQuery {
                         distance: hit.distance[0],
                         shape_key: key.value,
                         connectivity: shape.header.flags & 2 != 0
-                            && polytope.connectivity.is_some(),
+                            && matches!(&shape.geometry, QueryGeometry::Polytope(p) if p.connectivity.is_some()),
                     });
                 }
                 Ok(())
@@ -534,6 +542,7 @@ impl ShapePointQuery {
                     let child = shapes.get(instance.shape)?;
                     let vertices = match &child.geometry {
                         QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                        QueryGeometry::Convex(p) => p.vertices.as_slice(),
                         _ => &[],
                     };
                     let prepared = prepare_instance(

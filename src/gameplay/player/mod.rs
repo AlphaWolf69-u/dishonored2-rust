@@ -178,7 +178,8 @@ pub struct Player {
     game_over_fallback: Option<f64>,
     entity_event_time: f64,
     drowning_fx_requested: Option<String>,
-    /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
+    /// Shared gameplay stream (gameLocal+0x600f8). 8a37c0 seeds it with
+    /// zero; 8ac040 uses the same 15-bit sample as random::lcg_unit.
     random: u32,
     /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
     /// lean limits, set by the host.

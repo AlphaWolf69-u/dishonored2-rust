@@ -71,6 +71,15 @@ impl InteractionDef {
         use crate::assets::entities::Value;
         let mut result = Self::new();
         for (name, value) in fields {
+            //1415b5030 is the complete current reflected schema.14dec0
+            //skips an unmatched member with1496c0, leaving ctor state intact.
+            //Installed declarations retain obsolete m_interactionType and
+            //other historical fields; they are not aliases for player_state.
+            if !matches!(name.as_str(), "m_name" | "m_usageText" | "m_maximumDistance" |
+                "m_maxHeight" | "m_occlusionShapeIndex" | "m_playerMode" | "m_playerState" |
+                "m_allowedWhileSwimming" | "m_allowedWhileShadowWalking" | "m_allowedWhilePossessing" |
+                "m_sendUseNotification" | "m_allowOnlyFromFront" | "m_lockedInteraction" |
+                "m_interactionIcon" | "m_uid") { continue; }
             let Value::Atom(value) = value else { return Err(format!("interaction {name} is not scalar")); };
             let value = value.trim_matches('"');
             let number = || value.parse::<f32>().map_err(|_| format!("invalid interaction {name}: {value}"));
@@ -98,6 +107,7 @@ impl InteractionDef {
                 "m_playerMode" => result.player_mode = decode_enum(enums::PLAYER_MODES, value)?,
                 "m_playerState" => result.player_state = decode_enum(enums::PLAYER_STATES, value)?,
                 "m_interactionIcon" => result.icon = interaction_icon(value)?,
+                "m_uid" => result.uid = integer()? as u32,
                 _ => return Err(format!("unknown interaction field: {name}")),
             }
         }

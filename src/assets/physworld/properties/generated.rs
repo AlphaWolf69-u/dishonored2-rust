@@ -91,6 +91,25 @@ impl Surface {
                     }
                 }
             }
+            QueryGeometry::Convex(convex) => {
+                //Actual hknpConvexShape buildGeometry ce1e30: derive the hull
+                //from support vertices, including the authored convex radius.
+                //This transient geometry belongs only to the shared key1 owner.
+                let hull = crate::gameplay::havok_fx::convex_hull::Hull::build_geometry(
+                    &convex.vertices,
+                    convex.radius,
+                )?;
+                for triangle in hull.geometry_triangles() {
+                    let first = u32::try_from(self.vertices.len())
+                        .map_err(|_| "shape property convex vertex count overflow")?;
+                    self.vertices.extend(triangle.map(|point| {
+                        let mut point = transform_point(frame, [point[0], point[1], point[2], 1.]);
+                        point[3] = 1.;
+                        point
+                    }));
+                    self.triangles.push([first, first + 1, first + 2]);
+                }
+            }
             QueryGeometry::Compound(compound) => {
                 for instance in compound
                     .instances

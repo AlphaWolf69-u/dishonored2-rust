@@ -2,6 +2,15 @@
 //! Relative-array and connectivity fields use the file's inherited type schema.
 use super::{float, le32, PhysWorld};
 
+///hknpConvexShape's authored support vertices and convex radius. The base
+///class has no planes/faces/connectivity; ca2490 derives contact faces from
+///support features, and1412151a0 casts rays against these exact vertices.
+#[derive(Debug)]
+pub struct ConvexShape {
+    pub vertices: Vec<[f32; 4]>,
+    pub radius: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PolytopeFace {
     pub first_index: u16,
@@ -45,6 +54,66 @@ impl ConvexPolytope {
 }
 
 impl PhysWorld {
+    pub fn convex_shape(&self, bytes: &[u8], index: usize) -> Result<ConvexShape, String> {
+        let item = self.items.get(index).ok_or("convex shape item missing")?;
+        if self.types[item.type_index].name != "hknpConvexShape" {
+            return Err("support-only convex reader requires hknpConvexShape".into());
+        }
+        let shape = self.item_at(bytes, index, 0)?;
+        //The tagfile's inherited field schema stores the relocated relative
+        //array as an item reference. Runtime c82490 reads the same vertices
+        //through the expanded relative-array header; never copy its offsets
+        //onto the compact serialized object.
+        let reference = le32(shape, self.field_offset(item.type_index, "vertices")?)? as usize;
+        let vertices = self.convex_vectors(bytes, reference)?;
+        if vertices.is_empty() {
+            return Err("convex support vertex array is empty".into());
+        }
+        Ok(ConvexShape {
+            vertices,
+            radius: float(shape, self.field_offset(item.type_index, "convexRadius")?)?,
+        })
+    }
+
+    fn convex_vectors(&self, bytes: &[u8], reference: usize) -> Result<Vec<[f32; 4]>, String> {
+        if reference == 0 {
+            return Ok(Vec::new());
+        }
+        let item = self
+            .items
+            .get(reference)
+            .ok_or("convex vector item missing")?;
+        let mut kind = item.type_index;
+        let mut vector = false;
+        for _ in 0..self.types.len() {
+            let typ = self.types.get(kind).ok_or("convex vector type missing")?;
+            if typ.name == "hkVector4f" {
+                vector = true;
+                break;
+            }
+            if typ.parent == 0 {
+                break;
+            }
+            kind = typ.parent;
+        }
+        if !vector {
+            return Err(format!(
+                "convex vector item {reference} has type {}",
+                self.types[item.type_index].name
+            ));
+        }
+        (0..item.count)
+            .map(|element| {
+                let source = self.item_at(bytes, reference, element)?;
+                Ok([
+                    float(source, 0)?,
+                    float(source, 4)?,
+                    float(source, 8)?,
+                    float(source, 12)?,
+                ])
+            })
+            .collect()
+    }
     /// Read only when a query owner needs it. Ordinary collision extraction
     /// retains its existing allocations and never duplicates this data.
     pub fn convex_polytope(&self, bytes: &[u8], index: usize) -> Result<ConvexPolytope, String> {
@@ -57,47 +126,8 @@ impl PhysWorld {
         let reference = |name| -> Result<usize, String> {
             Ok(le32(shape, self.field_offset(item.type_index, name)?)? as usize)
         };
-        let vectors = |reference: usize| -> Result<Vec<[f32; 4]>, String> {
-            if reference == 0 {
-                return Ok(Vec::new());
-            }
-            let item = self
-                .items
-                .get(reference)
-                .ok_or("polytope vector item missing")?;
-            let mut kind = item.type_index;
-            let mut vector = false;
-            for _ in 0..self.types.len() {
-                let typ = self.types.get(kind).ok_or("polytope vector type missing")?;
-                if typ.name == "hkVector4f" {
-                    vector = true;
-                    break;
-                }
-                if typ.parent == 0 {
-                    break;
-                }
-                kind = typ.parent;
-            }
-            if !vector {
-                return Err(format!(
-                    "polytope vector item {reference} has type {}",
-                    self.types[item.type_index].name
-                ));
-            }
-            (0..item.count)
-                .map(|element| {
-                    let source = self.item_at(bytes, reference, element)?;
-                    Ok([
-                        float(source, 0)?,
-                        float(source, 4)?,
-                        float(source, 8)?,
-                        float(source, 12)?,
-                    ])
-                })
-                .collect()
-        };
-        let vertices = vectors(reference("vertices")?)?;
-        let planes = vectors(reference("planes")?)?;
+        let vertices = self.convex_vectors(bytes, reference("vertices")?)?;
+        let planes = self.convex_vectors(bytes, reference("planes")?)?;
         let faces_ref = reference("faces")?;
         let face_item = self
             .items

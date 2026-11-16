@@ -49,6 +49,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let requested = env::args().nth(1)
         .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
+    // Host diagnostic: observe this executable's actual loading/render/exit
+    // schedules without a Winit window, focus changes or a second build.
+    if let Ok(mode) = env::var("DH2_DEBUG_RUNTIME_LIFECYCLE") {
+        return super::runtime_lifecycle_diagnostics::inspect_runtime_lifecycles(
+            &base, &[requested, mode],
+        );
+    }
     let mut runtime = build(base, requested, HostMode::Window)?;
     if let bevy::app::AppExit::Error(code) = runtime.app.run() {
         return Err(format!("Game runtime exited with error code {code}").into());
@@ -473,7 +480,9 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(
             PostUpdate,
-            (super::physics_scene::simulation::update,
+            (gameplay_system(super::damage_zones::gather),
+             gameplay_system(super::damage_zones::update),
+             super::physics_scene::simulation::update,
              gameplay_system(super::physics_scene::water_publication::update),
              gameplay_system(super::water_impacts::update),
              gameplay_system(super::explosions::update),

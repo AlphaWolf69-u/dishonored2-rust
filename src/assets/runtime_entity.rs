@@ -33,6 +33,7 @@ pub(crate) enum Kind {
     Breakable(Arc<super::breakable::Definition>),
     Health(Arc<super::entities::damage::HealthBinding>),
     SoundVolume(Arc<crate::gameplay::sound::volume_control::Definition>),
+    DamageZone(Arc<crate::gameplay::damage_zone::Definition>),
     Audio(Arc<super::entities::audio::AudioBinding>),
     Pickable(Arc<crate::gameplay::pickable_component::PickableDefinition>),
     /// Payload-free reference-frame actor is the real factory32 component.
@@ -59,6 +60,10 @@ pub(crate) struct Definition {
     pub entity: String,
     pub class: String,
     pub class_index: usize,
+    /// idDynamicEntity's reflected bool at +360 (881d90/8820f0).
+    pub hide_on_spawn: bool,
+    /// arkBreakable's reflected bool at +360 (4e6540/1417fcc40).
+    pub navmesh_static_cutting: bool,
     pub types: Arc<ComponentTypes>,
     pub model: Option<Arc<super::equipment::attachment::Descriptor>>,
     pub components: Vec<Component>,
@@ -186,7 +191,7 @@ impl Definition {
                 Ok::<_, String>(text)
             };
             let chain = entities::player::entity_chain(entity, &mut read)?;
-            let entries = entities::player::component_entries(&chain);
+            let entries = entities::player::component_entries(&chain)?;
             let mut fields = Vec::new();
             for layer in chain {
                 entities::overlay_owned(&mut fields, layer);
@@ -221,9 +226,10 @@ impl Definition {
                     entities::components::entry_class(&entry, &declarations)?.ok_or_else(|| {
                         format!("{entity}: component slot{slot} has no declaration class")
                     })?;
+                let declaration_kind = catalog.component_declaration_kind(&kind)?.to_ascii_lowercase();
                 let fields = entities::components::entry_fields(
                     &entry,
-                    &kind,
+                    &declaration_kind,
                     &declarations,
                     &mut cache,
                     &mut read,
@@ -261,6 +267,26 @@ impl Definition {
                 class: class.clone(),
                 id: entity.to_owned(),
                 fields,
+            };
+            let hide_on_spawn = if class == "idDynamicEntity" {
+                match entities::field(child(&projected.fields, "edit"), "hide") {
+                    None => false,
+                    Some(entities::Value::Atom(value)) if value == "true" => true,
+                    Some(entities::Value::Atom(value)) if value == "false" => false,
+                    Some(value) => return Err(format!("{entity}: invalid idDynamicEntity.hide {value:?}")),
+                }
+            } else {
+                false
+            };
+            let navmesh_static_cutting = if class == "arkBreakable" {
+                match entities::field(child(&projected.fields, "edit"), "m_navmesh_staticCutting") {
+                    None => false,
+                    Some(entities::Value::Atom(value)) if value == "true" => true,
+                    Some(entities::Value::Atom(value)) if value == "false" => false,
+                    Some(value) => return Err(format!("{entity}: invalid arkBreakable.m_navmesh_staticCutting {value:?}")),
+                }
+            } else {
+                false
             };
             let model = atom(
                 child(child(&projected.fields, "edit"), "renderModelInfo"),
@@ -313,6 +339,8 @@ impl Definition {
                 entity: entity.to_owned(),
                 class,
                 class_index,
+                hide_on_spawn,
+                navmesh_static_cutting,
                 types,
                 model,
                 components,

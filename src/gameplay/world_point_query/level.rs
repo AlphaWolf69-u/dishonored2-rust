@@ -103,6 +103,13 @@ impl LevelPointQueries {
         self.storage.ray_query(executor, request, query_flags, |index| self.shape(index), hits)
     }
 
+    pub(crate) fn ray_any_hit(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+    ) -> Result<Option<crate::gameplay::shape_ray_query::ShapeRayContact>, String> {
+        self.storage.ray_any_hit(executor, request, query_flags, |index| self.shape(index))
+    }
+
     pub(crate) fn convex_hits(
         &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
         request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,

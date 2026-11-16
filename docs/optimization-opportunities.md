@@ -2392,3 +2392,5 @@ Audiograph/objective integration sweep (2026-11-15):
   borrowed world without nesting its guard; expected gain is only lock-call
   overhead per wind-registered dynamic body. Deferred until parent completes
   shared frame publication integration; no measured timing claim.
+
+- Implemented (2026-11-16): Breakable per-actor retirement now checks only its canonical target component list before admitting the existing global pending-effect dispatcher. Prediction: eliminate idle Nactors x Nscene-components shutdown scans. Evidence: Dust loaded, then exceeded the120-second runtime-retirement diagnostic deadline; sampled main stack was in pending_breakable_effect from begin_entity_retirement. Actual command ordering and effect acknowledgement remain unchanged. No post-change CPU number yet: the running diagnostic used the old binary and this worker did not build/test; parent owns combined verification.

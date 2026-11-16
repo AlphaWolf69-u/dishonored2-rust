@@ -120,6 +120,9 @@ impl UsableAnimations {
             slot.requested = true;
             slot.initialized = true;
             slot.prepared_pose = Some(matrices);
+            //Keep the actual initialized lower tree for the scene layer;
+            //the same pose becomes its live lower input after publication.
+            slot.local_pose = if machinery.scene_layer_active(index) { pose } else { None };
             owner.placements.insert(index, slot);
         }
         Ok(owner)
@@ -129,13 +132,13 @@ impl UsableAnimations {
         Some(&self.placements.get(&placement)?.asset.as_ref()?.rig.rig)
     }
 
-    pub(super) fn initial_joint_matrix(&self, placement: usize, joint: i16,
+    pub(super) fn initial_joint_matrices(&self, placement: usize,
         skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>)
-        -> Result<Option<super::physics_skinning::Affine>, String> {
+        -> Result<Option<&[super::physics_skinning::Affine]>, String> {
         let Some(slot) = self.placements.get(&placement) else { return Ok(None); };
         let asset = slot.asset.as_ref().ok_or("bound animation asset was retired during preparation")?;
         if !Arc::ptr_eq(&asset.rig.skeleton, skeleton) { return Err("attachment and usable skeleton owners differ".into()); }
-        Ok(usize::try_from(joint).ok().and_then(|joint| slot.prepared_pose.as_ref()?.get(joint)).copied())
+        Ok(slot.prepared_pose.as_deref())
     }
     /// 77b610/77bda0: stop the usable layer, retaining the last published
     /// palette with its existing placement rather than resetting its pose.

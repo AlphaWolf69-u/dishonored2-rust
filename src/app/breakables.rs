@@ -187,7 +187,13 @@ fn child_instigator(
 ///7ed9a0/7ecc90/7ecc00: ordinary remove receives retained chunks synchronously,
 ///then the array relinquishes them. GameLocal owns their asynchronous teardown.
 pub(super) fn begin_entity_retirement(world: &mut World, id: EntityId) -> Result<(), String> {
-    update(world)?;
+    //Source destruction waits for this owner's journal. A global dispatcher
+    //sweep for every unrelated actor repeats a whole-scene scan during exit.
+    //Keep its existing ordering/acknowledgements whenever actual work exists.
+    if world.resource::<super::physics_scene::PhysicsScene>()
+        .entity_has_pending_breakable_effect(id) {
+        update(world)?;
+    }
     let children = world
         .resource_mut::<super::physics_scene::PhysicsScene>()
         .begin_breakable_retirement(id)?;

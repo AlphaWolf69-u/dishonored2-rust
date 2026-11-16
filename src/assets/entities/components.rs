@@ -101,10 +101,10 @@ pub(crate) fn entry_fields(
     read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Option<Fields>, String> {
     let class = entry_class(entry, declarations)?;
-    // The serialized class keeps the underscore while its declaration suffix
-    // does not: cpntPickable_Simple / .cpntpickablesimple.
-    if class.as_deref() != Some(kind)
-        && !(kind == "cpntpickable_simple" && class.as_deref() == Some("cpntpickablesimple")) {
+    // Native type registration retains underscores which declaration filename
+    // extensions omit (Pickable, AI sensors/reasoners, ReferenceFramePlayer).
+    if !class.as_deref().is_some_and(|class| class.bytes().filter(|byte| *byte != b'_')
+        .eq(kind.bytes().filter(|byte| *byte != b'_'))) {
         return Ok(None);
     }
     let mut resolved = if let Some(name) = atom(entry, "mapComponentDecl") {
@@ -212,3 +212,6 @@ pub(super) fn component_fields(
     }
     Ok(resolved)
 }
+
+//Shared processed edit-list projection used by runtime and metadata owners.
+pub(crate) use super::processed_decl::ComponentList;

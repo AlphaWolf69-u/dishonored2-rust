@@ -2732,7 +2732,7 @@ pub(crate) fn model_descriptor(
 
 fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool) -> Option<PlacedModel> {
     if definition.kind != "entity" { return None; }
-    let edit = scope(field(&definition.fields, "edit"))?;
+    let edit = scope(field(&definition.fields, "edit")).unwrap_or(&[]);
     let render_info = scope(field(edit, "renderModelInfo"));
     let model_path = match render_info.and_then(|info| field(info, "model")) {
         Some(Value::Atom(path)) => path.as_str(),
@@ -2760,28 +2760,16 @@ fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blu
     } else {
         return None;
     };
-    let Some(position) =
-        scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
-    else {
-        return None;
-    };
+    //874c50 initializes origin/basis before authored fields are overlaid.
+    //A model without an explicit spawnPosition still has that real frame;
+    //use the same descriptor defaults as its physics/reference-frame owner.
+    let frame = spawn_frame(definition).ok()?;
+    let position = frame.position;
     let scale = render_info
         .and_then(|info| scope(field(info, "scale")))
         .and_then(|values| vector(values, [1.0; 3]))
         .unwrap_or([1.0; 3]);
-    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let rotation = scope(field(edit, "spawnOrientation"))
-        .and_then(|values| scope(field(values, "mat")))
-        .and_then(|matrix| {
-            let mut rows = identity;
-            for row in 0..3 {
-                if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
-                    rows[row] = vector(values, identity[row])?;
-                }
-            }
-            Some(rows)
-        })
-        .unwrap_or(identity);
+    let rotation = frame.basis;
     let custom_materials = render_info
         .and_then(|info| scope(field(info, "m_customMaterials")))
         .map(|overrides| {

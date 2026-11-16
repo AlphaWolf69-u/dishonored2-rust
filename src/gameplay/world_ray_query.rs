@@ -51,6 +51,7 @@ impl WorldRayQuery {
             resolve,
             selected: &mut selected,
             all_hits: None,
+            stop_at_first: false,
             query_flags: 0,
             error: None,
         };
@@ -105,6 +106,7 @@ impl WorldRayQuery {
             resolve,
             selected: &mut selected,
             all_hits: Some(hits),
+            stop_at_first: false,
             query_flags,
             error: None,
         };
@@ -122,6 +124,29 @@ impl WorldRayQuery {
         )?;
         visitor.error.take().map_or(Ok(()), Err)
     }
+
+    /// 0966e0 collector3: stop at the first actual accepted shape witness.
+    pub fn any_hit<'a>(
+        &mut self,
+        bodies: &dyn PointQueryBodies,
+        trees: &[PointQueryTree<'_>],
+        quantization: RayQuantization,
+        request: &WorldRayRequest,
+        query_flags: u32,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<ShapeRayContact>, String> {
+        let mut selected = None;
+        let mut visitor = Bodies { bodies, shapes: &mut self.shapes, request, resolve,
+            selected: &mut selected, all_hits: None, stop_at_first: true,
+            query_flags, error: None };
+        self.broadphase.query(trees, quantization, request.origin, request.direction,
+            request.maximum_fraction,
+            &mut RayQueryControl { fraction: f32::from_bits(0x5f7f_fff0), early_out: false },
+            &mut visitor)?;
+        let error = visitor.error.take();
+        drop(visitor);
+        error.map_or(Ok(selected), Err)
+    }
 }
 struct Bodies<'a, F> {
     bodies: &'a dyn PointQueryBodies,
@@ -130,6 +155,7 @@ struct Bodies<'a, F> {
     resolve: F,
     selected: &'a mut Option<ShapeRayContact>,
     all_hits: Option<&'a mut Vec<ShapeRayContact>>,
+    stop_at_first: bool,
     query_flags: u32,
     error: Option<String>,
 }
@@ -178,6 +204,22 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
             );
             let direction =
                 std::array::from_fn(|i| if direction[i] == 0. { 0. } else { direction[i] });
+            // 128ed70 keeps the collector bound separate from the ray's own
+            // query+4c limit, then takes their SIMD minimum for leaf work.
+            // Broadphase admission alone cannot enforce that segment limit
+            // on a large body's individual triangles/convex leaves.
+            let maximum_fraction = self.request.maximum_fraction;
+            let leaf_limit = |collector: f32| {
+                if maximum_fraction < collector {
+                    maximum_fraction
+                } else {
+                    collector
+                }
+            };
+            let mut leaf_control = RayQueryControl {
+                fraction: leaf_limit(control.fraction),
+                early_out: control.early_out,
+            };
             self.shapes.cast_with_flags(
                 RayQueryTarget {
                     shapes: resource.shapes,
@@ -195,18 +237,21 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
                 self.request.hit,
                 self.request.filter,
                 self.query_flags,
-                control,
-                &mut |hit, control| {
+                &mut leaf_control,
+                &mut |hit, leaf_control| {
                     let hit = hit.transformed_rigid(body.transform);
-                    if let Some(hits) = self.all_hits.as_deref_mut() {
+                    if self.stop_at_first {
+                        *self.selected = Some(hit);
+                        control.early_out = true;
+                    } else if let Some(hits) = self.all_hits.as_deref_mut() {
                         hits.push(hit);
-                        return;
-                    }
-                    // ca53a0 retains the first hit on equal fractions.
-                    if hit.fraction < control.fraction {
+                    } else if hit.fraction < control.fraction {
+                        // ca53a0 retains the first hit on equal fractions.
                         control.fraction = hit.fraction;
                         *self.selected = Some(hit);
                     }
+                    leaf_control.fraction = leaf_limit(control.fraction);
+                    leaf_control.early_out = control.early_out;
                 },
             )
         })();
