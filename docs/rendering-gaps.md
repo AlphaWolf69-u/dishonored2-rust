@@ -63,8 +63,31 @@ Original program (installed HLSL, `renderprog/arkhair` with `BRDF_hair`):
   chunk_000126 and binds `hairPrepass`/`hairOpacity` in 14031dce0.
   Cvars: r_hairAlphaTestAlpha, r_hairAlphaTestLit, r_hairAlphaTestOpaque,
   r_hairLuminanceHack.
-Next: the pass order and which passes run need a capture of the original
-with hair on screen (the prologue's petrified character).
+Measured in the original's main menu (capture
+`artifacts/renderdoc/original-menu-hair_frame12804.rdc`, 6 hair meshes; all
+in reverse-Z GREATER_EQUAL):
+1. Opaque depth prepass with motion vectors (RG16F), `hairAlphaTest` 0.8
+   (r_hairAlphaTestOpaque), depth write (events 691-763).
+2. Alpha depth, full resolution, 0.5 (r_hairAlphaTestAlpha), depth only
+   (1471-1543); then the half-resolution alpha depth, 0.5 (1593-1665).
+3. Main lit pass into the scene colour: `blend SRC_ALPHA
+   ONE_MINUS_SRC_ALPHA`, depth write, `hairAlphaTest` 0.05
+   (r_hairAlphaTestLit), output alpha 1 where albedo alpha >= 0.8
+   (`hairAlphaTestOpaque`) (10249-10321).
+4. Hair OIT pass (`writePixel` -> NEW_writePixel, RETAIL): RGBA16F hair
+   accumulation with ONE ONE and R8 hair revealage with ZERO
+   INV_SRC_COLOR, depth test without write, alpha test 0.05; OIT/Weights
+   (3, 50, 3, 0.5), OIT/Params (1, 0, 1, 1) (10536-10608).
+5. PostFX_CompositeWeightedBlendedOIT (10659) reads OIT/Opacity,
+   OIT/HairOpacity, OIT/Accumulation, OIT/HairAccumulation:
+   colour = hair.rgb/hair.a * alphaOpacity * (1 - hairOpacity)
+   + alpha.rgb/alpha.a * (1 - alphaOpacity), blend ONE SRC_ALPHA with
+   src alpha = alphaOpacity * hairOpacity.
+Menu-hair material values: sheen 0.5, sheenImportance 0.5, specular flow
+angle -45, primary power 70 / intensity 0.1 / shift 0, secondary 30 / 0.25
+/ -0.15, noise mask scale 40, hairIBL 1, luminance hack 0.7.
+The rewrite's particle OIT (dh2_particle_transparency_resolve.wgsl)
+covers only the alpha list; the hair list joins its composite.
 
 ## Particle declaration census (2026-11-10)
 
