@@ -96,7 +96,13 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
             }
         } else {
             let component = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
-            component.unregister_start_listeners(entity_events, false, || Err("unadmitted wind registration".into()))?;
+            let generation = component.owner.generation;
+            component.unregister_start_listeners(entity_events, false, || {
+                if let Some(index)=scene.rigid_wind_bodies.iter().position(|entry|*entry==(handle,generation)) {
+                    scene.rigid_wind_bodies.swap_remove(index);
+                }
+                Ok(())
+            })?;
             component.unregister_activation_listener(&mut scene.body_activation_events)?;
             let movement = component.movement_body()?;
             if let Some(actor) = scene.actors.bodies.get(movement).ok_or("rigid movement absent")?.actor {
@@ -110,7 +116,13 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
     // still has to detach the actual interface before body destruction.
     {
         let component = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
-        component.unregister_start_listeners(entity_events, false, || Err("unadmitted wind registration".into()))?;
+        let generation = component.owner.generation;
+        component.unregister_start_listeners(entity_events, false, || {
+                if let Some(index)=scene.rigid_wind_bodies.iter().position(|entry|*entry==(handle,generation)) {
+                    scene.rigid_wind_bodies.swap_remove(index);
+                }
+                Ok(())
+            })?;
         component.unregister_activation_listener(&mut scene.body_activation_events)?;
         let movement = component.movement_body()?;
         if let Some(actor) = scene.actors.bodies.get(movement).ok_or("rigid movement absent")?.actor {
@@ -144,4 +156,38 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
         rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.advance_unpublished_abort(step)?;
     }
     Ok(())
+}
+
+/// Roll back only this runtime actor's entered constructors. Shared bodies,
+///material registrations and unrelated startup queues retain their real owners.
+pub(super) fn rollback_runtime_entity(world:&mut bevy::prelude::World,scene:&mut PhysicsScene,live:&mut LiveEntities,
+    events:&mut EntityEvents,entity:usize)->Result<(),String>{
+    let index=scene.entities.get(entity).ok_or("runtime rollback actor absent")?;
+    let bodies=index.components.entries.values().iter().filter_map(|&packed|ComponentHandle::from_packed(packed).ok())
+        .filter(|handle|scene.is_rigid_class(handle.class_id))
+        .map(|handle|scene.rigid_component(handle).map(|component|component.body()))
+        .collect::<Result<Vec<_>,String>>()?.into_iter().flatten().collect::<Vec<_>>();
+    scene.retire_body_contacts(Some(&mut *world),live,events,&bodies)?;
+    let mut registry=scene.registry.take().ok_or("runtime rollback registry borrowed")?;
+    let result=(||{
+        let handles=scene.entities.get(entity).ok_or("runtime rollback actor absent")?.components.entries.values().iter()
+            .map(|&packed|{let handle=ComponentHandle::from_packed(packed)?;Ok((handle,scene.owner(handle)?.generation))})
+            .collect::<Result<Vec<_>,String>>()?;
+        if registry.interrupted_startup_component()?.is_some_and(|entered|!handles.iter().any(|(handle,_)|*handle==entered)){
+            return Err("runtime rollback entered callback belongs to another actor".into());
+        }
+        // Finite Projectile motion is a real distinct interface; detach it
+        //before unwinding the dormant or partially entered Throwable body.
+        for &(handle,_) in &handles{if handle.class_id==scene.classes[13]{scene.stop_projectile(handle,events)?;}}
+        for &(handle,_) in &handles{if handle.class_id==scene.classes[12]{scene.stop_throwable_component(handle,events)?;}}
+        let entered=scene.world.read().map_err(|_|"runtime rollback world poisoned")?.storage.disabled_component_creation_owner().map(|(handle,_)|handle);
+        let mut bodies=handles.iter().filter_map(|&(handle,_)|scene.is_rigid_class(handle.class_id).then_some(handle)).collect::<Vec<_>>();
+        if let Some(entered)=entered{if let Some(index)=bodies.iter().position(|handle|*handle==entered){bodies.swap(0,index);}else{return Err("runtime body creation belongs to another actor".into());}}
+        for handle in bodies{rollback_rigid(scene,&mut registry,events,handle)?;}
+        registry.abort_entity_startup(entity,&handles,&*scene)?;
+        // Resume the unrelated remainder at its adjusted original cursor.
+        // No failed actor component remains on initialization/start queues.
+        scene.run_runtime_startup(world,live,events,&mut registry)?;
+        Ok(())
+    })();scene.registry=Some(registry);result
 }

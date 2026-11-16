@@ -43,6 +43,10 @@ pub enum Effect {
         cannot_incapacitate_player_and_allies: bool,
         hold_owner: bool,
     },
+    RemoveOrGhost {
+        entity: EntityId,
+        delay: f32,
+    },
     Remove {
         entity: EntityId,
         delay: f32,
@@ -265,13 +269,13 @@ impl Runtime {
                 hold_owner: true,
             });
         } else if step.remove_entity {
-            self.pending.push_back(Effect::Remove {
+            self.pending.push_back(Effect::RemoveOrGhost {
                 entity: owner,
                 delay: 0.,
             });
         }
         for (chunk_index, definition) in step.chunks.iter().enumerate() {
-            // Native7ee0e0 transfers the pointer out of the runtime array before
+            // 7ee0e0 transfers the pointer out of the runtime array before
             // enabling it. Stop subsequently destroys only unreleased chunks.
             let target = if let Some(entity) = self.chunks[index][chunk_index].take() {
                 self.pending.push_back(Effect::ReleaseChunk {

@@ -269,6 +269,7 @@ pub struct Capsule {
 pub struct CapsuleQuery {
     support: ConvexSupportWorkspace,
     difference: Vec<[f32; 4]>,
+    mesh: crate::gameplay::compressed_mesh_query::CompressedMeshQuery,
 }
 impl CapsuleQuery {
     /// Host representation of the native capsule/convex zero sweep: the
@@ -325,30 +326,96 @@ impl CapsuleQuery {
                         radius: state.radius,
                     }),
                 })?;
-                if support.vertices.len() > usize::from(u16::MAX) / 2 {
-                    return Err("capsule Minkowski hull exceeds 16-bit feature identities".into());
-                }
-                self.difference.clear();
-                for endpoint in capsule.ends {
-                    for vertex in support.vertices {
-                        let world = transform_point(state.transform.world_from_local, *vertex);
-                        self.difference.push([
-                            world[0] - endpoint[0],
-                            world[1] - endpoint[1],
-                            world[2] - endpoint[2],
-                            f32::from_bits(self.difference.len() as u32),
-                        ]);
-                    }
-                }
-                Ok(query_point(
-                    [0., 0., 0., 0.5],
-                    &self.difference,
-                    IDENTITY,
-                    capsule.radius,
+                capsule_support_intersects(
+                    &mut self.difference,
+                    capsule,
+                    support.vertices,
                     support.radius,
-                    0.,
-                )?
-                .is_some())
+                    state.transform.world_from_local,
+                )
+            }
+            QueryGeometry::CompressedMesh(mesh) => {
+                use crate::gameplay::{
+                    compressed_mesh_query::{MeshSweep, support_input, support_leaves},
+                    constraint_solver::reciprocal,
+                    ray_query::RayQueryControl,
+                    shape_transform::{inverse_rigid, transform_bounds},
+                };
+                let world_bounds = [
+                    std::array::from_fn(|i| {
+                        if i < 3 {
+                            capsule.ends[0][i].min(capsule.ends[1][i]) - capsule.radius
+                        } else {
+                            0.
+                        }
+                    }),
+                    std::array::from_fn(|i| {
+                        if i < 3 {
+                            capsule.ends[0][i].max(capsule.ends[1][i]) + capsule.radius
+                        } else {
+                            0.
+                        }
+                    }),
+                ];
+                let mut bounds = transform_bounds(
+                    inverse_rigid(state.transform.world_from_local),
+                    world_bounds,
+                );
+                for axis in 0..3 {
+                    let inverse = if state.scaled {
+                        reciprocal(state.transform.scale[axis])
+                    } else {
+                        1.
+                    };
+                    let offset = if state.scaled {
+                        state.transform.offset[axis]
+                    } else {
+                        0.
+                    };
+                    let a = (bounds[0][axis] - offset) * inverse;
+                    let b = (bounds[1][axis] - offset) * inverse;
+                    bounds[0][axis] = a.min(b);
+                    bounds[1][axis] = a.max(b);
+                }
+                let sweep = MeshSweep {
+                    center: std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5),
+                    half_extent: std::array::from_fn(|i| (bounds[1][i] - bounds[0][i]) * 0.5),
+                    direction: [0.; 3],
+                };
+                let mut control = RayQueryControl {
+                    fraction: 1.,
+                    early_out: false,
+                };
+                let Self {
+                    support,
+                    difference,
+                    mesh: visitor,
+                } = self;
+                let mut intersects = false;
+                visitor.visit_swept(
+                    mesh,
+                    sweep,
+                    shape.header.radius,
+                    &mut control,
+                    &mut |leaf, control| {
+                        support_leaves(leaf, &mut |leaf| {
+                            if intersects {
+                                return Ok(());
+                            }
+                            let prepared = support.prepare(support_input(&leaf, state)?)?;
+                            intersects = capsule_support_intersects(
+                                difference,
+                                capsule,
+                                prepared.vertices,
+                                prepared.radius,
+                                state.transform.world_from_local,
+                            )?;
+                            control.early_out = intersects;
+                            Ok(())
+                        })
+                    },
+                )?;
+                Ok(intersects)
             }
             QueryGeometry::Compound(compound) => {
                 for instance in &compound.instances {
@@ -386,4 +453,39 @@ impl CapsuleQuery {
             }
         }
     }
+}
+
+// Same signed-distance kernel for polytope and actual compressed mesh leaves.
+// The mesh BVH selects candidates; only GSK can report capsule intersection.
+fn capsule_support_intersects(
+    difference: &mut Vec<[f32; 4]>,
+    capsule: Capsule,
+    vertices: &[[f32; 4]],
+    radius: f32,
+    transform: ShapeMatrix,
+) -> Result<bool, String> {
+    if vertices.len() > usize::from(u16::MAX) / 2 {
+        return Err("capsule Minkowski hull exceeds 16-bit feature identities".into());
+    }
+    difference.clear();
+    for endpoint in capsule.ends {
+        for vertex in vertices {
+            let world = transform_point(transform, *vertex);
+            difference.push([
+                world[0] - endpoint[0],
+                world[1] - endpoint[1],
+                world[2] - endpoint[2],
+                f32::from_bits(difference.len() as u32),
+            ]);
+        }
+    }
+    Ok(query_point(
+        [0., 0., 0., 0.5],
+        difference,
+        IDENTITY,
+        capsule.radius,
+        radius,
+        0.,
+    )?
+    .is_some())
 }

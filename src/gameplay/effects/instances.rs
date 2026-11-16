@@ -21,6 +21,17 @@ use std::{
 // Subscription callbacks must never alias a graph from an earlier level.
 static NEXT_GRAPH_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// One883d10 receiver snapshot, owned by the actual fallible pickup action.
+/// Graph generations stay in the canonical manager; no definition is copied.
+#[derive(Default)]
+pub(crate) struct PickupReceipt {
+    pub(crate) arguments: Option<(crate::gameplay::entity_lifetime::EntityId,bool,bool)>,
+    pub(crate) receivers: Vec<(u64,u32)>,
+    pub(crate) next: usize,
+    pub(crate) errors: Vec<String>,
+    pub(crate) failure: Option<String>,
+}
+
 pub enum GraphEvent {
     Action { graph: usize, node: u32, port: u32 },
     LoadingEnd { graph: usize, node: u32 },
@@ -281,6 +292,19 @@ impl FxGraphInstances {
             }
         }
         Ok(())
+    }
+    pub fn broken(&mut self, id: u64, node: u32, entity: crate::gameplay::event_graph::EntityReference, step: i32, removed: bool, location: [f32; 3]) -> Result<Vec<String>, String> {
+        let index = self.instance_index(id).ok_or("breakable graph retired")?;
+        self.runtimes[index].as_mut().ok_or("breakable graph busy")?.broken(node, entity, step, removed, location)?;
+        Ok(self.collect(index))
+    }
+    pub fn breakable_subscriptions(&self, graph: u64) -> Result<(Vec<(u32, crate::gameplay::event_graph::EntityReference)>, Vec<String>), String> {
+        let index = self.instance_index(graph).ok_or("breakable graph retired")?;
+        Ok(self.runtimes[index].as_ref().ok_or("breakable graph busy")?.breakable_subscriptions())
+    }
+    pub fn breakable_subscription(&self, graph: u64, node: u32) -> Result<Option<crate::gameplay::event_graph::EntityReference>, String> {
+        let index = self.instance_index(graph).ok_or("breakable graph retired")?;
+        self.runtimes[index].as_ref().ok_or("breakable graph busy")?.breakable_subscription(node)
     }
     pub fn picked_up(&mut self, id: u64, node: u32, successful: bool, from_grapple: bool)
         -> Result<Vec<String>, String> {

@@ -44,6 +44,22 @@ pub fn world_physics_bounds(document: &Document) -> Result<Option<[[f32; 4]; 2]>
     Ok(Some(bounds))
 }
 
+/// idWorldspawn+4e4, registered by1415e1017 as durationTime_t.
+/// 882300 supplies0.3 seconds before authored member overrides are applied.
+pub fn world_contact_unbent_duration(document: &Document) -> Result<Option<f32>, String> {
+    let mut worlds = document.definitions.iter()
+        .filter(|d|d.kind=="entity" && atom(&d.fields,"class")==Some("idWorldspawn"));
+    let Some(world)=worlds.next() else {return Ok(None);};
+    if worlds.next().is_some(){return Err("multiple worldspawn time owners".into());}
+    let default=f32::from_bits(0x3e99_999a);
+    let Some(edit)=scope(field(&world.fields,"edit")) else {return Ok(Some(default));};
+    let Some(value)=field(edit,"m_contactUnbentTimeDuration") else {return Ok(Some(default));};
+    let Value::Scope(duration)=value else {return Err("worldspawn contact unbent duration is not durationTime_t".into());};
+    let Some(value)=field(duration,"m_seconds") else {return Ok(Some(default));};
+    let Value::Atom(value)=value else {return Err("worldspawn contact unbent seconds is not numeric".into());};
+    Ok(Some(value.parse().map_err(|_|"invalid worldspawn contact unbent duration")?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

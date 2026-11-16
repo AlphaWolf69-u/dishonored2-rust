@@ -187,7 +187,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 20] = [
+const PLAYER_COMPONENTS: [&str; 21] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",

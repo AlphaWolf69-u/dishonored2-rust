@@ -287,7 +287,7 @@ impl BodyStorage {
         assets: BodyCreationAssets<'_>,
     ) -> Result<(), String> {
         if (info.name != 0) != assets.name.is_some()
-            || (info.mass_distribution != 0) != assets.mass_distribution.is_some()
+            || (info.mass_distribution != 0 || info.mass_distribution_lease.is_some()) != assets.mass_distribution.is_some()
         {
             return Err("body creation references have not been resolved consistently".into());
         }

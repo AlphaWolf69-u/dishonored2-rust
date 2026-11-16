@@ -67,6 +67,7 @@ struct InstanceSource {
     rows: Option<[[f32; 4]; 3]>,
     vectors: [f32; 7],
     clock: InstanceClock,
+    tag: u32,
     /// Wind center of a multi-instanced needsWind world instance.
     center: Option<usize>,
 }
@@ -165,6 +166,7 @@ pub(super) fn initialize_vegetation_wind(
                         ]),
                         vectors,
                         clock: InstanceClock::View,
+                        tag: instance.probe_index,
                         center: wind
                             .then(|| usize::try_from(center_indices[matrix]).ok())
                             .flatten(),
@@ -182,6 +184,7 @@ pub(super) fn initialize_vegetation_wind(
                         rows: source.world_baked.then(|| [rows[0], rows[1], rows[2]]),
                         vectors,
                         clock: InstanceClock::InitialModel,
+                        tag: instance.probe_index,
                         center: None,
                     }
                 }
@@ -277,12 +280,14 @@ pub(super) fn update_vegetation_wind(
     wind: Option<ResMut<VegetationWind>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut last_error: Local<Option<String>>,
+    model_data: Option<Res<super::model_motion::ModelProbeLighting>>,
+    model_state: Res<super::model_motion::ModelShaderData>,
 ) {
     let Some(mut wind) = wind else {
         return;
     };
     let advanced = clock.advanced();
-    if wind.uploaded && !advanced {
+    if wind.uploaded && !advanced && !model_state.is_changed() {
         return;
     }
     let result = (|| -> Result<Vec<u32>, String> {
@@ -298,7 +303,7 @@ pub(super) fn update_vegetation_wind(
             });
             let time = match source.clock {
                 InstanceClock::View => view_time,
-                InstanceClock::InitialModel => model_time,
+                InstanceClock::InitialModel => model_data.as_deref().map_or(model_time,|data|data.shader_clock(source.tag,[model_time,0.])[0]),
             };
             words.extend(instance_words(
                 source.rows,

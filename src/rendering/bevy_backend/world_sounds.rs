@@ -10,6 +10,23 @@ use crate::{gameplay::{effects::sound::handle::{SoundHandle, SoundObjectWorld}, 
 pub(crate) struct SoundFrame {
     pub axis: Mat3,
     pub scale: f32,
+    ///22fd00 receives the actual FX contact speed squared times mass.
+    pub energy:f32,
+    /// Actual60a8b0 callback owner, retained by the accepted sound cookie.
+    pub entity_context: Option<super::world_effects::EntityEffectContext>,
+}
+
+pub(crate) struct Stimulus {
+    pub owner: crate::gameplay::entity_lifetime::EntityId,
+    pub object: Emitter,
+    pub position: Vec3,
+    pub distance: f32,
+    pub descriptor: Arc<crate::assets::wwise::game_properties::GameSoundProperties>,
+}
+struct StimulusCookie {
+    owner: crate::gameplay::entity_lifetime::EntityId,
+    descriptor: Arc<crate::assets::wwise::game_properties::GameSoundProperties>,
+    distance: f32,
 }
 
 pub(crate) struct SoundObject {
@@ -61,6 +78,8 @@ pub(crate) struct SoundState {
     pub playing: PlayingEvents,
     pub(crate) playing_ids: Option<crate::gameplay::sound::playing::PlayingIds>,
     pub notifications: Vec<Notification>,
+    stimulus_cookies: HashMap<PlayingId, StimulusCookie>,
+    pub stimuli: std::collections::VecDeque<Stimulus>,
     pub acoustics: Option<Arc<Mutex<AcousticWorld>>>,
     pub listeners: [Option<AdmissionListener>; 8],
     pub motion: [Option<ListenerMotion>; 8],
@@ -70,9 +89,24 @@ pub(crate) struct SoundState {
     pub ready_sources: u64,
 }
 impl SoundState {
+    pub(crate) fn references_stimulus_owner(&self,owner:crate::gameplay::entity_lifetime::EntityId)->bool{
+        self.stimulus_cookies.values().any(|cookie|cookie.owner==owner)
+            || self.stimuli.iter().any(|packet|packet.owner==owner)
+    }
     pub fn pump_notifications(&mut self) {
         let notifications = self.playing.take_notifications();
         for notification in &notifications {
+            // c7180 promotes the first Duration packet to8000; later8 packets
+            //still reach FX bookkeeping. c47a0 supplies8000 beforeEnd when
+            //none arrived. Only the actual stimulus cookie is consumed once.
+            if matches!(notification.kind, NotificationKind::SourceReady | NotificationKind::EventPlaying) {
+                if let Some(cookie)=self.stimulus_cookies.remove(&notification.id) {
+                    if let Some(object)=self.objects.get(&notification.event.object) {
+                        self.stimuli.push_back(Stimulus { owner:cookie.owner, object:notification.event.object,
+                            position:object.position, distance:cookie.distance, descriptor:cookie.descriptor });
+                    }
+                }
+            }
             if matches!(notification.kind, NotificationKind::SourceReady) {
                 if self.ready_sources == 0 {
                     info!(declaration = notification.event.declaration, "World FX audio source readiness confirmed by shared output");
@@ -114,7 +148,7 @@ impl SoundObjectWorld for WorldSounds {
         Ok(Some(emitter))
     }
     fn post(&mut self, _: &mut SoundHandle<Emitter, PlayingId>, object: Emitter,
-        event: u32, _: &SoundFrame) -> Result<Option<PlayingId>, String>
+        event: u32, context: &SoundFrame) -> Result<Option<PlayingId>, String>
     {
         let mut state = self.lock();
         if state.objects.get(&object).is_some_and(|object| object.retiring) { return Err("FX sound object is retiring".into()); }
@@ -132,12 +166,23 @@ impl SoundObjectWorld for WorldSounds {
         let playing_id = state.playing_ids.as_ref().ok_or("shared audio playing-ID owner is absent")?.allocate();
         let ticket = state.playing.register_with_id(playing_id, Event { object, declaration: event, callbacks: 0x8009 })?;
         let id = ticket.id();
+        if let Some(context)=context.entity_context.filter(|context|
+            context.contact_stimulus_enabled==Some(true) && context.contact_speed>=0.) {
+            if let (Some(owner),Some(descriptor))=(context.owner,declaration.game_descriptor.as_ref()) {
+                state.stimulus_cookies.insert(id,StimulusCookie{owner,descriptor:descriptor.clone(),
+                    distance:if declaration.game_defined {descriptor.propagation_distance} else {declaration.max_distance}});
+            }
+        }
         let source = state.objects.get_mut(&object).ok_or("FX sound object was removed")?;
         source.events.push((id, declaration.max_distance));
         if source.range < declaration.max_distance && declaration.max_distance > 0.0 {
             source.range = declaration.max_distance;
         }
-        state.queued.push(ticket);
+        if declaration.game_defined {
+            // c4550's authored game-defined event has no middleware action:
+            //the canonical cookie emits8000 synchronously, thenEnd.
+            ticket.source_ready();
+        } else { state.queued.push(ticket); }
         Ok(Some(id))
     }
     fn release(&mut self, object: Emitter, stop: bool) -> Result<(), String> {
@@ -153,12 +198,13 @@ impl SoundObjectWorld for WorldSounds {
         } else { state.objects.remove(&object); }
         Ok(())
     }
-    fn initialize_posted(&mut self, object: Emitter, _: &SoundFrame) -> Result<(), String> {
+    fn initialize_posted(&mut self, object: Emitter, context: &SoundFrame) -> Result<(), String> {
         let mut state = self.lock();
         let energy = state.energy.ok_or("FX physics-energy RTPC is unavailable")?;
         let object = state.objects.get_mut(&object).ok_or("FX sound object is absent")?;
-        // Ordinary world NodeFx context21dc10 initializes velocity and mass0.
-        object.energy = Some((energy.id, energy.clamp(0.0)));
+        // Ordinary world NodeFx21dc10 supplies zero; real ContactFX retains
+        //its60a480 speed/mass rather than inheriting that unrelated default.
+        object.energy = Some((energy.id, energy.clamp(context.energy)));
         object.source_occlusion = false; // 22fac0 ->c3b70(0), after successful post.
         Ok(())
     }

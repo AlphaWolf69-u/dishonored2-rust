@@ -115,6 +115,11 @@ pub struct GrabDecl {
     pub distance: f32,
     pub velocity: f32,
     pub max_grab_velocity: f32,
+    pub grappled_linear_velocity: f32,
+    pub grappled_angular_velocity: f32,
+    pub inventory_full_sound: Option<String>,
+    pub object_pickup_z_offset: f32,
+    pub instant_loot: bool,
 }
 impl GrabDecl {
     pub fn read(fields: &Fields) -> Result<Self, String> {
@@ -125,7 +130,12 @@ impl GrabDecl {
             action: ActionDecl::read(fields)?,
             distance: number(fields, "m_distance", 0.5)?,
             velocity: number(fields, "m_velocity", 10.)?,
-            max_grab_velocity: number(fields, "m_maxGrabVelocity", 15.)?,
+            max_grab_velocity: number(fields, "m_maxGrabVelocity", 0.5)?,
+            grappled_linear_velocity: number(fields, "m_grappledLinearVelocity", 15.)?,
+            grappled_angular_velocity: number(fields, "m_grappledAngularVelocity", 800.)?,
+            inventory_full_sound: path(fields, "m_inventoryFullSoundEvent"),
+            object_pickup_z_offset: number(fields, "m_objectPickupZOffset", 0.5)?,
+            instant_loot: boolean(fields, "m_instantLoot", false)?,
         })
     }
     /// 140841500's ordinary physical pickup branch. `delta` is the exact
@@ -138,7 +148,7 @@ impl GrabDecl {
             Some(
                 delta / squared.max(f32::from_bits(0x00800000)).sqrt()
                     * if max_grab {
-                        self.max_grab_velocity
+                        self.grappled_linear_velocity
                     } else {
                         self.velocity
                     },
@@ -199,7 +209,9 @@ impl Runtime {
     pub(crate) fn has_work(&self) -> bool {
         self.pending.is_some() || self.held.is_some() || !self.changes.is_empty()
     }
-    pub(crate) fn has_transactions(&self)->bool{self.pending.is_some()||!self.changes.is_empty()}
+    pub(crate) fn has_transactions(&self) -> bool {
+        self.pending.is_some() || !self.changes.is_empty()
+    }
     pub(crate) fn request(&mut self, target: Target) -> bool {
         if self.pending.is_some() || self.held.is_some() || target.definition.hold.is_none() {
             return false;
@@ -334,5 +346,46 @@ impl super::Player {
             &self.carrying,
             self.entity_event_time,
         )
+    }
+}
+
+impl super::Player {
+    ///Installed49/50 hold declarations own m_throwFx. Both retained mode
+    ///machines share the ordinary FX source owner; no effect is instantiated.
+    pub(crate) fn carrying_throw_fx_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        for machine in [&self.machine, &self.swimming_machine] {
+            for id in [StateId::HOLD_ONE_HAND, StateId::HOLD_TWO_HAND] {
+                if let Some(state) = machine.state(id) {
+                    if let super::states::Kind::HoldObject(decl) = &state.decl.kind {
+                        if let Some(path) = &decl.throw_fx {
+                            paths.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+}
+
+impl super::Player {
+    pub(crate) fn carrying_hold_decl_for_hands(&self, both_hands: bool) -> Option<&HoldDecl> {
+        let machine = if self.swimming_active {
+            &self.swimming_machine
+        } else {
+            &self.machine
+        };
+        let id = if both_hands {
+            StateId::HOLD_TWO_HAND
+        } else {
+            StateId::HOLD_ONE_HAND
+        };
+        machine.state(id).and_then(|state| match &state.decl.kind {
+            super::states::Kind::HoldObject(decl) => Some(decl.as_ref()),
+            _ => None,
+        })
     }
 }

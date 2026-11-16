@@ -5,7 +5,13 @@ use super::{ActorBody, ActorMotionBody, PhysicsActorLinks, ResolvedMotion};
 
 pub enum BasicBody {
     Embedded,
-    Trigger { body: usize },
+    Trigger {
+        body: usize,
+    },
+    /// Projectile+20 vtable141b9c910 has the same six source callbacks.
+    Projectile {
+        body: usize,
+    },
 }
 impl BasicBody {
     fn selected<'a>(
@@ -19,7 +25,7 @@ impl BasicBody {
             .ok_or("basic movement body actor is missing")?;
         let expected = match self {
             Self::Embedded => actor.default_body,
-            Self::Trigger { body } => *body,
+            Self::Trigger { body } | Self::Projectile { body } => *body,
         };
         if actor.current_body != expected {
             return Err("selected movement body does not match its admitted interface".into());

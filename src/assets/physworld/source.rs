@@ -113,6 +113,9 @@ pub(crate) struct StandaloneShape {
     /// The innermost resource's first four serialized bytes.
     pub source_header: u32,
     pub wrappers: Vec<Arc<ShapeAlias>>,
+    ///08c7f0's actual0xf100 companion property, including a missing source.
+    ///The resource lease survives through the final registered body/query.
+    pub mass: Option<Arc<Option<super::mass::PrincipalMassProperties>>>,
 }
 
 pub(crate) struct ShapeAlias {
@@ -155,6 +158,13 @@ impl ShapeAlias {
 }
 
 impl StandaloneShape {
+    pub(crate) fn acquire_mass_properties(&mut self,catalog:&Catalog)->Result<(),String>{
+        let path=self.wrappers.first().map_or(self.source_path.as_str(),|resource|resource.path.as_str());
+        let key=path.strip_suffix(".hkx").ok_or("standalone shape mass resource key has no HKX suffix")?;
+        self.mass=Some(super::mass::acquire_resource(catalog,&format!("{key}.massProps"))?);
+        Ok(())
+    }
+
     /// This is the innermost shape, not the full resource when `wrappers` is
     /// nonempty. The component must retain and apply each compound wrapper.
     pub(crate) fn base_query_shapes(&self) -> Result<super::query_geometry::QueryShapes, String> {
@@ -453,7 +463,7 @@ impl ShapeSources {
             }
             leases.reverse();
             return Ok(Some(StandaloneShape { catalog_identity: catalog.identity(), shareable: !catalog.has_overlays(),
-                source, source_path: key, source_header: header, wrappers: leases }));
+                source, source_path: key, source_header: header, wrappers: leases, mass: None }));
         }
     }
 

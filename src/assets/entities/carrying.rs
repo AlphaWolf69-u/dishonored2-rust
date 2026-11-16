@@ -206,6 +206,9 @@ pub(crate) fn definition(
         usable_by_player: flag(fields, "m_usableByPlayer", true)?,
         invisible_npc_loot: flag(fields, "m_invisibleNpcLoot", false)?,
         pickup_interaction: interaction,
+        interaction_labels: [atom(child(fields,"m_pickupInteraction"),"m_name").unwrap_or("").to_owned(),
+            atom(child(fields,"m_pickupInteraction"),"m_usageText").unwrap_or("").to_owned()],
+        interaction_state: atom(child(fields,"m_pickupInteraction"),"m_playerState").unwrap_or("").to_owned(),
         scheduling: components::scheduling(
             fields,
             crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(

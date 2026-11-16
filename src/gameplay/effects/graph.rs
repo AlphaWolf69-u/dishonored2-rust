@@ -60,6 +60,7 @@ pub trait FxGraphWorld {
 }
 pub enum GraphStep {
     PickupReset { node: u32 },
+    BreakableReset { node: u32 },
     Idle,
     Action { schedule: Option<u32> },
 }
@@ -81,7 +82,7 @@ pub struct FxGraphRuntime {
     gameflow_subscriptions: Vec<usize>,
 }
 #[derive(Default)]
-struct NotificationState { count: i32, instigator: Option<EntityReference> }
+struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3] }
 impl GraphInputs for FxGraphRuntime {
     fn boolean_override(&self, node: &Node, name: &str) -> Option<bool> {
         (node.class == "arkKisculeNodeGate" && name == "m_isOpen")
@@ -115,9 +116,17 @@ impl GraphInputs for FxGraphRuntime {
             .iter()
             .find(|point| point.id == port)
             .ok_or("graph variable port absent")?;
-        if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
+        if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeBreakableNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
             return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
                 .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
+        }
+        if node.class == "arkKisculeNodeBreakableNotification" {
+            let state = self.notifications.as_ref().and_then(|states| states.get(&node.id));
+            match point.name.as_str() {
+                "m_stepIndex" => return Ok(Some(GraphValue::Int(state.map_or(0, |state| state.step)))),
+                "m_location" => return Ok(Some(GraphValue::Vector(state.map_or([0.; 3], |state| state.location)))),
+                _ => {}
+            }
         }
         if node.class == "arkKisculeNodeGetGameflowTaskState" {
             let name=self.string_id_input(node,"m_taskName")?;
@@ -318,6 +327,29 @@ impl FxGraphRuntime {
         self.notifications.get_or_insert_with(Default::default).entry(id).or_default().instigator = Some(EntityReference::Player);
         self.notification_outputs(id, maximum, if successful { "Picked Up" } else { "Picked Up Failed" })
     }
+    /// 7986b0: the broken entity, rather than its damage attacker, owns the notification.
+    pub fn broken(&mut self, id: u32, entity: EntityReference, step: i32, removed: bool, location: [f32; 3]) -> Result<(), String> {
+        let definition = self.shared_definition();
+        let node = definition.node(id)?;
+        if node.class != "arkKisculeNodeBreakableNotification" { return Err("node is not a breakable notification".into()); }
+        let maximum = self.integer_input(node, "m_maxNotificationCount", -1)?;
+        let state = self.notifications.get_or_insert_with(Default::default).entry(id).or_default();
+        state.instigator = Some(entity); state.step = step; state.location = location;
+        for output in [Some("Step changed"), removed.then_some("Removed"), Some("Out")].into_iter().flatten() {
+            let count = self.notifications.as_ref().unwrap()[&id].count;
+            if (maximum < 0 || count < maximum) && self.emit_queued(id, output, true)? {
+                let state = self.notifications.as_mut().unwrap().get_mut(&id).unwrap();
+                state.count = state.count.wrapping_add(1);
+            }
+        }
+        Ok(())
+    }
+    pub fn breakable_subscriptions(&self) -> (Vec<(u32, EntityReference)>, Vec<String>) {
+        self.notification_subscriptions("arkKisculeNodeBreakableNotification")
+    }
+    pub fn breakable_subscription(&self, id: u32) -> Result<Option<EntityReference>, String> {
+        self.notification_subscription(id, "arkKisculeNodeBreakableNotification")
+    }
     fn notification_outputs(&mut self, id: u32, maximum: i32, first: &str) -> Result<(), String> {
         for output in [first, "Out"] {
             let count = self.notifications.as_ref().unwrap().get(&id).unwrap().count;
@@ -365,8 +397,11 @@ impl FxGraphRuntime {
         self.notification_subscriptions("arkKisculeNodePickupNotification")
     }
     pub fn pickup_subscription(&self, id: u32) -> Result<Option<EntityReference>, String> {
+        self.notification_subscription(id, "arkKisculeNodePickupNotification")
+    }
+    fn notification_subscription(&self, id: u32, class: &str) -> Result<Option<EntityReference>, String> {
         let node = self.node(id)?;
-        if node.class != "arkKisculeNodePickupNotification" { return Err("node is not a pickup notification".into()); }
+        if node.class != class { return Err(format!("node is not a {class}")); }
         if !self.boolean_input(node, "m_enabled", true)? { return Ok(None); }
         let default = atom(&node.params, "m_listenedEntity")
             .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
@@ -377,7 +412,7 @@ impl FxGraphRuntime {
         let mut subscriptions = Vec::new();
         let mut errors = Vec::new();
         for node in self.graph.nodes.iter().filter(|node| node.class == class && self.relevant.contains(&node.id)) {
-            match self.pickup_subscription(node.id) {
+            match self.notification_subscription(node.id, class) {
                 Ok(Some(target)) => subscriptions.push((node.id, target)),
                 Ok(None) => {},
                 Err(error) => errors.push(format!("node {}: {error}", node.id)),
@@ -472,6 +507,9 @@ impl FxGraphRuntime {
                 self.emit(id,"Reset")?;
                 false
             }
+            "arkKisculeNodeBreakableNotification" if port.name == "Reset" => {
+                return Ok(GraphStep::BreakableReset { node: id });
+            }
             "arkKisculeNodePickupNotification" if port.name == "Reset" => {
                 return Ok(GraphStep::PickupReset { node: id });
             }
@@ -551,6 +589,7 @@ impl FxGraphRuntime {
             "arkKisculeNodeNamedVariableFloat"
             | "arkKisculeNodeNamedVariableBool"
             | "arkKisculeNodeNamedVariableInt"
+            | "arkKisculeNodeNamedVariableVec3"
             | "arkKisculeNodeNamedVariableEntityReference"
                 if port.name == "Set" =>
             {
@@ -560,6 +599,7 @@ impl FxGraphRuntime {
                 let kind = match node.class.as_str() {
                     "arkKisculeNodeNamedVariableBool" => GraphValue::Bool(false),
                     "arkKisculeNodeNamedVariableInt" => GraphValue::Int(0),
+                    "arkKisculeNodeNamedVariableVec3" => GraphValue::Vector([0.; 3]),
                     "arkKisculeNodeNamedVariableEntityReference" => GraphValue::Entity(None),
                     _ => GraphValue::Float(0.),
                 };

@@ -69,6 +69,7 @@ pub fn initialize_trigger(
     world.trigger_mut(reference)?.wind = wind;
     let declaration = world.declaration(reference)?;
     let collision = world.collision_settings(declaration)?;
+    world.trigger_mut(reference)?.collision=Some(collision);
     let input = prepare_trigger_body(TriggerBodyInput {
         shape: shape.shape,
         basis: shape.basis,

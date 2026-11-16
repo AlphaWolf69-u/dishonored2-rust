@@ -244,6 +244,9 @@ impl RenderAsset for GpuShaderBuffer {
     }
 
     fn byte_len(source: &Self::SourceAsset) -> Option<usize> {
+        // GPU-only growth has no CPU upload bytes. Deferring it behind the
+        // upload quota would discard the previous buffer needed by the copy.
+        if source.copy_on_resize && source.data.is_none() { return None; }
         if crate::render_asset::unbounded_loading_acquisition() { return None; }
         Some(source.data.as_ref().map_or(source.buffer_description.size as usize, Vec::len))
     }
@@ -254,11 +257,13 @@ impl RenderAsset for GpuShaderBuffer {
     ) -> Result<Self::SourceAsset, AssetExtractionError> {
         let data = source.data.take();
 
-        let valid_upload = data.is_some() || previous_gpu_asset.is_none_or(|prev| !prev.had_data);
+        let copy_on_resize = core::mem::take(&mut source.copy_on_resize);
+        let valid_upload = data.is_some() || copy_on_resize || previous_gpu_asset.is_none_or(|prev| !prev.had_data);
 
         valid_upload
             .then(|| Self::SourceAsset {
                 data,
+                copy_on_resize,
                 ..source.clone()
             })
             .ok_or(AssetExtractionError::AlreadyExtracted)

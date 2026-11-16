@@ -16,18 +16,23 @@ use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use crate::gameplay::entity_lifetime::EntityId;
 use crate::gameplay::powers::world_effects::{TimeLease, TimeRequest, TimeRequests};
 use crate::platform::performance_counter as platform;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 struct EntityClock {
     timespace: u32,
     offset: f64,
     remaining: Option<f32>,
     managed_override: bool,
+    /// idEntity+2b8, constructor874c50 initializes the explicit time-space
+    /// attachment separately from the actor's ordinary binding parent.
+    time_parent: Option<EntityId>,
 }
 impl EntityClock {
-    fn advance(&mut self, clock: &GameClock, bent: bool, step: f32) {
+    ///80f040 advances only the root countdown here. The application publishes
+    ///80f620's real binding traversal before changing selectors/model clocks.
+    fn advance(&mut self, _clock: &GameClock, bent: bool, step: f32) -> Option<u32> {
         if !self.managed_override {
-            return;
+            return None;
         }
         let unbent = if let Some(remaining) = self.remaining.as_mut() {
             let active = bent && step < *remaining;
@@ -41,22 +46,23 @@ impl EntityClock {
         } else {
             false
         };
-        if self.timespace > 1 {
-            return;
-        }
-        let timespace = u32::from(unbent);
         if self.remaining.is_none() {
             self.managed_override = false;
         }
-        if timespace == self.timespace {
-            return;
-        }
-        let old = if self.timespace == 0 { 3 } else { 4 };
-        let new = if timespace == 0 { 3 } else { 4 };
-        let elapsed = (clock.previous_time(old).unwrap_or(0.0) - self.offset) as f32;
-        self.offset = clock.previous_time(new).unwrap_or(0.0) - f64::from(elapsed);
-        self.timespace = timespace;
+        (self.timespace <= 1).then_some(u32::from(unbent))
     }
+}
+struct EntityTimeNode {
+    entity: EntityId,
+    stage: u8,
+    changed: bool,
+}
+struct EntityTimePublication {
+    root: Option<EntityId>,
+    target: u32,
+    pending: Vec<EntityId>,
+    current: Option<EntityTimeNode>,
+    visited: Vec<EntityId>,
 }
 
 struct PerformanceCounter {
@@ -102,15 +108,48 @@ struct LoadedClock {
     advanced: bool,
     /// 80d8c0/80f040: the player root's timed unbent request. This is a
     /// duration in game-local unquantized time, not an extra time factor.
+    player_entity: Option<EntityId>,
     player_override: Option<f32>,
     player_timespace: u32,
     player_clock_offset: f64,
     entity_clocks: HashMap<EntityId, EntityClock>,
     entity_overrides: Vec<EntityId>,
+    /// Actual87ce70/87d050 notifications awaiting the application owners.
+    /// This is a publication FIFO, never a second clock or entity registry.
+    entity_transitions: VecDeque<(EntityId, u32)>,
+    entity_publication: Option<EntityTimePublication>,
+    publication_spare: Option<EntityTimePublication>,
     power_requests: TimeRequests,
 }
 
 impl LoadedClock {
+    fn entity_values(&self, id: EntityId) -> Option<(u32, f64, Option<f32>)> {
+        if self.player_entity == Some(id) {
+            return Some((
+                self.player_timespace,
+                self.player_clock_offset,
+                self.player_override,
+            ));
+        }
+        self.entity_clocks
+            .get(&id)
+            .map(|record| (record.timespace, record.offset, record.remaining))
+    }
+    fn advance_player_timer(&mut self, bent: bool, step: f32) -> u32 {
+        let unbent = if let Some(remaining) = self.player_override.as_mut() {
+            let active = bent && step < *remaining;
+            if *remaining < f32::from_bits(0x7149_f2ca) {
+                *remaining -= step;
+            }
+            if !active {
+                self.player_override = None;
+            }
+            active
+        } else {
+            false
+        };
+        u32::from(unbent)
+    }
     /// A paused frame (`FUN_1408ad580`): 0450d0 still updates the frame
     /// estimator, but 8af320 (frame counter and 059990) is not called.
     fn paused(&mut self) -> Result<(), String> {
@@ -140,38 +179,49 @@ impl LoadedClock {
             // 8af320 passes clock group4 to 80f040, including the
             // current unbent scaling; it is not the wall-clock delta.
             let step = self.clock.delta(4).unwrap_or(0.0);
-            let unbent = if let Some(remaining) = self.player_override.as_mut() {
-                let active = bent && step < *remaining;
-                if *remaining < f32::from_bits(0x7149_f2ca) {
-                    *remaining -= step;
+            if self.player_entity.is_none() {
+                //The already constructed but not yet managed Player keeps its
+                //one existing bridge; no fabricated identity enters the list.
+                let timespace = self.advance_player_timer(bent, step);
+                if timespace != self.player_timespace {
+                    let old = if self.player_timespace == 0 { 3 } else { 4 };
+                    let new = if timespace == 0 { 3 } else { 4 };
+                    let elapsed = (self
+                        .clock
+                        .previous_time(old)
+                        .ok_or("player old clock group absent")?
+                        - self.player_clock_offset) as f32;
+                    self.player_clock_offset = self
+                        .clock
+                        .previous_time(new)
+                        .ok_or("player new clock group absent")?
+                        - f64::from(elapsed);
+                    self.player_timespace = timespace;
                 }
-                if !active {
-                    self.player_override = None;
-                }
-                active
-            } else {
-                false
-            };
-            let timespace = u32::from(unbent);
-            if timespace != self.player_timespace {
-                // 87d050 (and its 87ce70 counterpart): retain the entity's
-                // local elapsed time while switching native clock groups.
-                let previous_group = if self.player_timespace == 0 { 3 } else { 4 };
-                let next_group = if timespace == 0 { 3 } else { 4 };
-                let previous = self.clock.previous_time(previous_group).unwrap_or(0.0);
-                let next = self.clock.previous_time(next_group).unwrap_or(0.0);
-                let elapsed = (previous - self.player_clock_offset) as f32;
-                self.player_clock_offset = next - f64::from(elapsed);
-                self.player_timespace = timespace;
             }
-            let clocks = &mut self.entity_clocks;
-            self.entity_overrides.retain(|id| {
-                let Some(entity) = clocks.get_mut(id) else {
-                    return false;
+            //80f040 visits the actual unbent roots in reverse and removes
+            //expired entries by swapping the final slot, preserving its order.
+            for index in (0..self.entity_overrides.len()).rev() {
+                let id = self.entity_overrides[index];
+                if self.player_entity == Some(id) {
+                    let space = self.advance_player_timer(bent, step);
+                    self.entity_transitions.push_back((id, space));
+                    if self.player_override.is_none() {
+                        self.entity_overrides.swap_remove(index);
+                    }
+                    continue;
+                }
+                let Some(entity) = self.entity_clocks.get_mut(&id) else {
+                    self.entity_overrides.swap_remove(index);
+                    continue;
                 };
-                entity.advance(&self.clock, bent, step);
-                entity.managed_override
-            });
+                if let Some(space) = entity.advance(&self.clock, bent, step) {
+                    self.entity_transitions.push_back((id, space));
+                }
+                if !entity.managed_override {
+                    self.entity_overrides.swap_remove(index);
+                }
+            }
         }
         Ok(())
     }
@@ -221,13 +271,31 @@ impl ClockRuntime {
         let state = self.0.as_mut().map_err(|error| error.clone())?;
         state.power_requests = TimeRequests::default();
         for id in state.entity_overrides.drain(..) {
+            if state.player_entity == Some(id) {
+                state.player_override = None;
+                state.entity_transitions.push_back((id, 0));
+                continue;
+            }
             if let Some(entity) = state.entity_clocks.get_mut(&id) {
-                entity.advance(&state.clock, false, 0.0);
+                if let Some(space) = entity.advance(&state.clock, false, 0.0) {
+                    state.entity_transitions.push_back((id, space));
+                }
             }
         }
         state.player_override = None;
-        state.player_timespace = 0;
-        state.player_clock_offset = 0.0;
+        if let Some(player) = state.player_entity {
+            if state.player_timespace != 0
+                && !state
+                    .entity_transitions
+                    .iter()
+                    .any(|&(id, space)| id == player && space == 0)
+            {
+                state.entity_transitions.push_back((player, 0));
+            }
+        } else {
+            state.player_timespace = 0;
+            state.player_clock_offset = 0.;
+        }
         state.clock.set_rate_target(3, 1.0, 0.0)?;
         state.clock.set_rate_target(4, 1.0, 0.0)
     }
@@ -237,6 +305,11 @@ impl ClockRuntime {
         let state = self.0.as_mut().map_err(|error| error.clone())?;
         if state.player_override != Some(f32::from_bits(0x7149_f2ca)) {
             state.player_override = Some(duration);
+        }
+        if let Some(player) = state.player_entity {
+            if !state.entity_overrides.contains(&player) {
+                state.entity_overrides.push(player);
+            }
         }
         Ok(())
     }
@@ -262,29 +335,76 @@ impl ClockRuntime {
             .ok_or("player clock group is absent")?
             - state.player_clock_offset)
     }
+    /// Bind the real managed Player to its existing pre-admission clock
+    /// fields. No generic EntityClock record duplicates this same object.
+    pub fn bind_player_entity(&mut self, entity: EntityId) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        if state.player_entity.is_some_and(|current| current != entity) {
+            return Err("another player owns the actual clock bridge".into());
+        }
+        if state.entity_clocks.contains_key(&entity) {
+            return Err("actual player already has a duplicate generic clock record".into());
+        }
+        state.player_entity = Some(entity);
+        if state.player_override.is_some() && !state.entity_overrides.contains(&entity) {
+            state.entity_overrides.push(entity);
+        }
+        Ok(())
+    }
     /// Actual entity roots register once, then their component/model owners
     /// query this same timespace selection. No entity is fabricated here.
     pub fn register_entity_time(&mut self, entity: EntityId, timespace: u32) -> Result<(), String> {
         if timespace > 3 {
             return Err("entity timespace is outside 0..4".into());
         }
-        self.0
-            .as_mut()
-            .map_err(|e| e.clone())?
-            .entity_clocks
-            .entry(entity)
-            .or_insert(EntityClock {
-                timespace,
-                offset: 0.0,
-                remaining: None,
-                managed_override: false,
-            });
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        if state.player_entity == Some(entity) {
+            return Ok(());
+        }
+        state.entity_clocks.entry(entity).or_insert(EntityClock {
+            timespace,
+            offset: 0.0,
+            remaining: None,
+            managed_override: false,
+            time_parent: None,
+        });
         Ok(())
     }
     pub fn unregister_entity_time(&mut self, entity: EntityId) {
         if let Ok(state) = &mut self.0 {
+            if state.player_entity == Some(entity) {
+                state.player_entity = None;
+                state.player_override = None;
+                //The actual Player has retired. Its next constructed bridge
+                //receives the same source constructor selector/offset zero.
+                state.player_timespace = 0;
+                state.player_clock_offset = 0.;
+            }
             state.entity_clocks.remove(&entity);
             state.entity_overrides.retain(|id| *id != entity);
+            state.entity_transitions.retain(|(id, _)| *id != entity);
+            if state
+                .entity_publication
+                .as_ref()
+                .is_some_and(|work| work.root == Some(entity))
+            {
+                if let Some(mut work) = state.entity_publication.take() {
+                    work.root = None;
+                    work.pending.clear();
+                    work.visited.clear();
+                    work.current = None;
+                    state.publication_spare = Some(work);
+                }
+            } else if let Some(work) = state.entity_publication.as_mut() {
+                work.pending.retain(|id| *id != entity);
+                if work
+                    .current
+                    .as_ref()
+                    .is_some_and(|node| node.entity == entity)
+                {
+                    work.current = None;
+                }
+            }
         }
     }
     pub fn set_entity_time_override(
@@ -293,6 +413,15 @@ impl ClockRuntime {
         duration: f32,
     ) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|e| e.clone())?;
+        if state.player_entity == Some(entity) {
+            if state.player_override != Some(f32::from_bits(0x7149_f2ca)) {
+                state.player_override = Some(duration);
+            }
+            if !state.entity_overrides.contains(&entity) {
+                state.entity_overrides.push(entity);
+            }
+            return Ok(());
+        }
         let record = state
             .entity_clocks
             .get_mut(&entity)
@@ -306,42 +435,233 @@ impl ClockRuntime {
         }
         Ok(())
     }
-    /// The same registered entity selector as877eb0; rates remain owned by
-    /// GameClock rather than inferred from a currently held item or audio pitch.
-    pub fn entity_rates(&self, entity: EntityId) -> Result<[f32; 2], &str> {
+    pub(crate) fn entity_time_parent(&self, entity: EntityId) -> Result<Option<EntityId>, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
-        let record = state
+        if state.player_entity == Some(entity) {
+            return Ok(None);
+        }
+        Ok(state
             .entity_clocks
             .get(&entity)
+            .ok_or("entity clock root is not registered")?
+            .time_parent)
+    }
+    pub(crate) fn entity_transition_front(
+        &mut self,
+    ) -> Result<Option<(EntityId, u32, u8, bool)>, String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        loop {
+            if state.entity_publication.is_none() {
+                let Some(&(root, target)) = state.entity_transitions.front() else {
+                    return Ok(None);
+                };
+                let mut work =
+                    state
+                        .publication_spare
+                        .take()
+                        .unwrap_or_else(|| EntityTimePublication {
+                            root: None,
+                            target: 0,
+                            pending: Vec::new(),
+                            current: None,
+                            visited: Vec::new(),
+                        });
+                work.root = Some(root);
+                work.target = target;
+                work.pending.clear();
+                work.pending.push(root);
+                work.current = None;
+                work.visited.clear();
+                state.entity_publication = Some(work);
+            }
+            let work = state
+                .entity_publication
+                .as_mut()
+                .ok_or("entity time publication absent")?;
+            if work.current.is_none() {
+                if let Some(entity) = work.pending.pop() {
+                    if work.visited.contains(&entity) {
+                        return Err("cyclic entity time publication".into());
+                    }
+                    work.visited.push(entity);
+                    work.current = Some(EntityTimeNode {
+                        entity,
+                        stage: 0,
+                        changed: false,
+                    });
+                } else {
+                    state.entity_transitions.pop_front();
+                    let mut work = state
+                        .entity_publication
+                        .take()
+                        .ok_or("entity time publication absent")?;
+                    work.root = None;
+                    work.pending.clear();
+                    work.visited.clear();
+                    work.current = None;
+                    state.publication_spare = Some(work);
+                    continue;
+                }
+            }
+            let node = work
+                .current
+                .as_ref()
+                .ok_or("entity time publication node absent")?;
+            return Ok(Some((node.entity, work.target, node.stage, node.changed)));
+        }
+    }
+    pub(crate) fn prepare_entity_transition(
+        &mut self,
+        entity: EntityId,
+        space: u32,
+        excluded: bool,
+    ) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        let (current, offset, _) = state
+            .entity_values(entity)
             .ok_or("entity clock root is not registered")?;
-        state
+        let work = state
+            .entity_publication
+            .as_mut()
+            .ok_or("entity time publication absent")?;
+        let node = work
+            .current
+            .as_mut()
+            .ok_or("entity time publication node absent")?;
+        if node.entity != entity || work.target != space || node.stage != 0 {
+            return Err("entity time preparation differs".into());
+        }
+        if !excluded && current != space {
+            let old = *[3usize, 4, 2, 0]
+                .get(current as usize)
+                .ok_or("entity timespace invalid")?;
+            let new = *[3usize, 4, 2, 0]
+                .get(space as usize)
+                .ok_or("entity target timespace invalid")?;
+            let elapsed = (state
+                .clock
+                .previous_time(old)
+                .ok_or("entity clock old group absent")?
+                - offset) as f32;
+            let offset = state
+                .clock
+                .previous_time(new)
+                .ok_or("entity clock new group absent")?
+                - f64::from(elapsed);
+            if state.player_entity == Some(entity) {
+                state.player_timespace = space;
+                state.player_clock_offset = offset;
+            } else {
+                let record = state
+                    .entity_clocks
+                    .get_mut(&entity)
+                    .ok_or("entity clock root is not registered")?;
+                record.timespace = space;
+                record.offset = offset;
+            }
+            node.changed = true;
+        }
+        node.stage = 1;
+        Ok(())
+    }
+    pub(crate) fn advance_entity_transition(
+        &mut self,
+        entity: EntityId,
+        space: u32,
+        stage: u8,
+    ) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        let work = state
+            .entity_publication
+            .as_mut()
+            .ok_or("entity time publication absent")?;
+        let node = work
+            .current
+            .as_mut()
+            .ok_or("entity time publication node absent")?;
+        if node.entity != entity || work.target != space || node.stage != stage {
+            return Err("entity time acknowledgement differs".into());
+        }
+        node.stage += 1;
+        Ok(())
+    }
+    pub(crate) fn finish_entity_transition(
+        &mut self,
+        entity: EntityId,
+        space: u32,
+        children: &[EntityId],
+    ) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|e| e.clone())?;
+        let work = state
+            .entity_publication
+            .as_mut()
+            .ok_or("entity time publication absent")?;
+        let node = work
+            .current
+            .as_ref()
+            .ok_or("entity time publication node absent")?;
+        if node.entity != entity || work.target != space || node.stage != 4 {
+            return Err("entity time completion differs".into());
+        }
+        work.pending
+            .try_reserve(children.len())
+            .map_err(|error| format!("entity time publication: {error}"))?;
+        //80f620 visits the actual ordered actor-child list depth first.
+        work.pending.extend(children.iter().rev().copied());
+        work.current = None;
+        Ok(())
+    }
+    ///87ce70/87d050 project the real entity+2a0 offset to model+1c2c and
+    ///select its game-time group through1422952d8, without another clock.
+    pub fn entity_model_clock(&self, entity: EntityId) -> Result<(u8, f32), &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let (space, offset, _) = state
+            .entity_values(entity)
+            .ok_or("entity clock root is not registered")?;
+        let group = *[3, 4, 2, 0]
+            .get(space as usize)
+            .ok_or("entity timespace invalid")?;
+        Ok((group, offset as f32))
+    }
+    pub(crate) fn time_is_bent(&self) -> Result<bool, &str> {
+        Ok(self.0.as_ref().map_err(String::as_str)?.clock.as_bytes()[0x1a0] != 0)
+    }
+    /// Source entity+2ac selector and+2a8 countdown, including the actual
+    /// Player bridge. None is the constructor/expired zero.
+    pub fn entity_time_state(&self, entity: EntityId) -> Result<(u32, Option<f32>), &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let (space, _, remaining) = state
+            .entity_values(entity)
+            .ok_or("entity clock root is not registered")?;
+        Ok((space, remaining))
+    }
+    pub fn entity_rates(&self, entity: EntityId) -> Result<[f32; 2], &str> {
+        let (space, _) = self.entity_time_state(entity)?;
+        self.0
+            .as_ref()
+            .map_err(String::as_str)?
             .clock
-            .entity_rates(record.timespace)
-            .ok_or("entity timespace is invalid")
+            .entity_rates(space)
+            .ok_or("entity timespace invalid")
     }
     pub fn entity_delta(&self, entity: EntityId) -> Result<f32, &str> {
-        let state = self.0.as_ref().map_err(String::as_str)?;
-        let record = state
-            .entity_clocks
-            .get(&entity)
-            .ok_or("entity clock root is not registered")?;
-        state
+        let (space, _) = self.entity_time_state(entity)?;
+        self.0
+            .as_ref()
+            .map_err(String::as_str)?
             .clock
-            .entity_delta(record.timespace)
-            .ok_or("entity timespace is invalid")
+            .entity_delta(space)
+            .ok_or("entity timespace invalid")
     }
     pub fn entity_time(&self, entity: EntityId) -> Result<f64, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
-        let record = state
-            .entity_clocks
-            .get(&entity)
+        let (space, offset, _) = state
+            .entity_values(entity)
             .ok_or("entity clock root is not registered")?;
-        let group = [3, 4, 2, 0][record.timespace as usize];
-        Ok(state
-            .clock
-            .time(group)
-            .ok_or("entity clock group is absent")?
-            - record.offset)
+        let group = *[3, 4, 2, 0]
+            .get(space as usize)
+            .ok_or("entity timespace invalid")?;
+        Ok(state.clock.time(group).ok_or("entity clock group absent")? - offset)
     }
 }
 
@@ -365,11 +685,15 @@ impl FromWorld for ClockRuntime {
                 controls,
                 common_counter: 0,
                 advanced: false,
+                player_entity: None,
                 player_override: None,
                 player_timespace: 0,
                 player_clock_offset: 0.0,
                 entity_clocks: HashMap::new(),
                 entity_overrides: Vec::new(),
+                entity_transitions: VecDeque::new(),
+                entity_publication: None,
+                publication_spare: None,
                 power_requests: TimeRequests::default(),
             })
         })();

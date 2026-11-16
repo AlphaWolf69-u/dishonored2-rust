@@ -36,6 +36,8 @@ pub(super) struct Interactions {
     pub readable_by_entity: HashMap<String, usize>,
     pub carrying_by_entity: HashMap<String, usize>,
     pub casts: crate::gameplay::interaction_sensor::Scratch,
+    pub(super) physics_queries: super::physics_scene::interaction_queries::InteractionQueries,
+    pub(super) pending_pickup: Option<super::pickups::Pending>,
     parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(SelectionKind, usize, usize)>,
@@ -54,6 +56,7 @@ enum SelectionKind {
     Readable,
     Usable,
     Carry,
+    Pickup(crate::gameplay::entity_lifetime::EntityId),
 }
 
 struct PendingPickup {
@@ -236,6 +239,8 @@ impl Interactions {
             pending,
             selected: None,
             pending_read: None,
+            physics_queries: Default::default(),
+            pending_pickup: None,
             pending_activation: None,
             item_sources,
             acquisitions_closed: Arc::default(),
@@ -408,6 +413,7 @@ pub(super) fn focus_and_interact(
     interactions: Option<ResMut<Interactions>>,
     world: Option<Res<super::NavigationWorld>>,
     physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    models: Option<Res<super::world_models::WorldModels>>,
     mut effects: Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
     sources: Res<super::shadow_updates::ModelShadowSources>,
     placements: Res<super::RenderSourcePlacements>,
@@ -677,15 +683,35 @@ pub(super) fn focus_and_interact(
         sensor,
         &mut interactions.casts,
     );
+    let mut physics_queries = std::mem::take(&mut interactions.physics_queries);
+    if let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) {
+        if let Err(error) = scene.cast_interaction_sensor(
+            live,
+            bevy_math::Vec3::from_array(super::view_to_game(eye)),
+            bevy_math::Vec3::from_array(super::view_to_game(forward)),
+            sensor,
+            &mut physics_queries,
+            &mut interactions.casts,
+        ) {
+            interactions.physics_queries = physics_queries;
+            warn!("Live Pickable sensor query: {error}");
+            return;
+        }
+    }
     let mut selected = None;
     'casts: for hits in &interactions.casts.hits {
         for hit in hits {
-            let Some(entity) = world.0.owner_name(hit.owner) else {
+            let Some(entity) = hit
+                .entity
+                .and_then(|id| live.as_deref()?.get(id).map(|(name, _)| name))
+                .or_else(|| world.0.owner_name(hit.owner))
+            else {
                 continue;
             };
             // 3b8430 skips a transparent breakable before requesting its
             // interaction, using the actual contacted physics material.
-            if live_breakable(entity)
+            if hit.entity.is_none()
+                && live_breakable(entity)
                 && world
                     .0
                     .physics_material(hit.key)
@@ -696,99 +722,162 @@ pub(super) fn focus_and_interact(
             let readable = interactions.readable_by_entity.get(entity).copied();
             let actor = interactions.actor_by_entity.get(entity).copied();
             let carrying = interactions.carrying_by_entity.get(entity).copied();
-            let (kind, index, step, max_distance, shape, allowed_swimming) =
-                if let Some(index) = carrying {
-                    use crate::gameplay::interaction_definition::{
-                        ALLOW_SWIMMING, CandidateContext, admits_candidate,
-                    };
-                    let binding = &interactions.carrying[index];
-                    let definition = &binding.definition.pickup_interaction;
-                    let (Some(scene), Some(live), Some(player)) = (
-                        physics.as_deref(),
-                        live.as_deref(),
-                        player.as_deref().and_then(|state| state.player.as_ref()),
-                    ) else {
-                        continue;
-                    };
-                    let context = match scene.carry_context(entity, live, &sources) {
-                        Ok(Some((interactable, frame, bounds))) => CandidateContext {
-                            interactable,
-                            player_mode: if swimming { 1 } else { 0 },
-                            is_possessing: false,
-                            camera: super::view_to_game(eye),
-                            point: super::view_to_game(hit.position),
-                            target_forward: frame.basis[0],
-                            target_min_z: bounds[0],
-                            target_max_z: bounds[1],
-                        },
-                        Ok(None) => continue,
-                        Err(error) => {
-                            warn!("Carry interaction context: {error}");
-                            continue;
-                        }
-                    };
-                    match admits_candidate(definition, &context, |mode, state, _request| {
-                        Ok(player.carry_interaction_allowed(mode, state) == Some(true))
-                    }) {
-                        Ok(true) => {}
-                        Ok(false) => continue,
-                        Err(error) => {
-                            warn!("Carry interaction admission: {error}");
-                            continue;
-                        }
-                    }
-                    let Ok(shape) = usize::try_from(definition.occlusion_shape) else {
-                        continue;
-                    };
-                    (
-                        SelectionKind::Carry,
-                        index,
-                        0,
-                        definition.maximum_distance,
-                        shape,
-                        definition.has(ALLOW_SWIMMING),
-                    )
-                } else if let Some(index) = readable {
-                    (
-                        SelectionKind::Readable,
-                        index,
-                        0,
-                        interactions.readable[index].maximum_distance,
-                        interactions.readable[index].occlusion_shape,
-                        interactions.readable[index].allowed_swimming,
-                    )
-                } else if let Some(index) = actor {
-                    let Some(state) = interactions.actors[index].state.as_ref() else {
-                        continue;
-                    };
-                    if !interactions.actors[index].started {
-                        continue;
-                    }
-                    let step = state.state;
-                    let entry = &state.definition.steps[step];
-                    (
-                        SelectionKind::Usable,
-                        index,
-                        step,
-                        if entry.overrides_interaction {
-                            entry.maximum_distance
-                        } else {
-                            state.definition.maximum_distance
-                        },
-                        if entry.overrides_interaction {
-                            entry.occlusion_shape
-                        } else {
-                            state.definition.occlusion_shape
-                        },
-                        if entry.overrides_interaction {
-                            entry.allowed_swimming
-                        } else {
-                            state.definition.allowed_swimming
-                        },
-                    )
-                } else {
+            let (kind, index, step, max_distance, shape, allowed_swimming) = if let Some(index) =
+                carrying
+            {
+                use crate::gameplay::interaction_definition::{
+                    ALLOW_SWIMMING, CandidateContext, admits_candidate,
+                };
+                let binding = &interactions.carrying[index];
+                let definition = &binding.definition.pickup_interaction;
+                let (Some(scene), Some(live), Some(player)) = (
+                    physics.as_deref(),
+                    live.as_deref(),
+                    player.as_deref().and_then(|state| state.player.as_ref()),
+                ) else {
                     continue;
                 };
+                let context = match scene.carry_context(entity, live, &sources) {
+                    Ok(Some((interactable, frame, bounds))) => CandidateContext {
+                        interactable,
+                        player_mode: if swimming { 1 } else { 0 },
+                        is_possessing: false,
+                        camera: super::view_to_game(eye),
+                        point: super::view_to_game(hit.position),
+                        target_forward: frame.basis[0],
+                        target_min_z: bounds[0],
+                        target_max_z: bounds[1],
+                    },
+                    Ok(None) => continue,
+                    Err(error) => {
+                        warn!("Carry interaction context: {error}");
+                        continue;
+                    }
+                };
+                match admits_candidate(definition, &context, |mode, state, _request| {
+                    Ok(player.carry_interaction_allowed(mode, state) == Some(true))
+                }) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        warn!("Carry interaction admission: {error}");
+                        continue;
+                    }
+                }
+                let Ok(shape) = usize::try_from(definition.occlusion_shape) else {
+                    continue;
+                };
+                (
+                    SelectionKind::Carry,
+                    index,
+                    0,
+                    definition.maximum_distance,
+                    shape,
+                    definition.has(ALLOW_SWIMMING),
+                )
+            } else if let Some(index) = readable {
+                (
+                    SelectionKind::Readable,
+                    index,
+                    0,
+                    interactions.readable[index].maximum_distance,
+                    interactions.readable[index].occlusion_shape,
+                    interactions.readable[index].allowed_swimming,
+                )
+            } else if let Some(index) = actor {
+                let Some(state) = interactions.actors[index].state.as_ref() else {
+                    continue;
+                };
+                if !interactions.actors[index].started {
+                    continue;
+                }
+                let step = state.state;
+                let entry = &state.definition.steps[step];
+                (
+                    SelectionKind::Usable,
+                    index,
+                    step,
+                    if entry.overrides_interaction {
+                        entry.maximum_distance
+                    } else {
+                        state.definition.maximum_distance
+                    },
+                    if entry.overrides_interaction {
+                        entry.occlusion_shape
+                    } else {
+                        state.definition.occlusion_shape
+                    },
+                    if entry.overrides_interaction {
+                        entry.allowed_swimming
+                    } else {
+                        state.definition.allowed_swimming
+                    },
+                )
+            } else if let Some(id) = hit.entity {
+                use crate::gameplay::interaction_definition::{
+                    ALLOW_SWIMMING, CandidateContext, admits_candidate,
+                };
+                let (Some(scene), Some(live), Some(player), Some(models)) = (
+                    physics.as_deref(),
+                    live.as_deref(),
+                    player.as_deref().and_then(|state| state.player.as_ref()),
+                    models.as_deref(),
+                ) else {
+                    continue;
+                };
+                let Ok(Some((reference, pickable))) = scene.interaction_pickable(live, id) else {
+                    continue;
+                };
+                let Some(item) = pickable.item.as_ref() else {
+                    continue;
+                };
+                if item.type_number != 4
+                    || pickable.definition.hold.is_some()
+                    || !models.interaction_visible(id)
+                {
+                    continue;
+                }
+                let Some(bounds) = models.interaction_bounds(id) else {
+                    continue;
+                };
+                let Ok(Some(frame)) = scene.entity_frame(live, id) else {
+                    continue;
+                };
+                let definition = &pickable.definition.pickup_interaction;
+                let context = CandidateContext {
+                    interactable: reference,
+                    player_mode: if swimming { 1 } else { 0 },
+                    is_possessing: false,
+                    camera: super::view_to_game(eye),
+                    point: super::view_to_game(hit.position),
+                    target_forward: frame.basis[0],
+                    target_min_z: bounds[0][2],
+                    target_max_z: bounds[1][2],
+                };
+                match admits_candidate(definition, &context, |mode, state, _| {
+                    Ok(player.loot_interaction_allowed(mode, state) == Some(true))
+                }) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        warn!("Pickup interaction admission: {error}");
+                        continue;
+                    }
+                }
+                let Ok(shape) = usize::try_from(definition.occlusion_shape) else {
+                    continue;
+                };
+                (
+                    SelectionKind::Pickup(id),
+                    usize::from(reference.handle.slot),
+                    0,
+                    definition.maximum_distance,
+                    shape,
+                    definition.has(ALLOW_SWIMMING),
+                )
+            } else {
+                continue;
+            };
             if swimming && !allowed_swimming {
                 continue;
             }
@@ -802,6 +891,42 @@ pub(super) fn focus_and_interact(
             }
             if eye.distance_squared(hit.position) > max_distance * max_distance {
                 continue;
+            }
+            if let Some(target) = hit.entity {
+                let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
+                    continue;
+                };
+                let mut blocked = false;
+                for radius in std::iter::once(sensor.shape_radii[0]).chain(
+                    (shape > 0)
+                        .then(|| sensor.shape_radii.get(shape).copied())
+                        .flatten(),
+                ) {
+                    match scene.interaction_occluded(
+                        live,
+                        target,
+                        bevy_math::Vec3::from_array(super::view_to_game(eye)),
+                        bevy_math::Vec3::from_array(super::view_to_game(hit.position)),
+                        radius,
+                        &mut physics_queries,
+                    ) {
+                        Ok(true) => {
+                            blocked = true;
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            warn!("Live pickup occlusion: {error}");
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+                if blocked {
+                    continue;
+                }
+                selected = Some((kind, index, step));
+                break 'casts;
             }
             let classify = |key, owner| {
                 use crate::gameplay::interaction_sensor::OcclusionHit;
@@ -848,71 +973,101 @@ pub(super) fn focus_and_interact(
             break 'casts;
         }
     }
+    interactions.physics_queries = physics_queries;
     if selected != interactions.selected {
-        let prompt = selected.map(|(kind, index, step)| {
-            if kind == SelectionKind::Carry {
-                let binding = &interactions.carrying[index];
-                return super::interaction_focus::InteractionPrompt {
-                    entity: binding.entity.clone(),
-                    name: binding.interaction_name.clone(),
-                    usage_text: binding.interaction_text.clone(),
-                    interaction_type: binding.definition.pickup_interaction.icon,
+        let prompt = selected
+            .map(|(kind, index, step)| {
+                if let SelectionKind::Pickup(id) = kind {
+                    let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
+                        return None;
+                    };
+                    let Ok(Some((_, pickable))) = scene.interaction_pickable(live, id) else {
+                        return None;
+                    };
+                    let item = pickable.item.as_ref()?;
+                    return Some(super::interaction_focus::InteractionPrompt {
+                        entity: live.get(id)?.0.to_owned(),
+                        name: if item.name.is_empty() {
+                            pickable.definition.interaction_labels[0].clone()
+                        } else {
+                            item.name.clone()
+                        },
+                        usage_text: pickable.definition.interaction_labels[1].clone(),
+                        interaction_type: pickable.definition.pickup_interaction.icon,
+                        binding: "<GBA_INTERACT>".to_owned(),
+                        name_postfix: String::new(),
+                        hold: false,
+                        locked: pickable
+                            .definition
+                            .pickup_interaction
+                            .has(crate::gameplay::interaction_definition::LOCKED),
+                        player_state: pickable.definition.interaction_state.clone(),
+                    });
+                }
+                if kind == SelectionKind::Carry {
+                    let binding = &interactions.carrying[index];
+                    return Some(super::interaction_focus::InteractionPrompt {
+                        entity: binding.entity.clone(),
+                        name: binding.interaction_name.clone(),
+                        usage_text: binding.interaction_text.clone(),
+                        interaction_type: binding.definition.pickup_interaction.icon,
+                        binding: "<GBA_INTERACT>".to_owned(),
+                        name_postfix: String::new(),
+                        hold: false,
+                        locked: binding
+                            .definition
+                            .pickup_interaction
+                            .has(crate::gameplay::interaction_definition::LOCKED),
+                        player_state: binding.player_state.clone(),
+                    });
+                }
+                let (entity, name, text, icon, state, locked) = if kind == SelectionKind::Readable {
+                    let item = &interactions.readable[index];
+                    (
+                        &item.entity,
+                        item.interaction_name.as_deref(),
+                        item.interaction_text.as_deref(),
+                        item.interaction_icon.as_deref(),
+                        Some("PLAYER_STATE_READ_NOTE"),
+                        item.locked,
+                    )
+                } else {
+                    let actor = &interactions.actors[index];
+                    let def = &actor.definition;
+                    let entry = &def.steps[step];
+                    if entry.overrides_interaction {
+                        (
+                            &actor.entity,
+                            entry.interaction_name.as_deref(),
+                            entry.interaction_text.as_deref(),
+                            entry.interaction_icon.as_deref(),
+                            entry.player_state.as_deref(),
+                            entry.locked,
+                        )
+                    } else {
+                        (
+                            &actor.entity,
+                            def.interaction_name.as_deref(),
+                            def.interaction_text.as_deref(),
+                            def.interaction_icon.as_deref(),
+                            def.player_state.as_deref(),
+                            def.locked,
+                        )
+                    }
+                };
+                Some(super::interaction_focus::InteractionPrompt {
+                    entity: entity.clone(),
+                    name: name.unwrap_or("").to_owned(),
+                    usage_text: text.unwrap_or("").to_owned(),
+                    interaction_type: interaction_type(icon),
                     binding: "<GBA_INTERACT>".to_owned(),
                     name_postfix: String::new(),
                     hold: false,
-                    locked: binding
-                        .definition
-                        .pickup_interaction
-                        .has(crate::gameplay::interaction_definition::LOCKED),
-                    player_state: binding.player_state.clone(),
-                };
-            }
-            let (entity, name, text, icon, state, locked) = if kind == SelectionKind::Readable {
-                let item = &interactions.readable[index];
-                (
-                    &item.entity,
-                    item.interaction_name.as_deref(),
-                    item.interaction_text.as_deref(),
-                    item.interaction_icon.as_deref(),
-                    Some("PLAYER_STATE_READ_NOTE"),
-                    item.locked,
-                )
-            } else {
-                let actor = &interactions.actors[index];
-                let def = &actor.definition;
-                let entry = &def.steps[step];
-                if entry.overrides_interaction {
-                    (
-                        &actor.entity,
-                        entry.interaction_name.as_deref(),
-                        entry.interaction_text.as_deref(),
-                        entry.interaction_icon.as_deref(),
-                        entry.player_state.as_deref(),
-                        entry.locked,
-                    )
-                } else {
-                    (
-                        &actor.entity,
-                        def.interaction_name.as_deref(),
-                        def.interaction_text.as_deref(),
-                        def.interaction_icon.as_deref(),
-                        def.player_state.as_deref(),
-                        def.locked,
-                    )
-                }
-            };
-            super::interaction_focus::InteractionPrompt {
-                entity: entity.clone(),
-                name: name.unwrap_or("").to_owned(),
-                usage_text: text.unwrap_or("").to_owned(),
-                interaction_type: interaction_type(icon),
-                binding: "<GBA_INTERACT>".to_owned(),
-                name_postfix: String::new(),
-                hold: false,
-                locked,
-                player_state: state.unwrap_or("").to_owned(),
-            }
-        });
+                    locked,
+                    player_state: state.unwrap_or("").to_owned(),
+                })
+            })
+            .flatten();
         if focused.current != prompt {
             focused.current = prompt;
         }
@@ -924,7 +1079,37 @@ pub(super) fn focus_and_interact(
     let Some((kind, index, _)) = selected else {
         return;
     };
-    if kind == SelectionKind::Carry {
+    if let SelectionKind::Pickup(id) = kind {
+        if interactions.pending_pickup.is_none() {
+            if let (Some(scene), Some(live), Some(player)) = (
+                physics.as_deref(),
+                live.as_deref(),
+                player
+                    .as_deref_mut()
+                    .and_then(|state| state.player.as_mut()),
+            ) {
+                if let Ok(Some((reference, pickable))) = scene.interaction_pickable(live, id) {
+                    if let Some(item) = pickable.item.as_ref() {
+                        if player.request_loot_object(id) {
+                            interactions.pending_pickup = Some(super::pickups::Pending {
+                                entity: id,
+                                reference,
+                                definition: pickable.definition.clone(),
+                                item: item.clone(),
+                                maximum: interactions.limits.maximum(&item.path),
+                                phase: 0,
+                                admitted: 0,
+                                from_grapple: false,
+                                notice: Default::default(),
+                                rejected_notice: false,
+                                rejected_sound: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    } else if kind == SelectionKind::Carry {
         let (Some(scene), Some(live), Some(player)) = (
             physics.as_deref(),
             live.as_deref(),
@@ -1037,6 +1222,7 @@ pub(super) fn retire_admitted_pickups(
     navigation: Option<ResMut<super::NavigationWorld>>,
     physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
     live: Option<ResMut<crate::gameplay::entity_lifetime::LiveEntities>>,
+    mut entity_events: ResMut<crate::gameplay::entity_events::EntityEvents>,
     placements: Res<super::RenderSourcePlacements>,
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     mut retired: ResMut<super::interaction_focus::RetiredPlacements>,
@@ -1051,6 +1237,7 @@ pub(super) fn retire_admitted_pickups(
         &mut interactions,
         &mut scene,
         &mut live,
+        &mut entity_events,
         &mut navigation,
         &mut sources,
         &placements,
@@ -1070,6 +1257,7 @@ fn drain_accepted_pickups(
     interactions: &mut Interactions,
     scene: &mut super::physics_scene::PhysicsScene,
     live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+    entity_events: &mut crate::gameplay::entity_events::EntityEvents,
     navigation: &mut super::NavigationWorld,
     sources: &mut super::shadow_updates::ModelShadowSources,
     placements: &super::RenderSourcePlacements,
@@ -1080,9 +1268,12 @@ fn drain_accepted_pickups(
         if live.get(pending.identity.0).is_none() {
             return Err("document pickup identity retired before callback".into());
         }
-        if let Some(sound) =
-            scene.begin_document_pickup(live, pending.identity.1, &mut pending.step)?
-        {
+        if let Some(sound) = scene.begin_document_pickup(
+            live,
+            entity_events,
+            pending.identity.1,
+            &mut pending.step,
+        )? {
             // bevy_backend: PlayerBody is the existing player Audio host. Its
             // FIFO and ordinary retirement own the accepted sound request.
             post(super::audio::SoundEvent(
@@ -1114,6 +1305,7 @@ pub(super) fn finish_accepted_pickups(world: &mut World) -> Result<(), String> {
         ResMut<Interactions>,
         ResMut<super::physics_scene::PhysicsScene>,
         ResMut<crate::gameplay::entity_lifetime::LiveEntities>,
+        ResMut<crate::gameplay::entity_events::EntityEvents>,
         ResMut<super::NavigationWorld>,
         ResMut<super::shadow_updates::ModelShadowSources>,
         Res<super::RenderSourcePlacements>,
@@ -1125,6 +1317,7 @@ pub(super) fn finish_accepted_pickups(world: &mut World) -> Result<(), String> {
             mut interactions,
             mut scene,
             mut live,
+            mut entity_events,
             mut navigation,
             mut sources,
             placements,
@@ -1137,6 +1330,7 @@ pub(super) fn finish_accepted_pickups(world: &mut World) -> Result<(), String> {
             &mut interactions,
             &mut scene,
             &mut live,
+            &mut entity_events,
             &mut navigation,
             &mut sources,
             &placements,

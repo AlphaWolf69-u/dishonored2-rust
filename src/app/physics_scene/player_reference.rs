@@ -70,12 +70,12 @@ impl PhysicsScene {
             .ok_or("player reference component registry is absent")?;
         let result = (|| {
             self.reference_actor(index, &mut registry)?;
-            registry.initialize_and_start(&mut interaction_components::Startup {
+            registry.initialize_and_start(&mut interaction_components::Startup { world: None,
                 scene: self,
                 live,
                 events,
             })?;
-            registry.drain_update_changes(&mut interaction_components::Startup {
+            registry.drain_update_changes(&mut interaction_components::Startup { world: None,
                 scene: self,
                 live,
                 events,
@@ -134,8 +134,34 @@ impl PhysicsScene {
         }
         self.request_post_physics_actor(
             handle.slot as usize,
-            self.actors.actors[handle.slot].owner.generation,
+            self.actors.actors[handle.slot as usize].owner.generation,
         )?;
         Ok(())
     }
+}
+
+/// Publish the existing player before carrying and physics consume its frame.
+/// This borrows actual level owners and restores them on every failure path.
+pub(in crate::app) fn update(world: &mut bevy::prelude::World) -> Result<(), String> {
+    use crate::app::player::PlayerState;
+    use crate::gameplay::game_clock_runtime::ClockRuntime;
+    if !world.contains_resource::<PhysicsScene>() { return Ok(()); }
+    let Some(player) = world.get_resource::<PlayerState>() else { return Ok(()); };
+    if player.player.is_none() { return Ok(()); }
+    let mut scene = world.remove_resource::<PhysicsScene>().ok_or("player reference scene absent")?;
+    let result = (|| {
+        let clock = world.get_resource::<ClockRuntime>().ok_or("player reference clock absent")?;
+        let timespace = clock.player_timespace().map_err(str::to_owned)?;
+        let clock = clock.clock().map_err(str::to_owned)?.clone();
+        world.resource_scope(|world, player: bevy::prelude::Mut<PlayerState>| {
+            world.resource_scope(|world, mut live: bevy::prelude::Mut<LiveEntities>| {
+                let mut events = world.get_resource_mut::<EntityEvents>().ok_or("player reference events absent")?;
+                let player = player.player.as_ref().ok_or("player reference gameplay owner absent")?;
+                scene.admit_player_reference(player, &mut live, &mut events, timespace)?;
+                scene.publish_player_reference(player, &live, &clock)
+            })
+        })
+    })();
+    world.insert_resource(scene);
+    result
 }

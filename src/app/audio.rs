@@ -9,9 +9,16 @@ mod bevy_backend;
 mod fade;
 pub(super) mod contacts;
 mod acquisition;
+mod reservations;
+pub(super) use reservations::{reserve_events, events_ready, release_events};
+pub(super) fn contact_callbacks_complete(world:&World,owner:crate::gameplay::entity_lifetime::EntityId)->bool{
+    world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>()
+        .is_none_or(|sounds| !sounds.lock().references_stimulus_owner(owner))
+}
 pub(super) mod observation;
 use crate::assets::declaration_texts;
 mod effects;
+mod stimulus;
 mod spatial;
 mod session;
 pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
@@ -30,7 +37,7 @@ struct SoundEventCursor(bevy::ecs::message::MessageCursor<SoundEvent>);
 /// One in-flight decode per event and level bank generation. Each client has
 /// its own lease, so canceling an FX or UI request does not cancel another.
 #[derive(Clone, Copy)]
-enum DecodeClient { Effects = 1, Watched = 2 }
+enum DecodeClient { Effects = 1, Watched = 2, Prototype = 4 }
 struct DecodeJob {
     clients: u8,
     task: Option<std::sync::Mutex<acquisition::Job<Result<Vec<SourceAction>, String>>>>,
@@ -69,22 +76,23 @@ impl SoundDecodeQueue {
             let Some(task) = job.task.as_mut() else { continue };
             let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
             if let Some(result) = task.take() {
-                job.result = Some(result.map(Arc::new));
+                job.result = (job.clients != 0).then(|| result.map(Arc::new));
                 job.task = None;
             }
         }
+        self.0.retain(|_, job| job.clients != 0 || job.task.is_some());
     }
     fn result(&self, event: u32) -> Option<Result<Arc<Vec<SourceAction>>, String>> {
         self.0.get(&event).and_then(|job| job.result.clone())
     }
     fn release(&mut self, event: u32, client: DecodeClient) {
         if let Some(job) = self.0.get_mut(&event) { job.clients &= !(client as u8); }
-        self.0.retain(|_, job| job.clients != 0);
+        self.0.retain(|_, job| job.clients != 0 || job.task.is_some());
     }
     fn retain_client(&mut self, client: DecodeClient, wanted: &std::collections::HashSet<u32>) {
         self.0.retain(|event, job| {
             if !wanted.contains(event) { job.clients &= !(client as u8); }
-            job.clients != 0
+            job.clients != 0 || job.task.is_some()
         });
     }
 }
@@ -170,6 +178,9 @@ struct WwiseRegistry {
     attenuations: Arc<HashMap<u32, Arc<crate::assets::wwise::Attenuation>>>,
     library: Arc<crate::assets::wwise::PlaybackBanks<'static>>,
     sources: HashMap<u32, Arc<Vec<SourceAction>>>,
+    /// Runtime source admission shares one event graph. The bits represent
+    /// the existing FX/watched owners and the prototype reservation owner.
+    dynamic_source_clients: std::collections::HashMap<u32, u8>,
     scheduled_selections: graph::Selections,
     states: bevy_backend::StateGroups,
     /// The level's listed sound events were prepared at load.
@@ -184,6 +195,29 @@ struct WwiseRegistry {
 }
 
 impl WwiseRegistry {
+    fn publish_dynamic_source(&mut self, event: u32, actions: Arc<Vec<SourceAction>>, client: DecodeClient) {
+        if let hashbrown::hash_map::Entry::Vacant(entry) = self.sources.entry(event) {
+            entry.insert(actions);
+            self.dynamic_source_clients.insert(event, client as u8);
+        } else {
+            self.claim_dynamic_source(event, client);
+        }
+    }
+    fn claim_dynamic_source(&mut self, event: u32, client: DecodeClient) -> bool {
+        if let Some(clients) = self.dynamic_source_clients.get_mut(&event) {
+            *clients |= client as u8;
+            true
+        } else { false }
+    }
+    fn release_dynamic_source(&mut self, event: u32, client: DecodeClient) {
+        let Some(clients) = self.dynamic_source_clients.get_mut(&event) else { return; };
+        *clients &= !(client as u8);
+        if *clients == 0 {
+            self.dynamic_source_clients.remove(&event);
+            self.sources.remove(&event);
+        }
+    }
+
     /// Immutable bank ownership for a background event decode. The encoded
     /// banks and decoded index are shared; a level change can retire its own
     /// references while an already-running read finishes safely.
@@ -461,6 +495,19 @@ pub(super) fn forget_retired_component_object(world: &mut World, emitter: Emitte
 /// The output callback progresses independently; never spin waiting for it.
 pub(in crate::app) fn has_output(world: &World) -> bool { world.resource::<bevy_backend::Engine>().has_output() }
 
+/// Progress accepted FX sound cookies while their source actors, scene and
+/// entity-event owner still exist. The caller must drain EntityEvents before
+/// releasing actor IDs. This does not close level/audio admission or banks.
+pub(in crate::app) fn poll_accepted_effects(world: &mut World) -> Result<(), String> {
+    world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    stimulus::update(world)?;
+    poll_object_retirements(world)?;
+    if let Some(error) = world.resource::<effects::EffectAudio>().last_error.as_ref() {
+        return Err(format!("accepted FX sound delivery failed: {error}"));
+    }
+    Ok(())
+}
+
 pub(in crate::app) fn poll_object_retirements(world: &mut World) -> Result<(), String> {
     world.run_system_cached(bevy_backend::retire).map_err(|error| error.to_string())?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
@@ -505,9 +552,11 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
+    reservations::close(world);
     audiographs::stop(world)?;
     music::stop(world)?;
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    stimulus::update(world)?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
     let mut emitters = world.resource::<bevy_backend::Engine>().level_emitters();
     if let Some(level) = world.get_resource::<level::LevelAudio>() { emitters.extend(level.emitters()); }
@@ -525,6 +574,7 @@ pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), St
 
 pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, String> {
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    stimulus::update(world)?;
     poll_object_retirements(world)?;
     let pending = world.resource::<PendingSounds>().0.iter().any(|queued| request_emitter(&queued.request) != Emitter::Menu);
     let retiring = world.resource::<RetiringSounds>().0.iter().any(|(&emitter, &state)| emitter != Emitter::Menu && state != ObjectRetirement::Complete);
@@ -535,7 +585,8 @@ pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, S
             return Err(format!("world FX sound retirement failed: {error}"));
         }
     }
-    Ok(audiographs::drained(world)? && !pending && !retiring && !fx_pending)
+    let reserved = reservations::drain(world)?;
+    Ok(audiographs::drained(world)? && reserved && !pending && !retiring && !fx_pending)
 }
 
 pub(super) fn begin_level(world: &mut World) {
@@ -543,6 +594,7 @@ pub(super) fn begin_level(world: &mut World) {
     world.resource_mut::<RetiringSounds>().0.retain(|emitter, _| *emitter == Emitter::Menu);
     let mut registry = world.resource_mut::<WwiseRegistry>();
     registry.sources.clear();
+    registry.dynamic_source_clients.clear();
     let keep = registry.shared_banks;
     Arc::make_mut(&mut registry.library).truncate(keep);
     Arc::make_mut(&mut registry.banks).truncate(keep);
@@ -562,6 +614,7 @@ pub(super) fn begin_level(world: &mut World) {
     drop(registry);
     world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
     world.insert_resource(SoundDecodeQueue::default());
+    world.insert_resource(reservations::EventReservations::default());
     world.insert_resource(PendingSounds::default());
     world.resource_mut::<WwiseRegistry>().media_generation = graph::retain_media(&sound_ids);
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
@@ -612,6 +665,7 @@ pub(super) fn initialize_resources(app: &mut App) {
         .init_resource::<SoundCompletions>()
         .init_resource::<audiographs::Audiographs>()
         .init_resource::<SoundDecodeQueue>()
+        .init_resource::<reservations::EventReservations>()
         .init_resource::<AudioMix>()
         .init_resource::<bevy_backend::Engine>()
         .init_resource::<spatial::Scene>();
@@ -629,7 +683,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, reservations::advance, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, stimulus::scheduled, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -994,7 +1048,7 @@ fn play_events(
     (loading, exit): (Option<Res<super::loading_screen::Acquisition>>, Option<Res<super::loading_screen::ExitState>>),
 ) {
     completions.pump();
-    for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
+    for event in std::mem::take(&mut completions.retired_sources) { registry.release_dynamic_source(event, DecodeClient::Watched); }
     let wanted_decodes: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
     decodes.retain_client(DecodeClient::Watched, &wanted_decodes);
     decodes.poll();
@@ -1002,8 +1056,8 @@ fn play_events(
         let Some(result) = decodes.result(event) else { continue };
         match result {
             Ok(actions) => {
-                if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(event) {
-                    entry.insert(actions);
+                registry.publish_dynamic_source(event, actions, DecodeClient::Watched);
+                if registry.claim_dynamic_source(event, DecodeClient::Watched) {
                     completions.dynamic_sources.insert(event);
                 }
             }
@@ -1143,6 +1197,9 @@ fn play_events(
             waiting.push(emitter);
             pending.0.push(queued);
             continue;
+        }
+        if queued.watched.is_some() && registry.claim_dynamic_source(event, DecodeClient::Watched) {
+            completions.dynamic_sources.insert(event);
         }
         if let Err(error) = registry.prepare(event) {
             completions.failed_watch(event, emitter, queued.watched);

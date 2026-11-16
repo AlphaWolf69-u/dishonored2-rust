@@ -91,7 +91,7 @@ impl LevelPointQueries {
 
     fn shape(&self, index: usize) -> Result<WorldQueryShape<'_>, String> {
         let shape = self.geometry.shapes.get(index).and_then(Option::as_ref).ok_or("published query body has no retained geometry")?;
-        Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: None })
+        Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: Some(self) })
     }
 
     /// Borrow the same retained geometry used by point queries and body creation.
@@ -213,6 +213,21 @@ impl LevelPointQueries {
         eprintln!("LEVEL_POINT_QUERY_OBSERVATION samples={} wind_hits={wind_hits} water_hits={water_hits} signature={}",
             bodies.len(), digest.finalize());
         Ok(())
+    }
+}
+
+impl crate::gameplay::shape_tags::ShapeTagSource for LevelPointQueries {
+    fn mapped_material(&self, _index: usize) -> Result<u16, String> {
+        Err("level material mapping requires actual collision body context".into())
+    }
+    fn mapped_material_for_hit(&self, hit: &crate::gameplay::collision_hit::ShapeHitInfo, index: usize) -> Result<u16, String> {
+        use crate::gameplay::physics_world::storage::material_sources::MaterialSourceView;
+        use crate::gameplay::shape_tags::ShapeTagSource;
+        MaterialSourceView { sources: &self.storage.material_sources, materials: &self.storage.materials }
+            .mapped_material_for_hit(hit, index)
+    }
+    fn material_flags(&self, material: u16) -> Result<u16, String> {
+        self.storage.materials.shape_filter_flags(material)
     }
 }
 

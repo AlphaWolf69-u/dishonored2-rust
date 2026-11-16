@@ -112,12 +112,14 @@ pub struct Catalog {
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
     pub(crate) runtime_entity_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::runtime_entity::Definition>>>,
     pub(crate) damage_declarations: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::damage::Declaration>>>,
+    pub(crate) explosion_declarations: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::explosions::Declaration>>>,
     pub(crate) rule_handlers: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::slash_rules::Definition>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
     pub(crate) sound_auxiliary_buses: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<u32>>>,
     pub(crate) gameflow_programs: std::sync::OnceLock<std::sync::Mutex<crate::gameplay::gameflow::program::ProgramRegistry>>,
     pub(crate) speech_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::speech::Resources>>,
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
+    pub(crate) game_sound_properties: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::game_properties::GameSoundProperties>>>,
     pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
     pub(crate) render_parameters: std::sync::OnceLock<crate::assets::render_parameter::Owner>,
@@ -181,6 +183,7 @@ impl Drop for Catalog {
         self.physics_system_resources.take();
         crate::assets::physworld::mass::resources::report_retirement(self);
         crate::assets::wwise::event_resources::report_retirement(self);
+        crate::assets::wwise::game_properties::report_retirement(self);
         self.mass_resources.take();
         crate::assets::physworld::source::report(self, "catalog-retiring");
         self.shape_sources.take();
@@ -193,6 +196,8 @@ impl Drop for Catalog {
         self.runtime_entity_definitions.take();
         crate::assets::damage::report_retirement(self);
         self.damage_declarations.take();
+        crate::assets::explosions::report_retirement(self);
+        self.explosion_declarations.take();
         crate::assets::slash_rules::report_retirement(self);
         self.rule_handlers.take();
         self.sound_rtpcs.take();
@@ -200,6 +205,7 @@ impl Drop for Catalog {
         self.gameflow_programs.take();
         self.speech_resources.take();
         self.sound_events.take();
+        self.game_sound_properties.take();
         self.kiscule_resources.take();
         self.particle_resources.take();
         crate::assets::render_parameter::report(self, "catalog-retiring");
@@ -278,8 +284,10 @@ impl Catalog {
         crate::assets::speech::release_marker(self, 0);
         crate::assets::runtime_entity::release_marker(self, 0);
         crate::assets::damage::release_marker(self, 0);
+        crate::assets::explosions::release_marker(self, 0);
         crate::assets::slash_rules::release_marker(self, 0);
         crate::assets::wwise::event_resources::release_marker(self, 0);
+        crate::assets::wwise::game_properties::release_marker(self, 0);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
@@ -304,8 +312,10 @@ impl Catalog {
         crate::assets::speech::release_marker(self, 1);
         crate::assets::runtime_entity::release_marker(self, 1);
         crate::assets::damage::release_marker(self, 1);
+        crate::assets::explosions::release_marker(self, 1);
         crate::assets::slash_rules::release_marker(self, 1);
         crate::assets::wwise::event_resources::release_marker(self, 1);
+        crate::assets::wwise::game_properties::release_marker(self, 1);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
         crate::assets::wwise::rtpc_resources::release_marker(self, 1);
         crate::assets::physworld::mass::resources::release_marker(self, 1);
@@ -573,12 +583,14 @@ impl Catalog {
             difficulty_presets: Default::default(),
             runtime_entity_definitions: Default::default(),
             damage_declarations: Default::default(),
+            explosion_declarations: Default::default(),
             rule_handlers: Default::default(),
             sound_rtpcs: Default::default(),
             sound_auxiliary_buses: Default::default(),
             gameflow_programs: Default::default(),
             speech_resources: Default::default(),
             sound_events: Default::default(),
+            game_sound_properties: Default::default(),
             kiscule_resources: Default::default(),
             particle_resources: Default::default(),
             render_parameters: Default::default(),

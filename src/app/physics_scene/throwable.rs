@@ -13,6 +13,698 @@ pub(in crate::app) struct BindingPose {
     pub parent_placement: Option<usize>,
 }
 impl PhysicsScene {
+    ///4c9560 drains each actual Throwable's inline contact queue in LIFO
+    ///order. A failed host publication retains both the contact and its stage.
+    pub(in crate::app) fn advance_throwable_contacts(
+        &mut self,
+        live: &mut LiveEntities,
+        events: &mut EntityEvents,
+        clock: &crate::gameplay::game_clock_runtime::ClockRuntime,
+        player: Option<&crate::gameplay::player::Player>,
+    ) -> Result<(), String> {
+        use bevy_math::{Mat3, Vec3};
+        let marker = clock.clock().map_err(str::to_owned)?.frame_marker();
+        //The scheduled source prefix owns its callbacks; this does not scan
+        //render placements or construct actors for unadmitted declarations.
+        let count = usize::try_from(self.throwables.roster.sorted_start)
+            .map_err(|_| "negative Throwable update prefix")?;
+        for at in 0..count {
+            let slot = self.throwables.roster.indices[at];
+            let component = self
+                .throwables
+                .get(slot)
+                .ok_or("scheduled Throwable absent")?;
+            if component.owner.flags & 0xf != 0xa {
+                continue;
+            }
+            let index = component
+                .owner
+                .entity
+                .ok_or("scheduled Throwable entity absent")?;
+            let id = self.entities[index].shared;
+            let Some(first) = component.throwable()?.pending_contact() else {
+                continue;
+            };
+            let handle = first.bodies[0].component;
+            if handle.class_id != self.classes[12] || handle.slot != slot {
+                return Err("scheduled Throwable contact owner differs".into());
+            }
+            while let Some(contact) = self.rigid_component(handle)?.throwable()?.pending_contact() {
+                let state = self.rigid_component(handle)?.throwable()?;
+                if state.contact_delivery() == 0 {
+                    if contact.damage <= 0.
+                        && state.source.settings.sticky
+                        && self.entities[index].entity_flags & 0x80 == 0
+                        && state.binding.is_none()
+                        && !self.throwable_class_is(
+                            self.entities[*self
+                                .shared_indices
+                                .get(&contact.bodies[1].entity)
+                                .ok_or("sticky target actor absent")?]
+                            .class,
+                            b"arkPlayer",
+                        )?
+                    {
+                        let body = {
+                            let guard = self
+                                .world
+                                .read()
+                                .map_err(|_| "sticky contact world poisoned")?;
+                            let body = guard
+                                .storage
+                                .bodies
+                                .get(contact.bodies[1].body)
+                                .ok_or("sticky contact body retired")?;
+                            ReferenceFrame {
+                                position: body.transform[3][..3].try_into().unwrap(),
+                                basis: std::array::from_fn(|i| {
+                                    body.transform[i][..3].try_into().unwrap()
+                                }),
+                            }
+                        };
+                        //81b460 reprojects the captured contact through the
+                        //other body's current transform before4c9140 offsets it.
+                        let old = Mat3::from_cols_array_2d(&contact.other_frame.basis);
+                        if old.determinant() == 0. {
+                            return Err("sticky captured body basis singular".into());
+                        }
+                        let current = Mat3::from_cols_array_2d(&body.basis);
+                        let basis = current * old.inverse();
+                        let position = Vec3::from_array(body.position)
+                            + basis
+                                * (Vec3::from_array(contact.position)
+                                    - Vec3::from_array(contact.other_frame.position));
+                        let normal = basis * Vec3::from_array(contact.normal);
+                        let mut frame = self.entities[index].frame.pose;
+                        frame.position =
+                            (position + normal * state.source.settings.stick_distance).to_array();
+                        self.stick_throwable(
+                            live,
+                            id,
+                            frame,
+                            contact.bodies[1].body,
+                            u32::MAX,
+                            events,
+                        )?;
+                    } else if contact.damage > 0. {
+                        let declaration = state.source.damage.clone();
+                        if let Some(declaration) = declaration {
+                            let target = contact.bodies[1].entity;
+                            let already = self
+                                .rigid_component_mut(handle)?
+                                .throwable_mut()?
+                                .damaged_in_frame(marker, target);
+                            if !already {
+                                self.rigid_component_mut(handle)?
+                                    .throwable_mut()?
+                                    .reserve_damage_target()?;
+                                let component = self.rigid_component(handle)?;
+                                let origin_velocity =
+                                    Vec3::from_array(self.entities[index].frame.velocities[0]);
+                                let direction = origin_velocity
+                                    / origin_velocity
+                                        .length_squared()
+                                        .max(f32::MIN_POSITIVE)
+                                        .sqrt();
+                                let mut params =
+                                    crate::gameplay::damage::Parameters::from_declaration(
+                                        &declaration,
+                                    );
+                                params.hit_location = Some(Vec3::from_array(contact.position));
+                                params.hit_normal = Some(Vec3::from_array(contact.normal));
+                                params.hit_direction = direction;
+                                params.inflictor = Some(id);
+                                //Rigid collision-data vtable141c74578+30 is
+                                //06d040 (BODY_REGION_NONE);780ac0 also sets bit0.
+                                params.hit_region = 0;
+                                params.affected_regions = 1;
+                                let ignore_delay = crate::platform::console::shared()
+                                    .read()
+                                    .cvars
+                                    .float("ark_physics_impulser_ignore_delay")
+                                    .ok_or("physics instigator delay absent")?;
+                                params.attacker =
+                                    if ((clock.entity_time(id).map_err(str::to_owned)?
+                                        - component.instigator_time)
+                                        as f32)
+                                        < ignore_delay
+                                    {
+                                        component.instigator.filter(|id| live.get(*id).is_some())
+                                    } else {
+                                        None
+                                    };
+                                let greater = player
+                                    .filter(|player| player.managed_entity() == params.attacker)
+                                    .filter(|player| player.carrying_greater_throw());
+                                let amount = contact.damage
+                                    * greater.map_or(1., |player| {
+                                        player.carrying_throw_damage_multiplier()
+                                    });
+                                params.set_amount(&declaration, amount.floor(), greater.is_none());
+                                self.damage_entity(live, events, target, &params)?;
+                                self.rigid_component_mut(handle)?
+                                    .throwable_mut()?
+                                    .mark_damaged_in_frame(target)?;
+                            }
+                        }
+                    }
+                    self.rigid_component_mut(handle)?
+                        .throwable_mut()?
+                        .delivered_contact_stage(1);
+                }
+                if self
+                    .rigid_component(handle)?
+                    .throwable()?
+                    .contact_delivery()
+                    == 1
+                {
+                    let state = self.rigid_component(handle)?.throwable()?;
+                    if contact.damage > 0. && state.source.rigid.declaration_flags & 0x40 != 0 {
+                        if let Some(declaration) = state.source.damage.clone() {
+                            let other = *self
+                                .shared_indices
+                                .get(&contact.bodies[1].entity)
+                                .ok_or("self-damage other actor absent")?;
+                            let component = self.rigid_component(handle)?;
+                            let velocity =
+                                Vec3::from_array(self.entities[other].frame.velocities[0]);
+                            let direction =
+                                velocity / velocity.length_squared().max(f32::MIN_POSITIVE).sqrt();
+                            let mut params =
+                                crate::gameplay::damage::Parameters::from_declaration(&declaration);
+                            params.hit_location = Some(Vec3::from_array(contact.position));
+                            params.hit_normal = Some(Vec3::from_array(contact.normal));
+                            params.hit_direction = direction;
+                            params.inflictor = Some(contact.bodies[1].entity);
+                            params.hit_region = 0;
+                            params.affected_regions = 1;
+                            let delay = crate::platform::console::shared()
+                                .read()
+                                .cvars
+                                .float("ark_physics_impulser_ignore_delay")
+                                .ok_or("physics instigator delay absent")?;
+                            params.attacker = if ((clock.entity_time(id).map_err(str::to_owned)?
+                                - component.instigator_time)
+                                as f32)
+                                < delay
+                            {
+                                component.instigator.filter(|id| live.get(*id).is_some())
+                            } else {
+                                None
+                            };
+                            let greater = player
+                                .filter(|p| p.managed_entity() == params.attacker)
+                                .filter(|p| p.carrying_greater_throw());
+                            let amount = contact.damage
+                                * greater.map_or(1., |p| p.carrying_throw_damage_multiplier());
+                            params.set_amount(&declaration, amount.floor(), greater.is_none());
+                            //807480's fallback follows808480: it changes only
+                            //attribution, not the already evaluated damage.
+                            if params.attacker.is_none() {
+                                let body = component.body().ok_or("self-damage body absent")?;
+                                let player_owned = self
+                                    .world
+                                    .read()
+                                    .map_err(|_| "self-damage world poisoned")?
+                                    .storage
+                                    .bodies
+                                    .get(body)
+                                    .ok_or("self-damage body stale")?
+                                    .flags
+                                    & 0x80000
+                                    != 0;
+                                if player_owned {
+                                    params.attacker = player.and_then(|p| p.managed_entity());
+                                }
+                            }
+                            self.damage_entity(live, events, id, &params)?;
+                        }
+                    }
+                    self.rigid_component_mut(handle)?
+                        .throwable_mut()?
+                        .delivered_contact_stage(2);
+                }
+                if self
+                    .rigid_component(handle)?
+                    .throwable()?
+                    .contact_delivery()
+                    == 2
+                {
+                    let state = self.rigid_component(handle)?.throwable()?;
+                    if !state.first_hit() {
+                        let profile = state.damping_profile;
+                        let body = self
+                            .rigid_component(handle)?
+                            .body()
+                            .ok_or("contact damping body absent")?;
+                        if let Some(profile) = profile {
+                            let dynamic = {
+                                let world = self
+                                    .world
+                                    .read()
+                                    .map_err(|_| "contact damping world poisoned")?;
+                                world
+                                    .storage
+                                    .bodies
+                                    .get(body)
+                                    .ok_or("contact damping body stale")?
+                                    .flags
+                                    & 5
+                                    == 0
+                            };
+                            if dynamic {
+                                self.body_commands
+                                    .enqueue_motion_properties(body, profile, false)?;
+                            }
+                        }
+                        events.post(Event {
+                            id: 0x131,
+                            target: Some(id),
+                            payload: Payload::None,
+                        });
+                        self.rigid_component_mut(handle)?
+                            .throwable_mut()?
+                            .mark_first_hit();
+                    }
+                    self.rigid_component_mut(handle)?
+                        .throwable_mut()?
+                        .delivered_contact_stage(3);
+                }
+                if self
+                    .rigid_component(handle)?
+                    .throwable()?
+                    .contact_delivery()
+                    == 3
+                {
+                    let other = *self
+                        .shared_indices
+                        .get(&contact.bodies[1].entity)
+                        .ok_or("contact target scene owner absent")?;
+                    if !self.rigid_component(handle)?.throwable()?.npc_hit()
+                        && self.throwable_class_is(self.entities[other].class, b"arkNPC")?
+                        && (self.entities[other].entity_flags >> 8) & 0x28 == 0
+                    {
+                        events.post(Event {
+                            id: 0x132,
+                            target: Some(id),
+                            payload: Payload::None,
+                        });
+                        self.rigid_component_mut(handle)?
+                            .throwable_mut()?
+                            .mark_npc_hit();
+                    }
+                    self.rigid_component_mut(handle)?
+                        .throwable_mut()?
+                        .finish_contact()?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn throwable_class_is(&self, mut class: usize, name: &[u8]) -> Result<bool, String> {
+        loop {
+            let classes = self.types.classes();
+            let metadata = classes
+                .metadata(class)
+                .ok_or("Throwable contact class metadata absent")?;
+            if classes.name_text(metadata.name) == Some(name) {
+                return Ok(true);
+            }
+            let Some(base) = classes.hierarchy().node(class).and_then(|node| node.base) else {
+                return Ok(false);
+            };
+            class = base;
+        }
+    }
+
+    ///4c7c50/81b370/81b2e0/81aec0. The caller supplies the actual manifold
+    ///event kind and mutable cache/Jacobian, not guessed gameplay hit flags.
+    pub(in crate::app) fn capture_throwable_contact(
+        &mut self,
+        world: &WorldStorage,
+        live: &LiveEntities,
+        contact: &crate::gameplay::physics_world::contacts::SolvedContact,
+        cache: Option<&mut crate::gameplay::physics_world::contacts::ContactCallbackState>,
+        rows: Option<&mut crate::gameplay::constraint_solver::contact::ContactRows>,
+        event_kind: u8,
+        side: usize,
+    ) -> Result<(), String> {
+        use crate::gameplay::{
+            collision_user_data::CollisionUserData,
+            throwable::{Contact, ContactBody},
+        };
+        if side >= 2 {
+            return Err("Throwable contact recipient side invalid".into());
+        }
+        //cf3460's event8 has a null cache/Jacobian pointer. Retained
+        //numeric Rust rows do not make the native callback input present.
+        if event_kind == 8 {
+            return Ok(());
+        }
+        let cache = cache.ok_or("Throwable contact cache absent outside event8")?;
+        let own = world
+            .bodies
+            .get(contact.bodies[side])
+            .ok_or("Throwable contact body stale")?;
+        let handle = CollisionUserData::decode(own.user_data)?.component;
+        if handle.class_id != self.classes[12] || own.flags & 0x40 == 0 {
+            return Ok(());
+        }
+        if event_kind == 1 {
+            cache.contact_flags = (cache.contact_flags & !0x80) | 0x60;
+        }
+        //81b420 reads the selected actual stream header's type byte.
+        if !cache.stream_live {
+            return Ok(());
+        }
+        let Some(rows) = rows else {
+            return Ok(());
+        };
+        if rows.stream_type != 0 {
+            return Ok(());
+        }
+        let own_component = self.rigid_component(handle)?;
+        let index = own_component
+            .owner
+            .entity
+            .ok_or("Throwable contact entity absent")?;
+        let other = world
+            .bodies
+            .get(contact.bodies[1 - side])
+            .ok_or("Throwable other body stale")?;
+        let other_handle = CollisionUserData::decode(other.user_data)?.component;
+        let other_index = self
+            .owner(other_handle)?
+            .entity
+            .ok_or("Throwable other entity absent")?;
+        let id = self.entities[index].shared;
+        let other_id = self.entities[other_index].shared;
+        if live.get(id).is_none() || live.get(other_id).is_none() {
+            return Err("Throwable contact managed generation stale".into());
+        }
+        if self.throwable_class_is(self.entities[index].class, b"arkProjectile")?
+            && self.throwable_class_is(self.entities[other_index].class, b"arkProjectile")?
+        {
+            for &packed in self.entities[other_index].components.entries.values() {
+                let other_projectile = ComponentHandle::from_packed(packed)?;
+                if other_projectile.class_id != self.classes[13] {
+                    continue;
+                }
+                let runtime = self
+                    .projectiles
+                    .get(other_projectile.slot)
+                    .and_then(|c| c.runtime.as_ref())
+                    .ok_or("contact projectile runtime absent")?;
+                if !runtime.impact_stopped {
+                    if cache.modifier_flags & 0x200000 == 0 {
+                        rows.stream_flags |= 8;
+                        rows.stream_type = 3;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        let count = usize::from(contact.count);
+        if count == 0 || count > 4 {
+            return Err("Throwable contact manifold count invalid".into());
+        }
+        let minimum = contact.points[..count]
+            .iter()
+            .map(|p| p.distance)
+            .fold(f32::INFINITY, f32::min);
+        let cutoff = minimum + f32::from_bits(0x3ba3d70a);
+        let motion = world
+            .motions
+            .get(own.motion_id)
+            .ok_or("Throwable contact motion absent")?;
+        let angular = motion.world_angular_velocity();
+        let normal = contact.normal.map(|v| if side == 0 { v } else { -v });
+        let mut position = [0.; 3];
+        let mut velocity = [0.; 3];
+        let mut selected = 0.;
+        for point in &contact.points[..count] {
+            if point.distance > cutoff {
+                continue;
+            }
+            let p = std::array::from_fn::<_, 3, _>(|i| {
+                point.position[i]
+                    + if side == 0 {
+                        0.
+                    } else {
+                        contact.normal[i] * point.distance
+                    }
+            });
+            let r = std::array::from_fn::<_, 3, _>(|i| p[i] - motion.pose.center[i]);
+            let v = [
+                (angular[1] * r[2] - angular[2] * r[1]) + motion.linear_velocity[0],
+                (angular[2] * r[0] - angular[0] * r[2]) + motion.linear_velocity[1],
+                (angular[0] * r[1] - angular[1] * r[0]) + motion.linear_velocity[2],
+            ];
+            for i in 0..3 {
+                position[i] += p[i];
+                velocity[i] += v[i];
+            }
+            selected += 1.;
+        }
+        if selected == 0. {
+            return Err("Throwable manifold has no finite nearest point".into());
+        }
+        let inverse = crate::gameplay::constraint_solver::reciprocal(selected);
+        for i in 0..3 {
+            position[i] *= inverse;
+            velocity[i] *= inverse;
+        }
+        let origin = self.entities[index].frame.pose.position;
+        let difference = std::array::from_fn::<_, 3, _>(|i| position[i] - origin[i]);
+        let distance_squared = (difference[1] * difference[1] + difference[0] * difference[0])
+            + difference[2] * difference[2];
+        let other_frame = ReferenceFrame {
+            position: other.transform[3][..3].try_into().unwrap(),
+            basis: std::array::from_fn(|i| other.transform[i][..3].try_into().unwrap()),
+        };
+        let bodies = [
+            ContactBody {
+                body: own.id,
+                component: handle,
+                entity: id,
+                material: contact.material_ids[side],
+            },
+            ContactBody {
+                body: other.id,
+                component: other_handle,
+                entity: other_id,
+                material: contact.material_ids[1 - side],
+            },
+        ];
+        let state = own_component.throwable()?;
+        if own_component.owner.flags & 0x30 >= 0x20 {
+            return Ok(());
+        }
+        let mut damage = 0.;
+        if state.flags() & 1 != 0
+            && !self.throwable_class_is(other_handle.class_id as usize, b"arkCpntPhysicsWorld")?
+            && !self.throwable_class_is(self.entities[other_index].class, b"arkDoor")?
+        {
+            let settings = &state.source.rigid.settings;
+            let speed = self.entities[index].frame.velocities[0];
+            let speed2 = (speed[1] * speed[1] + speed[0] * speed[0]) + speed[2] * speed[2];
+            let threshold = if state.dropped() {
+                settings.velocity_damage_threshold_when_dropped
+            } else {
+                settings.velocity_damage_threshold
+            }
+            .ok_or("Throwable velocity damage threshold absent")?;
+            if threshold * threshold < speed2 {
+                let inverse_mass = f32::from_bits(u32::from(motion.inverse_mass[3]) << 16);
+                let mass = settings
+                    .mass_override
+                    .filter(|value| *value != 0.)
+                    .unwrap_or_else(|| {
+                        if inverse_mass == 0. {
+                            0.
+                        } else {
+                            1. / inverse_mass
+                        }
+                    });
+                let energy = speed2 * mass * 0.5;
+                let minimum = settings
+                    .min_contact_impulse_for_damage
+                    .ok_or("Throwable minimum impulse absent")?;
+                if minimum < energy {
+                    let maximum = settings
+                        .max_contact_impulse_for_damage
+                        .ok_or("Throwable maximum impulse absent")?;
+                    let maximum_damage = settings
+                        .contact_impulse_max_damage
+                        .ok_or("Throwable maximum damage absent")?;
+                    let factor = if maximum - minimum > 0. {
+                        ((energy.abs() - minimum) / (maximum - minimum)).min(1.)
+                    } else {
+                        1.
+                    };
+                    let amount = (factor * maximum_damage).max(1.);
+                    if self.breakable_would_break_amount(live, other_id, amount, true)? {
+                        if cache.modifier_flags & 0x200000 == 0 {
+                            rows.stream_flags |= 8;
+                            rows.stream_type = 3;
+                        }
+                        damage = amount;
+                    }
+                }
+            }
+        }
+        let queued = damage > 0.
+            || (state.source.settings.sticky && self.entities[index].entity_flags & 0x80 == 0)
+            || (state.source.settings.notify_hit
+                && (state.flags() & 0x10 == 0 || state.flags() & 0x20 == 0));
+        if queued {
+            self.rigid_component_mut(handle)?
+                .throwable_mut()?
+                .push_contact(Contact {
+                    bodies,
+                    position,
+                    normal,
+                    velocity,
+                    distance_squared,
+                    other_frame,
+                    damage,
+                })?;
+        }
+        Ok(())
+    }
+    /// 4c7020/4c6f90 use the real player's proxy pair manager. The player
+    /// reference actor deliberately has no fabricated WorldStorage body.
+    pub(in crate::app) fn mark_carried_release(
+        &mut self,
+        live: &LiveEntities,
+        id: EntityId,
+        player: &crate::gameplay::player::Player,
+        thrown: bool,
+        _events: &mut EntityEvents,
+    ) -> Result<(), String> {
+        let player_id = player
+            .managed_entity()
+            .ok_or("released object player identity absent")?;
+        if live.get(player_id).is_none() {
+            return Err("released object player generation stale".into());
+        }
+        let handle = self.throwable_handle(live, id)?;
+        let component = self.rigid_component(handle)?;
+        let body = component.body().ok_or("released Throwable body absent")?;
+        let filter = component
+            .throwable()?
+            .source
+            .rigid
+            .settings
+            .collision_filter()
+            .ok_or("released Throwable collision filter invalid")?;
+        let player_filter = crate::gameplay::collision_filter::filter_info(
+            crate::gameplay::collision_filter::layer::PLAYER,
+        );
+        if crate::gameplay::collision_filter::pair_collides(filter, player_filter) {
+            player.physics.release_pairs.mark_released(body)?;
+        }
+        let state = self.rigid_component_mut(handle)?.throwable_mut()?;
+        if thrown {
+            state.set_instigator(player_id);
+        } else {
+            state.mark_dropped(player_id);
+        }
+        Ok(())
+    }
+
+    /// 628df0/629590 publish through the same actual actor and body caches
+    /// as all other rigid entities; queued 90200 remains the velocity owner.
+    pub(in crate::app) fn publish_projectile_motion(
+        &mut self,
+        live: &LiveEntities,
+        id: EntityId,
+        frame: ReferenceFrame,
+        linear: [f32; 3],
+    ) -> Result<(), String> {
+        if live.get(id).is_none() {
+            return Err("finite projectile managed generation stale".into());
+        }
+        let index = *self
+            .shared_indices
+            .get(&id)
+            .ok_or("finite projectile entity absent")?;
+        let handle = self.entities[index]
+            .components
+            .reference_actor
+            .ok_or("finite projectile actor absent")?;
+        let actor = self
+            .actors
+            .actors
+            .get_mut(handle.slot)
+            .ok_or("finite projectile actor retired")?;
+        actor.set_transform(frame, false);
+        actor.frame.published_velocities = [linear, [0.; 3]];
+        let generation = actor.owner.generation;
+        self.entities[index].frame.pose = frame;
+        self.entities[index].frame.velocities = [linear, [0.; 3]];
+        self.request_post_physics_actor(usize::from(handle.slot), generation)?;
+        Ok(())
+    }
+
+    pub(in crate::app) fn publish_rigid_motion(
+        &mut self,
+        live: &LiveEntities,
+        id: EntityId,
+        frame: ReferenceFrame,
+        linear: [f32; 3],
+        angular: [f32; 3],
+    ) -> Result<(), String> {
+        if live.get(id).is_none() {
+            return Err("rigid motion managed generation stale".into());
+        }
+        let index = *self
+            .shared_indices
+            .get(&id)
+            .ok_or("rigid motion entity absent")?;
+        let handle = self
+            .document_rigid(index)?
+            .ok_or("rigid motion actual component absent")?;
+        let body = self
+            .rigid_component(handle)?
+            .body()
+            .ok_or("projectile body absent")?;
+        let mut registry = self.registry.take().ok_or("projectile registry absent")?;
+        let result = (|| {
+            let shared = self.world.clone();
+            let mut guard = shared.write().map_err(|_| "projectile world poisoned")?;
+            let world = &mut *guard;
+            let matrix = [
+                [frame.basis[0][0], frame.basis[0][1], frame.basis[0][2], 0.],
+                [frame.basis[1][0], frame.basis[1][1], frame.basis[1][2], 0.],
+                [frame.basis[2][0], frame.basis[2][1], frame.basis[2][2], 0.],
+                [frame.position[0], frame.position[1], frame.position[2], 1.],
+            ];
+            scene_publication_events!(self, &mut registry, publication);
+            world.storage.set_body_transform(
+                &mut world.geometry,
+                &mut publication,
+                body,
+                matrix,
+                0,
+            )?;
+            Ok::<_, String>(())
+        })();
+        self.registry = Some(registry);
+        result?;
+        self.entities[index].frame.pose = frame;
+        if let Some(actor) = self.entities[index].components.reference_actor {
+            self.actors.actors[usize::from(actor.slot)].set_transform(frame, false);
+            let generation = self.actors.actors[usize::from(actor.slot)].owner.generation;
+            self.request_post_physics_actor(usize::from(actor.slot), generation)?;
+        }
+        self.queue_rigid_velocity(
+            body,
+            [linear[0], linear[1], linear[2], 0.],
+            [angular[0], angular[1], angular[2], 0.],
+        )?;
+        Ok(())
+    }
     pub(in crate::app) fn bind_entity(
         &mut self,
         live: &mut LiveEntities,
@@ -20,6 +712,23 @@ impl PhysicsScene {
         parent: EntityId,
         pose: BindingPose,
         events: &mut EntityEvents,
+    ) -> Result<(), String> {
+        let mut registry = self
+            .registry
+            .take()
+            .ok_or("binding component registry is absent")?;
+        let result = self.bind_entity_in_registry(live, child, parent, pose, events, &mut registry);
+        self.registry = Some(registry);
+        result
+    }
+    pub(super) fn bind_entity_in_registry(
+        &mut self,
+        live: &mut LiveEntities,
+        child: EntityId,
+        parent: EntityId,
+        pose: BindingPose,
+        events: &mut EntityEvents,
+        registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let child = *self
             .shared_indices
@@ -50,17 +759,40 @@ impl PhysicsScene {
                 && actor.binding.offset == pose.offset
                 && actor.binding.orientation == pose.orientation
             {
-                return Ok(());
+                return self.refresh_bound_body_mode(live, child, registry);
+            }
+            //752900 updates the local binding in place when parent identity
+            //is unchanged. A new empty tag may replace a previous joint tag.
+            if binding.parent == parent {
+                let handle = self.entities[child]
+                    .components
+                    .reference_actor
+                    .ok_or("bound actor absent")?;
+                let actor = self
+                    .actors
+                    .actors
+                    .get_mut(handle.slot)
+                    .ok_or("bound actor absent")?;
+                actor.binding.joint = pose.joint;
+                actor.binding.offset = pose.offset;
+                actor.binding.orientation = pose.orientation;
+                let generation = actor.owner.generation;
+                let binding = self
+                    .document_hierarchy
+                    .bindings
+                    .iter_mut()
+                    .find(|binding| binding.child == child)
+                    .unwrap();
+                binding.joint = pose.joint;
+                binding.parent_placement = pose.parent_placement;
+                self.request_post_physics_actor(usize::from(handle.slot), generation)?;
+                return self.refresh_bound_body_mode(live, child, registry);
             }
             return Err("entity must detach its previous live binding before rebinding".into());
         }
-        let mut registry = self
-            .registry
-            .take()
-            .ok_or("binding component registry is absent")?;
-        let result = (|| {
-            let child_handle = self.reference_actor(child, &mut registry)?;
-            let parent_handle = self.reference_actor(parent, &mut registry)?;
+        let result: Result<(), String> = (|| {
+            let child_handle = self.reference_actor(child, registry)?;
+            let parent_handle = self.reference_actor(parent, registry)?;
             let ca = child_handle.slot as usize;
             let pa = parent_handle.slot as usize;
             let cg = self.actors.actors[ca].owner.generation;
@@ -104,7 +836,52 @@ impl PhysicsScene {
             self.request_post_physics_actor(pa, pg)?;
             Ok(())
         })();
-        self.registry = Some(registry);
+        result?;
+        self.refresh_bound_body_mode(live, child, registry)
+    }
+
+    ///727a00/80af20 refresh the same body's movement type after topology
+    ///changes. No new actor/body is created for a carry or sticky attachment.
+    fn refresh_bound_body_mode(
+        &mut self,
+        live: &LiveEntities,
+        index: usize,
+        registry: &mut ComponentRegistry,
+    ) -> Result<(), String> {
+        let Some(handle) = self.document_rigid(index)? else {
+            return Ok(());
+        };
+        let component = self.rigid_component(handle)?;
+        if component.owner.flags & 3 < 2 {
+            return Ok(());
+        }
+        let body = component.body().ok_or("bound rigid body absent")?;
+        let authored = component
+            .definition()
+            .and_then(|definition| definition.settings.physics_behavior.as_deref())
+            .and_then(entities::rigid_body_behavior_kind)
+            .ok_or("bound rigid declared behavior absent")?;
+        let behavior = self.bound_document_behavior(live, index, authored)?;
+        let result = (|| {
+            let shared = self.world.clone();
+            let mut guard = shared
+                .write()
+                .map_err(|_| "bound body mode world poisoned")?;
+            let world = &mut *guard;
+            scene_publication_events!(self, registry, events);
+            match behavior {
+                0 => world
+                    .storage
+                    .static_single_body(&mut world.geometry, &mut events, body),
+                1 => world
+                    .storage
+                    .keyframe_single_body(&mut world.geometry, &mut events, body),
+                2 => world
+                    .storage
+                    .dynamic_single_body(&mut world.geometry, &mut events, body),
+                _ => Err("bound body mode invalid".into()),
+            }
+        })();
         result
     }
     pub(in crate::app) fn bind_to_player(
@@ -173,15 +950,34 @@ impl PhysicsScene {
                         .rigid_component(handle)?
                         .body()
                         .ok_or("bound body absent")?;
+                    let authored = self
+                        .rigid_component(handle)?
+                        .definition()
+                        .and_then(|definition| definition.settings.physics_behavior.as_deref())
+                        .and_then(entities::rigid_body_behavior_kind)
+                        .ok_or("unbound rigid declared behavior absent")?;
                     let shared = self.world.clone();
                     let mut guard = shared.write().map_err(|_| "unbind world poisoned")?;
                     let world = &mut *guard;
                     scene_publication_events!(self, &mut registry, publication);
-                    world.storage.dynamic_single_body(
-                        &mut world.geometry,
-                        &mut publication,
-                        body,
-                    )?;
+                    match authored {
+                        0 => world.storage.static_single_body(
+                            &mut world.geometry,
+                            &mut publication,
+                            body,
+                        )?,
+                        1 => world.storage.keyframe_single_body(
+                            &mut world.geometry,
+                            &mut publication,
+                            body,
+                        )?,
+                        2 => world.storage.dynamic_single_body(
+                            &mut world.geometry,
+                            &mut publication,
+                            body,
+                        )?,
+                        _ => return Err("unbound body mode invalid".into()),
+                    }
                 }
             }
             self.detach_document(live, index)
@@ -423,12 +1219,12 @@ impl PhysicsScene {
                 false,
                 |_, _| Ok(()),
             )?;
-            registry.initialize_and_start(&mut interaction_components::Startup {
+            registry.initialize_and_start(&mut interaction_components::Startup { world: None,
                 scene: self,
                 live,
                 events,
             })?;
-            registry.drain_update_changes(&mut interaction_components::Startup {
+            registry.drain_update_changes(&mut interaction_components::Startup { world: None,
                 scene: self,
                 live,
                 events,
@@ -499,7 +1295,7 @@ impl PhysicsScene {
             });
         }
         let mut registry = self.registry.take().ok_or("stick registry absent")?;
-        let result = (|| {
+        let result: Result<(), String> = (|| {
             let phase = self
                 .rigid_component(handle)?
                 .throwable()?

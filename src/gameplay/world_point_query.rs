@@ -20,6 +20,9 @@ pub(crate) mod level;
 /// Read-only body projection shared by the live physics owner and its
 /// query consumers. All use the same traversal.
 pub trait PointQueryBodies {
+    /// Borrowed consumer admission, before geometry traversal. The body and
+    /// its generation remain owned by the canonical storage.
+    fn accepts_body(&self, _body: &super::collision_body::CollisionBody) -> bool { true }
     fn body(&self, index: u32) -> Option<&super::collision_body::CollisionBody>;
 }
 impl PointQueryBodies for BodyStorage {

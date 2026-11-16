@@ -51,3 +51,5 @@ pub(crate) mod runtime_entity;
 pub(crate) mod throwable;
 
 pub(crate) mod breakable;
+
+pub mod explosions;

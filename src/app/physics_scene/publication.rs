@@ -24,8 +24,9 @@ macro_rules! scene_publication_events {
             })
         };
         let mut observer = startup::WorldActivationObserver { owner: $scene.owner_id,
-            rigid_class: $scene.classes[8], rigid: &mut $scene.rigid_bodies,
-            body_events: &mut $scene.body_activation_events, registry: &mut *$registry,
+            rigid: [($scene.classes[8], &mut $scene.rigid_bodies),
+                ($scene.classes[12], &mut $scene.throwables)],
+            body_events: &mut $scene.body_activation_events, contacts: &mut $scene.contacts, registry: &mut *$registry,
             entity_activation: &mut entity_activation };
         let mut $events = ComponentPublicationEvents { components: TriggerComponentStore {
             trigger_class: $scene.classes[0], water_class: $scene.classes[1],

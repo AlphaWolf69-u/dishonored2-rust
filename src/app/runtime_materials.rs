@@ -231,6 +231,7 @@ pub(super) struct PreparedBatch {
     pub equipment: Vec<super::player_arms::PreparedEquipmentModel>,
     pub attachments: Vec<equipment_admission::PreparedAttachment>,
     pub world_models: Vec<super::world_models::Prepared>,
+    pub probe_records: Vec<[Vec4; 9]>,
     pub equipment_commands: Option<super::setup_commands::SetupCommands<'static, 'static>>,
     pub surfaces: Vec<super::particle_surface::PreparedSurface>,
     pub surface_images: HashMap<String, RuntimeImages>,
@@ -488,6 +489,7 @@ impl MaterialWork {
         let cache = std::mem::take(&mut resolver.cache);
         let image_paths = std::mem::take(&mut resolver.diffuse_image_paths);
         let shadow_materials = std::mem::take(&mut resolver.shadow_materials);
+        let probe_records = std::mem::take(&mut resolver.probe_sh_records);
         drop(resolver);
         // Only the pending batches publish. Existing assets are resolved from
         // the live world again, so their snapshot handles can retire here.
@@ -521,6 +523,7 @@ impl MaterialWork {
             attachments,
             world_models,
             equipment_commands,
+            probe_records,
             surfaces,
             surface_images,
             decals,
@@ -621,6 +624,7 @@ struct CacheLease {
     consumers: HashSet<MaterialConsumer>,
     equipment: Vec<std::sync::Weak<crate::assets::equipment::Descriptor>>,
     attachments: Vec<std::sync::Weak<crate::assets::equipment::attachment::Descriptor>>,
+    world_models: Vec<std::sync::Weak<()>>,
 }
 struct PendingMaterialWork {
     generation: u64,
@@ -1102,6 +1106,7 @@ fn coordinate_inner(
             cached.leases.retain(|lease| lease.strong_count() != 0);
             cached.equipment.retain(|lease| lease.strong_count() != 0);
             cached.attachments.retain(|lease| lease.strong_count() != 0);
+            cached.world_models.retain(|lease| lease.strong_count() != 0);
             for consumer in &cached.consumers {
                 let owners = match consumer {
                     MaterialConsumer::Mesh(key) => mesh_leases.get(key),
@@ -1122,6 +1127,7 @@ fn coordinate_inner(
                 cached.leases.is_empty()
                     && cached.equipment.is_empty()
                     && cached.attachments.is_empty()
+                    && cached.world_models.is_empty()
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -1375,10 +1381,11 @@ fn publish_batch(
 ) -> Result<(), String> {
     let PreparedBatch {
         assets,
-        equipment,
-        attachments,
+        mut equipment,
+        mut attachments,
         world_models,
-        equipment_commands,
+        mut equipment_commands,
+        probe_records,
         surfaces,
         surface_images,
         decals,
@@ -1492,7 +1499,7 @@ fn publish_batch(
                 consumers,
                 &mut cached.attachments,
             );
-            super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut cached.attachments);
+            super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut cached.world_models);
             for lease in &state.leases {
                 if let Some(source) = lease.upgrade() {
                     if consumers
@@ -1563,7 +1570,8 @@ fn publish_batch(
             consumers,
             &mut attachment_leases,
         );
-        super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut attachment_leases);
+        let mut world_model_leases = Vec::new();
+        super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut world_model_leases);
         state.cache.insert(
             key,
             CacheLease {
@@ -1573,8 +1581,13 @@ fn publish_batch(
                 consumers: consumers.clone(),
                 equipment: equipment_leases,
                 attachments: attachment_leases,
+                world_models: world_model_leases,
             },
         );
+    }
+    if let Some(commands) = &mut equipment_commands {
+        for model in &mut equipment { model.assign_probe_slots(&probe_records, world, commands)?; }
+        for attachment in &mut attachments { attachment.model.assign_probe_slots(Some(&probe_records), world, commands)?; }
     }
     if let Some(commands) = equipment_commands {
         commands.publish(world);

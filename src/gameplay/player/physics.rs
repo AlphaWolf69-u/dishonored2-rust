@@ -8,8 +8,11 @@
 //! moving-ground velocity, safe restore, the AI obstacle and the hitbox body
 //! are not ported: the rewrite's collision world is static.
 use super::character_proxy::{CharacterProxy, PlayerWorld, ProxySettings, SupportState, WorldHit};
-use super::shape::{PostureShape, ShapeSettings, POSTURE_AUTOCROUCHING, POSTURE_COUNT, POSTURE_KEEP_PREVIOUS, POSTURE_SWIMMING};
-use crate::gameplay::collision_filter::{filter_info, layer, QueryFilter};
+use super::shape::{
+    POSTURE_AUTOCROUCHING, POSTURE_COUNT, POSTURE_KEEP_PREVIOUS, POSTURE_SWIMMING, PostureShape,
+    ShapeSettings,
+};
+use crate::gameplay::collision_filter::{QueryFilter, filter_info, layer};
 use bevy_math::{Mat3, Vec3};
 #[path = "impulses.rs"]
 mod impulses;
@@ -97,7 +100,12 @@ pub struct Ground {
 
 impl Default for Ground {
     fn default() -> Self {
-        Self { state: SupportState::Unsupported, normal: Vec3::Z, velocity: Vec3::ZERO, angular: 0.0 }
+        Self {
+            state: SupportState::Unsupported,
+            normal: Vec3::Z,
+            velocity: Vec3::ZERO,
+            angular: 0.0,
+        }
     }
 }
 
@@ -120,6 +128,50 @@ struct VerticalMove {
 }
 
 pub const RAY_CENTER: usize = 0;
+
+/// The source pair-list remains owned by PlayerPhysics. Carry release receives
+/// a shared Player reference, so only that event takes a lock; exclusive
+/// physics integration accesses the list directly, with no query/body locks.
+#[derive(Debug, Default)]
+pub struct ReleasePairOwner(std::sync::Mutex<super::character_proxy::ReleasePairs>);
+impl ReleasePairOwner {
+    fn get_mut(&mut self) -> &mut super::character_proxy::ReleasePairs {
+        self.0.get_mut().expect("player release-pair owner poisoned")
+    }
+    pub fn mark_released(&self, body: u32) -> Result<(), String> {
+        let mut pairs = self
+            .0
+            .lock()
+            .map_err(|_| "player release-pair owner poisoned")?;
+        pairs.add(body);
+        pairs.remove(body);
+        Ok(())
+    }
+}
+impl Clone for ReleasePairOwner {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(
+            self.0.lock().expect("player release-pair owner poisoned").clone(),
+        ))
+    }
+}
+impl PartialEq for ReleasePairOwner {
+    fn eq(&self, other: &Self) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        // A stable owner order avoids reverse-comparison deadlocks without
+        // cloning and allocating the four retained lists just to compare them.
+        let (first, second) = if (self as *const Self as usize) < (other as *const Self as usize) {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let first = first.0.lock().expect("player release-pair owner poisoned");
+        let second = second.0.lock().expect("player release-pair owner poisoned");
+        *first == *second
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerPhysics {
@@ -172,6 +224,8 @@ pub struct PlayerPhysics {
     /// are not ported; the camera clamp reads it.
     pub lean_offset: Vec3,
     pub proxy: CharacterProxy,
+    /// The proxy listener's actual +2b0 pair-list owner, not a world body.
+    pub release_pairs: ReleasePairOwner,
     disable_gravity_count: i32,
     // arkCpntPlayerPhysics query state.
     pub ground_query_length: f32,
@@ -215,7 +269,11 @@ pub fn yaw_axis(yaw: f32) -> Mat3 {
 impl PlayerPhysics {
     /// arkCpntPlayerPhysics start FUN_1407fe310 and the arkPhysicsPlayer ctor.
     pub fn new(decl: &PhysicsDecl, position: Vec3, yaw: f32) -> Self {
-        let (first_posture, first) = decl.shapes.first().copied().unwrap_or((0, ShapeSettings::default()));
+        let (first_posture, first) = decl
+            .shapes
+            .first()
+            .copied()
+            .unwrap_or((0, ShapeSettings::default()));
         let mut shapes = vec![PostureShape::new(first)];
         let mut posture_shape = [usize::MAX; POSTURE_COUNT];
         let mut posture_settings = [first; POSTURE_COUNT];
@@ -291,6 +349,7 @@ impl PlayerPhysics {
             angular_velocity: 0.0,
             lean_offset: Vec3::ZERO,
             proxy,
+            release_pairs: Default::default(),
             disable_gravity_count: 0,
             ground_query_length: decl.ground_query_length,
             ground_ray_query_length: decl.ground_ray_query_length,
@@ -358,7 +417,13 @@ impl PlayerPhysics {
     }
 
     /// FUN_1407ff0a0 → FUN_1401b6ae0 (angular values in degrees).
-    pub fn set_motion_limits(&mut self, linear_acceleration: f32, linear_deceleration: f32, angular_acceleration: f32, angular_deceleration: f32) {
+    pub fn set_motion_limits(
+        &mut self,
+        linear_acceleration: f32,
+        linear_deceleration: f32,
+        angular_acceleration: f32,
+        angular_deceleration: f32,
+    ) {
         self.linear_acceleration = linear_acceleration;
         self.linear_deceleration = linear_deceleration;
         self.angular_acceleration = angular_acceleration * 0.017453292;
@@ -423,7 +488,9 @@ impl PlayerPhysics {
         self.max_z = max_z.unwrap_or(UNSET);
     }
 
-    pub fn speed_scale(&self) -> f32 { self.speed_scale }
+    pub fn speed_scale(&self) -> f32 {
+        self.speed_scale
+    }
 
     /// FUN_1407fd830 / FUN_1407fd970: counted gravity-strength disable.
     pub fn disable_gravity(&mut self, disable: bool) {
@@ -459,7 +526,11 @@ impl PlayerPhysics {
             self.current = self.target;
         }
         self.target = index;
-        self.duration = if self.timer <= 0.0 { duration } else { self.duration + duration };
+        self.duration = if self.timer <= 0.0 {
+            duration
+        } else {
+            self.duration + duration
+        };
         let growing = self.shape_height(self.target) - self.shape_height(self.current) > EPSILON;
         if growing {
             grew = false;
@@ -484,7 +555,11 @@ impl PlayerPhysics {
         {
             return true;
         }
-        let posture = if posture == POSTURE_KEEP_PREVIOUS { self.posture } else { posture };
+        let posture = if posture == POSTURE_KEEP_PREVIOUS {
+            self.posture
+        } else {
+            posture
+        };
         self.posture_settings(posture).height <= self.ceil_distance
     }
 
@@ -496,12 +571,19 @@ impl PlayerPhysics {
     /// FUN_1407fdab0: normal of the shortest ground ray when it is within the
     /// ground query length, else up.
     pub fn shortest_ground_ray_normal(&self) -> Vec3 {
-        let (index, distance) = self
-            .ground_ray_distance
-            .iter()
-            .enumerate()
-            .fold((0, f32::MAX), |best, (i, &d)| if d < best.1 { (i, d) } else { best });
-        if distance <= self.ground_query_length { self.ground_ray_normal[index] } else { Vec3::Z }
+        let (index, distance) =
+            self.ground_ray_distance
+                .iter()
+                .enumerate()
+                .fold(
+                    (0, f32::MAX),
+                    |best, (i, &d)| if d < best.1 { (i, d) } else { best },
+                );
+        if distance <= self.ground_query_length {
+            self.ground_ray_normal[index]
+        } else {
+            Vec3::Z
+        }
     }
 
     /// pp+0x98: project gravity on the ground plane this step (slip-fall).
@@ -516,7 +598,11 @@ impl PlayerPhysics {
 
     /// FUN_1407fdc30.
     pub fn ceiling_blocks(&self, extra: f32) -> bool {
-        self.ceil_distance <= self.proxy.settings.keep_distance + self.posture_settings(self.posture).height + 1e-4 + extra
+        self.ceil_distance
+            <= self.proxy.settings.keep_distance
+                + self.posture_settings(self.posture).height
+                + 1e-4
+                + extra
     }
 
     /// `groundDistance < FLT_MAX || support != UNSUPPORTED`.
@@ -546,7 +632,11 @@ impl PlayerPhysics {
     /// FUN_1400858d0: remove or add `layers` in the proxy's collides-with set.
     pub fn set_proxy_layers(&mut self, layers: u32, enabled: bool) {
         let filter = &mut self.proxy.settings.collision_filter;
-        *filter = if enabled { *filter | layers << 5 } else { *filter & (!layers << 5 | 0x1f) };
+        *filter = if enabled {
+            *filter | layers << 5
+        } else {
+            *filter & (!layers << 5 | 0x1f)
+        };
     }
 
     /// m_groundCollisionMask | m_ceilCollisionMask (the slide obstacle cast).
@@ -561,19 +651,36 @@ impl PlayerPhysics {
         // The layer's word without NPC_BODY_ANIMATED and NPC_BODY_RAGDOLL.
         let layer_layers = (filter_info(self.collision_layer) & 0xfff77fff) >> 5;
         let required = 1 << layer::PLAYER;
-        let touch = QueryFilter::layers((self.ceil_collision_mask | self.ground_collision_mask) & proxy_layers, required);
+        let touch = QueryFilter::layers(
+            (self.ceil_collision_mask | self.ground_collision_mask) & proxy_layers,
+            required,
+        );
         let ground = QueryFilter::layers(layer_layers & self.ground_collision_mask, required);
         let ceil = QueryFilter::layers(proxy_layers & self.ceil_collision_mask, required);
         let ground_rays = QueryFilter::layers(self.ground_collision_mask, required);
-        let query = if self.shape_height(self.target) - self.shape_height(self.current) > EPSILON { self.target } else { self.current };
+        let query = if self.shape_height(self.target) - self.shape_height(self.current) > EPSILON {
+            self.target
+        } else {
+            self.current
+        };
         let settings = self.shapes[query].settings;
-        let cast_offset = settings.z_offset + (settings.height - (settings.z_offset + settings.step_height)) * 0.5;
+        let cast_offset = settings.z_offset
+            + (settings.height - (settings.z_offset + settings.step_height)) * 0.5;
         let origin = self.proxy.position;
         let axis = self.axis();
         let start = origin + Vec3::Z * cast_offset;
         let mut hits: Vec<WorldHit> = Vec::new();
         // Touch: the posture's body shape at the origin.
-        world.cast_shape(touch, &self.shapes[self.posture_shape[self.posture]].body, axis, origin, Vec3::ZERO, 0.0, &mut hits, None);
+        world.cast_shape(
+            touch,
+            &self.shapes[self.posture_shape[self.posture]].body,
+            axis,
+            origin,
+            Vec3::ZERO,
+            0.0,
+            &mut hits,
+            None,
+        );
         self.penetrating = !hits.is_empty();
         let ceil_floor = &self.shapes[query].ceil_floor;
         let ground_length = self.ground_query_length + cast_offset;
@@ -584,7 +691,16 @@ impl PlayerPhysics {
             }
         } else {
             hits.clear();
-            world.cast_shape(ground, ceil_floor, axis, start, Vec3::new(0.0, 0.0, -ground_length), 0.0, &mut hits, None);
+            world.cast_shape(
+                ground,
+                ceil_floor,
+                axis,
+                start,
+                Vec3::new(0.0, 0.0, -ground_length),
+                0.0,
+                &mut hits,
+                None,
+            );
             if let Some(fraction) = hits.iter().map(|h| h.value).min_by(f32::total_cmp) {
                 self.ground_distance = ground_length * fraction - cast_offset;
             }
@@ -593,16 +709,33 @@ impl PlayerPhysics {
         if self.ground_distance < f32::MAX || self.proxy.contact_count() != 0 {
             // The native physmat queries retain the ground layers and require
             // flag 0x100, while the collision queries above require 0x40.
-            let material_filter = QueryFilter::layers(layer_layers & self.ground_collision_mask, 0x100);
+            let material_filter =
+                QueryFilter::layers(layer_layers & self.ground_collision_mask, 0x100);
             self.ground_material_hit = if self.penetrating {
-                world.cast_ray(material_filter, start, -Vec3::Z, ground_length).map(|hit| WorldHit {
-                    position: hit.position, normal: hit.normal, value: hit.distance / ground_length,
-                    body: hit.body, key: hit.key,
-                })
+                world
+                    .cast_ray(material_filter, start, -Vec3::Z, ground_length)
+                    .map(|hit| WorldHit { material_id: hit.material_id,
+                        position: hit.position,
+                        normal: hit.normal,
+                        value: hit.distance / ground_length,
+                        body: hit.body,
+                        key: hit.key,
+                    })
             } else {
                 hits.clear();
-                world.cast_shape(material_filter, ceil_floor, axis, start, Vec3::new(0.0, 0.0, -ground_length), 0.0, &mut hits, None);
-                hits.iter().min_by(|a, b| a.value.total_cmp(&b.value)).copied()
+                world.cast_shape(
+                    material_filter,
+                    ceil_floor,
+                    axis,
+                    start,
+                    Vec3::new(0.0, 0.0, -ground_length),
+                    0.0,
+                    &mut hits,
+                    None,
+                );
+                hits.iter()
+                    .min_by(|a, b| a.value.total_cmp(&b.value))
+                    .copied()
             };
         }
         self.ceil_distance = f32::MAX;
@@ -612,22 +745,39 @@ impl PlayerPhysics {
             }
         } else {
             hits.clear();
-            world.cast_shape(ceil, ceil_floor, axis, start, Vec3::new(0.0, 0.0, self.ceil_query_length), 0.0, &mut hits, None);
+            world.cast_shape(
+                ceil,
+                ceil_floor,
+                axis,
+                start,
+                Vec3::new(0.0, 0.0, self.ceil_query_length),
+                0.0,
+                &mut hits,
+                None,
+            );
             if let Some(fraction) = hits.iter().map(|h| h.value).min_by(f32::total_cmp) {
-                self.ceil_distance = fraction * self.ceil_query_length + cast_offset + settings.step_height;
+                self.ceil_distance =
+                    fraction * self.ceil_query_length + cast_offset + settings.step_height;
             }
         }
         let reach = settings.radius - 0.01;
-        let offsets = [Vec3::ZERO, axis.x_axis * reach, -axis.x_axis * reach, axis.y_axis * reach, -axis.y_axis * reach];
+        let offsets = [
+            Vec3::ZERO,
+            axis.x_axis * reach,
+            -axis.x_axis * reach,
+            axis.y_axis * reach,
+            -axis.y_axis * reach,
+        ];
         let length = self.ground_ray_query_length + cast_offset;
         self.ground_ray_distance_min = self.ground_ray_query_length;
         self.ground_ray_distance_max = -self.ground_ray_query_length;
         let mut sum = Vec3::ZERO;
         for (index, offset) in offsets.into_iter().enumerate() {
-            let (distance, normal) = match world.cast_ray(ground_rays, start + offset, -Vec3::Z, length) {
-                Some(hit) => (hit.distance - cast_offset, hit.normal),
-                None => (self.ground_ray_query_length, Vec3::Z),
-            };
+            let (distance, normal) =
+                match world.cast_ray(ground_rays, start + offset, -Vec3::Z, length) {
+                    Some(hit) => (hit.distance - cast_offset, hit.normal),
+                    None => (self.ground_ray_query_length, Vec3::Z),
+                };
             self.ground_ray_distance[index] = distance;
             self.ground_ray_normal[index] = normal;
             self.ground_ray_distance_min = self.ground_ray_distance_min.min(distance);
@@ -642,10 +792,15 @@ impl PlayerPhysics {
         let mut input = input;
         if !self.no_smoothing && input != self.smoothed_velocity {
             let delta = input - self.smoothed_velocity;
-            let limit = if self.smoothed_velocity.dot(delta) < 0.0 { self.linear_deceleration } else { self.linear_acceleration } * dt;
+            let limit = if self.smoothed_velocity.dot(delta) < 0.0 {
+                self.linear_deceleration
+            } else {
+                self.linear_acceleration
+            } * dt;
             let length2 = delta.length_squared();
             if length2 > limit * limit {
-                input = self.smoothed_velocity + delta * (limit / length2.max(f32::MIN_POSITIVE).sqrt());
+                input = self.smoothed_velocity
+                    + delta * (limit / length2.max(f32::MIN_POSITIVE).sqrt());
             }
         }
         self.smoothed_velocity = input;
@@ -669,20 +824,29 @@ impl PlayerPhysics {
         // 2. Input and linear smoothing.
         let mut velocity = self.smooth_input(input.linear.unwrap_or(Vec3::ZERO), dt);
         // 3. Gravity strength.
-        let gravity_strength = if self.gravity_override == UNSET { shape.gravity_strength } else { self.gravity_override };
+        let gravity_strength = if self.gravity_override == UNSET {
+            shape.gravity_strength
+        } else {
+            self.gravity_override
+        };
         let mut gravity = self.gravity_velocity;
         // 4. Vertical move.
         if let Some(mut vertical) = self.vertical {
             vertical.target_z += vertical.ground_vertical_speed * dt;
             let blocked = vertical.last_speed != 0.0
-                && (vertical.last_speed - (self.velocity.z - vertical.ground_vertical_speed)).abs() > 0.01;
+                && (vertical.last_speed - (self.velocity.z - vertical.ground_vertical_speed)).abs()
+                    > 0.01;
             let dz = vertical.target_z - self.proxy.position.z;
             let speed = if blocked || dz < 0.01 / self.speed_scale {
                 self.vertical = None;
                 0.0
             } else {
                 let rate = dz / dt;
-                if rate >= 1.0 / self.speed_scale { (rate * vertical.gain).min(vertical.max_speed) } else { rate }
+                if rate >= 1.0 / self.speed_scale {
+                    (rate * vertical.gain).min(vertical.max_speed)
+                } else {
+                    rate
+                }
             };
             vertical.last_speed = speed;
             gravity.z = speed;
@@ -695,7 +859,8 @@ impl PlayerPhysics {
         // the proxy's current layers against its original +0x214 word.
         self.impulse_velocity = self.impulses.update(dt);
         if (self.proxy.settings.collision_filter >> 5) & self.impulse_collision_layers
-            == self.impulse_collision_layers {
+            == self.impulse_collision_layers
+        {
             velocity += self.impulse_velocity;
         } else {
             self.impulse_velocity = Vec3::ZERO;
@@ -711,7 +876,11 @@ impl PlayerPhysics {
         // 7. Downhill ground-plane projection, keeping horizontal speed.
         let vertical_mode = self.vertical.is_some();
         let normal = self.ground.normal;
-        if !vertical_mode && gravity_strength > 0.0 && self.gravity_override == UNSET && normal.dot(velocity) > 0.0 {
+        if !vertical_mode
+            && gravity_strength > 0.0
+            && self.gravity_override == UNSET
+            && normal.dot(velocity) > 0.0
+        {
             let projected = velocity - normal * velocity.dot(normal);
             let length = projected.truncate().length();
             if length > 0.01 {
@@ -732,20 +901,24 @@ impl PlayerPhysics {
         }
         self.gravity_velocity = gravity;
         // 9. Compose.
-        let composed = self.water_velocity + if vertical_mode {
-            Vec3::new(velocity.x + gravity.x, velocity.y + gravity.y, gravity.z)
-        } else {
-            velocity + gravity
-        };
+        let composed = self.water_velocity
+            + if vertical_mode {
+                Vec3::new(velocity.x + gravity.x, velocity.y + gravity.y, gravity.z)
+            } else {
+                velocity + gravity
+            };
         // 10. Speed scale and integrate.
         if self.speed_scale < self.speed_scale_target {
-            self.speed_scale = (self.speed_scale + self.speed_scale_rate * dt).min(self.speed_scale_target);
+            self.speed_scale =
+                (self.speed_scale + self.speed_scale_rate * dt).min(self.speed_scale_target);
         } else if self.speed_scale > self.speed_scale_target {
-            self.speed_scale = (self.speed_scale + self.speed_scale_rate * dt).max(self.speed_scale_target);
+            self.speed_scale =
+                (self.speed_scale + self.speed_scale_rate * dt).max(self.speed_scale_target);
         }
         self.proxy.velocity = composed * self.speed_scale;
         self.proxy.rotation = self.axis();
-        self.proxy.integrate(world, dt);
+        self.proxy
+            .integrate_with_release_pairs(world, dt, self.release_pairs.get_mut());
         // 11. Read back.
         let out = self.proxy.velocity;
         if self.proxy.position.z > self.max_z {
@@ -767,7 +940,10 @@ impl PlayerPhysics {
         self.yaw_rate = yaw_rate;
         yaw_rate += self.ground.angular;
         let output_velocity = out / self.speed_scale;
-        if !self.slip && self.gravity_velocity.z < 0.0 && output_velocity.z - self.gravity_velocity.z > 0.1 {
+        if !self.slip
+            && self.gravity_velocity.z < 0.0
+            && output_velocity.z - self.gravity_velocity.z > 0.1
+        {
             self.gravity_velocity.z = 0.0;
         }
         self.slip = false;
@@ -786,42 +962,104 @@ mod tests {
     pub(crate) struct Floor(pub Vec<[Vec3; 3]>);
 
     impl PlayerWorld for Floor {
-        fn surface(&self, _hit: &WorldHit) -> crate::gameplay::player::character_proxy::SurfaceFlags {
-            crate::gameplay::player::character_proxy::SurfaceFlags { allow_mantle: true, allow_vault: true }
+        fn surface(
+            &self,
+            _hit: &WorldHit,
+        ) -> crate::gameplay::player::character_proxy::SurfaceFlags {
+            crate::gameplay::player::character_proxy::SurfaceFlags {
+                allow_mantle: true,
+                allow_vault: true,
+            }
         }
 
-        fn cast_shape(&self, _: QueryFilter, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
+        fn cast_shape(
+            &self,
+            _: QueryFilter,
+            shape: &[Vec3],
+            rotation: Mat3,
+            from: Vec3,
+            displacement: Vec3,
+            tolerance: f32,
+            cast: &mut Vec<WorldHit>,
+            start: Option<&mut Vec<WorldHit>>,
+        ) {
             let points: Vec<Vec3> = shape.iter().map(|p| from + rotation * *p).collect();
             let mut start = start;
             for (key, triangle) in self.0.iter().enumerate() {
-                if let Some((fraction, contact)) = shape_cast::cast(&points, displacement, triangle, 0.001) {
-                    cast.push(WorldHit { position: contact.position, normal: contact.normal, value: fraction, body: 0, key: key as u32 });
+                if let Some((fraction, contact)) =
+                    shape_cast::cast(&points, displacement, triangle, 0.001)
+                {
+                    cast.push(WorldHit { material_id: None,
+                        position: contact.position,
+                        normal: contact.normal,
+                        value: fraction,
+                        body: 0,
+                        key: key as u32,
+                    });
                 }
                 if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                     let contact = shape_cast::closest(&points, triangle);
                     if contact.distance <= tolerance {
-                        start.push(WorldHit { position: contact.position, normal: contact.normal, value: contact.distance, body: 0, key: key as u32 });
+                        start.push(WorldHit { material_id: None,
+                            position: contact.position,
+                            normal: contact.normal,
+                            value: contact.distance,
+                            body: 0,
+                            key: key as u32,
+                        });
                     }
                 }
             }
         }
-        fn cast_ray(&self, _: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
-            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { distance: from.z, position: Vec3::new(from.x, from.y, 0.0), normal: Vec3::Z, body: 0, key: 0 })
+        fn cast_ray(
+            &self,
+            _: QueryFilter,
+            from: Vec3,
+            direction: Vec3,
+            length: f32,
+        ) -> Option<RayHit> {
+            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { material_id: None,
+                distance: from.z,
+                position: Vec3::new(from.x, from.y, 0.0),
+                normal: Vec3::Z,
+                body: 0,
+                key: 0,
+            })
         }
     }
 
     pub(crate) fn floor() -> Floor {
         Floor(vec![
-            [Vec3::new(-50.0, -50.0, 0.0), Vec3::new(50.0, -50.0, 0.0), Vec3::new(50.0, 50.0, 0.0)],
-            [Vec3::new(-50.0, -50.0, 0.0), Vec3::new(50.0, 50.0, 0.0), Vec3::new(-50.0, 50.0, 0.0)],
+            [
+                Vec3::new(-50.0, -50.0, 0.0),
+                Vec3::new(50.0, -50.0, 0.0),
+                Vec3::new(50.0, 50.0, 0.0),
+            ],
+            [
+                Vec3::new(-50.0, -50.0, 0.0),
+                Vec3::new(50.0, 50.0, 0.0),
+                Vec3::new(-50.0, 50.0, 0.0),
+            ],
         ])
     }
 
     pub(crate) fn decl() -> PhysicsDecl {
-        let standing = ShapeSettings { radius: 0.4, height: 1.8, step_height: 0.5, gravity_strength: 3.0, ..Default::default() };
-        let sneaking = ShapeSettings { height: 1.2, ..standing };
+        let standing = ShapeSettings {
+            radius: 0.4,
+            height: 1.8,
+            step_height: 0.5,
+            gravity_strength: 3.0,
+            ..Default::default()
+        };
+        let sneaking = ShapeSettings {
+            height: 1.2,
+            ..standing
+        };
         PhysicsDecl {
-            physics: PhysicsSettings { max_slope: 65.0, ..Default::default() },
+            physics: PhysicsSettings {
+                max_slope: 65.0,
+                ..Default::default()
+            },
             shapes: vec![(0, standing), (1, sneaking)],
             ..Default::default()
         }
@@ -833,12 +1071,20 @@ mod tests {
         let mut physics = PlayerPhysics::new(&decl(), Vec3::new(0.0, 0.0, 2.0), 0.0);
         let dt = 1.0 / 120.0;
         physics.step(&world, dt, MotionInput::default());
-        assert!((physics.velocity.z + 29.43 * dt).abs() < 1e-3, "{:?}", physics.velocity);
+        assert!(
+            (physics.velocity.z + 29.43 * dt).abs() < 1e-3,
+            "{:?}",
+            physics.velocity
+        );
         for _ in 0..240 {
             physics.step(&world, dt, MotionInput::default());
         }
         assert_eq!(physics.ground.state, SupportState::Supported);
-        assert!((physics.position().z - 0.01).abs() < 0.003, "{:?}", physics.position());
+        assert!(
+            (physics.position().z - 0.01).abs() < 0.003,
+            "{:?}",
+            physics.position()
+        );
         assert_eq!(physics.gravity_velocity, Vec3::ZERO);
     }
 
@@ -852,7 +1098,11 @@ mod tests {
         }
         physics.start_vertical(physics.position().z + 1.5, 5.1, 0.74);
         physics.step(&world, dt, MotionInput::default());
-        assert!((physics.velocity.z - 5.1).abs() < 1e-3, "{:?}", physics.velocity);
+        assert!(
+            (physics.velocity.z - 5.1).abs() < 1e-3,
+            "{:?}",
+            physics.velocity
+        );
         let mut peak: f32 = 0.0;
         for _ in 0..240 {
             physics.step(&world, dt, MotionInput::default());
@@ -867,19 +1117,38 @@ mod tests {
         let world = floor();
         let mut physics = PlayerPhysics::new(&decl(), Vec3::new(0.0, 0.0, 0.01), 0.0);
         physics.set_motion_limits(10.0, 1000.0, UNSET, UNSET);
-        let input = MotionInput { linear: Some(Vec3::new(2.4, 0.0, 0.0)), angular: None };
+        let input = MotionInput {
+            linear: Some(Vec3::new(2.4, 0.0, 0.0)),
+            angular: None,
+        };
         physics.step(&world, 0.1, input);
-        assert!((physics.velocity.x - 1.0).abs() < 1e-3, "{:?}", physics.velocity);
+        assert!(
+            (physics.velocity.x - 1.0).abs() < 1e-3,
+            "{:?}",
+            physics.velocity
+        );
     }
 
     #[test]
     fn queries_measure_ground_and_ceiling() {
         let mut world = floor();
-        world.0.push([Vec3::new(-50.0, -50.0, 2.5), Vec3::new(50.0, 50.0, 2.5), Vec3::new(50.0, -50.0, 2.5)]);
+        world.0.push([
+            Vec3::new(-50.0, -50.0, 2.5),
+            Vec3::new(50.0, 50.0, 2.5),
+            Vec3::new(50.0, -50.0, 2.5),
+        ]);
         let mut physics = PlayerPhysics::new(&decl(), Vec3::new(0.0, 0.0, 0.3), 0.0);
         physics.update_queries(&world);
-        assert!((physics.ground_distance - 0.3).abs() < 0.002, "{}", physics.ground_distance);
-        assert!((physics.ceil_distance - 2.2).abs() < 0.003, "{}", physics.ceil_distance);
+        assert!(
+            (physics.ground_distance - 0.3).abs() < 0.002,
+            "{}",
+            physics.ground_distance
+        );
+        assert!(
+            (physics.ceil_distance - 2.2).abs() < 0.003,
+            "{}",
+            physics.ceil_distance
+        );
         assert!(physics.can_use_posture(0));
     }
 

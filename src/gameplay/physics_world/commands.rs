@@ -1,5 +1,5 @@
 //! Group2 physics API packets and the game's4096-byte deferred command owner.
-use super::{command_buffer::CommandBuffer, BodyAddition, BodyPublication, TransformCallbacks};
+use super::{BodyAddition, BodyPublication, TransformCallbacks, command_buffer::CommandBuffer};
 use crate::gameplay::{
     body_storage::BodyActivation, shape_transform::ShapeMatrix, space_cells::SpaceCells,
 };
@@ -25,6 +25,10 @@ pub enum BodyCommand {
         body: u32,
         deactivate: bool,
     },
+    MotionProperties {
+        body: u32,
+        properties: u16,
+    },
     Ignored,
 }
 
@@ -46,7 +50,7 @@ impl BodyCommand {
         let opcode = u16_at(4)?;
         let size = u16_at(0)? as usize;
         let need = match opcode {
-            1 | 0x1e => 16,
+            1 | 0x17 | 0x1e => 16,
             6 => 80,
             9 => 48,
             _ => 0,
@@ -76,10 +80,14 @@ impl BodyCommand {
                 body: word(8),
                 deactivate: packet[12] != 0,
             },
+            0x17 => Self::MotionProperties {
+                body: word(8),
+                properties: u16_at(12)?,
+            },
             1..=0x23 | 0x27..=0x34 | 0x36 | 0x39..=0x3e => {
                 return Err(format!(
                     "physics API command0x{opcode:x} is not implemented"
-                ))
+                ));
             }
             _ => Self::Ignored,
         })
@@ -123,6 +131,9 @@ impl BodyCommand {
             Self::Activation { body, deactivate } => {
                 world.set_activation(body, deactivate, callbacks)?;
             }
+            Self::MotionProperties { body, properties } => {
+                world.set_motion_properties(body, properties, callbacks)?
+            }
             Self::Ignored => {}
         }
         Ok(())
@@ -133,6 +144,21 @@ pub struct PhysicsCommands {
     buffer: CommandBuffer,
 }
 impl PhysicsCommands {
+    ///4c8e20's source API command17, actual motion-property ID at+12.
+    pub fn enqueue_motion_properties(
+        &self,
+        body: u32,
+        properties: u16,
+        grow_one_at_a_time: bool,
+    ) -> Result<(), String> {
+        let mut packet = [0u8; 16];
+        packet[..2].copy_from_slice(&16u16.to_le_bytes());
+        packet[2..6].copy_from_slice(&0x170200u32.to_le_bytes());
+        packet[8..12].copy_from_slice(&body.to_le_bytes());
+        packet[12..14].copy_from_slice(&properties.to_le_bytes());
+        self.buffer.append_packet(&packet, grow_one_at_a_time)?;
+        Ok(())
+    }
     /// 08f940 initializes world-owner+148288 with4096 bytes and memory tag95.
     pub fn new() -> Result<Self, String> {
         Ok(Self {
@@ -161,10 +187,19 @@ impl PhysicsCommands {
 
     ///809ab0 queues source command1E with deactivate=false before the
     ///component publishes its desired velocities.
-    pub fn enqueue_activation(&self,body:u32,deactivate:bool,grow_one_at_a_time:bool)->Result<(),String> {
-        let mut packet=[0u8;16];packet[..2].copy_from_slice(&16u16.to_le_bytes());
-        packet[2..6].copy_from_slice(&0x1e0200u32.to_le_bytes());packet[8..12].copy_from_slice(&body.to_le_bytes());packet[12]=u8::from(deactivate);
-        self.buffer.append_packet(&packet,grow_one_at_a_time)?;Ok(())
+    pub fn enqueue_activation(
+        &self,
+        body: u32,
+        deactivate: bool,
+        grow_one_at_a_time: bool,
+    ) -> Result<(), String> {
+        let mut packet = [0u8; 16];
+        packet[..2].copy_from_slice(&16u16.to_le_bytes());
+        packet[2..6].copy_from_slice(&0x1e0200u32.to_le_bytes());
+        packet[8..12].copy_from_slice(&body.to_le_bytes());
+        packet[12] = u8::from(deactivate);
+        self.buffer.append_packet(&packet, grow_one_at_a_time)?;
+        Ok(())
     }
 
     pub fn enqueue_velocity(

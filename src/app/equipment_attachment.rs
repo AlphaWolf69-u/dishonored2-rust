@@ -1,5 +1,6 @@
-//! Child of PlayerArms: authored ammo/upgrade models and real weapon
-//! tag binding (44dd00/62b240 ->875e80). No independent material/model owner.
+//! Shared ordinary model draws, with authored ammo/upgrade tag bindings
+//! (44dd00/62b240 ->875e80). WorldModels owns runtime world actor lifetimes;
+//! equipment owns its attachments. Both use the existing material/mesh owners.
 use super::*;
 use crate::{
     assets::equipment::{
@@ -22,8 +23,13 @@ enum PreparedGeometry {
 
 struct SurfaceTemplate {mesh:Handle<Mesh>,source_index:usize,probe_index:u32,material:MaterialHandle}
 enum TemplateGeometry {Rigid(Vec<SurfaceTemplate>),Animated{model:String,info:Arc<crate::bmd6::ModelInfo>,skeleton:Arc<crate::edge_skeleton::EdgeSkeleton>,surfaces:Vec<SurfaceTemplate>}}
-pub(in crate::app) struct Template {descriptor:Arc<Descriptor>,geometry:TemplateGeometry}
+pub(in crate::app) struct Template {descriptor:Arc<Descriptor>,geometry:TemplateGeometry,lifetime:Option<Arc<()>>}
 impl Template{
+    pub(in crate::app) fn retain_lease(&mut self, lease: Arc<()>) { self.lifetime = Some(lease); }
+    pub(in crate::app) fn receiver_meshes(&self)->Vec<(Handle<Mesh>,bool)>{
+        let (surfaces,skin)=match &self.geometry{TemplateGeometry::Rigid(s)=>(s,false),TemplateGeometry::Animated{surfaces,..}=>(surfaces,true)};
+        surfaces.iter().map(|surface|(surface.mesh.clone(),skin)).collect()
+    }
     pub(in crate::app) fn descriptor(&self)->&Arc<Descriptor>{&self.descriptor}
     pub(in crate::app) fn uploads(&self)->Vec<(bevy::asset::AssetId<Mesh>,bevy::asset::UntypedAssetId)>{
         let surfaces=match &self.geometry{TemplateGeometry::Rigid(surfaces)|TemplateGeometry::Animated{surfaces,..}=>surfaces};
@@ -36,7 +42,7 @@ impl Template{
             let MaterialHandle::Probe(material)=&source.material else{return Err("world model template is not an ordinary material".into())};
             let mut entity=commands.spawn((Mesh3d(source.mesh.clone()),MeshMaterial3d(material.clone()),Transform::IDENTITY,GlobalTransform::IDENTITY,Visibility::Hidden,MeshTag(source.probe_index)));
             if !self.descriptor.cast_shadows{entity.insert(bevy::light::NotShadowCaster);}
-            surfaces.push(ArmSurface{entity:entity.id(),_mesh:source.mesh.clone(),source_index:source.source_index,probe_index:source.probe_index,material:source.material.clone()});
+            surfaces.push(ArmSurface{entity:entity.id(),_mesh:source.mesh.clone(),source_index:source.source_index,probe_index:source.probe_index,_probe_slot:None,material:source.material.clone()});
         }
         let geometry=match &self.geometry{
             TemplateGeometry::Rigid(_)=>PreparedGeometry::Rigid(surfaces),
@@ -55,10 +61,18 @@ pub(in crate::app) fn prepare_template(descriptor:Arc<Descriptor>,resolver:&mut 
         PreparedGeometry::Rigid(surfaces)=>TemplateGeometry::Rigid(surfaces.into_iter().map(project).collect()),
         PreparedGeometry::Animated(model)=>TemplateGeometry::Animated{model:model.model,info:model.info,skeleton:model.skeleton,surfaces:model.surfaces.into_iter().map(project).collect()},
     };
-    Ok(Template{descriptor:model.descriptor,geometry})
+    Ok(Template{descriptor:model.descriptor,geometry,lifetime:None})
 }
 
 impl PreparedModel {
+    pub(in crate::app) fn assign_probe_slots(&mut self, records: Option<&[[Vec4; 9]]>, world: &mut World,
+        commands: &mut super::super::setup_commands::SetupCommands) -> Result<(), String> {
+        let surfaces = match &mut self.geometry {
+            PreparedGeometry::Rigid(surfaces) => surfaces,
+            PreparedGeometry::Animated(model) => &mut model.surfaces,
+        };
+        super::assign_probe_slots(surfaces, records, world, commands)
+    }
     pub(in crate::app) fn uploads(&self) -> Vec<(bevy::asset::AssetId<Mesh>, bevy::asset::UntypedAssetId)> {
         self.surfaces().iter().map(|surface| {
             let material = match &surface.material { MaterialHandle::Probe(handle)=>handle.id().untyped(), _=>unreachable!("model preparation admits ordinary probe materials") };
@@ -161,6 +175,19 @@ pub(in crate::app) fn prepare(
 
 pub(in crate::app) fn prepare_world(descriptor:Arc<Descriptor>,resolver:&mut MaterialResolver,meshes:&mut dyn AssetWrite<Mesh>,commands:&mut super::super::setup_commands::SetupCommands)->Result<PreparedModel,String>{
     let model=prepare(descriptor,0.0,resolver,meshes,commands)?;
+    if model.descriptor.cast_shadows {
+        for part in model.surfaces() {
+            let mesh = meshes.get_mut(&part._mesh).ok_or("world shadow mesh preparation missing")?;
+            match &model.descriptor.geometry {
+                Geometry::Rigid(source) => shadow_preparation::retain_model_shadow_position(mesh, &source.surfaces[part.source_index].positions),
+                Geometry::Animated { model: source, .. } => {
+                    let surface = &source.surfaces[part.source_index];
+                    shadow_preparation::retain_model_shadow_position(mesh, &surface.positions);
+                    shadow_preparation::retain_skin_inputs(mesh, surface);
+                }
+            }
+        }
+    }
     for surface in model.surfaces(){let entity=surface.entity;commands.queue(move|world:&mut World|{
         world.entity_mut(entity).remove::<bevy::camera::visibility::NoFrustumCulling>();
     });}
@@ -182,6 +209,9 @@ struct Model {
     frame: Option<ReferenceFrame>,
     bounds: Option<[[f32; 3]; 2]>,
     lighting: crate::probe_lighting::ProbeQuery,
+    /// Current game-space skin palette shared by both custom shadow passes.
+    /// Kept with the actual actor through the existing retirement receipt.
+    shadow_skin: Option<(Handle<ShaderBuffer>, Vec<[[f32; 4]; 3]>)>,
 }
 
 #[derive(Default)]
@@ -193,9 +223,10 @@ impl Models {
     /// actual entity frame and lifecycle stay with the world-model owner.
     pub(in crate::app) fn publish_world(&mut self, id: EntityId, prepared: PreparedModel, frame: ReferenceFrame, visible: bool) -> Result<(), String> {
         if self.live.contains_key(&id) { return Err("world model generation already published".into()); }
-        let node = match &prepared.descriptor.geometry { Geometry::Animated {rig,..} => Some(rig.template.clone()), Geometry::Rigid(_) => None };
+        // Runtime AnimBase belongs to its real component pool, not rendering.
+        let node = None;
         self.live.insert(id, Model { prepared, weapon:None,parent:None,binding:None,world:Some(frame),world_scale:None,node,command:None,
-            visible,shown:false,frame:Some(frame),bounds:None,lighting:Default::default() });
+            visible,shown:false,frame:Some(frame),bounds:None,lighting:Default::default(),shadow_skin:None });
         Ok(())
     }
     pub(in crate::app) fn set_world_frame(&mut self, id:EntityId, frame:ReferenceFrame)->Result<(),String>{
@@ -206,11 +237,65 @@ impl Models {
     pub(in crate::app) fn set_world_scale(&mut self,id:EntityId,scale:[f32;3])->Result<(),String>{
         self.live.get_mut(&id).ok_or("world model generation is absent")?.world_scale=Some(scale);Ok(())
     }
+    pub(in crate::app) fn projection_draws(&self,id:EntityId)->Option<impl Iterator<Item=(Entity,&Handle<Mesh>,usize,u32,&MaterialHandle)> + '_>{
+        let model=self.live.get(&id)?;
+        Some(model.prepared.surfaces().iter().map(|surface|(surface.entity,&surface._mesh,surface.source_index,surface.probe_index,&surface.material)))
+    }
+    /// Color skin palettes already include the world frame, so the draw's
+    /// identity transform needs actual world-space bounds, not bind-pose bounds.
+    pub(in crate::app) fn publish_animated_bounds(&self,
+        bounds: &mut Query<&mut bevy::camera::primitives::Aabb, With<Mesh3d>>,
+        commands: &mut Commands) {
+        for model in self.live.values() {
+            if model.world.is_none() || !matches!(&model.prepared.geometry, PreparedGeometry::Animated(_)) { continue }
+            let Some([low, high]) = model.bounds else { continue };
+            let actual = bevy::camera::primitives::Aabb::from_min_max(
+                Vec3::new(low[0], low[2], -high[1]), Vec3::new(high[0], high[2], -low[1]));
+            for part in model.prepared.surfaces() {
+                if let Ok(mut previous) = bounds.get_mut(part.entity) {
+                    if previous.center != actual.center || previous.half_extents != actual.half_extents { *previous = actual; }
+                } else { commands.entity(part.entity).insert(actual); }
+            }
+        }
+    }
+    pub(in crate::app) fn shadow_surfaces(&self, id: EntityId,
+        materials: &super::super::ShadowMaterials) -> Result<Option<([[f32; 3]; 2], Vec<super::super::shadow_updates::RuntimeShadowSurface>)>, String> {
+        let Some(model) = self.live.get(&id) else { return Ok(None) };
+        if !model.prepared.descriptor.cast_shadows { return Ok(None) }
+        let (Some(frame), Some(bounds)) = (model.frame, model.bounds) else { return Ok(None) };
+        let placement = &model.prepared.descriptor.placement;
+        let affine = render_model::affine_rows(frame.position, frame.basis, model.world_scale.unwrap_or(placement.scale));
+        let rigid = [affine[0], affine[1], affine[2], [0., 0., 0., 1.]];
+        let mut surfaces = Vec::new();
+        for part in model.prepared.surfaces() {
+            let Some(inputs) = materials.0.get(&part.material) else { return Err("world caster material owner missing".into()) };
+            let inputs = inputs.as_ref().map_err(Clone::clone)?;
+            if inputs.world_gather_flags48()? & 1 == 0 { continue; }
+            let skin = match &model.prepared.geometry {
+                PreparedGeometry::Rigid(_) => None,
+                PreparedGeometry::Animated(arm) => {
+                    let surface = &arm.info.surfaces[part.source_index];
+                    let (handle, _) = model.shadow_skin.as_ref().ok_or("world caster current skin palette missing")?;
+                    Some(super::super::shadow_updates::RuntimeSurfaceSkin {
+                        palette: handle.clone(), matrix_offset: surface.matrix_offset, influences: surface.skin_influences,
+                        raster_model: rigid,
+                    })
+                }
+            };
+            surfaces.push(super::super::shadow_updates::RuntimeShadowSurface {
+                mesh: part._mesh.clone(), material: part.material.clone(),
+                // Skinned matrices already carry the actual world frame.
+                models: vec![if skin.is_some() { Mat4::IDENTITY.to_cols_array_2d() } else { rigid }],
+                bounds: vec![bounds], skin, clock:None,
+            });
+        }
+        Ok(Some((bounds, surfaces)))
+    }
     pub(in crate::app) fn draw_entities(&self)->impl Iterator<Item=Entity>+'_ {
         self.live.values().flat_map(|model|model.prepared.surfaces().iter().map(|surface|surface.entity))
     }
     pub(in crate::app) fn view_visible(&self,id:EntityId,views:&Query<&ViewVisibility>)->bool{
-        self.live.get(&id).is_some_and(|model|model.prepared.surfaces().iter().any(|surface|views.get(surface.entity).is_ok_and(ViewVisibility::get)))
+        self.live.get(&id).is_some_and(|model|model.prepared.surfaces().iter().any(|surface|views.get(surface.entity).is_ok_and(|visibility| visibility.get())))
     }
     pub(in crate::app) fn submit_area(&self,id:EntityId,area:f32,bindings:&bevy::platform::collections::HashMap<MaterialHandle,Vec<usize>>,demands:&[crate::texture::ProjectedAreaDemand])->Result<(),String>{
         let Some(model)=self.live.get(&id).filter(|model|model.shown)else{return Ok(())};
@@ -251,6 +336,7 @@ impl Models {
                 frame: None,
                 bounds: None,
                 lighting: Default::default(),
+                shadow_skin: None,
             },
         );
         Ok(())
@@ -373,6 +459,7 @@ impl Models {
         joint_transforms: &mut Query<&mut GlobalTransform, Without<Mesh3d>>,
         identities: Option<&super::super::equipment_identity::Identities>,
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
+        world_poses: Option<&super::super::physics_scene::PhysicsScene>,
     ) -> Result<(), String> {
         for (&id, model) in &mut self.live {
             let render = model.weapon.as_ref().and_then(|weapon| weapon.visual.as_ref()).and_then(|visual| renders.iter().find(|render| {
@@ -435,30 +522,21 @@ impl Models {
                         else {
                             return Err("animated attachment lost its source rig".into());
                         };
-                        let node = model
-                            .node
-                            .as_mut()
-                            .ok_or("animated attachment lost its actual AnimBasic state")?;
-                        let clock =
-                            clock.ok_or("animated attachment has no canonical clock owner")?;
-                        let delta = if clock.advanced() {
-                            clock.entity_delta(id).map_err(str::to_owned)?
+                        let equipment_matrices;
+                        let matrices = if model.world.is_some() {
+                            world_poses.ok_or("runtime world model has no component pose owner")?
+                                .runtime_animation_matrices(id)?
+                                .ok_or("runtime animated model has no actual AnimBase pose")?
                         } else {
-                            0.
+                            let node = model.node.as_mut().ok_or("animated attachment lost its actual AnimBasic state")?;
+                            let clock = clock.ok_or("animated attachment has no canonical clock owner")?;
+                            let delta = if clock.advanced() { clock.entity_delta(id).map_err(str::to_owned)? } else { 0. };
+                            node.update(delta, model.command.take(), &rig.animations);
+                            let pose = node.evaluate(&rig.animations, &rig.skeleton.rest)?;
+                            let joints = pose.as_ref().map_or(rig.skeleton.rest.as_slice(), |pose| pose.joints.as_slice());
+                            equipment_matrices = edge_skeleton::pose_matrices(joints, &rig.skeleton.hierarchy, &rig.root)?;
+                            equipment_matrices.as_slice()
                         };
-                        node.update(delta, model.command.take(), &rig.animations);
-                        let pose = node.evaluate(&rig.animations, &rig.skeleton.rest)?;
-                        // This validated tree's inactive pause leaves publish
-                        // the model's initialized skeleton. Missing/unsupported
-                        // trees were rejected during source acquisition.
-                        let joints = pose
-                            .as_ref()
-                            .map_or(rig.skeleton.rest.as_slice(), |pose| pose.joints.as_slice());
-                        let matrices = edge_skeleton::pose_matrices(
-                            joints,
-                            &rig.skeleton.hierarchy,
-                            &rig.root,
-                        )?;
                         let axis = Mat3::from_cols_array_2d(&frame.basis)
                             * Mat3::from_diagonal(Vec3::from_array(scale));
                         let position = Vec3::from_array(frame.position);
@@ -488,13 +566,28 @@ impl Models {
                             joints: rows,
                             visible: shown,
                         };
-                        publish_model_skin(
+                        let palette = publish_model_skin(
                             arm,
                             &render,
                             commands,
                             inverse_bindposes,
                             joint_transforms,
                         )?;
+                        if model.prepared.descriptor.cast_shadows {
+                            if let Some((handle, previous)) = &mut model.shadow_skin {
+                                if *previous != palette {
+                                    let bytes = palette.iter().flat_map(|matrix| matrix.iter().flatten())
+                                        .flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+                                    patches.enqueue(handle.id(), 0, &bytes);
+                                    *previous = palette;
+                                }
+                            } else {
+                                let gpu = palette.iter().map(|matrix| matrix.map(Vec4::from_array)).collect::<Vec<_>>();
+                                let mut buffer = ShaderBuffer::from(gpu);
+                                buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+                                model.shadow_skin = Some((buffers.add(buffer), palette));
+                            }
+                        }
                     }
                 }
             } else {

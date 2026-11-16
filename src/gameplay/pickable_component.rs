@@ -14,6 +14,9 @@ pub struct PickableDefinition {
     pub usable_by_player: bool,
     pub invisible_npc_loot: bool,
     pub(crate) pickup_interaction: super::interaction_definition::InteractionDef,
+    /// Authored localization keys retained once with the shared declaration.
+    pub(crate) interaction_labels: [String; 2],
+    pub(crate) interaction_state: String,
     pub scheduling: super::component_state::declaration::DeclarationScheduling,
 }
 

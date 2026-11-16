@@ -15,6 +15,25 @@ pub(super) struct PolicyProgress {
     stage: u8,
 }
 impl WorldStorage {
+    pub(crate) fn set_body_motion_properties<
+        G: BodyCreationGeometry,
+        E: PublicationEvents + BodyCreationCallbacks,
+    >(
+        &mut self,
+        geometry: &mut G,
+        events: &mut E,
+        id: u32,
+        properties: u16,
+    ) -> Result<(), String> {
+        self.motion_properties
+            .get(properties)
+            .ok_or("body motion profile absent")?;
+        self.edit_bodies(geometry, events, |creation| {
+            creation
+                .world
+                .set_motion_properties(id, properties, creation.callbacks)
+        })
+    }
     ///089fb0 drains the real accepted API FIFO before the physical solve.
     ///Only completed dispatch resets retained command chunks; errors preserve
     ///the source command-buffer cursor and all remaining body requests.

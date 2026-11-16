@@ -2,8 +2,11 @@
 //! no mesh primitive becomes a body or a second collision world.
 use super::{constraint_solver::reciprocal, ray_query::RayQueryControl};
 use crate::assets::physworld::compressed_mesh::{CompressedMesh, PrimitiveKind};
+pub mod capsule_ray;
+pub mod convex_ray;
 pub mod triangle;
 
+#[derive(Clone, Copy)]
 pub struct MeshLeaf<'a> {
     pub section: u32,
     pub primitive: u32,
@@ -12,6 +15,7 @@ pub struct MeshLeaf<'a> {
     pub tag: u16,
     pub kind: PrimitiveKind,
     pub convex_kind: Option<u8>,
+    pub convex_quad: bool,
     pub radius: f32,
     pub vertices: &'a [[f32; 4]],
 }
@@ -221,6 +225,8 @@ impl CompressedMeshQuery {
                                 tag: mesh.primitive_tag(section, primitive)?,
                                 kind,
                                 convex_kind: mesh.convex_kind(section, primitive)?,
+                                convex_quad: kind == PrimitiveKind::Quad
+                                    && mesh.convex_quad(section, primitive)?,
                                 radius: mesh.primitive_radius(section, primitive, parent_radius)?,
                                 vertices: &self.vertices,
                             },
@@ -268,4 +274,78 @@ impl CompressedMeshQuery {
         }
         Ok(())
     }
+}
+
+/// 127f590 re-prepares a compressed convex's actual radius after decoding;
+/// the nonconvex parent could not adjust it before its vertices were known.
+pub(crate) fn support_input<'a>(
+    leaf: &MeshLeaf<'a>,
+    state: super::compound_query::instance::CompoundShapeState,
+) -> Result<super::convex_support::ConvexSupportInput<'a>, String> {
+    use super::convex_support::{scaling::adjust_scale, ConvexSupportInput, ConvexSupportScale};
+    let shape_type = match leaf.kind {
+        PrimitiveKind::Triangle | PrimitiveKind::Quad => 4,
+        PrimitiveKind::Convex => match leaf.convex_kind {
+            Some(0) => 2,
+            Some(1) => 3,
+            Some(2) => 6,
+            _ => return Err("invalid compressed convex primitive kind".into()),
+        },
+        PrimitiveKind::Empty => return Err("empty compressed primitive has no support".into()),
+    };
+    let scaled = if state.scaled {
+        let mut scale = state.transform.scale;
+        let mut radius = leaf.radius;
+        let offset = if leaf.kind == PrimitiveKind::Convex {
+            adjust_scale(
+                shape_type,
+                leaf.vertices,
+                state.keep_radius,
+                &mut scale,
+                &mut radius,
+            )?
+        } else {
+            state.transform.offset
+        };
+        Some(ConvexSupportScale {
+            scale: scale[..3].try_into().unwrap(),
+            offset: offset[..3].try_into().unwrap(),
+            radius,
+        })
+    } else {
+        None
+    };
+    Ok(ConvexSupportInput {
+        shape_type,
+        vertices: leaf.vertices,
+        radius: leaf.radius,
+        scaled,
+    })
+}
+
+///127f590's quad policy, preserving source half keys and independent support IDs.
+/// Ray tests always split quads themselves; convex queries use this policy.
+pub(crate) fn support_leaves(
+    leaf: MeshLeaf<'_>,
+    submit: &mut dyn FnMut(MeshLeaf<'_>) -> Result<(), String>,
+) -> Result<(), String> {
+    if leaf.kind != PrimitiveKind::Quad || leaf.convex_quad {
+        return submit(leaf);
+    }
+    let first = [leaf.vertices[0], leaf.vertices[1], leaf.vertices[2]];
+    let mut second = [leaf.vertices[0], leaf.vertices[2], leaf.vertices[3]];
+    for (i, vertex) in second.iter_mut().enumerate() {
+        vertex[3] = f32::from_bits(0x3f00_0000 | i as u32);
+    }
+    submit(MeshLeaf {
+        kind: PrimitiveKind::Triangle,
+        vertices: &first,
+        ..leaf
+    })?;
+    submit(MeshLeaf {
+        kind: PrimitiveKind::Triangle,
+        key: leaf.key | 1,
+        vertices: &second,
+        ..leaf
+    })
 }

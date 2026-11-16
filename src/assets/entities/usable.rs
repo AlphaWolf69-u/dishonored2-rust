@@ -90,7 +90,7 @@ pub struct ReadableBinding {
     pub locked: bool,
     pub allowed_swimming: bool,
     pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
-    pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
+    pub loot: Option<Arc<crate::gameplay::loot_component::LootDefinition>>,
     pub rigid: Option<Arc<super::rigid_body::Definition>>,
     pub faction: Option<(String, crate::gameplay::component_state::declaration::DeclarationScheduling)>,
     pub unsupported_pickup_components: Vec<String>,
@@ -129,7 +129,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
-    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::EmptyLootDefinition>>::new();
+    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::LootDefinition>>::new();
     let mut rigid_definitions = HashMap::<String, Arc<super::rigid_body::Definition>>::new();
     let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
@@ -222,7 +222,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                     name == "num" && matches!(value, Value::Atom(value) if value == "0")) {
                     return Err(format!("{}: nonempty Loot requires its actual child spawn/attachment callbacks", entity.id));
                 }
-                let definition = Arc::new(crate::gameplay::loot_component::EmptyLootDefinition {
+                let definition = Arc::new(crate::gameplay::loot_component::LootDefinition {
                     scheduling: components::scheduling(&fields,
                         crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
                     tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),

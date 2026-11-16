@@ -605,8 +605,10 @@ impl Scenario {
             .and_then(|frames| frames.clock)
             .ok_or("audio scenario has no published FX clock")?;
         let context = SoundFrame {
+            entity_context: None,
             axis: listener.axis,
             scale: clock.scale,
+            energy:0.,
         };
         let mut sounds = world.resource::<WorldSounds>().clone();
         if !self

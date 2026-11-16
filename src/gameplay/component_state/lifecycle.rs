@@ -612,3 +612,5 @@ impl ComponentRegistry {
 
 #[cfg(test)]
 mod tests;
+
+mod startup_abort;

@@ -1,8 +1,8 @@
 //! Bounded transform-update tasks, including both world enqueue sites
 //! (8a60e0/8a6030). Stable handles replace queued process addresses.
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Mutex,
+    atomic::{AtomicU32, Ordering},
 };
 
 pub const UPDATE_CAPACITY: usize = 0x2000;
@@ -264,6 +264,9 @@ pub struct ObjectUpdateTask<T> {
     pub frame: i32,
     pub stamp: i32,
     sentinel: u32,
+    /// Host: the actual single worker retains a failed callback's reserved
+    /// slot. The game's callback ABI cannot fail; Rust owner validation can.
+    retry: AtomicU32,
 }
 impl<T: Copy> ObjectUpdateTask<T> {
     pub fn new() -> Self {
@@ -286,6 +289,7 @@ impl<T: Copy> ObjectUpdateTask<T> {
             frame: 0,
             stamp: 0,
             sentinel,
+            retry: AtomicU32::new(u32::MAX),
         }
     }
     pub fn sentinel(&self) -> u32 {
@@ -294,7 +298,7 @@ impl<T: Copy> ObjectUpdateTask<T> {
     /// Entries only: an already running worker is owned by the scheduler.
     pub fn queue_is_empty(&self) -> bool {
         let [read, reserved, committed] = self.updates.queue.counters();
-        read == reserved && reserved == committed
+        read == reserved && reserved == committed && self.retry.load(Ordering::SeqCst) == u32::MAX
     }
     /// 751370 inserts one permanent sentinel per scheduled task worker.
     pub fn publish_sentinels(&self, count: u32) {
@@ -314,14 +318,30 @@ impl<T: Copy> ObjectUpdateTask<T> {
         &self,
         mut dispatch: impl FnMut(ObjectReference<T>, i32, i32) -> Result<(), String>,
     ) -> Result<(), String> {
-        while let Some(index) = self.updates.queue.pop() {
+        loop {
+            let retry = self.retry.swap(u32::MAX, Ordering::SeqCst);
+            let Some(index) = (if retry != u32::MAX {
+                Some(retry)
+            } else {
+                self.updates.queue.pop()
+            }) else {
+                break;
+            };
             if index == self.sentinel {
                 break;
             }
-            let reference = self.updates.entry(index as usize)?;
-            let result = dispatch(reference, self.frame, self.stamp);
+            let reference = match self.updates.entry(index as usize) {
+                Ok(reference) => reference,
+                Err(error) => {
+                    self.retry.store(index, Ordering::SeqCst);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = dispatch(reference, self.frame, self.stamp) {
+                self.retry.store(index, Ordering::SeqCst);
+                return Err(error);
+            }
             self.updates.pool.release(index)?;
-            result?;
         }
         Ok(())
     }
@@ -333,6 +353,13 @@ impl<T: Copy> Default for ObjectUpdateTask<T> {
 }
 impl<T> Drop for ObjectUpdateTask<T> {
     fn drop(&mut self) {
+        let retry = self.retry.load(Ordering::Relaxed);
+        if retry != u32::MAX {
+            self.updates
+                .pool
+                .release(retry)
+                .expect("task owns its retained callback slot");
+        }
         // 8a4460/8a44b0 and the non-allocating portion of their deleting
         // destructors return the permanent sentinel before owned storage dies.
         self.updates

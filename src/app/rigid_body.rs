@@ -30,7 +30,7 @@ pub(super) struct PreparedRigidResources {
 pub(super) struct RigidBodyResources {
     pub shape: StandaloneShape,
     pub extra: Option<(StandaloneShape, [u16; 2])>,
-    pub materials: Vec<u16>,
+    pub materials: std::sync::Arc<[u16]>,
     pub body_material: u16,
     pub filter_info: u32,
 }
@@ -48,7 +48,7 @@ fn physics_material_definition(catalog:&crate::archive::Catalog,name:&str,texts:
 }
 fn clone_shape(source:&StandaloneShape)->StandaloneShape {StandaloneShape {
     catalog_identity:source.catalog_identity,shareable:source.shareable,source:source.source.clone(),
-    source_path:source.source_path.clone(),source_header:source.source_header,wrappers:source.wrappers.clone()}}
+    source_path:source.source_path.clone(),source_header:source.source_header,wrappers:source.wrappers.clone(),mass:source.mass.clone()}}
 impl RigidBodyDraft {
     /// No archive IO occurs under the live world's lock. Existing material
     /// registration/dedup and its actual subscriber callback remain canonical.
@@ -63,7 +63,7 @@ impl RigidBodyDraft {
         }
         let body_material=if self.extra.is_none()&&materials.len()==1 {materials[0]}else{0};
         Ok(RigidBodyResources {shape:clone_shape(&self.shape),extra:self.extra.as_ref().map(|(source,tags)|(clone_shape(source),*tags)),
-            materials,body_material,filter_info:self.filter_info})
+            materials:materials.into(),body_material,filter_info:self.filter_info})
     }
 }
 
@@ -82,6 +82,13 @@ pub(super) fn prepare_resources(
         .publish(material_owner,&mut dispatch)
 }
 
+/// RenderModel's surface-slot material lookup807c80 is independent of
+///whether its actual canonical geometry is rigidbmodel or animatedbmd6.
+pub(super) enum MaterialSurfaces<'a>{Rigid(&'a crate::assets::bmodel::Model),Animated(&'a crate::assets::bmd6::ModelInfo)}
+impl MaterialSurfaces<'_>{
+    fn len(&self)->usize{match self{Self::Rigid(model)=>model.surfaces.len(),Self::Animated(model)=>model.surfaces.len()}}
+    fn path(&self,index:usize)->Option<&str>{match self{Self::Rigid(model)=>model.surfaces.get(index).map(|surface|surface.material_path.as_str()),Self::Animated(model)=>model.surfaces.get(index).map(|surface|surface.material_path.as_str())}}
+}
 pub(super) fn prepare_draft(
     catalog: &crate::assets::archive::Catalog,
     shape_sources: &mut crate::physworld::source::ShapeSources,
@@ -91,13 +98,28 @@ pub(super) fn prepare_draft(
     render_model: Option<&crate::assets::bmodel::Model>,
     render_materials: Option<&mut super::material_loading::MaterialCache>,
 ) -> Result<RigidBodyDraft, String> {
+    prepare_draft_with_surfaces(catalog,shape_sources,texts,settings,model,render_model.map(MaterialSurfaces::Rigid),render_materials)
+}
+
+pub(super) fn prepare_draft_with_surfaces(
+    catalog: &crate::assets::archive::Catalog,
+    shape_sources: &mut crate::physworld::source::ShapeSources,
+    texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+    settings: &crate::entities::RigidBodySettings,
+    model: &crate::entities::PlacedModel,
+    render_model: Option<MaterialSurfaces<'_>>,
+    render_materials: Option<&mut super::material_loading::MaterialCache>,
+) -> Result<RigidBodyDraft, String> {
     let kind = settings.shape_type.as_deref().and_then(crate::entities::rigid_body_shape_kind)
         .and_then(|kind| ["hkt", "cvx", "msh", "box", "cvd"].get(kind as usize).copied())
         .ok_or("rigid-body shape type is invalid")?;
     let path = super::view_geometry::model_havok_path(model, kind, false)
         .ok_or("rigid-body render model has no supported shape resource path")?;
-    let shape = shape_sources.acquire_standalone(catalog, &path, crate::physworld::source::ShapeUse::Physics)?
+    let mut shape = shape_sources.acquire_standalone(catalog, &path, crate::physworld::source::ShapeUse::Physics)?
         .ok_or_else(|| format!("rigid-body shape resource is missing: {path}"))?;
+    //808ea0 calls08c7f0 before optional ExtraHD composition. The combined
+    //root inherits this exact primary0xf100 property, not the child's mass.
+    shape.acquire_mass_properties(catalog)?;
     // The outer resource's signed +0x38 is the material-slot count. Native
     // allocates count+1 only when positive, otherwise it uses one scalar.
     let header = shape.wrappers.first().map_or(shape.source_header, |alias| alias.header);
@@ -114,10 +136,10 @@ pub(super) fn prepare_draft(
         // render surface. Unused material slots must not block this shape.
         let render_model = render_model.ok_or("rigid-body render material source is unsupported")?;
         let render_materials = render_materials.ok_or("rigid-body render material cache is absent")?;
-        if render_model.surfaces.len() < count { return Err("rigid-body render material slots are incomplete".into()); }
-        for (index, surface) in render_model.surfaces[..count].iter().enumerate() {
+        if render_model.len() < count { return Err("rigid-body render material slots are incomplete".into()); }
+        for index in 0..count {
             let name = model.custom_materials.get(index).and_then(Option::as_deref)
-                .unwrap_or(&surface.material_path);
+                .or_else(||render_model.path(index)).ok_or("rigid-body render material slot absent")?;
             let id = if let Some(name) = render_materials.body_physics_material(catalog, name)? {
                 let declaration = physics_material_definition(catalog, name.as_ref(), texts)?;
                 Some(declaration)
@@ -209,6 +231,9 @@ pub(super) struct RigidBodyComponent {
     /// Embedded +0xe8 movement interface in the shared actor-body table.
     movement_body: Option<usize>,
     pub velocities: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
+    ///7b7b10/7b8180: source+180 ordered overlapping Wind pointers. The
+    ///index projects the same level WindManager payload, never a second Wind.
+    pub(super) wind_triggers: Vec<(ComponentHandle,usize,i32)>,
     definition: Option<std::sync::Arc<RigidBodyDefinition>>,
     /// The authored model's acquired physical shape/material lease, held by
     /// this component until Initialize consumes it or admission rolls back.
@@ -221,6 +246,13 @@ pub(super) struct RigidBodyComponent {
     initialize_listeners: Option<(usize, crate::gameplay::entity_lifetime::EntityId, u32)>,
     start_listeners: Option<(usize, crate::gameplay::entity_lifetime::EntityId, u32, bool)>,
     activation_listener: Option<(u32, u32)>,
+    ///7278e0: actual instigator ID and entity-local clock sample (+88/+80).
+    pub(super) instigator: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub(super) instigator_time: f64,
+    pub(super) instigator_clock_delta: f32,
+    pub(super) instigator_notification: Option<(u32, u32)>,
+    ///853220 retains low2 flags while the actual body is not initialized.
+    pub(super) instigator_pending_flags: u8,
     /// arkCpntPhysicsBase +0x98..+0xb2, owned by the 0x149 listener.
     requested_motion: [f32; 6],
     requested_motion_flags: u8,
@@ -230,7 +262,7 @@ pub(super) struct RigidBodyComponent {
     pub(super) freeze_state: u8,
     /// Bit 0 of +0x1ac tracks the component's own update-roster pause.
     update_paused_by_body: bool,
-    materials: Vec<u16>,
+    materials: std::sync::Arc<[u16]>,
     pending_info: Option<BodyInfo>,
     creation_mass_resolved: bool,
     initialization: Initialization,
@@ -242,9 +274,9 @@ pub(super) struct RigidBodyComponent {
 
 impl Default for RigidBodyComponent {
     fn default() -> Self {
-        Self { owner: ComponentOwner::default(),throwable:None, movement_body: None, velocities: Default::default(), definition: None, prepared_resources: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
+        Self { owner: ComponentOwner::default(),throwable:None, movement_body: None, velocities: Default::default(), wind_triggers: Vec::new(), definition: None, prepared_resources: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None, instigator: None, instigator_time: 0., instigator_clock_delta: 0., instigator_notification: None, instigator_pending_flags: 0,
             requested_motion: [0.0; 6], requested_motion_flags: 0, requested_motion_additive: false, requested_motion_pending: false, freeze_state: 0, update_paused_by_body: false,
-            materials: Vec::new(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, start_behavior: None, stop: None, deinit: None }
+            materials: Default::default(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, start_behavior: None, stop: None, deinit: None }
     }
 }
 
@@ -291,13 +323,14 @@ impl RigidBodyComponent {
             .ok_or_else(||"held rigid authored collision filter is invalid".into())
     }
     pub(super) fn material_table(&self) -> &[u16] { &self.materials }
+    pub(super) fn material_table_lease(&self) -> std::sync::Arc<[u16]> { self.materials.clone() }
     pub(super) fn is_initialized(&self) -> bool { self.initialization == Initialization::Ready }
     pub(super) fn creation_pending(&self) -> bool { matches!(self.initialization, Initialization::GeometryReady | Initialization::Creating) }
     pub(super) fn base_initialize_pending(&self) -> bool { self.initialization == Initialization::BodyCreated }
     pub(super) fn initialize_listeners_pending(&self) -> bool { self.initialization == Initialization::BaseReady && self.initialize_listeners.is_none() }
 
     pub(super) fn can_release(&self) -> bool {
-        self.throwable.as_ref().is_none_or(|state|state.can_release()) && self.prepared_resources.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none()
+        self.throwable.as_ref().is_none_or(|state|state.can_release()) && self.prepared_resources.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none() && self.instigator_notification.is_none()
             && matches!(self.initialization, Initialization::Empty | Initialization::Retired)
     }
 
@@ -430,7 +463,7 @@ impl RigidBodyComponent {
         let body = self.body.ok_or("rigid-body activation body is absent")?;
         let handle = self.component.ok_or("rigid-body component identity is absent")?;
         let generation = self.owner.generation;
-        events.subscribe(body, crate::gameplay::physics_world::body_activation_events::ActivationSubscriber { handle, generation })?;
+        events.subscribe(body, crate::gameplay::physics_world::body_activation_events::ActivationSubscriber { handle, generation, callback: 0 })?;
         self.activation_listener = Some((body, generation));
         Ok(())
     }
@@ -438,10 +471,10 @@ impl RigidBodyComponent {
     /// 14080a260 removes the body activation callback before unpublication.
     pub(super) fn unregister_activation_listener(&mut self,
         events: &mut crate::gameplay::physics_world::body_activation_events::BodyActivationEvents) -> Result<(), String> {
-        let Some((body, generation)) = self.activation_listener else { return Ok(()) };
+        let Some((body, generation)) = self.activation_listener else { return Ok(()); };
         let handle = self.component.ok_or("rigid-body component identity is absent")?;
         if self.owner.generation != generation { return Err("rigid-body activation listener generation is stale".into()); }
-        events.unsubscribe(body, crate::gameplay::physics_world::body_activation_events::ActivationSubscriber { handle, generation })?;
+        events.unsubscribe(body, crate::gameplay::physics_world::body_activation_events::ActivationSubscriber { handle, generation, callback: 0 })?;
         self.activation_listener = None;
         Ok(())
     }
@@ -527,7 +560,7 @@ impl RigidBodyComponent {
     pub(super) fn begin_create(
         &mut self, handle: ComponentHandle, lease: StandaloneShape,
         extra: Option<(StandaloneShape, [u16; 2])>,
-        mut info: BodyInfo, materials: Vec<u16>, geometry: &mut TriggerAssets,
+        mut info: BodyInfo, materials: std::sync::Arc<[u16]>, geometry: &mut TriggerAssets,
     ) -> Result<(), String> {
         if self.initialization != Initialization::Empty || self.owner.entity.is_none()
             || self.owner.declaration.is_none() {
@@ -542,6 +575,12 @@ impl RigidBodyComponent {
         self.pending_info = Some(info);
         self.creation_mass_resolved = false;
         self.initialization = Initialization::GeometryReady;
+        //808fa6 creates key1 for non-mesh primary shapes before body creation.
+        //The actual ExtraHD combined root has no key1 table (809218 R9=0).
+        let mesh=self.definition().and_then(|d|d.settings.shape_type.as_deref()).and_then(crate::entities::rigid_body_shape_kind)==Some(2);
+        geometry.shapes.get_mut(shape).and_then(Option::as_mut).ok_or("prepared physics property shape absent")?.prepare_physics_property(mesh)?;
+
+
         Ok(())
     }
 
@@ -552,13 +591,18 @@ impl RigidBodyComponent {
         if self.initialization != Initialization::GeometryReady { return Err("rigid-body geometry is not ready for mass resolution".into()); }
         let info = self.pending_info.as_mut().ok_or("rigid-body creation info is absent")?;
         let settings = &self.definition.as_ref().ok_or("rigid-body definition is absent")?.settings;
-        info.mass = if let Some(mass) = settings.descriptor_mass_override { mass } else {
-            let properties = match geometry.cached_mass(info.shape)? {
-                Some(properties) => properties,
-                None => geometry.calculate_mass(info.shape, [0, 0x3fc0_0000, 0xc47a_0000])?,
-            };
-            properties.volume * density
-        };
+        let locked=settings.lock_rotation;
+        let properties=if settings.descriptor_mass_override.is_none()||locked.into_iter().any(|value|value){
+            Some(match geometry.cached_mass(info.shape)?{
+                Some(properties)=>properties,
+                None=>geometry.calculate_mass(info.shape,[0,0x3fc0_0000,0xc47a_0000])?,
+            })
+        }else{None};
+        info.mass=settings.descriptor_mass_override.unwrap_or_else(||properties.expect("shape density mass was resolved").volume*density);
+        if locked.into_iter().any(|value|value){
+            info.mass_distribution_lease=Some(std::sync::Arc::new(crate::physworld::mass::rotation_locked_distribution(
+                properties.expect("rotation-lock shape mass was resolved"),locked)));
+        }
         self.creation_mass_resolved = true;
         Ok(())
     }
@@ -631,7 +675,7 @@ impl RigidBodyComponent {
         if self.initialization == Initialization::AbortBody {
             let body = self.body.ok_or("rigid-body identity is absent")?;
             world.destroy_bodies(geometry, events, &[body], 0)?;
-            self.body = None;
+            self.body = None; self.instigator_notification = None;
             self.initialization = Initialization::AbortShape;
         }
         if self.initialization == Initialization::GeometryReady {
@@ -645,7 +689,7 @@ impl RigidBodyComponent {
         self.shape = None;
         self.pending_info = None;
         self.component = None;
-        self.materials.clear();
+        self.materials = Default::default();
         self.initialization = Initialization::Retired;
         Ok(())
     }
@@ -694,9 +738,9 @@ impl RigidBodyComponent {
                 if self.initialize_listeners.is_some() { return Err("rigid Initialize listeners remain registered".into()); }
                 Initialization::AbortBody
             },
-            3 => { self.body = None; Initialization::AbortShape },
+            3 => { self.body = None; self.instigator_notification = None; Initialization::AbortShape },
             4 => {
-                self.shape = None; self.pending_info = None; self.component = None; self.materials.clear();
+                self.shape = None; self.pending_info = None; self.component = None; self.materials = Default::default();
                 Initialization::Retired
             },
             _ => return Err("invalid unpublished rigid creation step".into()),
@@ -880,7 +924,7 @@ impl RigidBodyComponent {
                 if self.initialize_listeners.is_some() { return Err("rigid-body Initialize listeners remain registered".into()); }
                 DeinitPhase::Destroy
             },
-            DeinitPhase::Destroy => { self.body = None; DeinitPhase::Base },
+            DeinitPhase::Destroy => { self.body = None; self.instigator_notification = None; DeinitPhase::Base },
             DeinitPhase::Base => DeinitPhase::RetireShape,
             _ => return Err("rigid-body Deinitialize cursor cannot advance".into()),
         });
@@ -889,7 +933,7 @@ impl RigidBodyComponent {
     pub(super) fn retire_external_geometry(&mut self, geometry: &mut TriggerAssets) -> Result<(), String> {
         if self.deinit != Some(DeinitPhase::RetireShape) { return Err("rigid-body geometry retirement is out of order".into()); }
         geometry.retire_standalone_shape(self.shape.ok_or("rigid-body shape lease is absent")?)?;
-        self.shape = None; self.component = None; self.materials.clear();
+        self.shape = None; self.component = None; self.materials = Default::default();
         self.initialization = Initialization::Retired; self.deinit = Some(DeinitPhase::Complete);
         Ok(())
     }
@@ -949,7 +993,7 @@ impl RigidBodyComponent {
         if *phase == DeinitPhase::Destroy {
             let body = self.body.ok_or("rigid-body identity is absent")?;
             world.destroy_bodies(geometry, events, &[body], 0)?;
-            self.body = None;
+            self.body = None; self.instigator_notification = None;
             *phase = DeinitPhase::Base;
         }
         if *phase == DeinitPhase::Base {
@@ -961,7 +1005,7 @@ impl RigidBodyComponent {
             geometry.retire_standalone_shape(shape)?;
             self.shape = None;
             self.component = None;
-            self.materials.clear();
+            self.materials = Default::default();
             self.initialization = Initialization::Retired;
             *phase = DeinitPhase::Complete;
         }

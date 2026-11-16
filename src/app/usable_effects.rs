@@ -72,6 +72,7 @@ struct PendingSource {
 }
 
 struct Wanted {
+    context: Option<crate::rendering::bevy_backend::world_effects::EntityEffectContext>,
     path: String,
     revision: u64,
     retirement: Arc<Lifetime>,
@@ -98,7 +99,7 @@ pub(super) struct EffectTicket { lifetime: Weak<Lifetime>, path: Arc<str> }
 pub(super) enum EffectRequest {
     StartPlayer { owner: String, path: String },
     StopPlayer { owner: String },
-    StartEntity { owner: Arc<str>, path: String, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, retirement: Arc<Lifetime> },
+    StartEntity { owner: Arc<str>, path: String, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, retirement: Arc<Lifetime>, context: Option<crate::rendering::bevy_backend::world_effects::EntityEffectContext> },
     UpdateEntity { owner: Arc<str>, placement: EntityPlacement },
     UpdateBeam { owner: Arc<str>, origin: [f32; 3], endpoint: [f32; 3] },
     StopEntity { owner: Arc<str> },
@@ -150,7 +151,16 @@ impl EffectRequests {
     fn start_entity_mode(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, once: bool) -> EffectTicket {
         let retirement = Arc::new(Lifetime::new(once));
         let ticket = EffectTicket { lifetime: Arc::downgrade(&retirement), path: Arc::from(path) };
-        self.0.push_back(EffectRequest::StartEntity { owner, path: path.to_owned(), placement, initial_world, retirement });
+        self.0.push_back(EffectRequest::StartEntity { owner, path: path.to_owned(), placement, initial_world, retirement, context: None });
+        ticket
+    }
+    ///7ee610: retain source owner/culprit and inherited velocity on the same
+    ///FX request/instance, without creating another acquisition or actor owner.
+    pub(super) fn start_breakable_once(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement,
+        initial_world: crate::gameplay::reference_frame::ReferenceFrame, context: crate::rendering::bevy_backend::world_effects::EntityEffectContext) -> EffectTicket {
+        let retirement = Arc::new(Lifetime::new(true));
+        let ticket = EffectTicket { lifetime: Arc::downgrade(&retirement), path: Arc::from(path) };
+        self.0.push_back(EffectRequest::StartEntity { owner, path: path.to_owned(), placement, initial_world: Some(initial_world), retirement, context: Some(context) });
         ticket
     }
     pub(super) fn update_entity(&mut self, owner: Arc<str>, placement: EntityPlacement) {
@@ -168,6 +178,10 @@ impl EffectRequests {
 /// Acknowledges actual retirement, including the render snapshot and all
 /// instance particle/sound tails. A cancelled acquisition must also return
 /// before the gameplay entity can release its source owner.
+pub(super) fn effect_completed(ticket: &EffectTicket) -> bool {
+    ticket.lifetime.upgrade().is_none_or(|lifetime| lifetime.completed.load(Ordering::Acquire))
+}
+
 pub(super) fn entity_retired(world: &bevy::prelude::World, ticket: &EffectTicket) -> bool {
     if ticket.lifetime.strong_count() != 0 { return false; }
     world.get_resource::<UsableEffects>().is_none_or(|owner| !owner.loading.contains_key(ticket.path.as_ref()) && owner.retiring.is_empty())
@@ -315,7 +329,7 @@ impl UsableEffects {
         world: &Arc<Sources>,
     ) {
         self.next_revision = self.next_revision.wrapping_add(1);
-        self.wanted.insert(actor.clone(), Wanted { path: path.clone(), revision: self.next_revision, retirement: Arc::new(Lifetime::new(false)) });
+        self.wanted.insert(actor.clone(), Wanted { context: None, path: path.clone(), revision: self.next_revision, retirement: Arc::new(Lifetime::new(false)) });
         self.revision = self.revision.wrapping_add(1);
         let cached = self.cache.get(&path).and_then(Weak::upgrade);
         if self.ready.remove(&actor).is_some() {
@@ -499,14 +513,14 @@ pub(super) fn prepare_requests(
                     owner.revision = owner.revision.wrapping_add(1);
                     owner.cleanup_dirty = true;
                 }
-                EffectRequest::StartEntity { owner: key, path, placement, initial_world, retirement } => {
+                EffectRequest::StartEntity { owner: key, path, placement, initial_world, retirement, context } => {
                     let key = EffectOwner::Entity(key);
                     owner.beam_targets.remove(&key);
                     if let Some(frame) = initial_world { owner.world_placements.insert(key.clone(), frame); }
                     else { owner.world_placements.remove(&key); }
                     owner.entity_placements.insert(key.clone(), placement);
                     owner.request(key.clone(), path, catalog.clone(), &programs, &resources, &world.0);
-                    if let Some(wanted) = owner.wanted.get_mut(&key) { wanted.retirement = retirement; }
+                    if let Some(wanted) = owner.wanted.get_mut(&key) { wanted.retirement = retirement; wanted.context = context; }
                 }
                 EffectRequest::UpdateEntity { owner: key, placement } => {
                     let key = EffectOwner::Entity(key);
@@ -755,6 +769,7 @@ pub(super) fn publish(
     if prewarmed {
         let audio = sounds.lock();
         let source_prepared = |sources: &Arc<Sources>| {
+            if !sources.gameplay_ready() { return false; }
             if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
                 .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { return false; }
             let mut events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
@@ -793,7 +808,7 @@ pub(super) fn publish(
                 }
                 EffectOwner::Reservation(_, _) => continue,
             };
-            entries.push(DynamicEffect { owner: name, revision: wanted.revision, effect: wanted.path.clone(),
+            entries.push(DynamicEffect { entity_context: wanted.context, owner: name, revision: wanted.revision, effect: wanted.path.clone(),
                 target, tag, local, attached, initial_world: owner.world_placements.get(id).copied(), explicit_target: owner.beam_targets.get(id).copied(), sources: sources.clone(), retirement: wanted.retirement.clone() });
         }
     }

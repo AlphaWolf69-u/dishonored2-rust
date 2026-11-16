@@ -12,7 +12,7 @@ struct GpuReceiver { model: array<vec4<f32>, 3>, indices: vec4<u32> }
 struct DecalProjectionInstance { receiver: GpuReceiver, projection: GpuProjection }
 @group(4) @binding(0) var<storage, read> decal_projections: array<GpuProjection>;
 @group(4) @binding(1) var<storage, read> decal_receivers: array<GpuReceiver>;
-@group(4) @binding(2) var<storage, read> decal_remap: array<u32>;
+@group(4) @binding(2) var<storage, read> decal_remap: array<vec2<u32>>;
 @group(4) @binding(3) var<storage, read> decal_joints: array<mat4x4<f32>>;
 @group(4) @binding(4) var decal_bilinear: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(175) var decal_opacity: texture_2d<f32>;
@@ -23,7 +23,7 @@ struct DecalProjectionDraw { mesh_index: u32, first: u32 }
 var<immediate> decal_draw: DecalProjectionDraw;
 fn decal_record(index: u32) -> DecalProjectionInstance {
     let pair = decal_remap[index];
-    return DecalProjectionInstance(decal_receivers[pair & 0x00ffffffu], decal_projections[pair >> 24u]);
+    return DecalProjectionInstance(decal_receivers[pair.y], decal_projections[pair.x]);
 }
 fn decal_instance(index: u32) -> DecalProjectionInstance { return decal_record(decal_draw.first + index); }
 fn decal_world_from_local(instance: DecalProjectionInstance) -> mat4x4<f32> {

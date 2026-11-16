@@ -2383,3 +2383,12 @@ Audiograph/objective integration sweep (2026-11-15):
   level measures particle shadow draws above about 5% of its shadow draws.
 
 - Projectile629590 collector sorting currently uses stable Rust slice sorting to retain collector-order ties after initial-point/ray merge. The hit vectors and query scratch are retained, but stable sort may use temporary storage for larger hit sets. Port the source collector sorting implementation or supply a retained sorting workspace after source tie behavior is resolved; expected effect is only per-projectile collision collector scratch allocation, not a measured frame-time or memory saving. No performance test was run at user instruction.
+
+
+- Rigid wind807680 host integration currently takes one canonical read guard
+  per registered body before18d020 publication. It allocates no frame buffers
+  and borrows cached aero faces. A single world-guard batch would remove these
+  locks, but needs the canonical velocity publication adapter to accept a
+  borrowed world without nesting its guard; expected gain is only lock-call
+  overhead per wind-registered dynamic body. Deferred until parent completes
+  shared frame publication integration; no measured timing claim.

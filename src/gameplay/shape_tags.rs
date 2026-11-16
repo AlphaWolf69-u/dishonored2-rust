@@ -5,6 +5,9 @@ use super::collision_hit::ShapeHitInfo;
 /// physics-material flags. Neither is a rendering material or an item index.
 pub trait ShapeTagSource {
     fn mapped_material(&self, index: usize) -> Result<u16, String>;
+    fn mapped_material_for_hit(&self, _hit: &ShapeHitInfo, index: usize) -> Result<u16, String> {
+        self.mapped_material(index)
+    }
     fn material_flags(&self, material: u16) -> Result<u16, String>;
 }
 
@@ -55,7 +58,7 @@ pub fn decode_shape_tag(
         return Ok(());
     }
     let index = usize::from(hit.material_id) + usize::from(tag & 0x7fff);
-    let material = source.mapped_material(index)?;
+    let material = source.mapped_material_for_hit(hit, index)?;
     let filter = material_filter(hit.filter_info, source.material_flags(material)?);
     hit.material_id = material;
     hit.filter_info = filter;

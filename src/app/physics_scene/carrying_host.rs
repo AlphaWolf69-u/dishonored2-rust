@@ -3,13 +3,13 @@ use super::*;
 use crate::gameplay::{
     collision_filter::CollisionQueryFilter,
     collision_hit::ShapeHitInfo,
-    compound_query::instance::{prepare_instance, CompoundChildGeometry, CompoundShapeState},
+    compound_query::instance::{CompoundChildGeometry, CompoundShapeState, prepare_instance},
     entity_events::{EntityEvents, Event, Payload},
     entity_lifetime::{EntityId, LiveEntities, Stage},
     pickable_component::CheckedComponent,
     player::{
-        carrying::{GrabDecl, HoldDecl, Target},
         Player,
+        carrying::{GrabDecl, HoldDecl, Target},
     },
     reference_frame::ReferenceFrame,
     shape_convex_query::{ConvexCast, ConvexContact, ConvexQueryGeometry},
@@ -20,6 +20,7 @@ use bevy::prelude::{Mat3, Mat4, Quat, Vec3};
 
 #[derive(Default)]
 struct Progress {
+    loot_eligible: bool,
     begin: u8,
     release: u8,
     planned: bool,
@@ -30,8 +31,11 @@ struct Progress {
 }
 #[derive(Resource, Default)]
 pub(in crate::app) struct CarryPhysics {
+    pub(super) resources: super::carrying_resources::Resources,
     progress: HashMap<EntityId, Progress>,
     convex: WorldConvexQuery,
+    mesh: crate::gameplay::compressed_mesh_query::CompressedMeshQuery,
+    support: crate::gameplay::convex_support::ConvexSupportWorkspace,
     hits: Vec<ConvexContact>,
     starts: Vec<ConvexContact>,
     pending: Vec<(usize, CompoundShapeState)>,
@@ -50,7 +54,128 @@ pub(in crate::app) struct CarryHost<'a> {
     pub placements: &'a super::super::RenderSourcePlacements,
     pub effects: &'a mut super::super::usable_effects::EffectRequests,
 }
+///Borrowed real47 transaction metadata. Neither inventory item nor a made-up
+///Hold declaration is created to reuse the shared native pull algorithm.
+pub(in crate::app) struct LootTarget<'a> {
+    pub entity: EntityId,
+    pub reference: CheckedComponent,
+    pub definition: &'a crate::gameplay::pickable_component::PickableDefinition,
+    pub from_grapple: bool,
+}
 impl CarryHost<'_> {
+    fn begin_pull_for(
+        &mut self,
+        entity: EntityId,
+        reference: CheckedComponent,
+    ) -> Result<(), String> {
+        let progress = self.state.progress.entry(entity).or_default();
+        if progress.begin >= 5 {
+            return Ok(());
+        }
+        if let Some(sound) = self.scene.begin_document_pickup(
+            self.live,
+            self.events,
+            reference,
+            &mut progress.begin,
+        )? {
+            self.state
+                .sounds
+                .push(crate::gameplay::sound::Request::Post {
+                    event: sound.id,
+                    emitter: crate::gameplay::sound::Emitter::PlayerBody,
+                });
+        }
+        Ok(())
+    }
+    pub(in crate::app) fn begin_loot_pull(
+        &mut self,
+        target: &LootTarget<'_>,
+    ) -> Result<(), String> {
+        let (_, reference) =
+            self.pickable_reference(target.entity, target.definition, Some(target.reference))?;
+        self.begin_pull_for(target.entity, reference)
+    }
+    fn pull_delta(
+        &mut self,
+        entity: EntityId,
+        delta: Vec3,
+        decl: &GrabDecl,
+        player: &Player,
+        max_grab: bool,
+    ) -> Result<bool, String> {
+        if let Some(velocity) = decl.pull_velocity(delta, player.physics.axis().x_axis, max_grab) {
+            //877530: bound children do not receive pull motion requests.
+            if self.live.parent(entity)?.is_none() {
+                let angular = if max_grab {
+                    player.physics.axis().y_axis
+                        * decl.grappled_angular_velocity
+                        * f32::from_bits(0xbc8efa35)
+                } else {
+                    Vec3::ZERO
+                };
+                self.scene.request_actor_velocity(
+                    entity,
+                    velocity.to_array(),
+                    angular.to_array(),
+                )?;
+            }
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+    pub(in crate::app) fn pull_loot(
+        &mut self,
+        target: &LootTarget<'_>,
+        decl: &GrabDecl,
+        player: &Player,
+        player_center: Vec3,
+        target_center: Vec3,
+    ) -> Result<bool, String> {
+        let (_, reference) =
+            self.pickable_reference(target.entity, target.definition, Some(target.reference))?;
+        let pickable = self
+            .scene
+            .pickables
+            .get(reference.handle.slot)
+            .ok_or("Loot pull Pickable absent")?;
+        //841500's Simple branch commits immediately without a cached physics
+        //interface (or after the source restore flag4). Actual rigid ammo pulls.
+        if pickable
+            .references
+            .as_ref()
+            .and_then(|refs| refs.physics_base)
+            .is_none()
+            || pickable.interaction_flags & 4 != 0
+        {
+            return Ok(true);
+        }
+        let delta = if let Some(props) = target.definition.hold.as_ref() {
+            let hold = player
+                .carrying_hold_decl_for_hands(props.both_hands)
+                .ok_or("Loot hold target has no actual mode Hold declaration")?;
+            self.hold_pull_delta(target.entity, props, hold, player)?
+        } else {
+            player_center + Vec3::Z * decl.object_pickup_z_offset - target_center
+        };
+        self.pull_delta(target.entity, delta, decl, player, target.from_grapple)
+    }
+    fn hold_pull_delta(
+        &self,
+        entity: EntityId,
+        props: &crate::gameplay::pickable_component::HoldProperties,
+        hold: &HoldDecl,
+        player: &Player,
+    ) -> Result<Vec3, String> {
+        let (origin, axis) = Self::tag_frame(player, &props.attach_tag)?;
+        let mut offset = Vec3::from_array(props.center_offset);
+        offset.x += hold.distance;
+        let frame = self
+            .scene
+            .entity_frame(self.live, entity)?
+            .ok_or("pull entity frame absent")?;
+        Ok(origin + axis * offset - Vec3::from_array(frame.position))
+    }
     fn set_position(&mut self, target: &Target, position: Vec3) -> Result<(), String> {
         let (index, _) = self.reference(target)?;
         let mut pose = self.frame(target)?;
@@ -95,7 +220,9 @@ impl CarryHost<'_> {
                 .get_mut(handle.slot)
                 .ok_or("moved carry reference actor absent")?
                 .set_transform(pose, false);
-            let generation = self.scene.actors.actors[handle.slot].owner.generation;
+            let generation = self.scene.actors.actors[usize::from(handle.slot)]
+                .owner
+                .generation;
             self.scene
                 .request_post_physics_actor(handle.slot as usize, generation)?;
         }
@@ -130,9 +257,7 @@ impl CarryHost<'_> {
                     self.scene.mark_carried_release(
                         self.live,
                         target.entity,
-                        player
-                            .managed_entity()
-                            .ok_or("carry release player identity absent")?,
+                        player,
                         thrown,
                         self.events,
                     )?;
@@ -151,22 +276,30 @@ impl CarryHost<'_> {
         Ok(())
     }
     fn reference(&self, target: &Target) -> Result<(usize, CheckedComponent), String> {
+        self.pickable_reference(target.entity, &target.definition, None)
+    }
+    fn pickable_reference(
+        &self,
+        entity: EntityId,
+        definition: &crate::gameplay::pickable_component::PickableDefinition,
+        expected: Option<CheckedComponent>,
+    ) -> Result<(usize, CheckedComponent), String> {
         let index = *self
             .scene
             .shared_indices
-            .get(&target.entity)
+            .get(&entity)
             .ok_or("carry entity has no live scene owner")?;
         let record = self
             .scene
             .entities
             .get(index)
             .ok_or("carry scene identity is absent")?;
-        if self.live.stage(target.entity) != Some(Stage::Spawned) {
+        if self.live.stage(entity) != Some(Stage::Spawned) {
             return Err("carry managed entity generation is stale".into());
         }
         let handle = record
             .components
-            .find_component([self.scene.classes[6]; 2], [0x20, 0], |handle| {
+            .find_component([self.scene.classes[6]; 2], [0x28, 0], |handle| {
                 Ok(
                     crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                         flags: self.scene.owner(handle)?.flags,
@@ -184,16 +317,17 @@ impl CarryHost<'_> {
             .pickables
             .get(handle.slot)
             .ok_or("carry Pickable slot is absent")?;
-        if !Arc::ptr_eq(&component.definition, &target.definition) {
+        if !std::ptr::eq(&*component.definition, definition) {
             return Err("carry declaration owner changed".into());
         }
-        Ok((
-            index,
-            CheckedComponent {
-                handle,
-                generation: component.owner.generation,
-            },
-        ))
+        let reference = CheckedComponent {
+            handle,
+            generation: component.owner.generation,
+        };
+        if expected.is_some_and(|expected| expected != reference) {
+            return Err("pull Pickable generation differs from accepted transaction".into());
+        }
+        Ok((index, reference))
     }
     fn frame(&self, target: &Target) -> Result<ReferenceFrame, String> {
         self.scene
@@ -356,6 +490,79 @@ impl CarryHost<'_> {
                         self.state.pending.push((instance.shape, prepared.state));
                     }
                 }
+                crate::assets::physworld::query_geometry::QueryGeometry::CompressedMesh(mesh) => {
+                    use crate::gameplay::{
+                        compressed_mesh_query::{MeshSweep, support_input, support_leaves},
+                        ray_query::RayQueryControl,
+                    };
+                    // A moving composite casts each real leaf, just as its compound
+                    // siblings do. The source mesh visitor owns decoding, quad policy
+                    // and radii; its bounds only select leaves, never collision hits.
+                    let bounds = mesh.bounds();
+                    let sweep = MeshSweep {
+                        center: std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5),
+                        half_extent: std::array::from_fn(|i| (bounds[1][i] - bounds[0][i]) * 0.5),
+                        direction: [0.; 3],
+                    };
+                    let mut control = RayQueryControl {
+                        fraction: 1.,
+                        early_out: false,
+                    };
+                    let CarryPhysics {
+                        mesh: visitor,
+                        support,
+                        convex,
+                        hits,
+                        starts,
+                        ..
+                    } = self.state;
+                    visitor.visit_swept(
+                        mesh,
+                        sweep,
+                        query_shape.header.radius,
+                        &mut control,
+                        &mut |leaf, _| {
+                            support_leaves(leaf, &mut |leaf| {
+                                let input = support_input(&leaf, state)?;
+                                let shape_type = input.shape_type;
+                                let prepared = support.prepare(input)?;
+                                let request = WorldConvexRequest {
+                                    cast: ConvexCast {
+                                        geometry: ConvexQueryGeometry {
+                                            shape_type,
+                                            vertices: prepared.vertices,
+                                            radius: prepared.radius,
+                                        },
+                                        transform: state.transform.world_from_local,
+                                        displacement: displacement.to_array(),
+                                        tolerance: f32::from_bits(0x3a83126f),
+                                        start_tolerance: 0.,
+                                        hit: ShapeHitInfo {
+                                            body_id: None,
+                                            material_id: 0xffff,
+                                            shape_key: u32::MAX,
+                                            filter_info: 0,
+                                            user_data: 0,
+                                        },
+                                        filter: Some(CollisionQueryFilter {
+                                            layers: 0x1ffff,
+                                            required_flags: 0x800,
+                                        }),
+                                    },
+                                    maximum_fraction: 1.,
+                                };
+                                queries.convex_hits(convex, &request, hits, starts)?;
+                                for hit in hits.iter() {
+                                    fraction = Some(
+                                        fraction
+                                            .map_or(hit.fraction, |value| value.min(hit.fraction)),
+                                    );
+                                }
+                                Ok(())
+                            })
+                        },
+                    )?;
+                }
                 crate::assets::physworld::query_geometry::QueryGeometry::Polytope(polytope) => {
                     let vertices = if state.scaled {
                         self.state.vertices.clear();
@@ -440,22 +647,7 @@ impl super::super::carrying::Host for CarryHost<'_> {
     }
     fn begin_pull(&mut self, target: &Target) -> Result<(), String> {
         let (_, reference) = self.reference(target)?;
-        let progress = self.state.progress.entry(target.entity).or_default();
-        if progress.begin >= 5 {
-            return Ok(());
-        }
-        if let Some(sound) =
-            self.scene
-                .begin_document_pickup(self.live, reference, &mut progress.begin)?
-        {
-            self.state
-                .sounds
-                .push(crate::gameplay::sound::Request::Post {
-                    event: sound.id,
-                    emitter: crate::gameplay::sound::Emitter::PlayerBody,
-                });
-        }
-        Ok(())
+        self.begin_pull_for(target.entity, reference)
     }
     fn pull(
         &mut self,
@@ -469,22 +661,8 @@ impl super::super::carrying::Host for CarryHost<'_> {
             .hold
             .as_ref()
             .ok_or("pull target has no hold properties")?;
-        let (origin, axis) = Self::tag_frame(player, &props.attach_tag)?;
-        let mut offset = Vec3::from_array(props.center_offset);
-        offset.x += hold.distance;
-        let frame = self.frame(target)?;
-        let delta = origin + axis * offset - Vec3::from_array(frame.position);
-        if let Some(velocity) = decl.pull_velocity(delta, player.physics.axis().x_axis, false) {
-            self.scene.carry_motion_request(
-                target.entity,
-                velocity.to_array(),
-                [0.; 3],
-                self.clock,
-            )?;
-            Ok(false)
-        } else {
-            Ok(true)
-        }
+        let delta = self.hold_pull_delta(target.entity, props, hold, player)?;
+        self.pull_delta(target.entity, delta, decl, player, false)
     }
     fn attach(&mut self, target: &Target, hold: &HoldDecl, player: &Player) -> Result<(), String> {
         let (index, reference) = self.reference(target)?;
@@ -591,9 +769,12 @@ impl super::super::carrying::Host for CarryHost<'_> {
             };
             //83d460 ->10fc20 reads the final published camera axis in degrees,
             //rather than the player's unconstrained pitch field in radians.
-            let horizontal=axis.x_axis.truncate().length();
-            let pitch=if horizontal<=f32::from_bits(0x34000000){if axis.x_axis.z<0.{90.}else{-90.}}
-                else{-axis.x_axis.z.atan2(horizontal)*f32::from_bits(0x42652ee0)};
+            let horizontal = axis.x_axis.truncate().length();
+            let pitch = if horizontal <= f32::from_bits(0x34000000) {
+                if axis.x_axis.z < 0. { 90. } else { -90. }
+            } else {
+                -axis.x_axis.z.atan2(horizontal) * f32::from_bits(0x42652ee0)
+            };
             let distance = settings.target_distance(pitch);
             let destination = if let Some(hit) = player.ranged_target_hit() {
                 let direction = hit - eye;
@@ -723,9 +904,14 @@ fn run(world: &mut bevy::prelude::World, retiring: bool) -> Result<(), String> {
         if !world.resource::<Carrying>().has_work(player) {
             return Ok(());
         }
-        if !retiring&&!world.resource::<Carrying>().has_transactions(player){
-            if player.carrying.held.as_ref().is_some_and(|target|world.get_resource::<LiveEntities>()
-                .is_some_and(|live|live.stage(target.entity)==Some(Stage::Spawned))){return Ok(());}
+        if !retiring && !world.resource::<Carrying>().has_transactions(player) {
+            if player.carrying.held.as_ref().is_some_and(|target| {
+                world
+                    .get_resource::<LiveEntities>()
+                    .is_some_and(|live| live.stage(target.entity) == Some(Stage::Spawned))
+            }) {
+                return Ok(());
+            }
         }
     }
     if !world.contains_resource::<CarryPhysics>()
@@ -805,5 +991,221 @@ pub(in crate::app) fn update(world: &mut bevy::prelude::World) {
 /// Root LevelLifetime calls this before the player reference/rigid/FX owners.
 /// Any failure retains the level resources and pending journal for retry.
 pub(in crate::app) fn retire(world: &mut bevy::prelude::World) -> Result<(), String> {
-    run(world, true)
+    run(world, true)?;
+    super::carrying_resources::retire(world)
+}
+
+///Actual47 producer only. Normal48/49 ownership continues through Carrying;
+///these functions neither request new input nor create a second target runtime.
+pub(in crate::app) fn update_loot_pull(world: &mut bevy::prelude::World) -> Result<(), String> {
+    run_loot_pull(world, false)
+}
+pub(in crate::app) fn finish_accepted_loot_pull(
+    world: &mut bevy::prelude::World,
+) -> Result<(), String> {
+    run_loot_pull(world, true)
+}
+pub(in crate::app) fn acknowledge_loot_pull(world: &mut bevy::prelude::World, id: EntityId) {
+    if let Some(mut carry) = world.get_resource_mut::<CarryPhysics>() {
+        carry.progress.remove(&id);
+    }
+}
+fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), String> {
+    use super::super::{
+        interactions::Interactions, player::PlayerState, usable_effects::EffectRequests,
+    };
+    let Some(player) = world
+        .get_resource::<PlayerState>()
+        .and_then(|state| state.player.as_ref())
+    else {
+        return Ok(());
+    };
+    let Some(id) = player.world_pickup_target() else {
+        return Ok(());
+    };
+    let offered = player.pending_loot_object() == Some(id);
+    let mode = player
+        .world_pickup_mode()
+        .ok_or("accepted Loot47 mode absent")?;
+    let clock = world
+        .get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+        .ok_or("Loot47 clock owner absent")?;
+    if !closing && !clock.advanced() {
+        return Ok(());
+    }
+    let pending = world
+        .get_resource::<Interactions>()
+        .and_then(|state| state.pending_pickup.as_ref())
+        .ok_or("accepted Loot47 has no actual Pickable resource lease")?;
+    if pending.entity != id {
+        return Err("Loot47 target differs from retained Pickable lease".into());
+    }
+    let eligibility_pending = world
+        .get_resource::<CarryPhysics>()
+        .and_then(|carry| carry.progress.get(&id))
+        .is_none_or(|progress| !progress.loot_eligible);
+    let full = eligibility_pending
+        && pending.inventory_full(
+            world
+                .get_resource::<super::super::interaction_focus::DiscoveredDocuments>()
+                .ok_or("Loot47 inventory owner absent")?,
+        );
+    let full_sound = if full {
+        world
+            .get_resource::<super::super::player_actions::PlayerActions>()
+            .ok_or("Loot47 sound declaration owner absent")?
+            .loot_full_sounds
+            .get(mode)
+            .ok_or("Loot47 sound mode absent")?
+            .as_ref()
+            .map(|event| event.id)
+    } else {
+        None
+    };
+    let player_center = if !closing && !offered && !full {
+        let bounds = world
+            .get_resource::<super::super::player_arms::PlayerArms>()
+            .ok_or("Loot47 actual player render owner absent")?
+            .body_model_bounds(player)?;
+        Some(Vec3::from_array(std::array::from_fn(|i| {
+            (bounds[0][i] + bounds[1][i]) * 0.5
+        })))
+    } else {
+        None
+    };
+    let runtime_center = if player_center.is_some() {
+        super::super::world_models::bounds(world, id).map(|bounds| {
+            Vec3::from_array(std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5))
+        })
+    } else {
+        None
+    };
+    for present in [
+        world.contains_resource::<CarryPhysics>(),
+        world.contains_resource::<PhysicsScene>(),
+        world.contains_resource::<LiveEntities>(),
+        world.contains_resource::<EntityEvents>(),
+        world.contains_resource::<EffectRequests>(),
+    ] {
+        if !present {
+            return Err("Loot47 pull is missing a canonical level owner".into());
+        }
+    }
+    let mut interactions = world.remove_resource::<Interactions>().unwrap();
+    let mut state = world.remove_resource::<CarryPhysics>().unwrap();
+    let mut scene = world.remove_resource::<PhysicsScene>().unwrap();
+    let mut live = world.remove_resource::<LiveEntities>().unwrap();
+    let mut events = world.remove_resource::<EntityEvents>().unwrap();
+    let mut player_state = world.remove_resource::<PlayerState>().unwrap();
+    let mut effects = world.remove_resource::<EffectRequests>().unwrap();
+    let result = (|| {
+        let player = player_state
+            .player
+            .as_mut()
+            .ok_or("accepted Loot47 player absent")?;
+        let pending = interactions
+            .pending_pickup
+            .as_ref()
+            .ok_or("accepted Loot47 lease absent")?;
+        let valid = live.get(id).is_some()
+            && scene.shared_indices.contains_key(&id)
+            && scene
+                .pickables
+                .get(pending.reference.handle.slot)
+                .is_some_and(|component| {
+                    component.owner.generation == pending.reference.generation
+                        && crate::gameplay::component_state::matches_reference_state(
+                            component.owner.flags,
+                            [0x28, 0],
+                        )
+                });
+        if !valid {
+            player.lose_loot_object(id)?;
+            state.progress.remove(&id);
+            return Ok(());
+        }
+        if !state.progress.entry(id).or_default().loot_eligible {
+            if full {
+                player.reject_loot_object(id)?;
+                let pending = interactions
+                    .pending_pickup
+                    .as_mut()
+                    .ok_or("rejected Loot47 lease absent")?;
+                pending.rejected_notice = true;
+                pending.rejected_sound = full_sound;
+                state.progress.remove(&id);
+                return Ok(());
+            }
+            state.progress.get_mut(&id).unwrap().loot_eligible = true;
+        }
+        let clock = world
+            .resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .clock()
+            .map_err(str::to_owned)?;
+        let mut host = CarryHost {
+            scene: &mut scene,
+            live: &mut live,
+            events: &mut events,
+            state: &mut state,
+            clock,
+            bounds: world
+                .get_resource::<super::super::shadow_updates::ModelShadowSources>()
+                .ok_or("Loot47 canonical model bounds absent")?,
+            placements: world
+                .get_resource::<super::super::RenderSourcePlacements>()
+                .ok_or("Loot47 placed render owner absent")?,
+            effects: &mut effects,
+        };
+        let target = LootTarget {
+            entity: id,
+            reference: pending.reference,
+            definition: &pending.definition,
+            from_grapple: pending.from_grapple,
+        };
+        //Source24 map uses its own immediate callback and skips76e2b0.
+        if pending.item.type_number != 24 {
+            host.begin_loot_pull(&target)?;
+        }
+        if closing || offered {
+            return Ok(());
+        }
+        let target_center = if let Some(center) = runtime_center {
+            center
+        } else {
+            let (index, _) =
+                host.pickable_reference(id, target.definition, Some(target.reference))?;
+            let frame = host
+                .scene
+                .entity_frame(host.live, id)?
+                .ok_or("Loot47 target frame absent")?;
+            host.center(index, frame)?
+        };
+        let reached = {
+            let decl = player
+                .world_pickup_decl()
+                .ok_or("Loot47 actual declaration absent")?;
+            host.pull_loot(
+                &target,
+                decl,
+                player,
+                player_center.ok_or("Loot47 physical player center absent")?,
+                target_center,
+            )?
+        };
+        if reached {
+            player.world_pickup_reached(id)?;
+        }
+        Ok(())
+    })();
+    for request in state.sounds.drain(..) {
+        world.write_message(super::super::audio::SoundEvent(request));
+    }
+    world.insert_resource(interactions);
+    world.insert_resource(state);
+    world.insert_resource(scene);
+    world.insert_resource(live);
+    world.insert_resource(events);
+    world.insert_resource(player_state);
+    world.insert_resource(effects);
+    result
 }

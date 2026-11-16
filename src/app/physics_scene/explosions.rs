@@ -24,6 +24,7 @@ struct Action {
 }
 #[derive(Default)]
 pub(in crate::app) struct ExplosionQueries {
+    pub(in crate::app) contact_hits:Vec<ShapeRayContact>,
     convex: WorldConvexQuery,
     hits: Vec<ConvexContact>,
     initial: Vec<ConvexContact>,
@@ -33,6 +34,10 @@ pub(in crate::app) struct ExplosionQueries {
     used: usize,
     samples: Vec<Vec3>,
     actions: Vec<Action>,
+    applying: bool,
+    action_cursor: usize,
+    body_cursor: usize,
+    damage_delivered: bool,
 }
 impl PhysicsScene {
     pub(in crate::app) fn explosion_queries_ready(&self) -> Result<bool, String> {
@@ -49,12 +54,11 @@ impl PhysicsScene {
         events: &mut EntityEvents,
         request: &Request,
         modifiers: RadiusModifiers,
+        force_full_player_owned:bool,
         mut bounds: impl FnMut(&LiveEntities, EntityId) -> Result<Option<[[f32; 3]; 2]>, String>,
     ) -> Result<(), String> {
+        if queries.applying {return self.deliver_explosion(queries,live,events);}
         let d = &request.declaration;
-        if d.attacker_always_player {
-            return Err("explosion attacker override requires actual player identity source".into());
-        }
         let hit = ShapeHitInfo {
             body_id: None,
             material_id: u16::MAX,
@@ -170,6 +174,7 @@ impl PhysicsScene {
         }
         drop(world);
         queries.actions.clear();
+        queries.contact_hits.clear();
         for (group_index, group) in queries.groups[..queries.used].iter().enumerate() {
             let Some(aabb) = bounds(live, group.entity)? else {
                 return Err("explosion target lacks its actual entity RenderModel bounds".into());
@@ -178,11 +183,7 @@ impl PhysicsScene {
             let center = (aabb[0] + aabb[1]) * 0.5;
             queries.samples.clear();
             if let Some(handle) = self.explosion_health_handle(live, group.entity)? {
-                let receiver = &self
-                    .health
-                    .get(handle.slot)
-                    .ok_or("explosion Health payload absent")?
-                    .receiver;
+                let receiver = &self.health_payload(handle)?.receiver;
                 if !receiver.explosion_target_points.is_empty() {
                     return Err(
                         "explosion named target points require actual admitted animation-tag owner"
@@ -252,7 +253,16 @@ impl PhysicsScene {
             if occluded {
                 continue;
             }
-            if let Some((params, impulse)) = request.damage(aabb, center, false, modifiers, false) {
+            //7b24f0 consumes the actual material-bearing ray witness. It is
+            //independent of damage amount and never substitutes the AABB center.
+            if d.contact_material.is_some(){
+                let world=self.world.read().map_err(|_|"explosion contact ray world poisoned")?;
+                let ray=WorldRayRequest{origin:request.position.to_array(),direction:(queries.samples[0]-request.position).to_array(),maximum_fraction:1.,hit,
+                    filter:Some(CollisionQueryFilter{layers:d.occlusion_layers,required_flags:0x800})};
+                world.ray_hits(&mut queries.ray,&ray,2,&mut queries.ray_hits)?;
+                if let Some(contact)=queries.ray_hits.iter().min_by(|a,b|a.fraction.total_cmp(&b.fraction)){queries.contact_hits.push(*contact);}
+            }
+            if let Some((params, impulse)) = request.damage(aabb, center, false, modifiers, force_full_player_owned) {
                 queries.actions.push(Action {
                     group: group_index,
                     params,
@@ -260,13 +270,32 @@ impl PhysicsScene {
                 });
             }
         }
-        for action in &queries.actions {
-            let group = &queries.groups[action.group];
-            self.damage_entity(live, events, group.entity, &action.params)?;
-            for &body in &group.bodies {
-                self.explosion_body_impulse(body, action.impulse)?;
+        queries.applying=true;
+        queries.action_cursor=0;
+        queries.body_cursor=0;
+        queries.damage_delivered=false;
+        self.deliver_explosion(queries,live,events)
+    }
+    /// Host callbacks can fail after earlier recipients succeeded. Preserve
+    ///the native grouped recipient plan and completed callbacks rather than
+    ///running the spatial query and damaging those recipients a second time.
+    fn deliver_explosion(&mut self,queries:&mut ExplosionQueries,live:&mut LiveEntities,events:&mut EntityEvents)->Result<(),String>{
+        while queries.action_cursor<queries.actions.len(){
+            let action=&queries.actions[queries.action_cursor];
+            let group=&queries.groups[action.group];
+            if !queries.damage_delivered{
+                self.damage_entity(live,events,group.entity,&action.params)?;
+                queries.damage_delivered=true;
             }
+            while queries.body_cursor<group.bodies.len(){
+                self.explosion_body_impulse(group.bodies[queries.body_cursor],action.impulse)?;
+                queries.body_cursor+=1;
+            }
+            queries.action_cursor+=1;
+            queries.body_cursor=0;
+            queries.damage_delivered=false;
         }
+        queries.applying=false;
         Ok(())
     }
     fn explosion_actor_class(&self,live:&LiveEntities,id:EntityId,name:&[u8])->Result<bool,String>{
@@ -281,8 +310,8 @@ impl PhysicsScene {
         live: &LiveEntities,
         id: EntityId,
     ) -> Result<Option<ComponentHandle>, String> {
-        //Health lookup must retain the same owner/generation and active
-        //component flags as ordinary damage delivery.
+        //7b3830 selects Health sample metadata through877720 mode2;
+        //141c70e88[2] is {0x28,0}, as in879270 actual damage delivery.
         if live.stage(id) != Some(Stage::Spawned) {
             return Err("explosion Health identity stale".into());
         }
@@ -291,7 +320,7 @@ impl PhysicsScene {
         };
         self.entities[index]
             .components
-            .find_component([self.classes[10]; 2], [0x20, 0], |handle| {
+            .find_component(self.health_class_range()?, [0x28, 0], |handle| {
                 Ok(
                     crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                         flags: self.owner(handle)?.flags,
@@ -324,6 +353,6 @@ impl PhysicsScene {
             )
         })();
         self.registry = Some(registry);
-        result
+        result.map(|_| ())
     }
 }

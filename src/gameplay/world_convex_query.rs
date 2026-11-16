@@ -92,6 +92,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
             return false;
         };
         body.broadphase_id != u32::MAX
+            && self.bodies.accepts_body(body)
             && self
                 .request
                 .cast

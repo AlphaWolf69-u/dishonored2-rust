@@ -21,7 +21,9 @@ use crate::{
         shape_point_query::ShapePointContact,
         trigger_body::{DeferredPhysicsState, TriggerComponent, TriggerComponentStore},
         water_component::WaterComponent,
-        world_point_query::{level::LevelPointQueries, WorldPointQuery, WorldPointRequest, WorldQueryShape},
+        world_point_query::{
+            level::LevelPointQueries, WorldPointQuery, WorldPointRequest, WorldQueryShape,
+        },
     },
     rendering::environment_contacts::{ContactEntity, EnvironmentViewContacts},
 };
@@ -37,24 +39,41 @@ use std::{
 mod publication;
 #[macro_use]
 mod rigid_family;
-mod startup;
-mod interaction_components;
+mod audio;
 mod blink_queries;
-mod document_rigid;
+mod player_queries;
+pub(super) mod breakable;
+pub(super) mod carrying_host;
+pub(super) mod carrying_resources;
+pub(super) mod sound_volumes;
+pub(super) mod damage;
+mod loot;
 pub(super) mod document_hierarchy;
-pub(super) mod preparation;
 mod document_pickup;
-mod damage;
-mod breakable;
-mod projectiles;
-mod throwable;
-mod player_reference;
-mod carrying_host;
-mod runtime_entities;
-mod level_bodies;
+mod document_rigid;
 mod entity_messages;
-pub(super) mod windblast;
+mod entity_removal;
+pub(super) mod explosions;
+pub(super) mod explosion_effects;
+mod interaction_components;
+pub(super) mod interaction_queries;
+pub(super) mod level_bodies;
+pub(super) mod player_reference;
+pub(super) mod preparation;
+pub(super) mod projectiles;
 pub(super) mod rigid_actor;
+pub(super) mod runtime_animation;
+pub(super) mod runtime_entities;
+pub(super) mod simulation;
+mod startup;
+pub(super) mod throwable;
+mod trigger_events;
+mod wind_bodies;
+mod water_bodies;
+pub(super) mod water_simulation;
+mod water_impacts;
+pub(super) mod water_publication;
+pub(super) mod windblast;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;
 
@@ -79,19 +98,27 @@ struct PhysicsEntity {
 #[derive(Resource)]
 pub(super) struct PhysicsScene {
     owner_id: usize,
+    contact_unbent_duration: Option<f32>,
     entity_flags_d4: Vec<u8>,
+    /// Source-absence certificate for unhosted AITampering lookup in876ff0.
+    /// One compact lane per actual header; None is never assumed absent.
+    removal_tampering: Vec<Option<bool>>,
     post_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
     post_frame: i32,
     pre_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
     pre_frame: i32,
+    rigid_pre_started: bool,
+    rigid_post_started: bool,
+    simulation: Option<simulation::PhysicsFrameDriver>,
     pre_path: Vec<usize>,
     body_commands: crate::gameplay::physics_world::commands::PhysicsCommands,
     rigid_post_path: Vec<usize>,
-    body_activation_events: crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
+    body_activation_events:
+        crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 14],
-    classes: [i32; 14],
+    factories: [u32; 18],
+    classes: [i32; 18],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -107,18 +134,26 @@ pub(super) struct PhysicsScene {
     usables: ComponentPool<UsableComponent>,
     pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
     readable_components: HashMap<String, crate::gameplay::pickable_component::CheckedComponent>,
-    loots: ComponentPool<crate::gameplay::loot_component::EmptyLootComponent>,
+    loots: ComponentPool<crate::gameplay::loot_component::LootComponent>,
     rigid_bodies: ComponentPool<super::rigid_body::RigidBodyComponent>,
     // Concrete subtype factories retain their own handles and generations.
     throwables: ComponentPool<super::rigid_body::RigidBodyComponent>,
     breakables: ComponentPool<breakable::BreakableComponent>,
+    prepared_breakables: Vec<super::runtime_entities::PreparedBreakable>,
+    prepared_sound_volumes: Vec<super::runtime_entities::PreparedSoundVolume>,
+    sound_volumes: ComponentPool<crate::gameplay::sound::volume_control::Component>,
     projectiles: ComponentPool<super::projectiles::Component>,
+    level_bodies: ComponentPool<level_bodies::PhysicsWorldComponent>,
+    animations: ComponentPool<runtime_animation::AnimBaseComponent>,
     free_rigid_movement: Vec<usize>,
+    rigid_wind_bodies: Vec<(ComponentHandle, u32)>,
     rigid_placements: HashMap<usize, usize>,
     initial_rigid_frames: HashMap<usize, crate::gameplay::reference_frame::ReferenceFrame>,
     document_hierarchy: document_hierarchy::DocumentHierarchy,
     factions: ComponentPool<super::faction_component::FactionComponent>,
     health: ComponentPool<damage::HealthComponent>,
+    health_doors: ComponentPool<damage::DoorHealthComponent>,
+    damage_player: Option<damage::PlayerDamageContext>,
     faction_session: crate::gameplay::faction_registry::SessionFactionRegistry,
     faction_manager: Option<crate::gameplay::faction_registry::ActiveFactionManager>,
     audio_bindings: Vec<entities::audio::AudioBinding>,
@@ -128,6 +163,9 @@ pub(super) struct PhysicsScene {
     deferred: DeferredPhysicsState,
     signals: PublicationSignals<usize, usize>,
     contacts: crate::gameplay::water_contacts::WaterContactManager,
+    water_notifications: std::collections::VecDeque<(crate::gameplay::entity_lifetime::EntityId,bool)>,
+    water_simulation:water_simulation::WaterSimulation,
+    water_impacts:std::collections::VecDeque<water_simulation::WaterImpact>,
     trigger_material: u16,
     trigger_range: [i32; 2],
     area_range: [i32; 2],
@@ -135,19 +173,58 @@ pub(super) struct PhysicsScene {
     queries: CollisionQueries<WorldPointRequest, ShapePointContact>,
     executor: WorldPointQuery,
     retirement: Option<lifetime::Retirement>,
+    gameplay_component_drain: Option<lifetime::Retirement>,
 }
 
 impl PhysicsScene {
-    pub(super) fn entity_frame(&self, live: &crate::gameplay::entity_lifetime::LiveEntities,
-        id: crate::gameplay::entity_lifetime::EntityId)
-        -> Result<Option<crate::gameplay::reference_frame::ReferenceFrame>, String> {
-        let Some((name, class)) = live.get(id) else { return Err("entity frame identity is stale".into()); };
-        let Some(&index) = self.shared_indices.get(&id) else { return Ok(None); };
-        let entity = self.entities.get(index).ok_or("entity frame index is stale")?;
-        if entity.class != class || !entity.name.eq_ignore_ascii_case(name) { return Err("entity frame owner differs".into()); }
-        if live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) { return Ok(None); }
+    pub(in crate::app) fn contact_unbent_duration(&self) -> Option<f32> { self.contact_unbent_duration }
+
+    pub(in crate::app) fn publish_entity_timespace(&mut self,live:&crate::gameplay::entity_lifetime::LiveEntities,
+        id:crate::gameplay::entity_lifetime::EntityId,space:u32)->Result<(),String>{
+        self.entity_time_binding(live,id)?;
+        if space>1{return Err("entity time transition selector is outside world/unbent".into());}
+        let index=self.shared_indices[&id];
+        self.entities[index].timespace=space;
+        Ok(())
+    }
+
+    /// Raw entityD1 bit2 is the source's explicit time-sync exclusion.
+    pub(in crate::app) fn entity_time_binding(&self, live: &crate::gameplay::entity_lifetime::LiveEntities,
+        id: crate::gameplay::entity_lifetime::EntityId) -> Result<(u32,bool),String> {
+        if live.get(id).is_none(){return Err("time-sync entity generation is stale".into());}
+        let &index=self.shared_indices.get(&id).ok_or("time-sync entity has no canonical scene owner")?;
+        let entity=self.entities.get(index).ok_or("time-sync entity slot is absent")?;
+        if entity.retired || entity.shared != id{return Err("time-sync entity owner is retired".into());}
+        Ok((entity.timespace,entity.entity_flags & 0x400 != 0))
+    }
+
+    pub(super) fn entity_frame(
+        &self,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+        id: crate::gameplay::entity_lifetime::EntityId,
+    ) -> Result<Option<crate::gameplay::reference_frame::ReferenceFrame>, String> {
+        let Some((name, class)) = live.get(id) else {
+            return Err("entity frame identity is stale".into());
+        };
+        let Some(&index) = self.shared_indices.get(&id) else {
+            return Ok(None);
+        };
+        let entity = self
+            .entities
+            .get(index)
+            .ok_or("entity frame index is stale")?;
+        if entity.class != class || !entity.name.eq_ignore_ascii_case(name) {
+            return Err("entity frame owner differs".into());
+        }
+        if live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+            return Ok(None);
+        }
         if let Some(handle) = entity.components.reference_actor {
-            let actor = self.actors.actors.get(handle.slot).ok_or("entity reference actor absent")?;
+            let actor = self
+                .actors
+                .actors
+                .get(handle.slot)
+                .ok_or("entity reference actor absent")?;
             // The reference actor owns the current physics transform. No render
             // placement frame is substituted for an absent actor.
             return Ok(Some(actor.frame.current));
@@ -156,31 +233,70 @@ impl PhysicsScene {
     }
 
     pub(super) fn audio_component_live(&self, packed: u64, generation: u32) -> bool {
-        let Ok(handle) = ComponentHandle::from_packed(packed) else { return false };
-        handle.class_id == self.classes[4] && self.audios.get(handle.slot)
-            .is_some_and(|audio| audio.started && audio.owner.entity.is_some() && audio.owner.generation == generation)
+        let Ok(handle) = ComponentHandle::from_packed(packed) else {
+            return false;
+        };
+        handle.class_id == self.classes[4]
+            && self.audios.get(handle.slot).is_some_and(|audio| {
+                audio.started
+                    && audio.owner.entity.is_some()
+                    && audio.owner.generation == generation
+            })
     }
 
     pub(super) fn audio_owner_timespace(&self, packed: u64, generation: u32) -> Option<u32> {
         let handle = ComponentHandle::from_packed(packed).ok()?;
-        if handle.class_id != self.classes[4] { return None; }
+        if handle.class_id != self.classes[4] {
+            return None;
+        }
         let audio = self.audios.get(handle.slot)?;
-        if !audio.started || audio.owner.generation != generation { return None; }
-        self.entities.get(audio.owner.entity?).map(|entity| entity.timespace)
+        if !audio.started || audio.owner.generation != generation {
+            return None;
+        }
+        self.entities
+            .get(audio.owner.entity?)
+            .map(|entity| entity.timespace)
     }
 
-    pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
-        &entities::audio::AudioBinding, &mut crate::gameplay::sound::component::AudioComponent) -> Result<(), String>) -> Result<(), String>
-    {
-        for (&handle, binding) in self.audio_handles.iter().zip(&self.audio_bindings) {
-            let audio = self.audios.get_mut(handle.slot).ok_or("level audio component absent")?;
+    pub(super) fn visit_audio(
+        &mut self,
+        mut visit: impl FnMut(
+            ComponentHandle,
+            &entities::audio::AudioBinding,
+            &mut crate::gameplay::sound::component::AudioComponent,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for index in 0..self.audios.chunk_count() * self.audios.items_per_chunk {
+            let Some(audio) = self.audios.get_at(index) else {
+                continue;
+            };
+            let handle = ComponentHandle {
+                class_id: self.classes[4],
+                slot: u16::try_from(index).map_err(|_| "audio slot exceeds pool identity")?,
+            };
+            let runtime = audio.runtime_definition.clone();
+            let declaration = audio.owner.declaration;
+            let binding = match runtime.as_deref() {
+                Some(binding) => binding,
+                None => self
+                    .audio_bindings
+                    .get(declaration.ok_or("audio instance declaration is absent")?)
+                    .ok_or("audio instance definition is absent")?,
+            };
+            let audio = self
+                .audios
+                .get_at_mut(index)
+                .ok_or("audio instance disappeared")?;
             visit(handle, binding, audio)?;
         }
         Ok(())
     }
 
     pub(super) fn point_queries(&self) -> Result<Arc<RwLock<LevelPointQueries>>, String> {
-        let query_owner = self.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())?;
+        let query_owner = self
+            .world
+            .read()
+            .map_err(|_| "level physics query owner is poisoned".to_owned())?;
         query_owner.ready().map_err(str::to_owned)?;
         drop(query_owner);
         Ok(self.world.clone())
@@ -188,7 +304,9 @@ impl PhysicsScene {
 
     fn finish_point_queries(&mut self) -> Result<(), String> {
         let shared_world = self.world.clone();
-        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
+        let world = shared_world
+            .read()
+            .map_err(|_| "level physics query owner is poisoned")?;
         let owners = world.resolve_wind_owners(|body| {
             let data =
                 crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?;
@@ -226,7 +344,10 @@ impl PhysicsScene {
         drop(world);
         // Publish through the existing owner after all component startup writes.
         // Once published, render/FX leases share the same immutable geometry.
-        let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+        let mut query_owner = self
+            .world
+            .write()
+            .map_err(|_| "level physics query owner is poisoned")?;
         let world = &mut *query_owner;
         world.geometry.release_immutable_sources();
         world.publish_wind_owners(owners);
@@ -240,7 +361,10 @@ impl PhysicsScene {
         &mut self,
         position: [f32; 3],
     ) -> Result<Option<f32>, String> {
-        self.world.read().map_err(|_| "level physics query owner is poisoned")?.particle_water_body_height(&mut self.executor, position)
+        self.world
+            .read()
+            .map_err(|_| "level physics query owner is poisoned")?
+            .particle_water_body_height(&mut self.executor, position)
     }
 
     pub(super) fn load(
@@ -255,6 +379,7 @@ impl PhysicsScene {
         entity_events: &mut crate::gameplay::entity_events::EntityEvents,
         models: &[entities::PlacedModel],
         joint_frames: &super::joint_frames::JointFrames,
+        level_bodies: Option<&level_bodies::PreparedLevelBodies>,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -262,8 +387,13 @@ impl PhysicsScene {
             types
                 .factories()
                 .iter()
-                .find(|p| types.classes().metadata(p.class)
-                    .and_then(|class| types.classes().name_text(class.name)) == Some(name))
+                .find(|p| {
+                    types
+                        .classes()
+                        .metadata(p.class)
+                        .and_then(|class| types.classes().name_text(class.name))
+                        == Some(name)
+                })
                 .map(|p| p.pool_index)
                 .ok_or_else(|| {
                     format!(
@@ -289,20 +419,36 @@ impl PhysicsScene {
             factory(b"arkCpntBreakable")?,
             factory(b"arkCpntRigidBodyThrowable")?,
             factory(b"arkCpntProjectile")?,
+            factory(b"arkCpntPhysicsWorld")?,
+            factory(b"arkCpntAnimBase")?,
+            factory(b"arkCpntHealthDoor")?,
+            factory(b"arkCpntSoundVolumeControl")?,
         ];
-        let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
-            let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
-            let name = types.classes().name_text(class.name).ok_or("physics class name absent")?;
-            Ok((name.to_vec(), index))
-        }).collect::<Result<HashMap<_, _>, String>>()?;
+        let names = types
+            .classes()
+            .hierarchy()
+            .registration_order()
+            .iter()
+            .map(|&index| {
+                let class = types
+                    .classes()
+                    .metadata(index)
+                    .ok_or("physics class metadata absent")?;
+                let name = types
+                    .classes()
+                    .name_text(class.name)
+                    .ok_or("physics class name absent")?;
+                Ok((name.to_vec(), index))
+            })
+            .collect::<Result<HashMap<_, _>, String>>()?;
         let hierarchy = types.classes().hierarchy();
         let entity_range = |name: &[u8]| {
             hierarchy.type_range(*names.get(name).ok_or("physics entity class absent")?)
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 14];
-        for i in 0..14 {
+        let mut classes = [0; 18];
+        for i in 0..18 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -310,10 +456,25 @@ impl PhysicsScene {
             hierarchy.type_range(types.factory(factories[2])?.class)?,
         ];
         let trace_shape_cpu = std::env::var("DH2_DEBUG_TRIGGER_SOURCE_CPU").as_deref() == Ok("1");
-        let shape_cpu_start = if trace_shape_cpu { crate::loading::thread_cycles() } else { None };
+        let shape_cpu_start = if trace_shape_cpu {
+            crate::loading::thread_cycles()
+        } else {
+            None
+        };
         let geometry = TriggerAssets::load_with_sources(document, map, catalog, shape_sources)?;
-        if let (Some(start), Some(end)) = (shape_cpu_start, if trace_shape_cpu { crate::loading::thread_cycles() } else { None }) {
-            eprintln!("MEMORY trigger acquisition CPU: shapes={} cycles={}", geometry.shapes.len(), end.saturating_sub(start));
+        if let (Some(start), Some(end)) = (
+            shape_cpu_start,
+            if trace_shape_cpu {
+                crate::loading::thread_cycles()
+            } else {
+                None
+            },
+        ) {
+            eprintln!(
+                "MEMORY trigger acquisition CPU: shapes={} cycles={}",
+                geometry.shapes.len(),
+                end.saturating_sub(start)
+            );
         }
         let read = |name: &str| {
             catalog
@@ -342,35 +503,45 @@ impl PhysicsScene {
             .collect::<HashMap<_, _>>();
         let constants = crate::assets::physics_material::MaterialConstants::acquire(catalog)?;
         let mut materials = crate::gameplay::materials::MaterialOwner::new(constants, 16)?;
-        let declaration = materials.declaration_with_texts(catalog, "narrow_phase_trigger", texts)?;
+        let declaration =
+            materials.declaration_with_texts(catalog, "narrow_phase_trigger", texts)?;
         let trigger_material = materials.resolve(declaration, |_, _, _, _| {
             panic!("material subscriber before level initialization")
         })?;
         let water_declarations = water_bindings
             .iter()
-            .map(|binding| binding.startup(|name| materials.declaration_with_texts(catalog, name, texts)))
+            .map(|binding| {
+                binding.startup(|name| materials.declaration_with_texts(catalog, name, texts))
+            })
             .collect::<Result<Vec<_>, String>>()?;
         let bounds = entities::physics::world_physics_bounds(document)?
             .ok_or("physics worldspawn bounds absent")?;
         static NEXT_WORLD: AtomicUsize = AtomicUsize::new(1);
         let owner_id = NEXT_WORLD.fetch_add(1, Ordering::Relaxed);
-        let mut world = WorldStorage::new(
-            WorldInfo::game_settings(bounds),
-            owner_id,
-            materials,
-        )?;
+        let mut world = WorldStorage::new(WorldInfo::game_settings(bounds), owner_id, materials)?;
+        //093a40: these actual userdata vtables all use06d040(null matrix)
+        // at+20. Other body families must publish their real matrix policy.
+        for index in [0, 8, 12, 14] {
+            world.register_collision_class_without_matrix(classes[index]);
+        }
         world.initialize_game_timespaces()?;
-        let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
+        let faction_session =
+            crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
         faction_session.acquire_all_registered(catalog)?;
         let faction_manager = Some(faction_session.snapshot()?.into_manager()?);
         let cvars = crate::platform::console::shared().read();
         let mut scene = Self {
             owner_id,
+            contact_unbent_duration: entities::physics::world_contact_unbent_duration(document)?,
             entity_flags_d4: Vec::new(),
+            removal_tampering: Vec::new(),
             post_updates: Default::default(),
             post_frame: 0,
             pre_updates: Default::default(),
             pre_frame: 0,
+            rigid_pre_started: false,
+            rigid_post_started: false,
+            simulation: Some(simulation::PhysicsFrameDriver::new()),
             pre_path: Vec::new(),
             body_commands: crate::gameplay::physics_world::commands::PhysicsCommands::new()?,
             body_activation_events: Default::default(),
@@ -385,15 +556,23 @@ impl PhysicsScene {
             loots: types.create_pool(factories[7], &cvars.cvars)?,
             rigid_bodies: types.create_pool(factories[8], &cvars.cvars)?,
             breakables: types.create_pool(factories[11], &cvars.cvars)?,
+            prepared_breakables: Vec::new(),
+            prepared_sound_volumes: Vec::new(),
+            sound_volumes: types.create_pool(factories[17], &cvars.cvars)?,
             throwables: types.create_pool(factories[12], &cvars.cvars)?,
             projectiles: types.create_pool(factories[13], &cvars.cvars)?,
+            level_bodies: types.create_pool(factories[14], &cvars.cvars)?,
+            animations: types.create_pool(factories[15], &cvars.cvars)?,
             free_rigid_movement: Vec::new(),
+            rigid_wind_bodies: Vec::new(),
             rigid_post_path: Vec::new(),
             rigid_placements: HashMap::new(),
             initial_rigid_frames: HashMap::new(),
             document_hierarchy: Default::default(),
             factions: types.create_pool(factories[9], &cvars.cvars)?,
             health: types.create_pool(factories[10], &cvars.cvars)?,
+            health_doors: types.create_pool(factories[16], &cvars.cvars)?,
+            damage_player: None,
             faction_session,
             faction_manager,
             audio_bindings,
@@ -418,6 +597,9 @@ impl PhysicsScene {
             },
             signals: default(),
             contacts: crate::gameplay::water_contacts::WaterContactManager::new()?,
+            water_notifications:Default::default(),
+            water_simulation:Default::default(),
+            water_impacts:Default::default(),
             trigger_material,
             trigger_range,
             area_range,
@@ -425,6 +607,7 @@ impl PhysicsScene {
             queries: CollisionQueries::default(),
             executor: WorldPointQuery::new(u32::MAX)?,
             retirement: None,
+            gameplay_component_drain: None,
         };
         drop(cvars);
         startup::install_activation_observers(&mut scene.signals, owner_id);
@@ -436,9 +619,13 @@ impl PhysicsScene {
         let preparation = (|| -> Result<(), String> {
             let mut entity_indices = HashMap::<String, usize>::new();
             let query_owner = scene.world.clone();
-            let query_world = query_owner.read().map_err(|_| "level physics query owner is poisoned")?;
+            let query_world = query_owner
+                .read()
+                .map_err(|_| "level physics query owner is poisoned")?;
             for index in 0..query_world.geometry.placements.len() {
-                let placement = query_world.geometry.placements[index].as_ref().ok_or("prepared trigger placement absent")?;
+                let placement = query_world.geometry.placements[index]
+                    .as_ref()
+                    .ok_or("prepared trigger placement absent")?;
                 let existing = entity_indices.get(&placement.binding.entity_id).copied();
                 let entity_index = existing.unwrap_or(scene.entities.len());
                 let definition = definitions
@@ -463,8 +650,16 @@ impl PhysicsScene {
                     .get(class.as_bytes())
                     .ok_or_else(|| format!("trigger entity class unsupported: {class}"))?;
                 if existing.is_none() {
-                    let shared = live.allocate_managed(Arc::from(placement.binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
-                    let entity = PhysicsEntity { retired: false, external: false,
+                    let shared = live.allocate_managed(
+                        Arc::from(placement.binding.entity_id.as_str()),
+                        class,
+                        None,
+                        0,
+                        constructor_tag,
+                    )?;
+                    let entity = PhysicsEntity {
+                        retired: false,
+                        external: false,
                         name: placement.binding.entity_id.clone(),
                         shared,
                         components: EntityComponents::new(entity_index),
@@ -476,10 +671,15 @@ impl PhysicsScene {
                         entity_flags: 0x001e_8008,
                         entity_flags_d7: 0,
                         priority: 0,
-                        frame: crate::gameplay::reference_frame::PublishedFrame { pose: crate::gameplay::reference_frame::ReferenceFrame {
-                            position: placement.position,
-                            basis: placement.shape.basis,
-                        }, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0,
+                        frame: crate::gameplay::reference_frame::PublishedFrame {
+                            pose: crate::gameplay::reference_frame::ReferenceFrame {
+                                position: placement.position,
+                                basis: placement.shape.basis,
+                            },
+                            ..crate::gameplay::reference_frame::ReferenceFrameCache::default()
+                                .published()
+                        },
+                        timespace: 0,
                     };
                     // Publish the allocation to its sole scene owner before any
                     // fallible factory callback, so cancellation can find it.
@@ -566,39 +766,120 @@ impl PhysicsScene {
                 let entity_index = match entity_indices.get(&binding.entity_id).copied() {
                     Some(index) => index,
                     None => {
-                        let definition = definitions.get(binding.entity_id.as_str()).ok_or("audio entity definition absent")?;
-                        let class = definition.fields.iter().find_map(|(key, value)| {
-                            if key != "class" { return None; }
-                            if let entities::Value::Atom(value) = value { Some(value.trim_matches('"')) } else { None }
-                        }).ok_or("audio entity class name absent")?;
-                        let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
+                        let definition = definitions
+                            .get(binding.entity_id.as_str())
+                            .ok_or("audio entity definition absent")?;
+                        let class = definition
+                            .fields
+                            .iter()
+                            .find_map(|(key, value)| {
+                                if key != "class" {
+                                    return None;
+                                }
+                                if let entities::Value::Atom(value) = value {
+                                    Some(value.trim_matches('"'))
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or("audio entity class name absent")?;
+                        let class = *names
+                            .get(class.as_bytes())
+                            .ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
                         let index = scene.entities.len();
-                        let shared = live.allocate_managed(Arc::from(binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
-                        scene.entities.push(PhysicsEntity { retired: false, external: false, name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
-                            environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0,
-                            entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
-                            frame: crate::gameplay::reference_frame::PublishedFrame { pose: binding.frame, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
+                        let shared = live.allocate_managed(
+                            Arc::from(binding.entity_id.as_str()),
+                            class,
+                            None,
+                            0,
+                            constructor_tag,
+                        )?;
+                        scene.entities.push(PhysicsEntity {
+                            retired: false,
+                            external: false,
+                            name: binding.entity_id.clone(),
+                            shared,
+                            components: EntityComponents::new(index),
+                            class,
+                            environment: volume_indices.get(binding.entity_id.as_str()).copied(),
+                            flags: 0,
+                            entity_flags: 0x001e_8008,
+                            entity_flags_d7: 0,
+                            priority: 0,
+                            frame: crate::gameplay::reference_frame::PublishedFrame {
+                                pose: binding.frame,
+                                ..crate::gameplay::reference_frame::ReferenceFrameCache::default()
+                                    .published()
+                            },
+                            timespace: 0,
+                        });
                         scene.entity_flags_d4.push(0);
                         entity_indices.insert(binding.entity_id.clone(), index);
                         index
                     }
                 };
-                let declaration = scene.types.declaration(factories[4], index, binding.scheduling.clone())?;
-                let handle = ComponentFactory { declaration: &declaration, pool: &mut scene.audios,
-                    registry: &mut registry, grow_one_at_a_time: false }.create(
-                        &mut scene.entities[entity_index].components, declaration.scheduling.starts_on_spawn(),
-                        |_, _, _| Ok(crate::gameplay::sound::component::AudioComponent::default()), |_, _, _| Ok(()),
-                    )?.ok_or("audio component creation disabled during level load")?;
+                let declaration =
+                    scene
+                        .types
+                        .declaration(factories[4], index, binding.scheduling.clone())?;
+                let handle = ComponentFactory {
+                    declaration: &declaration,
+                    pool: &mut scene.audios,
+                    registry: &mut registry,
+                    grow_one_at_a_time: false,
+                }
+                .create(
+                    &mut scene.entities[entity_index].components,
+                    declaration.scheduling.starts_on_spawn(),
+                    |_, _, _| Ok(crate::gameplay::sound::component::AudioComponent::default()),
+                    |_, _, _| Ok(()),
+                )?
+                .ok_or("audio component creation disabled during level load")?;
                 scene.declarations.insert(handle.packed(), declaration);
                 scene.audio_handles.push(handle);
             }
             drop(query_world);
             if let Some(interactions) = interactions {
-                scene.admit_interaction_components(document, interactions, live, &mut registry, constructor_tag)?;
-                scene.prepare_document_hierarchy(document, interactions, models, live, &mut registry, constructor_tag, joint_frames)?;
-                scene.prepare_document_rigids(catalog, document, interactions, models, texts, shape_sources, &mut registry)?;
+                scene.admit_interaction_components(
+                    document,
+                    interactions,
+                    live,
+                    &mut registry,
+                    constructor_tag,
+                )?;
+                scene.prepare_document_rigids(
+                    catalog,
+                    document,
+                    interactions,
+                    models,
+                    texts,
+                    shape_sources,
+                    &mut registry,
+                    live,
+                    constructor_tag,
+                )?;
+                scene.prepare_document_hierarchy(
+                    document,
+                    interactions,
+                    models,
+                    live,
+                    &mut registry,
+                    constructor_tag,
+                    joint_frames,
+                )?;
             }
             scene.admit_health_components(catalog, document, &mut registry)?;
+            scene.prepare_placed_sound_volumes(catalog, document, models)?;
+            scene.prepare_placed_breakables(catalog, document, models)?;
+            if let Some(prepared) = level_bodies {
+                scene.admit_level_bodies(
+                    document,
+                    prepared,
+                    live,
+                    &mut registry,
+                    constructor_tag,
+                )?;
+            }
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.
             for (index, entity) in scene.entities.iter().enumerate() {
@@ -606,18 +887,31 @@ impl PhysicsScene {
                 live.spawned(entity.shared)?;
                 scene.shared_indices.insert(entity.shared, index);
             }
-            registry.initialize_and_start(&mut interaction_components::Startup { scene: &mut scene, live, events: entity_events })?;
-            registry.drain_update_changes(&mut interaction_components::Startup { scene: &mut scene, live, events: entity_events })
+            registry.initialize_and_start(&mut interaction_components::Startup { world: None,
+                scene: &mut scene,
+                live,
+                events: entity_events,
+            })?;
+            registry.drain_update_changes(&mut interaction_components::Startup { world: None,
+                scene: &mut scene,
+                live,
+                events: entity_events,
+            })
         })();
         // The registry owns the in-flight callback cursor even when startup
         // fails. Restore it before invoking the canonical release owner.
         scene.registry = Some(registry);
-        let preparation = preparation.and_then(|()| scene.finish_point_queries());
+        let preparation = preparation.and_then(|()| scene.finish_point_queries())
+            .and_then(|()| scene.capture_removal_components(catalog, document));
         if let Err(error) = preparation {
-            return Err(match preparation::rollback(&mut scene, live, entity_events) {
-                Ok(()) => error,
-                Err(rollback) => format!("{error}; unpublished physics rollback incomplete: {rollback}"),
-            });
+            return Err(
+                match preparation::rollback(&mut scene, live, entity_events) {
+                    Ok(()) => error,
+                    Err(rollback) => {
+                        format!("{error}; unpublished physics rollback incomplete: {rollback}")
+                    }
+                },
+            );
         }
         Ok(scene)
     }
@@ -626,44 +920,113 @@ impl PhysicsScene {
     /// Uses the same874c50/8a6180 identity and retirement roster as other
     /// admitted entity headers. Derived actors keep their real class owner;
     /// a reference to an unimplemented NPC/spawner never fabricates that actor.
-    pub(super) fn admit_marker_targets(&mut self, document:&entities::Document,
-        requested:&std::collections::HashSet<String>, live:&mut crate::gameplay::entity_lifetime::LiveEntities)->Result<(),String>{
-        let tag=self.types.intern_name(Some(b"MAIN"))?;
-        let class=self.types.classes().hierarchy().registration_order().iter().copied().find(|&index|{
-            self.types.classes().metadata(index).is_some_and(|metadata|self.types.classes().name_text(metadata.name)==Some(b"idEntity".as_slice()))
-        }).ok_or("base entity class metadata absent")?;
-        let mut count=0;
-        for definition in document.definitions.iter().filter(|definition|definition.kind=="entity" && requested.contains(&definition.id.to_ascii_lowercase())){
-            if live.find(&definition.id).is_some(){continue;}
-            let actual=definition.fields.iter().find_map(|(key,value)|match (key.as_str(),value){("class",entities::Value::Atom(value))=>Some(value.trim_matches('"')),_=>None});
-            if actual!=Some("idEntity"){continue;}
-            let edit=crate::gameplay::options::decl::scope(&definition.fields,"edit").unwrap_or(&[]);
-            if crate::gameplay::options::decl::scope(edit,"m_componentDecls").is_some_and(|fields|fields.iter().any(|(key,_)|key.starts_with("item_add["))){continue;}
-            let pose=entities::spawn_frame(definition)?;
-            let index=self.entities.len();
-            let shared=live.allocate_managed(Arc::from(definition.id.as_str()),class,None,0,tag)?;
-            self.entities.push(PhysicsEntity { retired: false, external: false,name:definition.id.clone(),shared,components:EntityComponents::new(index),class,environment:None,
-                flags:0,entity_flags:0x001e_8008,entity_flags_d7:0,priority:0,frame:crate::gameplay::reference_frame::PublishedFrame{pose,
-                    ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published()},timespace:0});
+    pub(super) fn admit_marker_targets(
+        &mut self,
+        document: &entities::Document,
+        requested: &std::collections::HashSet<String>,
+        live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
+        let tag = self.types.intern_name(Some(b"MAIN"))?;
+        let class = self
+            .types
+            .classes()
+            .hierarchy()
+            .registration_order()
+            .iter()
+            .copied()
+            .find(|&index| {
+                self.types
+                    .classes()
+                    .metadata(index)
+                    .is_some_and(|metadata| {
+                        self.types.classes().name_text(metadata.name)
+                            == Some(b"idEntity".as_slice())
+                    })
+            })
+            .ok_or("base entity class metadata absent")?;
+        let mut count = 0;
+        for definition in document.definitions.iter().filter(|definition| {
+            definition.kind == "entity" && requested.contains(&definition.id.to_ascii_lowercase())
+        }) {
+            if live.find(&definition.id).is_some() {
+                continue;
+            }
+            let actual =
+                definition
+                    .fields
+                    .iter()
+                    .find_map(|(key, value)| match (key.as_str(), value) {
+                        ("class", entities::Value::Atom(value)) => Some(value.trim_matches('"')),
+                        _ => None,
+                    });
+            if actual != Some("idEntity") {
+                continue;
+            }
+            let edit =
+                crate::gameplay::options::decl::scope(&definition.fields, "edit").unwrap_or(&[]);
+            if crate::gameplay::options::decl::scope(edit, "m_componentDecls")
+                .is_some_and(|fields| fields.iter().any(|(key, _)| key.starts_with("item_add[")))
+            {
+                continue;
+            }
+            let pose = entities::spawn_frame(definition)?;
+            let index = self.entities.len();
+            let shared =
+                live.allocate_managed(Arc::from(definition.id.as_str()), class, None, 0, tag)?;
+            self.entities.push(PhysicsEntity {
+                retired: false,
+                external: false,
+                name: definition.id.clone(),
+                shared,
+                components: EntityComponents::new(index),
+                class,
+                environment: None,
+                flags: 0,
+                entity_flags: 0x001e_8008,
+                entity_flags_d7: 0,
+                priority: 0,
+                frame: crate::gameplay::reference_frame::PublishedFrame {
+                    pose,
+                    ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published()
+                },
+                timespace: 0,
+            });
             self.entity_flags_d4.push(0);
             live.initialized(shared)?;
             live.spawned(shared)?;
-            self.shared_indices.insert(shared,index);
-            count+=1;
+            self.shared_indices.insert(shared, index);
+            count += 1;
         }
         eprintln!("OBJECTIVE_TARGET_LIFETIME admitted_base_entities={count}");
         Ok(())
     }
 
     fn water_component(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
-        let entity = self.entities.get(index).ok_or("water query entity absent")?;
-        entity.components.find_component(self.dependency_ranges[0], [0x20, 0], |handle| {
-            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
-                flags: self.waters.get(handle.slot).ok_or("water query component absent")?.owner.flags,
-                start_phases: Some(self.declarations.get(&handle.packed())
-                    .ok_or("water query declaration absent")?.scheduling.start_phases),
+        let entity = self
+            .entities
+            .get(index)
+            .ok_or("water query entity absent")?;
+        entity
+            .components
+            .find_component(self.dependency_ranges[0], [0x20, 0], |handle| {
+                Ok(
+                    crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                        flags: self
+                            .waters
+                            .get(handle.slot)
+                            .ok_or("water query component absent")?
+                            .owner
+                            .flags,
+                        start_phases: Some(
+                            self.declarations
+                                .get(&handle.packed())
+                                .ok_or("water query declaration absent")?
+                                .scheduling
+                                .start_phases,
+                        ),
+                    },
+                )
             })
-        })
     }
 
     /// 852ff0 / 8a7d30's Boolean projection for FX group eligibility.
@@ -672,21 +1035,41 @@ impl PhysicsScene {
     /// the group. This Boolean result is independent of the distance sort.
     pub(super) fn water_at(&mut self, position: [f32; 3]) -> Result<bool, String> {
         let shared_world = self.world.clone();
-        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
+        let world = shared_world
+            .read()
+            .map_err(|_| "level physics query owner is poisoned")?;
         let mut contacts = Vec::new();
-        world.storage.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
-            Ok(WorldQueryShape {
-                shapes: &world.geometry.shapes.get(shape).and_then(Option::as_ref).ok_or("water query shape absent")?.query_shapes,
-                materials: None,
-            })
-        }, &mut contacts)?;
+        world.storage.point_query(
+            &mut self.executor,
+            &WorldPointRequest::water(position),
+            |shape| {
+                Ok(WorldQueryShape {
+                    shapes: &world
+                        .geometry
+                        .shapes
+                        .get(shape)
+                        .and_then(Option::as_ref)
+                        .ok_or("water query shape absent")?
+                        .query_shapes,
+                    materials: None,
+                })
+            },
+            &mut contacts,
+        )?;
         let mut found = false;
         for contact in contacts {
-            let entity = crate::gameplay::collision_user_data::CollisionUserData::decode(contact.target.user_data)?
-                .entity(|handle| self.owner(handle).ok())?;
+            let entity = crate::gameplay::collision_user_data::CollisionUserData::decode(
+                contact.target.user_data,
+            )?
+            .entity(|handle| self.owner(handle).ok())?;
             if let Some(handle) = self.water_component(entity)? {
-                let water = self.waters.get(handle.slot).ok_or("water query component absent")?;
-                if water.owner.flags & 0xc < 8 { return Ok(false); }
+                let water = self
+                    .waters
+                    .get(handle.slot)
+                    .ok_or("water query component absent")?;
+                if water.owner.flags & 0xc < 8 {
+                    return Ok(false);
+                }
                 found = true;
             }
         }
@@ -706,7 +1089,9 @@ impl PhysicsScene {
         let mut head_water_is_ocean = false;
         let mut head_water_current = None;
         let shared_world = self.world.clone();
-        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
+        let world = shared_world
+            .read()
+            .map_err(|_| "level physics query owner is poisoned")?;
         let completed = view.resolve(
             &world.storage,
             &mut self.executor,
@@ -757,14 +1142,26 @@ impl PhysicsScene {
                         )
                     },
                 )?;
-                if let Some(component)=water.and_then(|h|self.waters.get(h.slot)) {
+                if let Some(component) = water.and_then(|h| self.waters.get(h.slot)) {
                     if component.owner.flags & 0xc >= 8 {
-                        let declaration=component.owner.declaration.ok_or("head water declaration absent")?;
-                        head_water_is_ocean |= self.water_declarations.get(declaration).ok_or("head water declaration out of range")?.is_ocean;
-                        let height=0.-component.plane().ok_or("head water component has no plane")?[3];
+                        let declaration = component
+                            .owner
+                            .declaration
+                            .ok_or("head water declaration absent")?;
+                        head_water_is_ocean |= self
+                            .water_declarations
+                            .get(declaration)
+                            .ok_or("head water declaration out of range")?
+                            .is_ocean;
+                        let height = 0.
+                            - component
+                                .plane()
+                                .ok_or("head water component has no plane")?[3];
                         if head_water_surface.is_none_or(|prior| height > prior) {
                             head_water_surface = Some(height);
-                            head_water_current = component.flow_and_density().map(|value| [value[0], value[1], value[2]]);
+                            head_water_current = component
+                                .flow_and_density()
+                                .map(|value| [value[0], value[1], value[2]]);
                         }
                     }
                 }
@@ -782,9 +1179,9 @@ impl PhysicsScene {
                 })
             },
         )?;
-        view.head_water_surface=completed.then_some(head_water_surface).flatten();
-        view.head_water_is_ocean=completed && head_water_is_ocean;
-        view.head_water_current=if completed { head_water_current } else { None };
+        view.head_water_surface = completed.then_some(head_water_surface).flatten();
+        view.head_water_is_ocean = completed && head_water_is_ocean;
+        view.head_water_current = if completed { head_water_current } else { None };
         Ok(completed)
     }
 
@@ -802,6 +1199,7 @@ impl PhysicsScene {
             DeclarationScheduling::reference_frame(0),
         )?;
         let bodies = &mut self.actors.bodies;
+        let free = &mut self.free_rigid_movement;
         let handle = ComponentFactory {
             declaration: &declaration,
             pool: &mut self.actors.actors,
@@ -812,11 +1210,26 @@ impl PhysicsScene {
             &mut self.entities[entity].components,
             false,
             |_, _, _| {
-                let embedded = bodies.len();
-                bodies.push(ActorBody {
+                // The inline default interface has the same lifetime as this
+                // actor. Reuse only slots returned by acknowledged destruction.
+                let body = ActorBody {
                     actor: None,
                     body_id: u32::MAX,
-                });
+                };
+                let embedded = if let Some(index) = free.pop() {
+                    let slot = bodies
+                        .get_mut(index)
+                        .ok_or("free actor interface slot absent")?;
+                    if slot.actor.is_some() || slot.body_id & 0x00ff_ffff != 0x00ff_ffff {
+                        return Err("free actor interface is still attached".into());
+                    }
+                    *slot = body;
+                    index
+                } else {
+                    let index = bodies.len();
+                    bodies.push(body);
+                    index
+                };
                 Ok(PhysicsActor::new(embedded))
             },
             |_, _, _| Err("reference actor requested immediate start before initialization".into()),
@@ -866,6 +1279,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.throwables.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[13] {
             self.projectiles.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[14] {
+            self.level_bodies.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[15] {
+            self.animations.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[16] {
+            self.health_doors.get(handle.slot).map(|v| &v.base.owner)
+        } else if handle.class_id == self.classes[17] {
+            self.sound_volumes.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -903,6 +1324,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.throwables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[13] {
             self.projectiles.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[14] {
+            self.level_bodies.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[15] {
+            self.animations.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[16] {
+            self.health_doors.get_mut(handle.slot).map(|v| &mut v.base.owner)
+        } else if handle.class_id == self.classes[17] {
+            self.sound_volumes.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -923,8 +1352,13 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .declaration
                 .ok_or("trigger declaration absent")?;
             let (position, collision) = {
-                let world = self.world.read().map_err(|_| "level physics query owner is poisoned")?;
-                let placement = world.geometry.placements[placement].as_ref().ok_or("trigger placement retired")?;
+                let world = self
+                    .world
+                    .read()
+                    .map_err(|_| "level physics query owner is poisoned")?;
+                let placement = world.geometry.placements[placement]
+                    .as_ref()
+                    .ok_or("trigger placement retired")?;
                 (placement.position, placement.binding.collision)
             };
             let entity = &mut self.entities[entity];
@@ -941,7 +1375,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 flags: &mut entity.flags,
             };
             scene_publication_events!(self, registry, events);
-            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let mut query_owner = self
+                .world
+                .write()
+                .map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
             crate::gameplay::trigger_body::initialization::physics::TriggerPhysicsInitialization {
                 world: &mut world.storage,
@@ -952,7 +1389,9 @@ impl ComponentLifecycleWorld for PhysicsScene {
             .initialize(handle)
         } else if handle.class_id == self.classes[6] {
             let target = &mut self.entities[entity];
-            self.pickables.get_mut(handle.slot).ok_or("Pickable component absent")?
+            self.pickables
+                .get_mut(handle.slot)
+                .ok_or("Pickable component absent")?
                 .initialize(&mut target.entity_flags, &mut target.entity_flags_d7);
             Ok(())
         } else if handle.class_id == self.classes[3] {
@@ -993,28 +1432,42 @@ impl ComponentLifecycleWorld for PhysicsScene {
             .ok_or("physics component scheduling absent")?
             .scheduling
             .clone();
-        if handle.class_id == self.classes[10] {
+        if self.is_health_class(handle.class_id) {
             self.entities[entity_index].entity_flags_d7 |= 2;
             let dead = self.entities[entity_index].entity_flags & 0x800 != 0;
-            let component = self.health.get_mut(handle.slot).ok_or("health component absent")?;
+            let component = self.health_payload_mut(handle)?;
             // 7181c0 preserves a previously dead owner's zero health when
             // the real component restarts; Start is not a resurrection.
-            if component.owner.flags & (1 << 30) == 0 { component.current = if dead { 0.0 } else { component.maximum }; }
+            if component.owner.flags & (1 << 30) == 0 {
+                component.current = if dead { 0.0 } else { component.maximum };
+            }
         }
         if handle.class_id == self.classes[0] {
             let declaration = self
                 .owner(handle)?
                 .declaration
                 .ok_or("trigger declaration absent")?;
-            let keyframed = self.world.read().map_err(|_| "level physics query owner is poisoned")?
-                .geometry.placements[declaration].as_ref().ok_or("trigger placement retired")?.binding.collision.keyframed;
+            let keyframed = self
+                .world
+                .read()
+                .map_err(|_| "level physics query owner is poisoned")?
+                .geometry
+                .placements[declaration]
+                .as_ref()
+                .ok_or("trigger placement retired")?
+                .binding
+                .collision
+                .keyframed;
             let actor = if keyframed {
                 Some(self.reference_actor(entity_index, registry)?)
             } else {
                 None
             };
             scene_publication_events!(self, registry, events);
-            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let mut query_owner = self
+                .world
+                .write()
+                .map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
             crate::gameplay::trigger_body::startup::start_trigger(
                 &mut world.storage,
@@ -1039,16 +1492,21 @@ impl ComponentLifecycleWorld for PhysicsScene {
             // before lifecycle publication; no graphics material is substituted.
             let trigger_range = self.dependency_ranges_for_trigger()?;
             let declaration = &self.water_declarations[binding];
+            let mut notify_contacts = false;
+            let result = {
             let mut level = startup::WaterLevel {
                 entity: &self.entities[entity_index].components,
                 trigger_range,
                 declarations: &self.declarations,
                 scheduling: &scheduling,
                 priority: self.entities[entity_index].priority,
-                contacts: &mut self.contacts,
+                notify_contacts: &mut notify_contacts,
             };
             scene_publication_events!(self, registry, events);
-            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let mut query_owner = self
+                .world
+                .write()
+                .map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
             crate::gameplay::water_component::startup::physics::WaterPhysicsStartup {
                 world: &mut world.storage,
@@ -1057,18 +1515,44 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 level: &mut level,
             }
             .start(handle, declaration)
+            };
+            result?;
+            if notify_contacts { self.notify_water_contacts(handle, false)?; }
+            Ok(())
         } else if handle.class_id == self.classes[4] {
-            let declaration = self.owner(handle)?.declaration.ok_or("audio declaration absent")?;
-            let startup = self.audio_bindings.get(declaration).ok_or("audio startup binding absent")?.startup();
+            let audio = self
+                .audios
+                .get(handle.slot)
+                .ok_or("audio component absent")?;
+            let startup = if let Some(binding) = &audio.runtime_definition {
+                binding.startup()
+            } else {
+                let declaration = audio.owner.declaration.ok_or("audio declaration absent")?;
+                self.audio_bindings
+                    .get(declaration)
+                    .ok_or("audio startup binding absent")?
+                    .startup()
+            };
             let priority = self.entities[entity_index].priority;
-            let audio = self.audios.get_mut(handle.slot).ok_or("audio component absent")?;
+            let audio = self
+                .audios
+                .get_mut(handle.slot)
+                .ok_or("audio component absent")?;
             // 140708fc0 clears the special update counter before base admission.
-            if audio.owner.flags & (1 << 30) != 0 { audio.owner.flags &= 0xf800003f; }
-            let scheduled = crate::gameplay::component_state::prepare_admission(&mut audio.owner.flags,
-                u8::from(scheduling.priority < 8), scheduling.priority, priority);
+            if audio.owner.flags & (1 << 30) != 0 {
+                audio.owner.flags &= 0xf800003f;
+            }
+            let scheduled = crate::gameplay::component_state::prepare_admission(
+                &mut audio.owner.flags,
+                u8::from(scheduling.priority < 8),
+                scheduling.priority,
+                priority,
+            );
             audio.startup = startup;
             audio.started = true;
-            if scheduled { self.audios.schedule(handle.slot)?; }
+            if scheduled {
+                self.audios.schedule(handle.slot)?;
+            }
             Ok(())
         } else {
             let priority = self.entities[entity_index].priority;
@@ -1079,15 +1563,37 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 priority,
             );
             if scheduled {
-                if handle.class_id == self.classes[2] { self.winds.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[3] { self.actors.actors.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[5] { self.usables.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[6] { self.pickables.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[7] { self.loots.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[8] { self.rigid_bodies.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[9] { self.factions.schedule(handle.slot)?; }
-                else if handle.class_id == self.classes[10] { self.health.schedule(handle.slot)?; }
-                else { return Err("scheduled physics component class is unsupported".into()); }
+                if handle.class_id == self.classes[2] {
+                    self.winds.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[3] {
+                    self.actors.actors.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[5] {
+                    self.usables.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[6] {
+                    self.pickables.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[7] {
+                    self.loots.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[8] {
+                    self.rigid_bodies.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[9] {
+                    self.factions.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[10] {
+                    self.health.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[11] {
+                    self.breakables.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[13] {
+                    self.projectiles.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[14] {
+                    self.level_bodies.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[15] {
+                    self.animations.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[16] {
+                    self.health_doors.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[17] {
+                    self.sound_volumes.schedule(handle.slot)?;
+                } else {
+                    return Err("scheduled physics component class is unsupported".into());
+                }
             }
             Ok(())
         }

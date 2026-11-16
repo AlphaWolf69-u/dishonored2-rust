@@ -91,6 +91,18 @@ impl ShapeConvexQuery {
                 }
                 Ok(())
             }
+            QueryGeometry::CompressedMesh(mesh) => self.mesh_closest(
+                target,
+                mesh,
+                shape.header.radius,
+                shape.header.key_bits,
+                state,
+                relative,
+                key,
+                hit,
+                request,
+                submit,
+            ),
             QueryGeometry::Compound(compound) => {
                 let mut query_geometry = request.geometry;
                 let prepared = prepare(

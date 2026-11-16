@@ -4,6 +4,8 @@ use super::{bounds::OrientedBox, shadows::local_caster_query::LocalWorldQuery};
 use std::sync::Arc;
 
 mod effect;
+mod model;
+pub use model::{ModelProjection, MODEL_PROJECTION_LIMIT};
 pub mod material;
 mod pool;
 mod world_draws;

@@ -35,19 +35,6 @@ impl PhysicsScene {
             let definition = component
                 .definition()
                 .ok_or("placed rigid definition is absent")?;
-            // Rotation locks require the source ref-counted MassDistribution;
-            // reject that authored branch before consuming the prepared lease.
-            if definition
-                .settings
-                .lock_rotation
-                .into_iter()
-                .any(|locked| locked)
-            {
-                return Err(
-                    "placed rigid rotation locks require the authored mass-distribution owner"
-                        .into(),
-                );
-            }
             if !world.storage.motion_properties.added.is_empty() {
                 return Err(
                     "placed rigid motion-property addition requires its registered observer host"
@@ -166,6 +153,9 @@ impl PhysicsScene {
         let component = rigid_pool_mut!(self, handle.class_id)?
             .get_mut(handle.slot)
             .ok_or("rigid component slot is absent")?;
+        if let Some(body) = component.body() {
+            world.storage.register_body_materials(body, component.material_table_lease())?;
+        }
         if component.base_initialize_pending() {
             // 726ae0 clears +b4 low three bits. No pre-Initialize request can
             // reach this newly admitted component; 726f10's pending branch is
@@ -178,7 +168,7 @@ impl PhysicsScene {
         component.finish_initialize()
     }
 
-    fn checked_rigid_component(
+    pub(super) fn checked_rigid_component(
         &self,
         handle: ComponentHandle,
         generation: u32,
@@ -305,20 +295,13 @@ impl PhysicsScene {
                 let hidden = entities::entity_hidden(authored);
                 if hidden { self.entities[index].entity_flags |= 1; }
                 let settings = &definition.settings;
-                if settings.lock_rotation.iter().any(|v| *v)
-                    || settings.wind_speed_factor.ok_or("rigid wind factor absent")? > 0.0
-                    || definition.declaration_flags & 0x80 != 0 {
-                    return Err(format!("{}: authored rigid requires unhosted rotation/wind/critical owner", binding.entity));
+                if definition.declaration_flags & 0x80 != 0 {
+                    return Err(format!("{}: authored rigid requires unhosted critical-quality owner", binding.entity));
                 }
                 let behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
                     .ok_or("document rigid behavior absent")?;
-                // 809d80 publishes the newly created dynamic body deactivated
-                // when startAsleep is true. It does not run a simulation step.
-                // Keep the real dynamic motion in the shared world; changing it
-                // to keyframed/static here would change later pickup callbacks.
-                if behavior == 2 && settings.start_asleep != Some(true) {
-                    return Err("awake document rigid requires the canonical active simulation owner".into());
-                }
+                //809d80 retains the authored dynamic/asleep state. The shared
+                //097bc0/c8e0a0/099a00 driver now owns active-body simulation.
                 let render = if settings.material.is_none() {
                     crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
                 } else { None };
@@ -428,16 +411,22 @@ impl PhysicsScene {
                     .schedule(handle.slot)?;
             }
         }
-        if self.actors.bodies[movement].actor.is_none() {
-            let actor = self.reference_actor(index, registry)?;
+        let actor = self.reference_actor(index, registry)?;
+        if self.actors.bodies[movement].actor != Some(usize::from(actor.slot))
+            || self.actors.actors[usize::from(actor.slot)].current_body != movement {
             self.actors.bodies[movement].body_id = body;
-            // This admission rejects parent/binds; no authored motion request
-            // exists before Start. Unexpected requests cannot be swallowed.
+            //751050 must select the interface again after a finite Projectile
+            //handoff, even when its retained reciprocal owner already matches.
+            let updates = &self.pre_updates;
             self.actors.attach_body(
                 usize::from(actor.slot),
                 movement,
-                self.post_frame,
-                |_, _| Err("rigid attachment has an unhosted pre-physics motion request".into()),
+                self.pre_frame,
+                |actors, actor| {
+                    updates.updates.enqueue(crate::gameplay::physics_world::update_queue::ObjectReference::capture(
+                        Some((actors.actors[actor].owner.generation,actor))))?;
+                    Ok(())
+                },
             )?;
         }
         let activation = if self.owner(handle)?.flags & 0x30 > 0x1f || asleep {
@@ -528,8 +517,13 @@ impl PhysicsScene {
             component.register_activation_listener(&mut self.body_activation_events)?;
         }
         if !component.start_listeners_registered() {
+            let generation = component.owner.generation;
             component.register_start_listeners(entity_events, self.owner_id, id, false, || {
-                Err("positive wind factor was not admitted".into())
+                if !self.rigid_wind_bodies.contains(&(handle,generation)) {
+                    self.rigid_wind_bodies.try_reserve(1).map_err(|error|format!("Wind body registration: {error}"))?;
+                    self.rigid_wind_bodies.push((handle,generation));
+                }
+                Ok(())
             })?;
         }
         component.finish_start(|| Ok(()))
@@ -562,8 +556,12 @@ impl PhysicsScene {
             let component = rigid_pool_mut!(self, handle.class_id)?
                 .get_mut(handle.slot)
                 .ok_or("rigid component slot is absent")?;
+            let generation = component.owner.generation;
             component.unregister_start_listeners(entity_events, false, || {
-                Err("unadmitted wind registration".into())
+                if let Some(index)=self.rigid_wind_bodies.iter().position(|entry|*entry==(handle,generation)) {
+                    self.rigid_wind_bodies.swap_remove(index);
+                }
+                Ok(())
             })?;
             component.unregister_activation_listener(&mut self.body_activation_events)?;
             component.advance_external_stop()?;

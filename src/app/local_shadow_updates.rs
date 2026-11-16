@@ -80,7 +80,7 @@ pub(super) struct LocalShadowSide {
 pub(super) struct LocalShadowCpu {
     pub current: Option<(u32, Vec<LocalProjectedLight>)>,
     /// The particle systems the current lights' caster lists address.
-    pub particles: Option<std::sync::Arc<Vec<shadow_updates::ParticleShadowCaster>>>,
+    pub runtime_surfaces: Option<std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
     error: Option<String>,
     reported: bool,
     verified_parallel: bool,
@@ -181,7 +181,7 @@ struct LocalStaticInputs {
     /// Particle system surfaces as of the cache entry's first source
     /// generation: like any static-bucket model they stay in the cached
     /// layer until it is rebuilt (the cache key is the light pose, 2cd500).
-    particles: Vec<shadow_updates::ParticleShadowSurface>,
+    runtime_surfaces: Vec<shadow_updates::RuntimeShadowSurface>,
     clocks: game_clock::GameplayViewClocks,
     dimensions: [u32; 2],
     prepared: Option<(Vec<shadow_pass::ShadowInstance>, bool)>,
@@ -215,17 +215,17 @@ fn local_side_models(
 
 /// The particle system surfaces of a whole-light caster list inside one
 /// side, culled by system bounds as 329120 culls models.
-fn local_side_particles(
+fn local_side_runtime_surfaces(
     records: &[(usize, usize)],
     clip: render_shadow::ShadowMatrix,
-    particles: Option<&std::sync::Arc<Vec<shadow_updates::ParticleShadowCaster>>>,
-) -> Vec<shadow_updates::ParticleShadowSurface> {
-    let Some(particles) = particles else { return Vec::new() };
+    runtime_surfaces: Option<&std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
+) -> Vec<shadow_updates::RuntimeShadowSurface> {
+    let Some(runtime_surfaces) = runtime_surfaces else { return Vec::new() };
     let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
     records
         .iter()
-        .filter_map(|&(source, _)| shadow_updates::particle_caster_index(source, particles.len()))
-        .map(|index| &particles[index])
+        .filter_map(|&(source, _)| shadow_updates::runtime_surface_caster_index(source, runtime_surfaces.len()))
+        .map(|index| &runtime_surfaces[index])
         .filter(|caster| !render_model::transformed_aabb_clip_cull(&clip, caster.bounds[0], caster.bounds[1]).culled)
         .flat_map(|caster| caster.surfaces.iter().cloned())
         .collect()
@@ -247,7 +247,7 @@ pub(super) fn publish_local_shadow_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<LocalShadowDraws>,
     mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
-    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind)): (
+    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind), model_data): (
         Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
@@ -256,6 +256,7 @@ pub(super) fn publish_local_shadow_draws(
             Option<Res<super::vegetation_wind::VegetationWind>>,
             Option<Res<super::fog_scene::WorldWind>>,
         ),
+        Option<Res<super::model_motion::ModelProbeLighting>>,
     ),
 ) {
     let _span = profile.as_deref().map(|p| p.measure(25));
@@ -305,10 +306,10 @@ pub(super) fn publish_local_shadow_draws(
                             light.clips[side_index],
                             &model_sources,
                         ),
-                        particles: local_side_particles(
+                        runtime_surfaces: local_side_runtime_surfaces(
                             &light.model_casters[0],
                             light.clips[side_index],
-                            cpu.particles.as_ref(),
+                            cpu.runtime_surfaces.as_ref(),
                         ),
                         clocks,
                         dimensions: [
@@ -366,7 +367,7 @@ pub(super) fn publish_local_shadow_draws(
                     clip,
                     world: light.world_casters[side_index].clone(),
                     models: local_side_models(&light.model_casters[0], clip, &model_sources),
-                    particles: local_side_particles(&light.model_casters[0], clip, cpu.particles.as_ref()),
+                    runtime_surfaces: local_side_runtime_surfaces(&light.model_casters[0], clip, cpu.runtime_surfaces.as_ref()),
                     clocks,
                     dimensions,
                     prepared: None,
@@ -427,9 +428,10 @@ pub(super) fn publish_local_shadow_draws(
                         &images,
                         &vegetation,
                         &mut shadow_textures,
+                        model_data.as_deref(),
                     )?;
-                    let particles = shadow_updates::prepare_particle_shadow_instances(
-                        &input.particles,
+                    let runtime_surfaces = shadow_updates::prepare_runtime_surface_shadows(
+                        &input.runtime_surfaces,
                         input.clip,
                         bias,
                         0.0,
@@ -440,12 +442,12 @@ pub(super) fn publish_local_shadow_draws(
                         &vegetation,
                         &mut shadow_textures,
                     )?;
-                    let contains_models = !models.is_empty() || !particles.is_empty();
+                    let contains_models = !models.is_empty() || !runtime_surfaces.is_empty();
                     let mut built =
                         build_world_layer(plans, matrices.as_ref(), target, &mut buffers)
                             .instances;
                     built.extend(models);
-                    built.extend(particles);
+                    built.extend(runtime_surfaces);
                     input.prepared = Some((built, contains_models));
                 }
                 let static_prepared = !cache.is_some_and(|c| completed.contains_key(&c.id));
@@ -473,7 +475,16 @@ pub(super) fn publish_local_shadow_draws(
                     &images,
                     &vegetation,
                     &mut shadow_textures,
+                    model_data.as_deref(),
                 )?);
+
+                if light.refresh_dynamic {
+                    let surfaces = local_side_runtime_surfaces(&light.model_casters[1], clip, cpu.runtime_surfaces.as_ref());
+                    instances.extend(shadow_updates::prepare_runtime_surface_shadows(
+                        &surfaces, clip, bias, 0.0, dimensions, &clocks,
+                        &materials, &images, &vegetation, &mut shadow_textures,
+                    )?);
+                }
 
                 layers.push(shadow_pass::ShadowLayer {
                     ops: shadow_pass::ShadowLayerOps {
@@ -768,14 +779,14 @@ pub(super) fn prepare_local_shadow_cpu(
     mut cpu: ResMut<LocalShadowCpu>,
     model_frame: Res<shadow_updates::ModelCasterFrame>,
     model_sources: Res<shadow_updates::ModelShadowSources>,
-    particle_casters: Res<shadow_updates::ParticleShadowCasters>,
+    runtime_casters: Res<shadow_updates::RuntimeSurfaceCasters>,
     completion: Res<shadow_pass::LocalShadowCompletion>,
     mut view_controls: ResMut<LocalShadowViewControls>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(24));
     cpu.current = None;
-    cpu.particles = None;
+    cpu.runtime_surfaces = None;
     let Some(mut owner) = owner else {
         return;
     };
@@ -925,7 +936,7 @@ pub(super) fn prepare_local_shadow_cpu(
                 request.priority,
             );
         }
-        let particles = particle_casters.current.as_ref().map(|(_, casters)| casters.clone());
+        let runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters.clone());
         let model_inputs: LocalModelInputs = std::array::from_fn(|bucket| {
             let mut records = Vec::new();
             let mut inputs = Vec::new();
@@ -945,8 +956,9 @@ pub(super) fn prepare_local_shadow_cpu(
                 }
             }
             // FX systems are static-bucket model owners (201480).
-            if bucket == 0 {
-                for (index, caster) in particles.iter().flat_map(|p| p.iter()).enumerate() {
+            {
+                for (index, caster) in runtime_surfaces.iter().flat_map(|p| p.iter()).enumerate()
+                    .filter(|(_, caster)| caster.dynamic == (bucket != 0)) {
                     records.push(render_model::LocalModelCasterRecord {
                         bounds: caster.bounds,
                         camera_clip_mask: caster.camera_clip_mask,
@@ -1248,7 +1260,7 @@ pub(super) fn prepare_local_shadow_cpu(
                 cpu.reported = true;
             }
             cpu.current = Some((frame.0, lights));
-            cpu.particles = particle_casters.current.as_ref().map(|(_, casters)| casters.clone());
+            cpu.runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters.clone());
         }
         Err(error) => {
             if cpu.error.as_ref() != Some(&error) {

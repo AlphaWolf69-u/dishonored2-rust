@@ -7,7 +7,7 @@ use crate::archive::Catalog;
 use super::SoundEventDeclaration;
 
 pub fn acquire_with(catalog: &Catalog, name: &str,
-    read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Arc<SoundEventDeclaration>, String> {
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Arc<SoundEventDeclaration>, String> {
     let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
     let acquisition_start = if trace { crate::loading::thread_cycles() } else { None };
     let path = format!("generated/decls/soundevent/{}.decl", name.replace('\\', "/").to_ascii_lowercase());
@@ -19,9 +19,15 @@ pub fn acquire_with(catalog: &Catalog, name: &str,
         decoded = true;
         let start = if trace { crate::loading::thread_cycles() } else { None };
         let _tag = crate::platform::allocation_tags::tag("Sound event declarations");
-        let value = crate::assets::entities::player::resolved_decl("soundevent", name, read)
+        let value = crate::assets::entities::player::resolved_decl("soundevent", name, &mut read)
             .and_then(|fields| SoundEventDeclaration::from_fields(&fields)
-                .map(Arc::new).map_err(|error| format!("{name}: {error}")));
+                .map_err(|error| format!("{name}: {error}")))
+            .and_then(|mut event| {
+                if let Some(name)=event.game_properties.as_deref(){
+                    event.game_descriptor=Some(super::game_properties::acquire_with(catalog,name,&mut read)?);
+                }
+                Ok(Arc::new(event))
+            });
         if let (Some(start), Some(end)) = (start, if trace { crate::loading::thread_cycles() } else { None }) {
             cycles = end.saturating_sub(start);
         }

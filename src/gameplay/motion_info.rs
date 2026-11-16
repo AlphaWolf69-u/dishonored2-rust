@@ -61,7 +61,7 @@ impl MotionInfo {
         distribution: Option<MassDistribution>,
         calculate: impl FnOnce([u32; 3]) -> Result<PrincipalMassProperties, String>,
     ) -> Result<Self, String> {
-        if (body.mass_distribution != 0) != distribution.is_some() {
+        if (body.mass_distribution != 0 || body.mass_distribution_lease.is_some()) != distribution.is_some() {
             return Err("motion mass distribution reference is unresolved".into());
         }
         let frame = creation_mass_properties(cached, distribution, body.mass, calculate)?;

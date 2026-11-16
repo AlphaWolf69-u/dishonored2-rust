@@ -43,6 +43,26 @@ pub(crate) struct PendingStick {
     pub dynamic_target: bool,
 }
 
+/// Typed projection of the source 0x90-byte contact4 record. Resource IDs and
+/// checked component/entity generations replace borrowed executable pointers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContactBody {
+    pub body: u32,
+    pub component: ComponentHandle,
+    pub entity: EntityId,
+    pub material: u16,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Contact {
+    pub bodies: [ContactBody; 2],
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub velocity: [f32; 3],
+    pub distance_squared: f32,
+    pub other_frame: ReferenceFrame,
+    pub damage: f32,
+}
+
 pub(crate) struct State {
     pub source: Arc<crate::assets::throwable::Definition>,
     /// Native+438 defaults0x42; callers change only the source-owned bits.
@@ -56,6 +76,11 @@ pub(crate) struct State {
     pub binding: Option<Binding>,
     pub pending_stick: Option<PendingStick>,
     listener: Option<(usize, ComponentHandle, u32, EntityId)>,
+    contacts: [Option<Contact>; 4],
+    contact_count: usize,
+    contact_delivery: u8,
+    damage_frame: i32,
+    damage_targets: Vec<EntityId>,
 }
 impl State {
     pub fn new(source: Arc<crate::assets::throwable::Definition>) -> Self {
@@ -70,10 +95,99 @@ impl State {
             binding: None,
             pending_stick: None,
             listener: None,
+            contacts: [None; 4],
+            contact_count: 0,
+            contact_delivery: 0,
+            damage_frame: -1,
+            damage_targets: Vec::new(),
         }
     }
     pub fn flags(&self) -> u8 {
         self.flags
+    }
+    /// 4c6580 gives each component four inline entries; 4c7c50 rejects a
+    /// full list before calling the source duplicate/nearest-point rule.
+    pub fn push_contact(&mut self, contact: Contact) -> Result<(), String> {
+        if self.contact_count == self.contacts.len() {
+            return Err("Throwable contact list is full".into());
+        }
+        for slot in &mut self.contacts[..self.contact_count] {
+            let old = slot.as_mut().ok_or("Throwable contact list has a hole")?;
+            if old.bodies[0].component == contact.bodies[0].component
+                && old.bodies[1].component == contact.bodies[1].component
+            {
+                if old.distance_squared <= contact.distance_squared {
+                    return Ok(());
+                }
+                *old = contact;
+                //4c64c0 replaces the nearer duplicate then appends it as well.
+                break;
+            }
+        }
+        self.contacts[self.contact_count] = Some(contact);
+        self.contact_count += 1;
+        Ok(())
+    }
+    /// 4c9560 drains last-in-first-out, acknowledging only after its callback.
+    pub fn pending_contact(&self) -> Option<Contact> {
+        self.contact_count
+            .checked_sub(1)
+            .and_then(|i| self.contacts[i])
+    }
+    pub fn finish_contact(&mut self) -> Result<(), String> {
+        let i = self
+            .contact_count
+            .checked_sub(1)
+            .ok_or("Throwable contact list empty")?;
+        self.contacts[i] = None;
+        self.contact_count = i;
+        self.contact_delivery = 0;
+        Ok(())
+    }
+    ///4c7f40 retires all inline contacts during the actual component Stop.
+    pub fn clear_contacts(&mut self) {
+        self.contacts.fill(None);
+        self.contact_count = 0;
+        self.contact_delivery = 0;
+        self.damage_targets.clear();
+    }
+    pub fn contact_delivery(&self) -> u8 {
+        self.contact_delivery
+    }
+    pub fn delivered_contact_stage(&mut self, stage: u8) {
+        self.contact_delivery = stage;
+    }
+    pub fn first_hit(&self) -> bool {
+        self.flags & 0x10 != 0
+    }
+    pub fn npc_hit(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+    pub fn mark_first_hit(&mut self) {
+        self.flags |= 0x10;
+    }
+    pub fn mark_npc_hit(&mut self) {
+        self.flags |= 0x20;
+    }
+    ///8071e0 suppresses duplicate damage to the same target in one frame.
+    pub fn damaged_in_frame(&mut self, frame: i32, target: EntityId) -> bool {
+        if self.damage_frame != frame {
+            self.damage_frame = frame;
+            self.damage_targets.clear();
+        }
+        self.damage_targets.contains(&target)
+    }
+    pub fn mark_damaged_in_frame(&mut self, target: EntityId) -> Result<(), String> {
+        self.damage_targets
+            .try_reserve(1)
+            .map_err(|e| format!("Throwable damage target admission: {e}"))?;
+        self.damage_targets.push(target);
+        Ok(())
+    }
+    pub fn reserve_damage_target(&mut self) -> Result<(), String> {
+        self.damage_targets
+            .try_reserve(1)
+            .map_err(|e| format!("Throwable damage target admission: {e}"))
     }
     pub fn thrown(&self) -> bool {
         self.flags & 8 != 0

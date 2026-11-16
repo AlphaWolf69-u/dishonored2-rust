@@ -26,6 +26,17 @@ pub(super) struct Binding {
 }
 
 impl DocumentHierarchy {
+    /// Retire per-actor projections with the actual header generation. A
+    ///reused entity index must not inherit another actor's render/joint frame.
+    pub(super) fn retire_entity_frames(&mut self,entity:usize)->Result<(),String>{
+        if self.bindings.iter().any(|binding|binding.child==entity||binding.parent==entity){
+            return Err("retiring entity still has document bindings".into());
+        }
+        self.ancestors.remove(&entity);
+        self.render_frames.remove(&entity);
+        self.external_joints.retain(|(owner,_),_|*owner!=entity);
+        Ok(())
+    }
     pub(super) fn record_runtime_binding(&mut self,child:usize,parent:usize,parent_placement:Option<usize>,joint:i16,
         child_actor:(ComponentHandle,u32),parent_actor:(ComponentHandle,u32),initial:ReferenceFrame,parent_frame:ReferenceFrame) {
         self.ancestors.entry(parent).or_insert((parent_frame,parent_placement));
@@ -245,7 +256,10 @@ impl PhysicsScene {
         if actor.owner.generation != generation { return Err("attachment actor generation is stale".into()); }
         let linked = self.entities[entity].components.reference_actor == Some(handle);
         let retained = self.retirement.as_ref().is_some_and(|retirement| retirement.retained_actors.contains(&(handle, generation)));
-        if !linked && !retained { return Err("attachment actor has no live or retiring owner".into()); }
+        let bound = self.document_hierarchy.bindings.iter().any(|binding|
+            (binding.child == entity && binding.child_actor == (handle, generation))
+                || (binding.parent == entity && binding.parent_actor == (handle, generation)));
+        if !linked && !retained && !bound { return Err("attachment actor has no live or retiring owner".into()); }
         Ok(handle.slot as usize)
     }
 

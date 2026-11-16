@@ -10,36 +10,51 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+pub(crate) mod component;
+mod stick;
+mod weapon_variant;
+pub(crate) use weapon_variant::weapon_variant;
 
+#[derive(Clone)]
 pub(crate) struct Component {
     pub slot: String,
     pub declaration: String,
+    pub inline: bool,
     pub class_index: usize,
     pub factory: u32,
     pub scheduling: Arc<DeclarationScheduling>,
     pub kind: Kind,
 }
+#[derive(Clone)]
 pub(crate) enum Kind {
     Rigid(Arc<super::entities::rigid_body::Definition>),
     Throwable(Arc<super::throwable::Definition>),
     Projectile(Arc<super::projectiles::Declaration>),
     Breakable(Arc<super::breakable::Definition>),
     Health(Arc<super::entities::damage::HealthBinding>),
+    SoundVolume(Arc<crate::gameplay::sound::volume_control::Definition>),
     Audio(Arc<super::entities::audio::AudioBinding>),
     Pickable(Arc<crate::gameplay::pickable_component::PickableDefinition>),
     /// Payload-free reference-frame actor is the real factory32 component.
     ReferenceFrame,
     /// Actual AnimBasic metadata and Clips live with the model's BasicRig.
-    AnimBasic,
+    AnimBasic {
+        default_alias: Option<String>,
+    },
     /// Source-proven optional manager consumers have no actual runtime owner
     /// in this client. Their metadata is retained, never a dummy component.
-    Unhosted { class: &'static str },
+    Unhosted {
+        class: &'static str,
+    },
 }
+#[derive(Clone)]
 pub(crate) struct Chunk {
+    pub component: usize,
     pub step: usize,
     pub chunk: usize,
     pub definition: Arc<Definition>,
 }
+#[derive(Clone)]
 pub(crate) struct Definition {
     pub entity: String,
     pub class: String,
@@ -51,6 +66,9 @@ pub(crate) struct Definition {
     pub throwable: Option<Arc<super::throwable::Definition>>,
     pub breakable: Option<Arc<super::breakable::Definition>>,
     pub chunks: Vec<Chunk>,
+    pub stick_components: Vec<Component>,
+    pub stick_model: Option<Arc<super::equipment::attachment::Descriptor>>,
+    pub stick_chunks: Vec<Chunk>,
     /// Exact source read-history ownership, without retaining parsed trees.
     pub source_paths: Vec<String>,
 }
@@ -73,15 +91,51 @@ fn active(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
         Ok(())
     }
 }
-fn validate_capabilities(types:&ComponentTypes,components:&[Component])->Result<(),String>{
-    let hierarchy=types.classes().hierarchy();
-    for optional in components.iter().filter(|component|matches!(component.kind,Kind::Unhosted{..})){
-        for supported in components.iter().filter(|component|!matches!(component.kind,Kind::Unhosted{..})){
-            for dependency in &types.definition(supported.factory)?.initialization{
-                let range=hierarchy.type_range(dependency.class)?;
-                let target=hierarchy.type_id(optional.class_index)?;
-                if (dependency.exact&&dependency.class==optional.class_index)||(!dependency.exact&&range[0]<=target&&target<=range[1]){
-                    return Err(format!("supported component {} requires unhosted manager component {}: {}",supported.slot,optional.slot,dependency.reason));
+fn validate_capabilities<'a>(
+    types: &ComponentTypes,
+    components: impl Iterator<Item = &'a Component> + Clone,
+) -> Result<(), String> {
+    let hierarchy = types.classes().hierarchy();
+    //HealthEvolved has its own unhosted payload and callbacks. HealthDoor uses
+    //the actual DoorHealthComponent pool and39edc0 virtual calculation.
+    //Reject before resource warming or actor allocation, never substitute
+    //the base Health pool merely because the type inherits from it.
+    for component in components
+        .clone()
+        .filter(|component| matches!(component.kind, Kind::Health(_)))
+    {
+        let class = types
+            .classes()
+            .metadata(component.class_index)
+            .ok_or("runtime Health class metadata absent")?;
+        let name = types.classes().name_text(class.name);
+        if name != Some(b"arkCpntHealth".as_slice())
+            && name != Some(b"arkCpntHealthDoor".as_slice())
+        {
+            return Err(format!(
+                "runtime Health component {} requires its actual derived payload owner",
+                component.slot
+            ));
+        }
+    }
+    for optional in components
+        .clone()
+        .filter(|component| matches!(component.kind, Kind::Unhosted { .. }))
+    {
+        for supported in components
+            .clone()
+            .filter(|component| !matches!(component.kind, Kind::Unhosted { .. }))
+        {
+            for dependency in &types.definition(supported.factory)?.initialization {
+                let range = hierarchy.type_range(dependency.class)?;
+                let target = hierarchy.type_id(optional.class_index)?;
+                if (dependency.exact && dependency.class == optional.class_index)
+                    || (!dependency.exact && range[0] <= target && target <= range[1])
+                {
+                    return Err(format!(
+                        "supported component {} requires unhosted manager component {}: {}",
+                        supported.slot, optional.slot, dependency.reason
+                    ));
                 }
             }
         }
@@ -113,13 +167,13 @@ impl Definition {
                 .get_or_init(Default::default)
                 .lock()
                 .map_err(|_| "entity definition registry is poisoned")?;
-            let existing=registry.live_values().find(|value| value.entity == entity);
+            let existing = registry.live_values().find(|value| value.entity == entity);
             if let Some(value) = existing {
                 return Ok(value);
             }
         }
         stack.push(source.clone());
-        let result = (|| {
+        let result: Result<Arc<Self>, String> = (|| {
             let types = ComponentTypes::acquire(catalog)?;
             let mut texts = HashMap::<String, Option<String>>::new();
             let mut read = |path: &str| {
@@ -179,149 +233,29 @@ impl Definition {
                     .or_else(|| atom(&entry, "mapComponentDecl"))
                     .unwrap_or("")
                     .to_owned();
-                let mut defaults = DeclarationScheduling::from_base_flags(0);
-                if kind == "cpntaudio" {
-                    defaults.add_updates(0x10);
+                let decoded = component::from_resolved(
+                    catalog,
+                    &types,
+                    entity,
+                    &format!("item_add[{slot}]"),
+                    &declaration,
+                    entities::scope(entities::field(&entry, "inlineDecl")).is_some(),
+                    &kind,
+                    &fields,
+                    &mut read,
+                )?;
+                match &decoded.component.kind {
+                    Kind::Projectile(value) => projectile = Some(value.clone()),
+                    Kind::Throwable(value) => throwable = Some(value.clone()),
+                    Kind::Breakable(value) => breakable = Some(value.clone()),
+                    _ => {}
                 }
-                let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
-                let (native, payload) = match kind.as_str() {
-                    "cpntrigidbody" => (
-                        "arkCpntRigidBody",
-                        Kind::Rigid(Arc::new(entities::rigid_body::Definition {
-                            settings: entities::rigid_body::from_resolved(
-                                entity,
-                                &declaration,
-                                &fields,
-                            )?,
-                            declaration_flags: entities::rigid_body::declaration_flags(&fields)?,
-                            scheduling: scheduling.clone(),
-                        })),
-                    ),
-                    "cpntrigidbodythrowable" => {
-                        let value = super::throwable::Definition::from_resolved(
-                            catalog,
-                            entity,
-                            &declaration,
-                            &fields,
-                            scheduling.clone(),
-                        )?;
-                        throwable = Some(value.clone());
-                        ("arkCpntRigidBodyThrowable", Kind::Throwable(value))
-                    }
-                    "cpntprojectile" => {
-                        let value = super::projectiles::Declaration::from_resolved(
-                            catalog, entity, &fields,
-                        )?;
-                        projectile = Some(value.clone());
-                        ("arkCpntProjectile", Kind::Projectile(value))
-                    }
-                    "cpntbreakable" => {
-                        let value = Arc::new(super::breakable::Definition::read(&fields)?);
-                        breakable = Some(value.clone());
-                        ("arkCpntBreakable", Kind::Breakable(value))
-                    }
-                    "cpnthealth" | "cpnthealthevolved" | "cpnthealthdoor" => {
-                        let native = match kind.as_str() {
-                            "cpnthealth" => "arkCpntHealth",
-                            "cpnthealthevolved" => "arkCpntHealthEvolved",
-                            _ => "arkCpntHealthDoor",
-                        };
-                        let value = Arc::new(entities::damage::HealthBinding {
-                            entity_id: entity.to_owned(),
-                            slot: format!("item_add[{slot}]"),
-                            class: kind.clone(),
-                            maximum: crate::gameplay::damage::number(&fields, "m_health", 1.)?,
-                            asleep_health: crate::gameplay::damage::number(
-                                &fields,
-                                "m_asleepHealth",
-                                1.,
-                            )?,
-                            receiver: crate::gameplay::damage::Receiver::read(&fields)?,
-                            scheduling: (*scheduling).clone(),
-                        });
-                        (native, Kind::Health(value))
-                    }
-                    "cpntaudio" => {
-                        let list = child(&fields, "m_startSoundEvents");
-                        let count = atom(list, "num")
-                            .unwrap_or("0")
-                            .parse::<usize>()
-                            .map_err(|_| "invalid runtime audio startup count")?;
-                        let mut events = Vec::with_capacity(count);
-                        for index in 0..count {
-                            events.push(
-                                atom(list, &format!("item[{index}]"))
-                                    .filter(|name| {
-                                        !name.is_empty() && !name.eq_ignore_ascii_case("NULL")
-                                    })
-                                    .map(|name| {
-                                        super::wwise::event_resources::acquire_with(
-                                            catalog, name, &mut read,
-                                        )
-                                    })
-                                    .transpose()?,
-                            );
-                        }
-                        let propagation = match atom(&fields, "m_enablePropagation") {
-                            None | Some("true") => true,
-                            Some("false") => false,
-                            _ => return Err("invalid runtime audio propagation flag".into()),
-                        };
-                        let value = Arc::new(entities::audio::AudioBinding {
-                            entity_id: entity.to_owned(),
-                            slot: format!("item_add[{slot}]"),
-                            scheduling: (*scheduling).clone(),
-                            settings: crate::gameplay::sound::component::Settings::read(&fields)?,
-                            propagation,
-                            events,
-                            frame: crate::gameplay::reference_frame::ReferenceFrame::default(),
-                        });
-                        ("arkCpntAudio", Kind::Audio(value))
-                    }
-                    "cpntpickable_simple" | "cpntpickablesimple" => (
-                        "arkCpntPickable_Simple",
-                        Kind::Pickable(entities::carrying::definition(catalog, &fields)?),
-                    ),
-                    "cpntanimbase" => {
-                        animation = Some(
-                            atom(&fields, "m_animTree")
-                                .ok_or("runtime AnimBasic tree is absent")?
-                                .to_owned(),
-                        );
-                        ("arkCpntAnimBase", Kind::AnimBasic)
-                    }
-                    "cpntaiattentionsource"=>("arkCpntAIAttentionSource",Kind::Unhosted{class:"arkCpntAIAttentionSource"}),
-                    "cpntaimassist"=>("arkCpntAimAssist",Kind::Unhosted{class:"arkCpntAimAssist"}),
-                    "cpntobservable"=>("arkCpntObservable",Kind::Unhosted{class:"arkCpntObservable"}),
-                    _ => {
-                        return Err(format!(
-                            "{entity}: component {kind} has no typed runtime payload owner"
-                        ))
-                    }
-                };
-                let factory = types
-                    .factories()
-                    .iter()
-                    .find(|factory| {
-                        types
-                            .classes()
-                            .metadata(factory.class)
-                            .and_then(|data| types.classes().name_text(data.name))
-                            .is_some_and(|name|name.eq_ignore_ascii_case(native.as_bytes()))
-                    })
-                    .ok_or_else(|| {
-                        format!("{entity}: installed component factory {native} is absent")
-                    })?;
-                components.push(Component {
-                    slot: format!("item_add[{slot}]"),
-                    declaration,
-                    class_index: factory.class,
-                    factory: factory.pool_index,
-                    scheduling,
-                    kind: payload,
-                });
+                if matches!(&decoded.component.kind, Kind::AnimBasic { .. }) {
+                    animation = decoded.animation;
+                }
+                components.push(decoded.component);
             }
-            validate_capabilities(&types,&components)?;
+            validate_capabilities(&types, components.iter())?;
             let projected = entities::Definition {
                 kind: "entity".into(),
                 class: class.clone(),
@@ -343,17 +277,37 @@ impl Definition {
             })
             .transpose()?;
             drop(read);
-            let source_paths = texts.into_keys().collect();
+            let mut source_paths: Vec<_> = texts.into_keys().collect();
             let mut chunks = Vec::new();
-            if let Some(definition) = &breakable {
-                for (step, chunk, entity) in definition.chunks() {
-                    chunks.push(Chunk {
-                        step,
-                        chunk,
-                        definition: Self::acquire_inner(catalog, &name(entity), cancelled, stack)?,
-                    });
+            for (component, descriptor) in components.iter().enumerate() {
+                if let Kind::Breakable(definition) = &descriptor.kind {
+                    for (step, chunk, entity) in definition.chunks() {
+                        chunks.push(Chunk {
+                            component,
+                            step,
+                            chunk,
+                            definition: Self::acquire_inner(
+                                catalog,
+                                &name(entity),
+                                cancelled,
+                                stack,
+                            )?,
+                        });
+                    }
                 }
             }
+            let stick = stick::prepare(
+                catalog,
+                entity,
+                &class,
+                &types,
+                projectile.as_deref(),
+                model.clone(),
+                cancelled,
+                stack,
+            )?;
+            validate_capabilities(&types, components.iter().chain(stick.components.iter()))?;
+            source_paths.extend(stick.source_paths);
             active(cancelled)?;
             Ok(Arc::new(Self {
                 entity: entity.to_owned(),
@@ -366,6 +320,9 @@ impl Definition {
                 throwable,
                 breakable,
                 chunks,
+                stick_components: stick.components,
+                stick_model: stick.model,
+                stick_chunks: stick.chunks,
                 source_paths,
             }))
         })();

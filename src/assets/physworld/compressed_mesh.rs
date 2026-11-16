@@ -2,12 +2,14 @@
 //! 127f590/127f030; no navigation triangles or render meshes become colliders.
 use super::{float, le32, source::ShapeSource, CompressedPrimitiveKind};
 use std::sync::Arc;
+mod surface;
 
 pub struct CompressedMesh {
     source: Arc<ShapeSource>,
     pub shape_item: usize,
     tables: [usize; 6],
     top_nodes: usize,
+    convex_mask: u8,
     domain: [[f32; 3]; 2],
     pub(crate) scale: f32,
 }
@@ -44,11 +46,17 @@ impl CompressedMesh {
         }
         let (low, high) = world.compressed_domain(tree, ty)?;
         let top_nodes = le32(tree, world.field_offset(ty, "nodes")?)? as usize;
+        // hkcdStaticMeshTreeBase reflection string141ea5a70; runtime+5c
+        // becomes the packed visitor's primitive-is-flat-convex mask.
+        let convex_mask = *tree
+            .get(world.field_offset(ty, "primitiveStoresIsFlatConvex")?)
+            .ok_or("compressed convex primitive mask absent")?;
         Ok(Self {
             source,
             shape_item,
             tables,
             top_nodes,
+            convex_mask,
             domain: [low, high],
             scale: 1.,
         })
@@ -174,6 +182,12 @@ impl CompressedMesh {
             },
         )
     }
+    /// 127f590 treats an encoded flat convex quad as one support shape;
+    /// other quads retain their two actual primitive triangle keys.
+    pub fn convex_quad(&self, section: usize, index: usize) -> Result<bool, String> {
+        let primitive = self.primitive(section, index)?;
+        Ok(primitive[3] < (primitive[1] & self.convex_mask))
+    }
     /// The low header nibble selects sphere (0), capsule (1), or convex (2).
     pub fn convex_kind(&self, section: usize, index: usize) -> Result<Option<u8>, String> {
         if self.primitive_kind(section, index)? != PrimitiveKind::Convex {
@@ -204,6 +218,34 @@ impl CompressedMesh {
             }
         }
         Err("compressed primitive has no data run".into())
+    }
+    ///08b830 calls the real primitive's buildGeometry virtual before welding.
+    pub(crate) fn surface_triangles(
+        &self,
+        section: usize,
+        index: usize,
+        parent_radius: f32,
+    ) -> Result<Vec<[[f32; 3]; 3]>, String> {
+        let mut vertices = Vec::new();
+        self.vertices(section, index, &mut vertices)?;
+        let radius = self.primitive_radius(section, index, parent_radius)?;
+        match self.convex_kind(section, index)? {
+            Some(0) => surface::sphere(
+                *vertices.first().ok_or("sphere surface center absent")?,
+                radius,
+            ),
+            Some(1) => surface::capsule(
+                *vertices
+                    .first()
+                    .ok_or("capsule surface endpoint A absent")?,
+                *vertices.get(1).ok_or("capsule surface endpoint B absent")?,
+                radius,
+            ),
+            // ca3920->ce1720 (facecount0)->ce1e30 with build mode1:
+            // source support points go directly through b88330/b928a0.
+            Some(2) => surface::convex(&vertices, radius),
+            _ => Err("surface construction requires a source compressed convex primitive".into()),
+        }
     }
     /// Decode just one actual leaf into the caller's reusable scratch. Quads
     /// remain four vertices; convex headers retain their source codec and

@@ -5,8 +5,9 @@
 
 // Host equivalent of the resource registry's scoped purge (140060180).
 mod residency;
-pub(crate) use residency::{Registry, acquire, release_unused};
-static HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+pub(crate) use residency::{acquire, release_unused, Registry};
+static HISTORY_SCOPES: crate::loading::CatalogHistoryScopes =
+    crate::loading::CatalogHistoryScopes::new();
 
 pub(crate) struct HistoryLease(u64);
 
@@ -50,20 +51,36 @@ pub struct EdgeSkeleton {
 
 impl Clone for EdgeSkeleton {
     fn clone(&self) -> Self {
-        Self { rest: self.rest.clone(), parents: self.parents.clone(), parent_skeleton: self.parent_skeleton.clone(),
-            parent_reference: self.parent_reference, inverse_bind: self.inverse_bind.clone(), joint_names: self.joint_names.clone(),
-            hierarchy: self.hierarchy.clone(), residency: None, audit: None }
+        Self {
+            rest: self.rest.clone(),
+            parents: self.parents.clone(),
+            parent_skeleton: self.parent_skeleton.clone(),
+            parent_reference: self.parent_reference,
+            inverse_bind: self.inverse_bind.clone(),
+            joint_names: self.joint_names.clone(),
+            hierarchy: self.hierarchy.clone(),
+            residency: None,
+            audit: None,
+        }
     }
 }
 impl PartialEq for EdgeSkeleton {
     fn eq(&self, other: &Self) -> bool {
-        self.rest == other.rest && self.parents == other.parents && self.parent_skeleton == other.parent_skeleton
-            && self.parent_reference == other.parent_reference && self.inverse_bind == other.inverse_bind
-            && self.joint_names == other.joint_names && self.hierarchy == other.hierarchy
+        self.rest == other.rest
+            && self.parents == other.parents
+            && self.parent_skeleton == other.parent_skeleton
+            && self.parent_reference == other.parent_reference
+            && self.inverse_bind == other.inverse_bind
+            && self.joint_names == other.joint_names
+            && self.hierarchy == other.hierarchy
     }
 }
 impl EdgeSkeleton {
-    pub(crate) fn source_audit(&self) -> Option<(u32, usize)> { self.audit.as_ref().map(|audit| (audit.source_crc, audit.source_bytes)) }
+    pub(crate) fn source_audit(&self) -> Option<(u32, usize)> {
+        self.audit
+            .as_ref()
+            .map(|audit| (audit.source_crc, audit.source_bytes))
+    }
 }
 
 struct Reader<'a> {
@@ -297,15 +314,32 @@ pub fn pose_matrices(
     hierarchy: &[[u16; 2]],
     root: &JointRestPose,
 ) -> Result<Vec<[[f32; 4]; 3]>, String> {
+    let mut result = Vec::new();
+    pose_matrices_into(local, hierarchy, root, &mut result, &mut Vec::new())?;
+    Ok(result)
+}
+
+/// Same12e1130 owner with caller-retained result/ready storage. Four-wide
+/// hierarchy groups are stack scratch rather than per-group allocations.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn pose_matrices_into(
+    local: &[JointRestPose],
+    hierarchy: &[[u16; 2]],
+    root: &JointRestPose,
+    result: &mut Vec<[[f32; 4]; 3]>,
+    ready: &mut Vec<bool>,
+) -> Result<(), String> {
     if hierarchy.len() % 4 != 0 {
         return Err("Edge hierarchy lacks four-lane padding".into());
     }
-    let mut result = vec![[[0.0; 4]; 3]; local.len()];
-    let mut ready = vec![false; local.len()];
+    result.clear();
+    result.resize(local.len(), [[0.; 4]; 3]);
+    ready.clear();
+    ready.resize(local.len(), false);
     let root_matrix = joint_local_matrix(root);
     for group in hierarchy.chunks_exact(4) {
-        let mut prepared = Vec::with_capacity(4);
-        for &[joint, parent] in group {
+        let mut prepared = [(0usize, [[0.; 4]; 3]); 4];
+        for (lane, &[joint, parent]) in group.iter().enumerate() {
             let joint = usize::from(joint);
             let pose = local
                 .get(joint)
@@ -340,7 +374,7 @@ pub fn pose_matrices(
                     }
                 })
             });
-            prepared.push((joint, output));
+            prepared[lane] = (joint, output);
         }
         for (joint, output) in prepared {
             result[joint] = output;
@@ -350,7 +384,7 @@ pub fn pose_matrices(
     if ready.iter().any(|ready| !*ready) {
         return Err("Edge hierarchy did not produce every joint".into());
     }
-    Ok(result)
+    Ok(())
 }
 
 /// 09b980 copies a native column-major 4x4 into the row-major 3x4 skin ABI.
@@ -425,16 +459,22 @@ pub fn vertex_skin_matrix(
 #[derive(Clone)]
 pub(crate) struct SharedSlice<T>(std::sync::Arc<[T]>);
 impl<T> From<Vec<T>> for SharedSlice<T> {
-    fn from(values: Vec<T>) -> Self { Self(values.into()) }
+    fn from(values: Vec<T>) -> Self {
+        Self(values.into())
+    }
 }
 impl<T> std::ops::Deref for SharedSlice<T> {
     type Target = [T];
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 impl<'a, T> IntoIterator for &'a SharedSlice<T> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
 }
 
 pub(crate) type Affine = [[f32; 4]; 3];
@@ -455,19 +495,32 @@ pub(crate) struct RestRigSources {
 }
 impl RestRigSources {
     pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
-        Self { catalog: catalog.identity(), share: !catalog.has_overlays(), rigs: Default::default() }
+        Self {
+            catalog: catalog.identity(),
+            share: !catalog.has_overlays(),
+            rigs: Default::default(),
+        }
     }
 
-    pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, name: &str) -> Result<RestRig, String> {
+    pub(crate) fn acquire(
+        &mut self,
+        catalog: &crate::archive::Catalog,
+        name: &str,
+    ) -> Result<RestRig, String> {
         if self.catalog != catalog.identity() {
             self.rigs.clear();
             self.catalog = catalog.identity();
             self.share = !catalog.has_overlays();
         }
         let normalized = name.replace('\\', "/").to_ascii_lowercase();
-        let stem = normalized.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
+        let stem = normalized
+            .strip_suffix(".md6skl")
+            .ok_or("unsupported skeleton resource suffix")?;
         let path = format!("generated/skeleton/{stem}.edgeskl");
-        let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+        let key = if path
+            .bytes()
+            .all(|byte| byte != b'\\' && !byte.is_ascii_uppercase())
+        {
             std::borrow::Cow::Borrowed(path.as_str())
         } else {
             let mut normalized = path.replace('\\', "/");
@@ -475,14 +528,27 @@ impl RestRigSources {
             std::borrow::Cow::Owned(normalized)
         };
         if self.share {
-            if let Some(rig) = self.rigs.get(key.as_ref()) { return Ok(rig.clone()); }
+            if let Some(rig) = self.rigs.get(key.as_ref()) {
+                return Ok(rig.clone());
+            }
         }
         let skeleton = acquire(catalog, &path)?;
-        let root = JointRestPose { rotation: [0., 0., 0., 1.], translation: [0.; 3], scale: [1.; 3] };
+        let root = JointRestPose {
+            rotation: [0., 0., 0., 1.],
+            translation: [0.; 3],
+            scale: [1.; 3],
+        };
         let rest = pose_matrices(&skeleton.rest, &skeleton.hierarchy, &root)?;
-        if skeleton.inverse_bind.len() < rest.len() { return Err("skeleton inverse bind table is short".into()); }
-        let rig = RestRig { skeleton, rest: rest.into() };
-        if self.share { self.rigs.insert(key.into_owned(), rig.clone()); }
+        if skeleton.inverse_bind.len() < rest.len() {
+            return Err("skeleton inverse bind table is short".into());
+        }
+        let rig = RestRig {
+            skeleton,
+            rest: rest.into(),
+        };
+        if self.share {
+            self.rigs.insert(key.into_owned(), rig.clone());
+        }
         Ok(rig)
     }
 }

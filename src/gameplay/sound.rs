@@ -12,6 +12,7 @@ pub mod properties;
 pub mod resampler;
 pub mod gain;
 pub mod component;
+pub mod volume_control;
 pub mod admission;
 pub mod propagation;
 pub mod acoustic_world;

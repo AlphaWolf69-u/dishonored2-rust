@@ -65,6 +65,9 @@ pub struct Prepared {
     pub declaration: Arc<Declaration>,
     pub bounds_min: bevy_math::Vec3,
     pub bounds_max: bevy_math::Vec3,
+    ///638ae0 queries the base model before639970 applies637e40's visual
+    ///override. Final model bounds above still serve Initialize626eb0.
+    pub sight_bounds: [[f32; 3]; 2],
     pub(crate) entity: Arc<crate::assets::runtime_entity::Definition>,
 }
 impl std::fmt::Debug for Prepared {
@@ -77,6 +80,12 @@ impl std::fmt::Debug for Prepared {
 impl Prepared {
     pub(crate) fn from_entity(
         entity: Arc<crate::assets::runtime_entity::Definition>,
+    ) -> Result<Arc<Self>, String> {
+        Self::project(entity, None)
+    }
+    fn project(
+        entity: Arc<crate::assets::runtime_entity::Definition>,
+        sight_bounds: Option<[[f32; 3]; 2]>,
     ) -> Result<Arc<Self>, String> {
         let declaration = entity
             .projectile
@@ -94,13 +103,28 @@ impl Prepared {
             declaration,
             bounds_min: bevy_math::Vec3::from_array(bounds[0]),
             bounds_max: bevy_math::Vec3::from_array(bounds[1]),
+            sight_bounds: sight_bounds.unwrap_or(bounds),
             entity,
         }))
+    }
+    pub(crate) fn from_weapon_entity(
+        base: &crate::assets::runtime_entity::Definition,
+        entity: Arc<crate::assets::runtime_entity::Definition>,
+    ) -> Result<Arc<Self>, String> {
+        let sight_bounds = base
+            .model
+            .as_ref()
+            .ok_or("weapon projectile has no base render model")?
+            .geometry
+            .bounds();
+        Self::project(entity, Some(sight_bounds))
     }
 }
 
 #[derive(Debug)]
 pub struct StickSettings {
+    pub can_recover: bool,
+    pub components_to_attach: Vec<String>,
     pub minimum_yaw: f32,
     pub maximum_yaw: f32,
     pub random_yaw: bool,
@@ -274,6 +298,8 @@ impl Declaration {
                 sink_random_range: number(stick, "m_sinkDistRandomRange", 0.)?,
                 sink_pinned_limb: number(stick, "m_sinkDistWithPinnedLimb", 0.)?,
                 model_change: text(stick, "m_modelChange"),
+                can_recover: boolean(stick, "m_canRecover", true)?,
+                components_to_attach: declaration_list(stick, "m_componentsToAttach")?,
             },
             deflection: Deflection::read(
                 atom(&fields, "m_deflectionType").unwrap_or("NO_DEFLECTION"),
@@ -336,4 +362,24 @@ fn boolean(fields: &[(String, Value)], key: &str, default: bool) -> Result<bool,
         Some("false" | "0") => Ok(false),
         Some(value) => Err(format!("invalid {key}: {value}")),
     }
+}
+fn declaration_list(fields: &[(String, Value)], key: &str) -> Result<Vec<String>, String> {
+    let entries = child(fields, key);
+    let count = atom(entries, "num")
+        .unwrap_or("0")
+        .parse::<usize>()
+        .map_err(|_| format!("invalid {key} declaration count"))?;
+    let mut declarations = Vec::new();
+    declarations
+        .try_reserve(count)
+        .map_err(|error| format!("{key} declarations: {error}"))?;
+    for index in 0..count {
+        let item = format!("item[{index}]");
+        let name = atom(entries, &item)
+            .ok_or_else(|| format!("missing {key}.{item} declaration reference"))?;
+        if !name.is_empty() && !name.eq_ignore_ascii_case("NULL") {
+            declarations.push(name.to_owned());
+        }
+    }
+    Ok(declarations)
 }

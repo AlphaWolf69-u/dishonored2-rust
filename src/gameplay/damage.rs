@@ -402,6 +402,9 @@ impl DoorContext {
 pub struct Parameters {
     pub amount: f32,
     pub damage_type: DamageType,
+    ///Original source declaration+60 provenance for HealthDoor39eed0. This
+    ///survives request-local damage-type overrides just as param2[0] does.
+    pub declaration_focus_blink_attack:bool,
     pub hit_direction: Vec3,
     /// Actual collision/source location and normal. None means the source
     /// did not supply a value; chunk/impact owners must require the actual
@@ -421,6 +424,7 @@ impl Parameters {
         Self {
             amount: declaration.maximum,
             damage_type: declaration.damage_type,
+            declaration_focus_blink_attack:declaration.damage_type.0&0x40000000000!=0,
             hit_direction: Vec3::ZERO,
             hit_location: None,
             hit_normal: None,

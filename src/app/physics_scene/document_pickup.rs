@@ -59,9 +59,12 @@ impl PhysicsScene {
         Ok(())
     }
 
-    pub(in crate::app) fn begin_document_pickup(&mut self, live: &mut LiveEntities, reference: CheckedComponent, step: &mut u8)
+    pub(in crate::app) fn begin_document_pickup(&mut self, live: &mut LiveEntities, events: &mut crate::gameplay::entity_events::EntityEvents, reference: CheckedComponent, step: &mut u8)
         -> Result<Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,String> {
         let (index,_) = self.document_pickable(live,reference)?;
+        if *step == 0 {
+            self.begin_projectile_pickup(live, events, self.entities[index].shared)?;
+        }
         let mut registry = self.registry.take().ok_or("document registry absent")?;
         let result = (|| {
             // 844bf0 calls the real 8762d0 attachment owner before changing

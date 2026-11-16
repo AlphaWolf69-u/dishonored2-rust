@@ -284,6 +284,7 @@ pub(super) fn install(
     crate::loading::gate("initial view texture residency");
     crate::loading::gate("initial forward and shadow submissions");
     crate::loading::gate("initial player resources");
+    crate::loading::gate("initial runtime resources");
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.insert_resource(gpu.clone()).add_systems(
@@ -572,7 +573,14 @@ fn acquire(world: &mut World) {
         // instead of waiting on it forever.
         let player_error = world.get_resource::<super::player_actions::PlayerActions>()
             .and_then(|actions| actions.startup_error().map(str::to_owned));
-        if let Some(error) = player_error.or_else(|| super::runtime_materials::equipment_admission::startup_error(world)) {
+        if let Some(error) = player_error
+            .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
+            .or_else(|| super::carrying_resources::startup_error(world)) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
+        if let Some(error) = super::runtime_entities::startup_error(world) {
             fail_initial_images(world, &error);
             world.insert_resource(state);
             return;
@@ -583,6 +591,18 @@ fn acquire(world: &mut World) {
             world.get_resource::<super::player_actions::PlayerActions>()
                 .is_some_and(|actions| actions.startup_pending())
             || super::runtime_materials::equipment_admission::startup_pending(world));
+        if !player_pending && !super::weapon_firing::startup_pending(world)
+            && !super::runtime_entities::startup_pending(world)
+            && !super::fx_gameplay::startup_pending(world)
+            && !super::water_impacts::startup_pending(world)
+            && !super::carrying_resources::startup_pending(world) {
+            crate::loading::complete("initial runtime resources");
+        }
+        if let Some(error) = super::weapon_firing::startup_error(world).map(str::to_owned) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
         if !player_pending { crate::loading::complete("initial player resources"); }
         else if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD player startup pending: actions[{}] equipment={}",
@@ -762,6 +782,19 @@ fn acquire(world: &mut World) {
                 }
                 let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world, state.catalog.clone());
                 prepared.publish(world);
+                super::entity_removal::initialize(world);
+                world.insert_resource(super::carrying::Carrying::default());
+                world.insert_resource(super::physics_scene::carrying_host::CarryPhysics::default());
+                if let Err(error) = super::fx_gameplay::initialize(world)
+                    .and_then(|_| super::water_impacts::initialize(world))
+                    .and_then(|_| super::world_models::initialize(world))
+                    .and_then(|_| super::runtime_entities::initialize(world)) {
+                    lifetime.published(world, &resources);
+                    state.lifetime = lifetime;
+                    fail_initial_images(world, &format!("Runtime resource initialization failed: {error}"));
+                    world.insert_resource(state);
+                    return;
+                }
                 if let Some(mut startup) = state.startup.take() {
                     let _span = super::load_timing::Span::new("remaining startup");
                     startup.run(world);

@@ -1,6 +1,6 @@
 //! Actual RigidBody-derived payload pools. Handles retain the constructed
 //! component class and its own slot, roster and generation throughout dispatch.
-//! Throwable inherits the body owner (4c6600); Breakable/Projectile/Holdable
+//! Throwable inherits the body owner (4c6600); Breakable and Projectile
 //! have distinct payload owners and must not be reinterpreted as this type.
 use super::*;
 macro_rules! rigid_pool {

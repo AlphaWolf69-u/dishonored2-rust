@@ -69,6 +69,7 @@ pub(super) fn stop_listener(
         );
         state.set_listener(None);
     }
+    state.clear_contacts();
     Ok(())
 }
 

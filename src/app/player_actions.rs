@@ -417,6 +417,7 @@ pub(super) struct PlayerActions {
     active_power: Option<String>,
     active_power_generation: Option<Arc<str>>,
     pub potion_sounds: [Option<Arc<SoundEventDeclaration>>; 2],
+    pub(super) loot_full_sounds: [Option<Arc<SoundEventDeclaration>>; 2],
     pub potion_results: Vec<player::consumables::PotionResult>,
     pub selection_requests: Vec<ShortcutSelection>,
     pub removed_equipment: Vec<String>,
@@ -486,6 +487,16 @@ impl PlayerActions {
             &declarations.mana,
         )?;
         let grapple_body = Arc::new(player::body::grapple::Definition::read(&declarations.body));
+        let mut loot_full_sounds=[None,None];
+        for (mode,states) in [&declarations.states,&declarations.swimming_states].into_iter().enumerate(){
+            if let Some(path)=states.iter().filter(|(kind,fields)|kind=="playerstatelootobject"
+                &&crate::entities::scene_motion::atom(fields,"m_id").and_then(player::decls::state_id).unwrap_or(player::states::StateId::LOOT_OBJECT)==player::states::StateId::LOOT_OBJECT)
+                .find_map(|(_,fields)|crate::entities::scene_motion::atom(fields,"m_inventoryFullSoundEvent"))
+                .filter(|name|!name.is_empty()&&!name.eq_ignore_ascii_case("NULL")) {
+                loot_full_sounds[mode]=Some(crate::assets::wwise::event_resources::acquire_with(&catalog,path,
+                    |path|crate::assets::declaration_texts::read_common_or_catalog(&catalog,path))?);
+            }
+        }
         let shortcuts = Arc::new(ShortcutSettings::read(&declarations.controller)?);
         let mut slash_scene_paths = player::combat::equipment_scene_paths(declarations);
         if let Some(definition) = declarations
@@ -557,6 +568,7 @@ impl PlayerActions {
             source_flags: Default::default(),
             selected_ammunition: Default::default(),
             potion_sounds,
+            loot_full_sounds,
             potion_results: Vec::new(),
             blink: None,
             active_blink: None,

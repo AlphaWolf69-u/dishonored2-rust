@@ -20,6 +20,9 @@ use super::{
 };
 use crate::assets::physworld::query_geometry::{QueryGeometry, QueryShapes};
 
+#[path = "shape_point_query/mesh.rs"]
+mod mesh;
+
 const IDENTITY: ShapeMatrix = [
     [1., 0., 0., 0.],
     [0., 1., 0., 0.],
@@ -46,6 +49,7 @@ pub struct ShapePointQuery {
     traversals: Vec<CompoundQuery>,
     active: Vec<usize>,
     support: ConvexSupportWorkspace,
+    mesh: super::compressed_mesh_query::CompressedMeshQuery,
 }
 impl ShapePointQuery {
     pub fn new(enabled_shape_types: u32) -> Result<Self, String> {
@@ -54,6 +58,7 @@ impl ShapePointQuery {
             traversals: Vec::new(),
             active: Vec::new(),
             support: ConvexSupportWorkspace::default(),
+            mesh: Default::default(),
         })
     }
 
@@ -101,6 +106,10 @@ impl ShapePointQuery {
             QueryGeometry::Compound(shape) => {
                 transform_bounds(target.state.transform.world_from_local, shape.bounds)
             }
+            QueryGeometry::CompressedMesh(shape) => transform_bounds(
+                target.state.transform.world_from_local,
+                shape.bounds().map(|v| [v[0], v[1], v[2], 0.]),
+            ),
             QueryGeometry::Polytope(shape) => super::convex_support::convex_bounds(
                 &shape.vertices,
                 target.state.transform.world_from_local,
@@ -223,6 +232,32 @@ impl ShapePointQuery {
                 }
                 Ok(())
             }
+            (QueryGeometry::CompressedMesh(mesh), ClosestPointHandler::ConvexMesh) => self
+                .mesh_points(
+                    mesh,
+                    shape.header.radius,
+                    shape.header.key_bits,
+                    state,
+                    relative,
+                    key,
+                    sphere.vertex,
+                    sphere.radius,
+                    &mut 0.,
+                    &mut |shape_key, tag, geometry| {
+                        let mut child = ShapeHitInfo { shape_key, ..hit };
+                        decode_shape_tag(
+                            tag,
+                            target.materials.filter(|_| child.body_id.is_some()),
+                            &mut child,
+                        )?;
+                        if filter.is_none_or(|f| {
+                            f.accepts_pair(query.filter_info, child.filter_info, true)
+                        }) {
+                            submit(ShapePointContact { target: child }, geometry);
+                        }
+                        Ok(0.)
+                    },
+                ),
             (QueryGeometry::Compound(compound), ClosestPointHandler::ConvexCompound) => {
                 let prepared = prepare(
                     sphere,
@@ -471,6 +506,26 @@ impl ShapePointQuery {
                 }
                 Ok(())
             }
+            QueryGeometry::CompressedMesh(mesh) => self.mesh_points(
+                mesh,
+                shape.header.radius,
+                shape.header.key_bits,
+                state,
+                relative,
+                key,
+                point,
+                0.,
+                threshold,
+                &mut |shape_key, _, geometry| {
+                    Ok(submit(LeafClosestPoint {
+                        position: geometry.point,
+                        normal: geometry.normal,
+                        distance: geometry.distance[0],
+                        shape_key,
+                        connectivity: false,
+                    }))
+                },
+            ),
             QueryGeometry::Compound(compound) => {
                 for (index, instance) in compound.instances.iter().enumerate() {
                     if instance.flags & 64 == 0 {

@@ -7,7 +7,7 @@
 // arkDefault/arkVegetation Z branches return after ClipZorShadowPass:
 // only diffuse0 alpha and DefaultAlphaTest, before layers, vertex color,
 // gloss-in-alpha, normals, AO or lighting (arkDefaultHelpers.decl:29-40).
-fn clip_surface(uv0:vec2<f32>,uv1:vec2<f32>,world_position:vec4<f32>,vertex_color:vec4<f32>) {
+fn clip_surface(uv0:vec2<f32>,uv1:vec2<f32>,world_position:vec4<f32>,vertex_color:vec4<f32>,model_tag:u32) {
     if compiled_misc.z==7u || compiled_misc.z==8u {discard;}
     // arkSimpleSprite has no clip/discard in any specialization. Its colour
     // output is masked off by the nonrefractive alpha-depth draw state.
@@ -22,7 +22,7 @@ fn clip_surface(uv0:vec2<f32>,uv1:vec2<f32>,world_position:vec4<f32>,vertex_colo
     }
 #endif
     if compiled_misc.z==6u {
-        let color=filling_colour(uv0,uv1,vec4(1.0));
+        let color=filling_colour(uv0,uv1,vec4(1.0),model_tag);
         let clip_w=(view.clip_from_world*world_position).w;
         let alpha=filling_plane_alpha(color.a,world_position.xyz,clip_w);
 #ifdef SHADOW_PASS

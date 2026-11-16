@@ -177,3 +177,17 @@ fn matrix_frame(matrix: [[f32; 4]; 3]) -> ReferenceFrame {
     ReferenceFrame { position: [matrix[0][3], matrix[1][3], matrix[2][3]],
         basis: std::array::from_fn(|column| [matrix[0][column], matrix[1][column], matrix[2][column]]) }
 }
+
+/// 784e30 uses879890's optional tag and53dac0's phase3 frame. Borrow the
+/// actual AnimBase palette; no second skeleton, pose evaluation or cache.
+pub(super) fn current_tag_frame(rig: &crate::assets::animation_rig::Rig,
+    matrices: &[[[f32; 4]; 3]], group: &str, name: &str, scale: [f32; 3],
+    parent: ReferenceFrame) -> Result<Option<ReferenceFrame>, String> {
+    let Some((joint, offset, orientation)) = rig.optional_tag_quaternion_in_group(group, name)? else {
+        return Ok(None);
+    };
+    let Some(matrix) = matrices.get(joint) else { return Ok(None); };
+    let local = reference_frame::joints::bind_local_frame(matrix_frame(*matrix), scale,
+        offset.to_array(), orientation.to_array());
+    Ok(Some(reference_frame::compose(parent, local)))
+}

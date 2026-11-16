@@ -47,6 +47,8 @@ struct Prototype {
     model: Option<Arc<Template>>,
     uploaded: Arc<AtomicBool>,
     error: Option<String>,
+    owners: std::collections::HashSet<Arc<str>>,
+    lease: Arc<()>,
 }
 #[derive(Resource, Default)]
 pub(super) struct WorldModels {
@@ -54,10 +56,92 @@ pub(super) struct WorldModels {
     prototypes: HashMap<usize, Prototype>,
     models: Models,
     retiring: HashMap<EntityId, RetiredModel>,
-    retiring_prototypes: Vec<RetiredModel>,
+    retiring_resources: Vec<RetiredModel>,
     closing: bool,
 }
 impl WorldModels {
+    pub(super) fn interaction_bounds(&self, id: EntityId) -> Option<[[f32; 3]; 2]> {
+        let entry = self.entries.get(&id)?;
+        Some(crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(), entry.frame.position, entry.frame.basis, entry.scale))
+    }
+    pub(super) fn interaction_visible(&self, id: EntityId) -> bool {
+        self.entries.get(&id).is_some_and(|entry| entry.visible && !entry.render.hidden && self.models.has(id))
+    }
+    pub(super) fn publish_clock(&self,id:EntityId,bank:&mut super::model_motion::ModelProbeLighting,patches:&mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,time:[f32;2]){
+        if let Some(draws)=self.models.projection_draws(id){for (_,_,_,tag,_) in draws{if tag&0x80000000==0{bank.publish_clock(patches,tag,time);}}}
+    }
+    pub(super) fn projection_keys(&self)->impl Iterator<Item=EntityId>+'_ {self.entries.keys().copied()}
+    pub(super) fn projection_input(&self,id:EntityId)->Option<([[f32;4];4],Vec<(usize,[[f32;3];2])>)>{
+        let entry=self.entries.get(&id)?;
+        let affine=crate::render_model::affine_rows(entry.frame.position,entry.frame.basis,entry.scale);
+        let model=[affine[0],affine[1],affine[2],[0.,0.,0.,1.]];
+        let local=match &entry.descriptor.geometry{
+            crate::assets::equipment::attachment::Geometry::Rigid(source)=>source.surfaces.iter().map(|surface|surface.authored_bounds).collect::<Vec<_>>(),
+            crate::assets::equipment::attachment::Geometry::Animated{model,..}=>model.surfaces.iter().map(|surface|{
+                let mut bounds=[[f32::INFINITY;3],[f32::NEG_INFINITY;3]];
+                for position in &surface.positions{for axis in 0..3{bounds[0][axis]=bounds[0][axis].min(position[axis]);bounds[1][axis]=bounds[1][axis].max(position[axis]);}}bounds
+            }).collect(),
+        };
+        let surfaces=local.into_iter().enumerate().map(|(surface,bounds)|(surface,crate::render_model::transformed_bounds(bounds,entry.frame.position,entry.frame.basis,entry.scale))).collect();
+        Some((model,surfaces))
+    }
+    pub(super) fn projection_receivers(&self,layouts:&std::collections::HashMap<bevy::asset::AssetId<Mesh>,u32>,materials:&super::ShadowMaterials,
+        visibility:&Query<&ViewVisibility>,contexts:&super::projected_decals::ModelProjectionContexts,
+        output:&mut Vec<crate::rendering::bevy_backend::projected_decals::Receiver>){
+        for (&id,entry) in &self.entries{
+            if !entry.visible{continue}
+            let Some(draws)=self.models.projection_draws(id)else{continue};
+            let bounds=crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(),entry.frame.position,entry.frame.basis,entry.scale);
+            let affine=crate::render_model::affine_rows(entry.frame.position,entry.frame.basis,entry.scale);
+            let rigid=super::view_geometry::game_affine_to_view(&std::array::from_fn(|i|affine[i/4][i%4])).to_matrix();
+            let rows=contexts.rows(super::projected_decals::ModelKey::Actor(id)).cloned();
+            for (entity,mesh,surface,probe,material) in draws{
+                if !visibility.get(entity).is_ok_and(|visibility| visibility.get()){continue}
+                let Some(&layout)=layouts.get(&mesh.id())else{continue};
+                let Some(Ok(material))=materials.0.get(material)else{continue};
+                output.push(crate::rendering::bevy_backend::projected_decals::Receiver{
+                    entity:bevy::render::sync_world::MainEntity::from(entity),mesh:mesh.id(),
+                    model:if matches!(&entry.descriptor.geometry,crate::assets::equipment::attachment::Geometry::Animated{..}){Mat4::IDENTITY}else{rigid},
+                    probe,world_instance:None,opaque:material.source.main_blend_state&1==0,flags48:0,bounds,layout,surface,model_projections:rows.clone(),
+                });
+            }
+        }
+    }
+    pub(super) fn shadow_bounds(&self) -> impl Iterator<Item = [[f32; 3]; 2]> + '_ {
+        self.entries.values().filter(|entry| entry.visible && entry.descriptor.cast_shadows).map(|entry|
+            crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(), entry.frame.position, entry.frame.basis, entry.scale))
+    }
+    pub(super) fn collect_shadow_casters(&self, materials: &super::ShadowMaterials, shader_data:&super::model_motion::ModelShaderData,
+        inverse_view: &[[f32; 4]; 4], clip: &[f32; 16], cull_distance: f32,
+        output: &mut Vec<super::shadow_updates::RuntimeSurfaceCaster>) -> Result<(), String> {
+        for (&id, entry) in &self.entries {
+            // Actual hidden state, independent of the main camera's visibility.
+            if !entry.visible { continue; }
+            let Some((bounds, mut surfaces)) = self.models.shadow_surfaces(id, materials)? else { continue };
+            let clock=shader_data.clock(super::model_motion::ModelKey::Actor(id));
+            for surface in &mut surfaces{surface.clock=Some(clock);}
+            let flags = crate::render_model::model_owner_bounds_flags(0,
+                [bounds[0][0], bounds[0][1], bounds[0][2], 0.],
+                [bounds[1][0], bounds[1][1], bounds[1][2], 0.]);
+            let info = crate::render_model::prepare_model_caster_info(bounds, flags,
+                crate::render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC, 0,
+                surfaces.iter().any(|surface| surface.skin.is_some()),
+                surfaces.iter().map(|_| (1, 1)));
+            let Some(sphere) = info.sphere else { continue };
+            let Some(sort_distance) = crate::render_model::model_caster_sort_distance(info.flags,
+                sphere, inverse_view, cull_distance) else { continue };
+            output.push(super::shadow_updates::RuntimeSurfaceCaster {
+                bounds, flags: info.flags, sort_distance,
+                camera_clip_mask: crate::render_model::transformed_aabb_clip_cull(clip, bounds[0], bounds[1]).output_byte,
+                surfaces,
+                // bevy_backend: runtime actor poses are not kept in the baked
+                // WORLD atlas cache. This prevents stale poses/deleted actors;
+                // both buckets otherwise use identical source draw programs.
+                dynamic: true,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn shown_materials(&self) -> impl Iterator<Item = &super::MaterialHandle> {
         self.models.shown_materials()
     }
@@ -85,23 +169,32 @@ fn key(descriptor: &Arc<Descriptor>) -> usize {
     Arc::as_ptr(descriptor) as usize
 }
 pub(super) fn install(app: &mut App) {
+    app.init_resource::<super::model_motion::ModelShaderData>();
     app.init_resource::<WorldModels>()
         .init_resource::<Uploads>()
         .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
             Uploads,
         >::default());
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+        render.add_systems(bevy::render::Render,
+            storage_bindings_ready
+                .after(bevy::render::render_asset::prepare_assets::<bevy::render::storage::GpuShaderBuffer>)
+                .before(bevy::render::erased_render_asset::prepare_erased_assets::<MeshMaterial3d<super::ProbeMaterial>>)
+                .before(bevy::render::erased_render_asset::prepare_erased_assets::<MeshMaterial3d<super::DecalMaterial>>));
         render.add_systems(
             bevy::render::Render,
             acknowledge.in_set(bevy::render::RenderSystems::PrepareResources),
         );
     }
 }
+// bevy_backend: storage replacement must precede dependent material binding.
+// The two generic asset plugins otherwise have no dependency on each other.
+fn storage_bindings_ready() {}
 pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     if let Some(owner) = world.get_resource::<WorldModels>() {
         if !owner.entries.is_empty()
             || !owner.retiring.is_empty()
-            || !owner.retiring_prototypes.is_empty()
+            || !owner.retiring_resources.is_empty()
         {
             return Err("previous world models still own live/GPU generations".into());
         }
@@ -146,10 +239,24 @@ pub(super) fn prewarm(world: &mut World, descriptor: Arc<Descriptor>) -> Result<
             model: None,
             uploaded: Arc::default(),
             error: None,
+            owners: Default::default(),
+            lease: Arc::new(()),
         },
     );
     drop(owner);
     super::runtime_materials::invalidate_world_models(world);
+    Ok(())
+}
+pub(super) fn prewarm_for(world: &mut World, scope: Arc<str>, descriptor: Arc<Descriptor>) -> Result<(), String> {
+    prewarm(world, descriptor.clone())?;
+    world.resource_mut::<WorldModels>().prototypes.get_mut(&key(&descriptor)).unwrap().owners.insert(scope);
+    Ok(())
+}
+pub(super) fn release_prewarm_for(world: &mut World, scope: &str, descriptor: &Arc<Descriptor>) -> Result<(), String> {
+    if let Some(mut owner) = world.get_resource_mut::<WorldModels>() {
+        if let Some(prototype) = owner.prototypes.get_mut(&key(descriptor)) { prototype.owners.remove(scope); }
+    }
+    prune(world);
     Ok(())
 }
 pub(super) fn prototype_ready(world: &World, descriptor: &Arc<Descriptor>) -> Result<bool, String> {
@@ -198,7 +305,46 @@ pub(super) fn request(
         },
     );
     drop(owner);
+    if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.dirty(super::projected_decals::ModelKey::Actor(id));}
     advance(world)
+}
+///2679a0 ->87bcb0/873350 replaces only the actual render model. Source
+///prototypes are prepared before the firing callback; old draws retain their
+///exact handles/SH/skin leases through the normal submitted-work receipt.
+pub(super) fn replace(world:&mut World,id:EntityId,descriptor:Arc<Descriptor>,frame:ReferenceFrame)->Result<bool,String>{
+    if world.get_resource::<LiveEntities>().and_then(|live|live.get(id)).is_none(){return Err("model replacement entity generation stale".into())}
+    if !prototype_ready(world,&descriptor)?{return Ok(false)}
+    let mut owner=world.remove_resource::<WorldModels>().ok_or("world model owner absent")?;
+    let mut commands=super::setup_commands::SetupCommands::prepared(world);
+    let result=(||{
+        let entry=owner.entries.get(&id).ok_or("model replacement has no actual render owner")?;
+        if Arc::ptr_eq(&entry.descriptor,&descriptor){
+            owner.entries.get_mut(&id).unwrap().frame=frame;
+            owner.models.set_world_frame(id,frame)?;
+            return Ok(true)
+        }
+        let visible=entry.visible;let scale=entry.scale;
+        let template=owner.prototypes.get(&key(&descriptor)).and_then(|prototype|prototype.model.clone()).ok_or("ready replacement template absent")?;
+        let mut prepared=template.instantiate(&mut commands)?;
+        prepared.assign_probe_slots(None,world,&mut commands)?;
+        let old=owner.models.remove(id,&mut commands).ok_or("replacement old draw generation absent")?;
+        owner.retiring_resources.push(old);
+        owner.models.publish_world(id,prepared,frame,visible)?;
+        owner.models.set_world_scale(id,scale)?;
+        let entry=owner.entries.get_mut(&id).unwrap();
+        entry.descriptor=descriptor;entry.frame=frame;entry.area=None;
+        entry.render=RenderState{hidden:!visible,current:false,previous:false};
+        //873350 copies18a0/18b0/depth/cast fields, not local projection rows
+        //or1c2c/1c31 shader time. The fresh constructor owns their defaults.
+        if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){
+            contexts.remove(super::model_motion::ModelKey::Actor(id));contexts.dirty(super::model_motion::ModelKey::Actor(id));
+        }
+        if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){data.remove(super::model_motion::ModelKey::Actor(id));}
+        Ok(true)
+    })();
+    if result.is_ok(){commands.publish(world);}
+    world.insert_resource(owner);
+    result
 }
 pub(super) fn ready(world: &World, id: EntityId) -> Result<bool, String> {
     let Some(owner) = world.get_resource::<WorldModels>() else {
@@ -215,6 +361,8 @@ pub(super) fn update(
     frame: ReferenceFrame,
     visible: bool,
 ) -> Result<(), String> {
+    let changed=self::frame(world,id).is_none_or(|old|old.position!=frame.position || old.basis!=frame.basis);
+    if changed{if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.dirty(super::projected_decals::ModelKey::Actor(id));}}
     let mut owner = world
         .get_resource_mut::<WorldModels>()
         .ok_or("world model owner is absent")?;
@@ -231,7 +379,13 @@ pub(super) fn update(
     }
     Ok(())
 }
+pub(super) fn set_visible(world: &mut World, id: EntityId, visible: bool) -> Result<bool, String> {
+    let Some(frame) = self::frame(world, id) else { return Ok(false) };
+    update(world, id, frame, visible)?;
+    Ok(true)
+}
 pub(super) fn set_scale(world: &mut World, id: EntityId, scale: [f32; 3]) -> Result<(), String> {
+    if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.dirty(super::projected_decals::ModelKey::Actor(id));}
     let mut owner = world
         .get_resource_mut::<WorldModels>()
         .ok_or("world model owner is absent")?;
@@ -253,6 +407,22 @@ pub(super) fn render_state(world: &World, id: EntityId) -> Option<RenderState> {
         .then(|| owner.entries.get(&id).map(|entry| entry.render))
         .flatten()
 }
+/// Actual renderer model resource and current entity scale for tag-property
+///selection (784e30/879890). No rig lookup, conversion or tag alias fallback.
+pub(super) fn descriptor(world:&World,id:EntityId)->Option<Arc<Descriptor>>{
+    Some(world.get_resource::<WorldModels>()?.entries.get(&id)?.descriptor.clone())
+}
+pub(super) fn tag_model<'w>(world:&'w World,live:&LiveEntities,id:EntityId)->Result<Option<(&'w str,[f32;3])>,String>{
+    let (name,_)=live.get(id).ok_or("tag model entity generation stale")?;
+    if let Some(entry)=world.get_resource::<WorldModels>().and_then(|owner|owner.entries.get(&id)){
+        return Ok(Some((entry.descriptor.placement.resource_path.as_str(),entry.scale)));
+    }
+    let Some(placements)=world.get_resource::<super::RenderSourcePlacements>()else{return Ok(None)};
+    let mut matches=placements.0.iter().filter(|placement|placement.id.eq_ignore_ascii_case(name));
+    let Some(placement)=matches.next()else{return Ok(None)};
+    if matches.any(|other|other.resource_path!=placement.resource_path || other.scale!=placement.scale){return Err("entity has multiple incompatible current tag model sources".into())}
+    Ok(Some((placement.resource_path.as_str(),placement.scale)))
+}
 pub(super) fn frame(world: &World, id: EntityId) -> Option<ReferenceFrame> {
     world
         .get_resource::<WorldModels>()?
@@ -264,6 +434,49 @@ pub(super) fn bounds(world:&World,id:EntityId)->Option<[[f32;3];2]>{
     let entry=world.get_resource::<WorldModels>()?.entries.get(&id)?;
     Some(crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(),entry.frame.position,entry.frame.basis,entry.scale))
 }
+///878230/738bf0 query actual render-model world bounds independently of
+///camera visibility. Placed resources use their existing authored model bounds
+///and current placement transform, including physics/animation publication.
+pub(super) fn entity_bounds(world: &World, live: &LiveEntities, id: EntityId) -> Result<Option<[[f32; 3]; 2]>, String> {
+    if let Some(bounds) = self::bounds(world, id) {
+        return Ok(Some(bounds));
+    }
+    let (name, _) = live.get(id).ok_or("entity bounds generation is stale")?;
+    let placements = world.get_resource::<super::RenderSourcePlacements>()
+        .ok_or("entity bounds require the canonical placed model owner")?;
+    if !placements.0.iter().any(|placement| placement.id.eq_ignore_ascii_case(name)) {
+        return Ok(None); // Actual source entity has no authored render model.
+    }
+    let models = world.get_resource::<super::shadow_updates::ModelShadowSources>()
+        .ok_or("entity bounds require prepared model resource bounds")?;
+    let mut merged = None::<[[f32; 3]; 2]>;
+    for source in &models.0 {
+        let Some(placement) = placements
+            .0
+            .get(source.placement)
+            .filter(|placement| placement.id.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        let bounds = crate::render_model::transformed_bounds(
+            source.local_bounds,
+            placement.position,
+            placement.rotation,
+            placement.scale,
+        );
+        if let Some(current) = &mut merged {
+            for axis in 0..3 {
+                current[0][axis] = current[0][axis].min(bounds[0][axis]);
+                current[1][axis] = current[1][axis].max(bounds[1][axis]);
+            }
+        } else {
+            merged = Some(bounds);
+        }
+    }
+    if merged.is_none() { return Err("authored render model has no prepared resource bounds".into()); }
+    Ok(merged)
+}
+
 pub(super) fn requested(world: &World) -> Vec<Request> {
     world
         .get_resource::<WorldModels>()
@@ -294,12 +507,16 @@ pub(super) fn validate(world: &World, prepared: &Prepared) -> Result<(), String>
     }
     Ok(())
 }
-pub(super) fn publish(world: &mut World, prepared: Prepared) -> Result<(), String> {
+pub(super) fn publish(world: &mut World, mut prepared: Prepared) -> Result<(), String> {
     validate(world, &prepared)?;
     let assets = prepared.model.uploads();
+    let meshes = prepared.model.receiver_meshes();
+    let lease = Arc::downgrade(&world.resource::<WorldModels>().prototypes[&prepared.key].lease);
+    super::projected_decals::register_model_layouts(world,&meshes,lease);
     let mut owner = world.resource_mut::<WorldModels>();
     let prototype = owner.prototypes.get_mut(&prepared.key).unwrap();
     let complete = prototype.uploaded.clone();
+    prepared.model.retain_lease(prototype.lease.clone());
     prototype.model = Some(Arc::new(prepared.model));
     drop(owner);
     Arc::make_mut(&mut world.resource_mut::<Uploads>().0).push(Upload { assets, complete });
@@ -308,7 +525,7 @@ pub(super) fn publish(world: &mut World, prepared: Prepared) -> Result<(), Strin
 pub(super) fn add_leases(
     world: &World,
     keys: impl Iterator<Item = usize>,
-    leases: &mut Vec<Weak<Descriptor>>,
+    leases: &mut Vec<Weak<()>>,
 ) {
     let Some(owner) = world.get_resource::<WorldModels>() else {
         return;
@@ -317,9 +534,9 @@ pub(super) fn add_leases(
         if let Some(prototype) = owner.prototypes.get(&key) {
             if !leases
                 .iter()
-                .any(|lease| lease.ptr_eq(&prototype.descriptor))
+                .any(|lease| lease.ptr_eq(&Arc::downgrade(&prototype.lease)))
             {
-                leases.push(prototype.descriptor.clone());
+                leases.push(Arc::downgrade(&prototype.lease));
             }
         }
     }
@@ -334,6 +551,14 @@ pub(super) fn failed(world: &mut World, error: &str) {
             prototype.error = Some(error.to_owned());
         }
     }
+}
+pub(super) fn advance_after_materials(world: &mut World) {
+    if let Err(error) = advance(world) {
+        error!("World model admission failed: {error}");
+        crate::platform::client_diagnostics::record(&format!("World model admission failed: {error}"));
+        world.write_message(AppExit::error());
+    }
+    prune(world);
 }
 pub(super) fn advance(world: &mut World) -> Result<(), String> {
     let Some(mut owner) = world.remove_resource::<WorldModels>() else {
@@ -360,7 +585,8 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
             let Some(template) = &prototype.model else {
                 continue;
             };
-            let prepared = template.instantiate(&mut commands)?;
+            let mut prepared = template.instantiate(&mut commands)?;
+            prepared.assign_probe_slots(None, world, &mut commands)?;
             models.publish_world(id, prepared, entry.frame, entry.visible)?;
             models.set_world_scale(id, entry.scale)?;
         }
@@ -371,6 +597,8 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
     result
 }
 pub(super) fn remove(world: &mut World, id: EntityId) -> Result<(), String> {
+    if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.retire(super::projected_decals::ModelKey::Actor(id));}
+    if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){data.remove(super::model_motion::ModelKey::Actor(id));}
     let Some(mut owner) = world.remove_resource::<WorldModels>() else {
         return Ok(());
     };
@@ -383,6 +611,44 @@ pub(super) fn remove(world: &mut World, id: EntityId) -> Result<(), String> {
     world.insert_resource(owner);
     Ok(())
 }
+/// Retire an actual dynamic or map-placed renderer generation. Placed source
+/// geometry remains owned by the map's scene registry; only the actor's draw
+/// entities disappear, and the queue receipt gates deletion of its managed ID.
+pub(super) fn remove_entity(world: &mut World, live: &LiveEntities, id: EntityId) -> Result<(), String> {
+    if world.get_resource::<WorldModels>().is_some_and(|owner| owner.entries.contains_key(&id)) {
+        return remove(world, id);
+    }
+    if world.get_resource::<WorldModels>().is_some_and(|owner| owner.retiring.contains_key(&id)) { return Ok(()) }
+    let (name, _) = live.get(id).ok_or("render retirement targeted a stale entity generation")?;
+    let name = name.to_owned();
+    super::model_motion::set_entity_visible(world, live, id, false)?;
+    let placements = world.resource::<super::RenderSourcePlacements>().0.iter().enumerate()
+        .filter_map(|(index, placement)| placement.id.eq_ignore_ascii_case(&name).then_some(index)).collect::<Vec<_>>();
+    if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){
+        for &placement in &placements{contexts.retire(super::projected_decals::ModelKey::Placed(placement));}
+    }
+    if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){for &placement in &placements{data.remove(super::model_motion::ModelKey::Placed(placement));}}
+    let mut entities = Vec::new();
+    let mut handles = Vec::new();
+    for instance in &mut world.resource_mut::<super::SceneRenderQueue>().instances {
+        let Some(source) = instance.source else { continue };
+        let placement = match source.surface {
+            super::RenderModelSurface::Bmodel { placement, .. } | super::RenderModelSurface::Bmd6 { placement, .. } => placement,
+            _ => continue,
+        };
+        if !placements.contains(&placement) { continue }
+        if let Some(entity) = instance.entity.take() {
+            entities.push(entity);
+            handles.push((instance.mesh.clone(), instance.material.clone()));
+        }
+    }
+    for entity in entities { if world.entities().contains(entity) { world.despawn(entity); } }
+    if !handles.is_empty() {
+        world.resource_mut::<WorldModels>().retiring.insert(id, RetiredModel::new(handles));
+    }
+    Ok(())
+}
+pub(super) fn retired_entity(world: &mut World, id: EntityId) -> bool { retired(world, id) }
 pub(super) fn retired(world: &mut World, id: EntityId) -> bool {
     let Some(mut owner) = world.get_resource_mut::<WorldModels>() else {
         return true;
@@ -406,23 +672,23 @@ pub(super) fn retirement_receipts(owner: &WorldModels) -> impl Iterator<Item = R
     owner
         .retiring
         .values()
-        .chain(owner.retiring_prototypes.iter())
+        .chain(owner.retiring_resources.iter())
         .cloned()
 }
 pub(super) fn prune(world: &mut World) {
     let Some(mut owner) = world.remove_resource::<WorldModels>() else {
         return;
     };
-    let before = owner.retiring_prototypes.len();
+    let before = owner.retiring_resources.len();
     owner
-        .retiring_prototypes
+        .retiring_resources
         .retain(|receipt| !receipt.complete());
-    let mut changed = before != owner.retiring_prototypes.len();
+    let mut changed = before != owner.retiring_resources.len();
     let dead = owner
         .prototypes
         .iter()
         .filter_map(|(&key, prototype)| {
-            (prototype.descriptor.strong_count() <= usize::from(prototype.model.is_some()))
+            (prototype.owners.is_empty() && !owner.entries.values().any(|entry| self::key(&entry.descriptor) == key))
                 .then_some(key)
         })
         .collect::<Vec<_>>();
@@ -431,12 +697,13 @@ pub(super) fn prune(world: &mut World) {
             Arc::make_mut(&mut world.resource_mut::<Uploads>().0)
                 .retain(|upload| !Arc::ptr_eq(&upload.complete, &prototype.uploaded));
             if let Some(model) = prototype.model {
-                owner.retiring_prototypes.push(RetiredModel::new(model));
+                owner.retiring_resources.push(RetiredModel::new(model));
             }
             changed = true;
         }
     }
     world.insert_resource(owner);
+    super::projected_decals::prune_model_layouts(world);
     if changed {
         super::runtime_materials::invalidate_world_models(world);
     }
@@ -455,14 +722,14 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
     let prototypes = std::mem::take(&mut owner.prototypes);
     for (_, prototype) in prototypes {
         if let Some(model) = prototype.model {
-            owner.retiring_prototypes.push(RetiredModel::new(model));
+            owner.retiring_resources.push(RetiredModel::new(model));
         }
     }
     owner.retiring.retain(|_, receipt| !receipt.complete());
     owner
-        .retiring_prototypes
+        .retiring_resources
         .retain(|receipt| !receipt.complete());
-    let done = owner.retiring.is_empty() && owner.retiring_prototypes.is_empty();
+    let done = owner.retiring.is_empty() && owner.retiring_resources.is_empty();
     drop(owner);
     world.resource_mut::<Uploads>().0 = Arc::default();
     super::runtime_materials::invalidate_world_models(world);
@@ -484,6 +751,8 @@ pub(super) fn publish_poses(
     mut inverse: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut joints: Query<&mut GlobalTransform, Without<Mesh3d>>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
+    world_poses: Option<Res<super::physics_scene::PhysicsScene>>,
+    mut model_bounds: Query<&mut bevy::camera::primitives::Aabb, With<Mesh3d>>,
 ) {
     let state = queue
         .as_ref()
@@ -559,6 +828,7 @@ pub(super) fn publish_poses(
         &mut joints,
         None,
         clock.as_deref(),
+        world_poses.as_deref(),
     ) {
         error!("World model pose publication failed: {error}");
         crate::platform::client_diagnostics::record(&format!(
@@ -566,6 +836,7 @@ pub(super) fn publish_poses(
         ));
         commands.write_message(AppExit::error());
     }
+    owner.models.publish_animated_bounds(&mut model_bounds, &mut commands);
 }
 pub(super) fn observe_visibility(mut owner: ResMut<WorldModels>, views: Query<&ViewVisibility>) {
     let WorldModels {

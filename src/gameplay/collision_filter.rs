@@ -132,7 +132,13 @@ pub fn filter_info(layer: u32) -> u32 {
 /// arkCollisionFilter 140099610: a zero first word always collides;
 /// otherwise each side must accept the other's layer.
 pub fn pair_collides(first: u32, second: u32) -> bool {
-    first == 0 || ((second >> 5) >> (first & 31) & 1 != 0 && (first >> 5) >> (second & 31) & 1 != 0)
+    first == 0 || body_pair_collides(first, second)
+}
+
+/// 0992c0's body-pair stage has no query-word-zero shortcut. Component-level
+/// ignore relations (093a40) are evaluated by the live owner after this mask.
+pub(crate) fn body_pair_collides(first: u32, second: u32) -> bool {
+    (second >> 5) >> (first & 31) & 1 != 0 && (first >> 5) >> (second & 31) & 1 != 0
 }
 
 /// Whether any layer's bodies can collide with this layer's.

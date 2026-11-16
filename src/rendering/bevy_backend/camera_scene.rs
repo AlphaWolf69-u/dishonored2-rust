@@ -51,6 +51,9 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> { self.world_particles.pending_gameplay() }
+    pub(crate) fn acknowledge_gameplay(&mut self) -> Result<(),String> { self.world_particles.acknowledge_gameplay() }
+    pub(crate) fn clear_gameplay(&mut self) { self.world_particles.clear_gameplay(); }
     pub(crate) fn set_gameflow(&mut self, mailbox: std::sync::Arc<crate::gameplay::gameflow::program::Mailbox>) {
         self.world_particles.set_gameflow(mailbox);
     }
@@ -72,9 +75,18 @@ impl FxSimulation {
     pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
         self.world_particles.retire_entity_graph(entity)
     }
+    pub(crate) fn dispatch_broken(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        step: i32, removed: bool, location: [f32; 3], live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
+        self.world_particles.dispatch_broken(entity, step, removed, location, live)
+    }
     pub(crate) fn dispatch_picked_up(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
         successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
         self.world_particles.dispatch_picked_up(entity, successful, from_grapple, live)
+    }
+    pub(crate) fn dispatch_picked_up_receipt(&mut self,entity:crate::gameplay::entity_lifetime::EntityId,
+        successful:bool,from_grapple:bool,live:&crate::gameplay::entity_lifetime::LiveEntities,
+        receipt:&mut crate::gameplay::effects::instances::PickupReceipt)->Result<(),String>{
+        self.world_particles.dispatch_picked_up_receipt(entity,successful,from_grapple,live,receipt)
     }
     /// Diagnostic snapshots borrow the actual manager without starting or
     /// advancing another simulation. No ordinary-frame observer is installed.
@@ -139,8 +151,11 @@ impl FxPublication {
     /// Read-only lifecycle diagnostic; absence is published by the ordinary
     /// view producer, never manufactured by the observer.
     pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
-    /// This frame's world-material particle surface draws, for consumers
-    /// outside the FX passes (the model shadow casters).
+    /// Borrow the existing committed projection owners for model-local rows.
+    pub(crate) fn model_decals(&self) -> Option<&[(u32, u64, crate::rendering::decals::CommittedDecal<std::sync::Arc<crate::assets::decal::DecalMaterials<String>>>)]> {
+        Some(&self.0.as_ref()?.decals)
+    }
+    /// This frame's world-material particle surface draws (model shadows).
     pub(crate) fn world_meshes(&self) -> Option<(u32, &[super::particle_system::WorldMeshDraw])> {
         let frame = self.0.as_ref()?;
         Some((frame.frame, frame.particles.as_ref().map_or(&[][..], |particles| particles.world_meshes.as_slice())))

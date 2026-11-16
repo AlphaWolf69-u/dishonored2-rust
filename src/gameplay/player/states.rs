@@ -54,6 +54,7 @@ impl StateId {
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const READ_NOTE: Self = Self(52);
+    pub const LOOT_OBJECT: Self = Self(47);
     pub const GRAB_OBJECT: Self = Self(48);
     pub const HOLD_ONE_HAND: Self = Self(49);
     pub const HOLD_TWO_HAND: Self = Self(50);
@@ -443,6 +444,7 @@ pub enum Kind {
     Swimming(super::swimming::SwimmingStateDecl),
     SwimMantle,
     ReadNote,
+    LootObject(Arc<super::carrying::GrabDecl>),
     GrabObject(Arc<super::carrying::GrabDecl>),
     HoldObject(Arc<super::carrying::HoldDecl>),
     ReleaseObject(Arc<super::combat::ActionDecl>),
@@ -559,7 +561,7 @@ impl StateDecl {
                 flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
                 (StateId::READ_NOTE, 0.0)
             }
-            Kind::GrabObject(ref grab) => {
+            Kind::LootObject(ref grab) | Kind::GrabObject(ref grab) => {
                 flags = StateFlags { primary:false,body_parts:8,locked_body_parts:8,exclusive_body_parts:0,
                     allow_camera_out_of_shape:true,..flags };
                 (grab.id,0.)
@@ -934,7 +936,7 @@ pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
                 .collect(),
             Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
             Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
-            Kind::GrabObject(d) => d.action.midnight.iter().collect(),
+            Kind::LootObject(d) | Kind::GrabObject(d) => d.action.midnight.iter().collect(),
             Kind::ReleaseObject(d) => d.midnight.iter().collect(),
             Kind::Grapple(d) => d.translate_midnight.iter().chain(&d.wall_midnight).chain(&d.ceil_midnight).collect(),
             Kind::UsePower(d) => d.out_of_mana.iter().chain(&d.out_of_mana_slide).chain(&d.action.midnight).collect(),
@@ -1110,6 +1112,7 @@ pub struct StateMachine {
     pending_sounds: Vec<u32>,
     pending_fall_damage: Option<f32>,
     read_note: super::read_note::Runtime,
+    world_pickup: super::world_pickup::Runtime,
     slash_rules: Option<super::slash_rules::Runtime>,
 }
 
@@ -1140,7 +1143,38 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), world_pickup: Default::default(), slash_rules: None }
+    }
+
+    pub(super) fn world_pickup_busy(&self)->bool{self.world_pickup.busy()}
+    pub(super) fn world_pickup_target(&self)->Option<crate::gameplay::entity_lifetime::EntityId>{self.world_pickup.target()}
+    pub(super) fn accepted_world_pickup(&self)->Option<crate::gameplay::entity_lifetime::EntityId>{self.world_pickup.accepted()}
+    pub(super) fn rejected_world_pickup(&mut self)->Option<crate::gameplay::entity_lifetime::EntityId>{self.world_pickup.rejected()}
+    pub(super) fn request_world_pickup(&mut self,id:crate::gameplay::entity_lifetime::EntityId)->bool{
+        if !matches!(self.state(StateId::LOOT_OBJECT).map(|state|&state.decl.kind),Some(Kind::LootObject(_)))||!self.world_pickup.request(id){return false}
+        self.request(StateId::LOOT_OBJECT);true
+    }
+    pub(super) fn offer_world_pickup(&mut self){self.world_pickup.offer();self.quit(StateId::LOOT_OBJECT);}
+    pub(super) fn acknowledge_world_pickup(&mut self,id:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{self.world_pickup.acknowledge(id)?;self.quit(StateId::LOOT_OBJECT);Ok(())}
+    pub(super) fn lose_world_pickup(&mut self,id:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{
+        self.world_pickup.lose(id)?;self.quit(StateId::LOOT_OBJECT);Ok(())
+    }
+    pub(super) fn reject_world_pickup(&mut self,id:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{
+        self.world_pickup.reject_active(id)?;self.quit(StateId::LOOT_OBJECT);Ok(())
+    }
+    pub(super) fn finish_world_pickup(&mut self){self.world_pickup.reject();self.offer_world_pickup();}
+    pub(super) fn world_pickup_allowed(&self,id:StateId,parts:&super::body_parts::BodyParts,now:f64)->Option<bool>{
+        let Some(state)=self.state(id) else{return Some(false)};
+        let Kind::LootObject(declaration)=&state.decl.kind else{return Some(false)};
+        Some(!self.world_pickup.busy()&&parts.can_activate(state.decl.flags.body_parts,state.decl.flags.unlocks_code_locked_body_parts)
+            &&self.world_pickup.action.can_activate(now,&declaration.action)
+            &&self.active.iter().all(|&active|self.rule(active,id).allow))
+    }
+    fn start_world_pickup_scene(&mut self,index:usize,declaration:&super::carrying::GrabDecl,frame:&mut Frame){
+        let handle=Self::play(declaration.action.midnight.as_ref(),1.,self.states[index].decl.flags.body_parts,frame);
+        self.states[index].midnight=handle;
+        self.world_pickup.action.after_scene(handle,&declaration.action);
+        self.world_pickup.scene_started=true;
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -1214,7 +1248,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), world_pickup: Default::default(), slash_rules: None }
     }
 
     pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
@@ -1243,6 +1277,7 @@ impl StateMachine {
     /// its replacement; each mode retains its own state instances.
     pub fn leave_mode(&mut self, frame: &mut Frame) {
         self.read_note.reject();
+        self.world_pickup.reject();
         self.read_note.deactivate();
         for id in self.active.clone().into_iter().rev() {
             if let Some(index) = self.index(id) {
@@ -1444,6 +1479,7 @@ impl StateMachine {
             }
             Kind::Falling(_) => true,
             Kind::ReadNote => state.decl.flags.body_parts == 0 && self.read_note.admission,
+            Kind::LootObject(decl) => self.world_pickup.pending() && self.world_pickup.action.can_activate(frame.action_time,&decl.action),
             Kind::GrabObject(decl) => frame.carrying.pending() && frame.carrying.grab_state()==Some(decl.id) && frame.carrying.release.can_activate(frame.action_time,&decl.action),
             Kind::HoldObject(_) => frame.carrying.held.as_ref().is_some_and(|target|target.hold_state()==state.decl.id),
             Kind::ReleaseObject(decl) => frame.carrying.has_held() && frame.carrying.release.can_activate(frame.action_time,decl),
@@ -1569,7 +1605,7 @@ impl StateMachine {
         let handle = if let (Some(count), Some(path)) = (burst, path.as_ref()) {
             if let Some(scene) = frame.scenes.get(path) {
                 match frame.midnight.start_with_variables(scene, frame.md6, rate, frame.animations, 0xf, 0.0,
-                    &[("Burst", true)], &[("BurstLoop", count)]) {
+                    &[("Burst", true)], &[("BurstLoop", count)], frame.random) {
                     Ok(handle) => handle,
                     Err(error) => { frame.midnight.last_start_error = Some(format!("{path}: {error}")); 0 }
                 }
@@ -1976,6 +2012,7 @@ impl StateMachine {
         let mut quits = Vec::new();
         let mut read_note_requested = false;
         let mut grab_requested = false;
+        let mut loot_requested = false;
         let mut blink_requested = false;
         let mut grapple_requested = false;
         for command in queue {
@@ -2010,6 +2047,7 @@ impl StateMachine {
                 }
                 Command::Request(id) => {
                     blink_requested |= id == StateId::BLINKING;
+                    loot_requested |= id == StateId::LOOT_OBJECT;
                     grab_requested |= matches!(self.state(id).map(|state|&state.decl.kind),Some(Kind::GrabObject(_)));
                     grapple_requested |= id == StateId::GRAPPLE;
                     self.accept(id, None, &snapshot, &mut accepted, frame);
@@ -2065,6 +2103,7 @@ impl StateMachine {
             self.activate(index, speed, frame);
         }
         if read_note_requested { self.read_note.reject(); }
+        if loot_requested && !self.is_active(StateId::LOOT_OBJECT) { self.world_pickup.reject(); }
         if grab_requested && !self.active.iter().any(|id|matches!(self.state(*id).map(|state|&state.decl.kind),Some(Kind::GrabObject(_)))) {frame.carrying.cancel_grab();}
         if grapple_requested && !self.is_active(StateId::GRAPPLE) {
             frame.powers.grapple_pending = false;
@@ -2110,6 +2149,10 @@ impl StateMachine {
     /// Slot 8 OnRequestAccepted (InAir FUN_14083eb00, Jumping FUN_1408681a0,
     /// Falling FUN_140865b90, Slipping FUN_140870030).
     fn on_request_accepted(&mut self, index: usize) {
+        if let Kind::LootObject(declaration)=&self.states[index].decl.kind {
+            self.world_pickup.action.requested_again(&declaration.action,self.states[index].active);
+            return;
+        }
         if let Kind::Slash(decl) = &self.states[index].decl.kind {
             let decl = decl.action.clone();
             let active = self.states[index].active;
@@ -2172,6 +2215,13 @@ impl StateMachine {
             *frame.desired_legs += 1;
         }
         match &decl.kind {
+            Kind::LootObject(declaration) => {
+                self.world_pickup.activate();
+                if self.world_pickup.action.activate(&declaration.action,false)==super::combat::ActionStep::Execute {
+                    self.start_world_pickup_scene(index,declaration,frame);
+                }
+                return;
+            }
             Kind::GrabObject(_) => {frame.carrying.begin_grab();return;}
             Kind::HoldObject(_) => {
                 frame.carrying.attach();
@@ -2517,7 +2567,7 @@ impl StateMachine {
             // Activated above, without the navigation base.
             Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::UsePower(_) | Kind::Blinking | Kind::Grapple(_) | Kind::Dead(_)
                 | Kind::FireWeapon(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon
-                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) => {}
+                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) => {}
         }
     }
 
@@ -2616,6 +2666,11 @@ impl StateMachine {
                     self.states[index].slash.dispersion_active = false;
                 }
                 self.states[index].midnight = 0;
+                return;
+            }
+            Kind::LootObject(_) => {
+                self.world_pickup.offer();
+                self.world_pickup.action.deactivate(frame.action_time);
                 return;
             }
             Kind::GrabObject(_) => {frame.carrying.cancel_grab();return;}
@@ -2847,6 +2902,18 @@ impl StateMachine {
         let kind = self.states[index].decl.kind.clone();
         let id = self.states[index].decl.id;
         match kind {
+            Kind::LootObject(declaration) => {
+                use super::combat::ActionStep;
+                let action=frame.controller.mapping.iter().find(|mapping|mapping.state==id).map_or(0,|mapping|mapping.action);
+                let finished=frame.midnight.finished(self.states[index].midnight);
+                match self.world_pickup.action.update(frame.dt,&declaration.action,frame.controller.down(action),finished,false) {
+                    ActionStep::Quit=>self.quit(id),
+                    ActionStep::Execute if !self.world_pickup.scene_started=>self.start_world_pickup_scene(index,&declaration,frame),
+                    //Loot's +b8 action callback is actually0998b0 (no-op).
+                    ActionStep::Execute|ActionStep::None=>{}
+                }
+                if self.world_pickup.target().is_none(){self.quit(id);}
+            }
             Kind::GrabObject(_) => {if !frame.carrying.pending(){self.quit(id);}}
             Kind::HoldObject(_) => {if !frame.carrying.has_held(){self.quit(id);}}
             Kind::ReleaseObject(decl) => {

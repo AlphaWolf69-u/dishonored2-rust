@@ -36,6 +36,10 @@ pub struct TriggerShapeAsset {
     pub query_shapes: std::sync::Arc<physworld::query_geometry::QueryShapes>,
     cached_mass: Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>,
     pub(crate) signals: crate::gameplay::shape_registry::ShapeSignals,
+    ///08b830 propertykey1 belongs to this actual shape generation. Both wind
+    ///and water borrow it; the final geometry lease drops it automatically.
+    physics_property_present: bool,
+    physics_property: std::sync::OnceLock<Result<physworld::properties::generated::PhysicsShapeProperty,String>>,
 }
 
 impl std::ops::Deref for TriggerShapeAsset {
@@ -58,7 +62,7 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
         Ok(crate::gameplay::body_storage::BodyCreationAssets { shape:shape.header,
             wrapped_shapes:None,
             name:shape.physics.body_name(&shape.bytes, info.name)?,
-            mass_distribution:shape.physics.body_mass_distribution(&shape.bytes, info.mass_distribution)? })
+            mass_distribution:match info.mass_distribution_lease.as_deref(){Some(value)=>Some(*value),None=>shape.physics.body_mass_distribution(&shape.bytes,info.mass_distribution)?} })
     }
     fn header(&self,shape:usize)->Result<physworld::shape::ShapeHeader,String>{
         Ok(self.shapes.get(shape).and_then(Option::as_ref).ok_or("trigger shape header is missing")?.header)
@@ -90,7 +94,28 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
 
 impl TriggerShapeAsset {
     pub(crate) fn root_index(&self) -> usize { self.query_shapes.root() }
+    pub(crate) fn prepare_physics_property(&mut self, mesh:bool)->Result<(),String>{
+        //A later mesh admission cannot erase key1 already installed on the
+        //same actual shared shape; a later nonmesh admission may create it.
+        if mesh { if self.physics_property.get().is_none(){self.physics_property_present=false;} }
+        else if self._standalone_extra.is_none(){self.physics_property_present=true;}
+        if self.physics_property_present { self.physics_property_ref()?; }
+        Ok(())
+    }
+    pub(crate) fn physics_property_if_present(&self)->Result<Option<&physworld::properties::generated::PhysicsShapeProperty>,String>{
+        if self.physics_property_present { self.physics_property_ref().map(Some) } else { Ok(None) }
+    }
+    pub(crate) fn physics_property_ref(&self)->Result<&physworld::properties::generated::PhysicsShapeProperty,String>{
+        if !self.physics_property_present { return Err("shape has no generated key1 physics property".into()); }
+        self.physics_property.get_or_init(||physworld::properties::generated::build(&self.query_shapes))
+            .as_ref().map_err(Clone::clone)
+    }
     fn root_mass(&self) -> Result<Option<physworld::mass::PrincipalMassProperties>, String> {
+        if let Some(mass)=self.standalone.as_ref().and_then(|shape|shape.mass.as_ref()){
+            //808ea0/08c7f0 overrides the actual root property, including
+            //scaled aliases and the primary+ExtraHD combined compound.
+            return Ok(**mass);
+        }
         if self.standalone.as_ref().is_some_and(|shape| !shape.wrappers.is_empty()) {
             // 14008c9a0 constructs a new scaled compound without copying the
             // child's 0xf100 property. Its native mode-zero calculator uses
@@ -166,7 +191,7 @@ impl TriggerAssets {
         let asset = TriggerShapeAsset { path: path.to_owned(), source, standalone: None,
             _standalone_extra: None, standalone_key: None, root, retain_for_admission: true,
             header, bounds, is_mutable, query_shapes: std::sync::Arc::new(query_shapes),
-            cached_mass: None, signals: Default::default() };
+            cached_mass: None, signals: Default::default(), physics_property_present: false, physics_property: Default::default() };
         self.shapes.try_reserve(1).map_err(|error| error.to_string())?;
         self.shape_references.try_reserve(1).map_err(|error| error.to_string())?;
         let index = self.shapes.len();
@@ -203,8 +228,14 @@ impl TriggerAssets {
             shape.wrappers.iter().map(physworld::source::ShapeAlias::identity).collect(), *tags));
         let key = StandaloneKey { source: std::sync::Arc::as_ptr(&lease.source) as usize, aliases, extra: extra_key };
         if let Some(&index) = self.standalone_keys.get(&key) {
-            let asset = self.shapes.get(index).and_then(Option::as_ref).ok_or("shared standalone shape slot absent")?;
-            if asset.standalone.is_none() { return Err("shared standalone shape owner mismatch".into()); }
+            let asset = self.shapes.get_mut(index).and_then(Option::as_mut).ok_or("shared standalone shape slot absent")?;
+            let existing=asset.standalone.as_mut().ok_or("shared standalone shape owner mismatch")?;
+            if let Some(mass)=lease.mass.as_ref(){
+                if existing.mass.as_ref().is_some_and(|old|!std::sync::Arc::ptr_eq(old,mass)){
+                    return Err("shared standalone shape companion mass generation changed".into());
+                }
+                existing.mass=Some(mass.clone());
+            }
             let count = self.shape_references.get_mut(index).ok_or("shared standalone reference count absent")?;
             *count = count.checked_add(1).ok_or("standalone shape reference count overflow")?;
             if trace_collision_sources() {
@@ -229,9 +260,10 @@ impl TriggerAssets {
         let bounds = query_shapes.bounds(query_shapes.root(), identity)?;
         let path = lease.wrappers.first().map_or_else(|| lease.source_path.clone(), |resource| resource.path.clone());
         let source = lease.source.clone();
+        let physics_property_present = _standalone_extra.is_none();
         let asset = TriggerShapeAsset { path, source, standalone: Some(Box::new(lease)), _standalone_extra, standalone_key: Some(key.clone()), root: 1,
             retain_for_admission: true, header, bounds, is_mutable,
-            query_shapes: std::sync::Arc::new(query_shapes), cached_mass: None, signals: Default::default() };
+            query_shapes: std::sync::Arc::new(query_shapes), cached_mass: None, signals: Default::default(), physics_property_present, physics_property: Default::default() };
         if let Some(index) = self.free_shapes.last().copied() {
             if self.shapes.get(index).is_none_or(Option::is_some) || self.shape_references.get(index) != Some(&0) {
                 return Err("free shape slot is inconsistent".into());
@@ -424,7 +456,7 @@ impl TriggerAssets {
                         is_mutable,
                         query_shapes: std::sync::Arc::new(query_shapes),
                         cached_mass: None,
-                        signals: Default::default(),
+                        signals: Default::default(), physics_property_present: false, physics_property: Default::default(),
                     }));
                     indices.insert(path, index);
                     index

@@ -27,8 +27,25 @@ pub struct WorldEffectSources(pub Arc<WorldFxSources>);
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct DynamicEffects(pub Arc<Vec<DynamicEffect>>);
 
+///7ee610's instance metadata, owned through the actual FX tail lifetime.
+#[derive(Clone, Copy)]
+pub struct EntityEffectContext {
+    pub owner: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub culprit: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub cannot_incapacitate_player_and_allies: bool,
+    pub player_impact: bool,
+    pub velocities: [[f32; 3]; 2],
+    ///60a480/60a8b0 request+f0/f4 -> FXparams+b8/bc.22fd00 uses
+    ///speed squared times mass for the existing physics-energy sound RTPC.
+    pub contact_speed:f32,
+    pub contact_mass:f32,
+    ///60a480 receives8520d0's SOURCE body flag19 to install the
+    ///439480 contact-stimulus completion callback; it is not a clock.
+    pub contact_stimulus_enabled:Option<bool>,
+}
 #[derive(Clone)]
 pub struct DynamicEffect {
+    pub entity_context: Option<EntityEffectContext>,
     pub owner: String,
     pub revision: u64,
     pub effect: String,

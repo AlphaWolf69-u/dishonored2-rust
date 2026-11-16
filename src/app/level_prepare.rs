@@ -110,6 +110,7 @@ pub(super) fn prepare_level(
     let path = PathBuf::from(&level.world);
     let game_base = Some(base);
     let mut app = super::loading_screen::PreparedLevel::default();
+    let mut level_bodies = None;
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
     app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(&catalog)));
     app.insert_resource(SkeletalHistoryScope::new(&catalog));
@@ -187,12 +188,9 @@ pub(super) fn prepare_level(
     app.insert_resource(crate::assets::inventory_item::PickableSourceLease::for_catalog(catalog.as_ref().unwrap())
         .map_err(std::io::Error::other)?);
     let mut interactions = match entity_document.as_ref() {
-        Some(document) => match super::interactions::Interactions::load(
+        Some(document) => Some(super::interactions::Interactions::load(
             catalog.as_ref().unwrap().clone(), document, character,
-        ) {
-            Ok(interactions) => Some(interactions),
-            Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
-        },
+        ).map_err(|error| std::io::Error::other(format!("level interaction resources: {error}")))?),
         None => None,
     };
     let limits = if let Some(interactions) = interactions.as_ref() {
@@ -627,7 +625,7 @@ pub(super) fn prepare_level(
         let keep_details = env::var_os("DH2_DEBUG_KEEP_COLLISION_DETAILS").is_some_and(|value| value == "1");
         let trace_physics = env::var_os("DH2_DEBUG_PHYSICS_SIGNATURES").is_some_and(|value| value == "1");
         let physics = physworld::parse(&physics_bytes)?;
-        let (world_triangles, retained_source) = {
+        let world_triangles = {
             let shape_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
             let geometry = physics.collision_for_navigation(&physics_bytes, keep_details,
                 &|| cancelled(CancellationPoint::CollisionShapes))?;
@@ -636,7 +634,6 @@ pub(super) fn prepare_level(
                 eprintln!("MEMORY collision extraction: details={keep_details} detail_capacity_bytes={} cycles={cycles}",
                     geometry.detail_capacity_bytes());
             }
-            let retained_source = stage_triangles.then_some(physics_bytes);
             if profile {
                 println!(
                     "PERF authored physics parse and decode: {:.3}s",
@@ -650,7 +647,7 @@ pub(super) fn prepare_level(
                 geometry.triangles.len(),
                 geometry.compressed_decode_failures.len()
             );
-            (geometry.triangles, retained_source)
+            geometry.triangles
         };
         check_cancelled()?;
         let model_start = std::time::Instant::now();
@@ -796,10 +793,15 @@ pub(super) fn prepare_level(
                 0,
             )
         };
-        let retained_source_bytes = retained_source.as_ref().map_or(0, Vec::capacity);
-        drop(retained_source);
-        drop(physics);
-        drop(materials);
+        let retained_source_bytes = physics_bytes.capacity();
+        let world_materials = materials.into_iter().collect::<Result<Vec<_>,_>>()
+            .map_err(|()| "level physics material declaration unresolved")?;
+        let path = level.physics.clone().ok_or("loaded physics resource has no path")?;
+        let source = physworld::source::ShapeSource::from_world_read(
+            catalog.as_ref().unwrap().identity(), path.clone(), physics_bytes, physics);
+        level_bodies = Some(super::physics_scene::level_bodies::PreparedLevelBodies {
+            path, source, materials: world_materials,
+        });
         check_cancelled()?;
         if let Some(start) = index_cycles {
             let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
@@ -1029,11 +1031,18 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
+        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref())
             .map_err(std::io::Error::other)?;
         let marker_targets = std::mem::take(&mut marker_positions.targets);
         physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
+        if !marker_targets.is_empty() {
+            physics.capture_removal_components(catalog, document).map_err(std::io::Error::other)?;
+        }
         drop(marker_targets);
+        if let Some(mut navigation)=app.take_resource::<NavigationWorld>(){
+            physics.publish_navigation_ownership(&mut navigation.0).map_err(std::io::Error::other)?;
+            app.insert_resource(navigation);
+        }
         app.insert_resource(live);
         app.insert_resource(entity_events);
         app.insert_resource(physics);

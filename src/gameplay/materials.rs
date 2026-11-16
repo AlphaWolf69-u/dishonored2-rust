@@ -67,6 +67,20 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     pub fn get(&self, handle: usize) -> Option<&PhysicsMaterial> {
         self.declarations.get(handle).map(|definition| definition.material())
     }
+    /// Admission appends canonical definitions even when physical records can
+    /// share values. Contact dependency consumers observe this owner revision.
+    pub(crate) fn declaration_revision(&self) -> usize { self.declarations.len() }
+    pub(crate) fn contact_definitions(&self) -> &[Arc<Definition>] { &self.declarations }
+    /// 853b80 passes the library record's actual declaration+68 collision
+    /// block flags to81a5f0. These are neither traversal flags at+80 nor the
+    /// solver policy flags packed into the runtime library record.
+    pub(crate) fn shape_filter_flags(&self, material: u16) -> Result<u16, String> {
+        let record = self.library.get(material).ok_or("shape tag material record is missing")?;
+        let identity = u64::from(record.words[14]) | (u64::from(record.words[15]) << 32);
+        let handle = identity.checked_sub(1).ok_or("mapped shape tag material has no declaration")?;
+        let handle = usize::try_from(handle).map_err(|_| "shape tag declaration handle exceeds host address space")?;
+        Ok(self.get(handle).ok_or("shape tag material declaration is missing")?.collision.flags)
+    }
     /// c9c940 retains the declaration identity in the library record's +0x60.
     pub(crate) fn material_for_id(&self, id: u16) -> Result<&PhysicsMaterial, String> {
         let record = self.library.get(id).ok_or("material library ID absent")?;

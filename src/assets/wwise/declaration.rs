@@ -7,6 +7,7 @@ use super::{invalid, invalid_owned};
 pub struct SoundEventDeclaration {
     pub id: u32,
     pub game_properties: Option<String>,
+    pub game_descriptor: Option<std::sync::Arc<super::game_properties::GameSoundProperties>>,
     pub game_defined: bool,
     pub spatialized: bool,
     pub has_voices: bool,
@@ -42,6 +43,7 @@ impl SoundEventDeclaration {
                 .map_err(|_| invalid("invalid sound event engine ID"))?,
             game_properties: atom(edit, "m_gameProperties")
                 .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL")).map(str::to_owned),
+            game_descriptor: None,
             game_defined: boolean("m_isGameDefined")?, spatialized: boolean("m_Spatialized")?,
             has_voices: boolean("m_HasVoices")?, internally_stopped: boolean("m_IsInternallyStopped")?,
             looping: boolean("m_isLooping")?, max_distance: number("m_MaxDistance", 0.0)?,

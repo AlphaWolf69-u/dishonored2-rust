@@ -33,6 +33,9 @@ pub(crate) trait SimulationContacts<G, E> {
         motions: &[u32],
         velocities: &[SolverVelocities],
     ) -> Result<(), String>;
+    /// True only after the actual prepared manifold callbacks acknowledge
+    /// their real cache/stream-row edits. No integration can precede them.
+    fn prepared_callbacks_ready(&self) -> bool;
     fn solve(
         &mut self,
         step: &SolverParameters,
@@ -57,6 +60,7 @@ pub(crate) trait SimulationContacts<G, E> {
 enum Phase {
     Collide,
     Prepare,
+    ContactCallbacks,
     Solve,
     Integrate,
     Publish,
@@ -307,6 +311,13 @@ impl WorldStorage {
         }
         if scratch.pending.as_ref().unwrap().phase == Phase::Prepare {
             contacts.prepare(self, geometry, &step, &scratch.motions, &scratch.velocities)?;
+            scratch.pending.as_mut().unwrap().phase = Phase::ContactCallbacks;
+        }
+        if scratch.pending.as_ref().unwrap().phase == Phase::ContactCallbacks {
+            // The component host may need the same world's body mutators.
+            // Yield its lock with all numeric rows/velocities retained; the
+            // driver dispatches the actual 81b... callbacks before retrying.
+            if !contacts.prepared_callbacks_ready() { return Ok(false); }
             scratch.pending.as_mut().unwrap().phase = Phase::Solve;
         }
         if scratch.pending.as_ref().unwrap().phase == Phase::Solve {

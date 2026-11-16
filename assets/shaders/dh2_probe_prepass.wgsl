@@ -1,3 +1,4 @@
+#import bevy_pbr::mesh_bindings::mesh
 #import bevy_pbr::prepass_io::VertexOutput
 #import dh2_alpha_clip::clip_surface
 @fragment fn fragment(vertex_output:VertexOutput) {
@@ -10,5 +11,5 @@
 #endif
     // Ordinary Z/shadow branches do not consume vertex colour. Decals have
     // no host prepass; their Z-alpha wrapper supplies the actual mesh colour.
-    clip_surface(uv0,uv1,vertex_output.world_position,vec4(1.0));
+    clip_surface(uv0,uv1,vertex_output.world_position,vec4(1.0),mesh[vertex_output.instance_index].tag);
 }

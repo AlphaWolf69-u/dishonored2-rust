@@ -24,6 +24,8 @@ use crate::assets::physworld::{
 };
 #[path = "shape_convex_query/closest.rs"]
 mod closest;
+#[path = "shape_convex_query/mesh.rs"]
+mod mesh;
 
 pub struct ConvexClosestQuery<'a> {
     pub geometry: ConvexQueryGeometry<'a>,
@@ -86,6 +88,7 @@ pub struct ShapeConvexQuery {
     pending: Vec<Vec<u16>>,
     active: Vec<usize>,
     closest_traversals: Vec<super::compound_query::CompoundQuery>,
+    mesh: super::compressed_mesh_query::CompressedMeshQuery,
 }
 impl ShapeConvexQuery {
     pub fn cast(
@@ -157,69 +160,30 @@ impl ShapeConvexQuery {
                         radius: state.radius,
                     }),
                 })?;
-                let direction = inverse_rotate_vector(
-                    state.transform.world_from_local,
-                    [
-                        request.displacement[0],
-                        request.displacement[1],
-                        request.displacement[2],
-                        0.,
-                    ],
-                );
-                let mut moving = relative;
-                let mut fraction = [0.; 4];
-                for iteration in 0..256 {
-                    let Some(geometry) = query_pair(
-                        request.geometry.vertices,
-                        support.vertices,
-                        moving,
-                        request.geometry.radius,
-                        support.radius,
-                        f32::from_bits(0x7f7f_ffee),
-                    )?
-                    else {
-                        break;
-                    };
-                    let contact = ConvexContact {
-                        query: request.hit,
-                        target: hit,
-                        position: transform_point(state.transform.world_from_local, geometry.point),
-                        normal: rotate_vector(state.transform.world_from_local, geometry.normal),
-                        distance: geometry.distance[0],
-                        fraction: fraction[0],
-                        flags: 2,
-                    };
-                    if iteration == 0 && geometry.distance[0] <= request.start_tolerance {
-                        submit(
-                            ConvexContact {
-                                flags: 4,
-                                ..contact
-                            },
-                            true,
-                            control,
-                        );
-                    }
-                    if geometry.distance[0] <= request.tolerance {
-                        submit(contact, false, control);
-                        break;
-                    }
-                    let approach = (geometry.normal[1] * direction[1]
-                        + geometry.normal[0] * direction[0])
-                        + geometry.normal[2] * direction[2];
-                    if -f32::from_bits(0x3400_0000) < approach {
-                        break;
-                    }
-                    let inverse = super::constraint_solver::reciprocal(approach);
-                    fraction =
-                        std::array::from_fn(|i| fraction[i] - inverse * geometry.distance[i]);
-                    if control.fraction <= fraction[0] && fraction[0] != control.fraction {
-                        break;
-                    }
-                    moving[3] =
-                        std::array::from_fn(|i| fraction[i] * direction[i] + relative[3][i]);
-                }
-                Ok(())
+                cast_support(
+                    support.vertices,
+                    support.radius,
+                    state,
+                    relative,
+                    hit,
+                    request,
+                    control,
+                    submit,
+                )
             }
+            QueryGeometry::CompressedMesh(mesh) => self.mesh_cast(
+                target,
+                mesh,
+                shape.header.radius,
+                shape.header.key_bits,
+                state,
+                relative,
+                key,
+                hit,
+                request,
+                control,
+                submit,
+            ),
             QueryGeometry::Compound(compound) => {
                 let mut geometry = request.geometry;
                 let prepared = prepare(
@@ -426,4 +390,76 @@ fn max(a: f32, b: f32) -> f32 {
     } else {
         b
     }
+}
+
+/// cbd060's shared cold GSK advancement receives real leaf support geometry.
+fn cast_support(
+    vertices: &[[f32; 4]],
+    radius: f32,
+    state: CompoundShapeState,
+    relative: ShapeMatrix,
+    hit: ShapeHitInfo,
+    request: &ConvexCast<'_>,
+    control: &mut RayQueryControl,
+    submit: &mut dyn FnMut(ConvexContact, bool, &mut RayQueryControl),
+) -> Result<(), String> {
+    let direction = inverse_rotate_vector(
+        state.transform.world_from_local,
+        [
+            request.displacement[0],
+            request.displacement[1],
+            request.displacement[2],
+            0.,
+        ],
+    );
+    let mut moving = relative;
+    let mut fraction = [0.; 4];
+    for iteration in 0..256 {
+        let Some(geometry) = query_pair(
+            request.geometry.vertices,
+            vertices,
+            moving,
+            request.geometry.radius,
+            radius,
+            f32::from_bits(0x7f7f_ffee),
+        )?
+        else {
+            break;
+        };
+        let contact = ConvexContact {
+            query: request.hit,
+            target: hit,
+            position: transform_point(state.transform.world_from_local, geometry.point),
+            normal: rotate_vector(state.transform.world_from_local, geometry.normal),
+            distance: geometry.distance[0],
+            fraction: fraction[0],
+            flags: 2,
+        };
+        if iteration == 0 && geometry.distance[0] <= request.start_tolerance {
+            submit(
+                ConvexContact {
+                    flags: 4,
+                    ..contact
+                },
+                true,
+                control,
+            );
+        }
+        if geometry.distance[0] <= request.tolerance {
+            submit(contact, false, control);
+            break;
+        }
+        let approach = (geometry.normal[1] * direction[1] + geometry.normal[0] * direction[0])
+            + geometry.normal[2] * direction[2];
+        if -f32::from_bits(0x3400_0000) < approach {
+            break;
+        }
+        let inverse = super::constraint_solver::reciprocal(approach);
+        fraction = std::array::from_fn(|i| fraction[i] - inverse * geometry.distance[i]);
+        if control.fraction <= fraction[0] && fraction[0] != control.fraction {
+            break;
+        }
+        moving[3] = std::array::from_fn(|i| fraction[i] * direction[i] + relative[3][i]);
+    }
+    Ok(())
 }

@@ -15,6 +15,7 @@ pub enum GraphValue {
     Float(f32),
     Int(i32),
     Time(i32),
+    Vector([f32; 3]),
     Entity(Option<EntityReference>),
     Entities(Vec<EntityReference>),
 }
@@ -30,6 +31,7 @@ impl GraphValue {
             Self::Float(_) => Self::Float(inputs.number(node, port, 0)?),
             Self::Int(_) => Self::Int(inputs.integer(node, port, 0)?),
             Self::Time(_) => Self::Time(inputs.integer(node, port, 0)?),
+            Self::Vector(_) => Self::Vector(inputs.vector(node, port, 0)?),
             Self::Entity(_) => {
                 let mut entities = inputs.entity_references(node, port)?;
                 if entities.len() > 1 {
@@ -39,6 +41,12 @@ impl GraphValue {
             }
             Self::Entities(_) => Self::Entities(inputs.entity_references(node, port)?),
         })
+    }
+    pub fn vector(&self) -> Result<[f32; 3], String> {
+        match self {
+            Self::Vector(value) => Ok(*value),
+            _ => Err("non-vector graph variable used as a vector".into()),
+        }
     }
     pub fn number(&self) -> Result<f32, String> {
         match self {
@@ -61,6 +69,20 @@ impl GraphValue {
             _ => Err("non-entity graph variable used as an entity".into()),
         }
     }
+}
+
+///909030/90bfa0 initialize both Vec3 storage slots to the executable's
+///1432cdf40 zero vector. Authored fields retain the reflected x/y/z layout.
+pub(crate) fn read_vector(fields: &[(String, crate::entities::Value)], name: &str) -> Result<[f32; 3], String> {
+    let values = match crate::entities::field(fields, name) {
+        None => &[][..],
+        Some(value) => crate::entities::scope(Some(value)).ok_or_else(|| format!("invalid vector {name}"))?,
+    };
+    Ok([
+        crate::gameplay::damage::number(values, "x", 0.)?,
+        crate::gameplay::damage::number(values, "y", 0.)?,
+        crate::gameplay::damage::number(values, "z", 0.)?,
+    ])
 }
 
 pub type SharedVariables = Arc<RwLock<GraphVariables>>;
@@ -112,6 +134,7 @@ fn default_value(definition: &GraphVariable) -> Result<GraphValue, String> {
             .parse()
             .map(GraphValue::Time)
             .map_err(|_| invalid()),
+        "arkKisculeGraphVariableVec3" => read_vector(fields, "m_defaultValue").map(GraphValue::Vector),
         "arkKisculeGraphVariableEntityReference" => Ok(GraphValue::Entity(
             value
                 .filter(|value| !value.is_empty())

@@ -206,9 +206,17 @@ pub(crate) trait WaterContactWorld: WaterDensityWorld {
     fn deactivate_body(&mut self, body_index: u32) -> Result<(), String>;
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OceanPoint {
+    pub index: Option<usize>,
+    pub xy: [f32; 2],
+}
 struct ContactBody {
     id: u32,
     contacts: WaterContacts,
+    queries: [OceanPoint; 4],
+    splash_pending: bool,
+    splash_queued: bool,
 }
 
 /// Source650bf0/651b80/651e70/652080: hash buckets in ascending order,
@@ -261,6 +269,9 @@ impl WaterContactManager {
                     at,
                     ContactBody {
                         id: body,
+                        queries: Default::default(),
+                        splash_pending: true,
+                        splash_queued: false,
                         contacts: WaterContacts {
                             density: Some([0.; 4]),
                             components: Vec::new(),
@@ -301,6 +312,43 @@ impl WaterContactManager {
         }
     }
 
+    ///Borrow the real source bucket/list order without a per-frame body-ID
+    ///snapshot, allocation, or another residency map.
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = (u32, &WaterContacts)> {
+        self.buckets
+            .iter()
+            .flat_map(|bucket| bucket.iter().map(|body| (body.id, &body.contacts)))
+    }
+    pub(crate) fn simulation_bodies(
+        &mut self,
+    ) -> impl Iterator<
+        Item = (
+            u32,
+            &WaterContacts,
+            &mut [OceanPoint; 4],
+            &mut bool,
+            &mut bool,
+        ),
+    > {
+        self.buckets.iter_mut().flat_map(|bucket| {
+            bucket.iter_mut().map(|body| {
+                (
+                    body.id,
+                    &body.contacts,
+                    &mut body.queries,
+                    &mut body.splash_pending,
+                    &mut body.splash_queued,
+                )
+            })
+        })
+    }
+    pub(crate) fn acknowledge_splash(&mut self, id: u32) {
+        let bucket = &mut self.buckets[(id & 0xffffff & self.mask) as usize];
+        if let Some(body) = bucket.iter_mut().find(|body| body.id == id) {
+            body.splash_pending = false;
+            body.splash_queued = false;
+        }
+    }
     ///651960, subscribed by651800 to world+868's removed-body signal.
     /// No density/deactivation callbacks occur during destruction.
     pub fn remove_bodies(&mut self, bodies: &[u32]) {

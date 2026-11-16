@@ -34,8 +34,10 @@ pub mod shape;
 pub mod simplex_solver;
 pub mod states;
 pub mod read_note;
+mod world_pickup;
 
 use bevy_math::{Mat3, Vec3};
+use std::sync::Arc;
 use body::Body;
 use camera::{BodyPose, PlayerCamera, View};
 use character_proxy::{PlayerWorld, SupportState};
@@ -313,6 +315,10 @@ impl Player {
         runtime.ok_or("ammo upgrades prepared before actual owned ranged Start")?.install_ammunition_flags(flags)
     }
     pub fn ranged_identity(&self) -> Option<&str> { self.weapon_identity.as_deref() }
+    pub fn ranged_ammunition_index(&self, identity: &str) -> Option<usize> {
+        if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_ref() }
+        else { self.holstered_weapons.get(identity) }.map(|weapon| weapon.ammunition_index())
+    }
     /// The last published camera world frame, available without sampling a
     /// second body pose during a component callback.
     pub fn published_camera_frame(&self) -> (Vec3, Mat3) { (self.camera.eye, self.camera_axis) }
@@ -490,6 +496,20 @@ impl Player {
         machine.request(state);
         true
     }
+    ///83d3e0 compares the current and authored base of AttributesPlayer+118.
+    ///435660 binds that slot through14397ea50;14137abc0 names STRENGTH.
+    pub fn carrying_greater_throw(&self) -> bool {
+        self.attributes.1.get("ARK_ATTRIBUTE_STRENGTH")
+            .is_some_and(|attribute| self.attributes.get("ARK_ATTRIBUTE_STRENGTH") != attribute.base)
+    }
+    ///435660 binds11c to14397ea58;14137abe0 registers this exact tag.
+    ///808480 uses1 only when the actual cached attribute is absent.
+    pub fn carrying_throw_damage_multiplier(&self) -> f32 {
+        if self.attributes.1.contains_key("ARK_ATTRIBUTE_STRENGTH_DAMAGE_MULTIPLIER") {
+            self.attributes.get("ARK_ATTRIBUTE_STRENGTH_DAMAGE_MULTIPLIER")
+        } else { 1.0 }
+    }
+
     pub fn carried_object_reached(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) {
         if let Some(state) = self.carrying.reached(entity) {
             let machine = if self.swimming_active { &mut self.swimming_machine } else { &mut self.machine };

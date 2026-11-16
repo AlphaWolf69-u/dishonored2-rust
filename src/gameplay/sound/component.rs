@@ -43,13 +43,16 @@ pub enum StartupAction { None, Stop, Post }
 /// its voices stop, until the component's shutdown releases it (140708620).
 pub struct AudioComponent {
     pub owner: crate::gameplay::component_state::ComponentOwner,
+    /// Runtime definitions belong to their actual component, rather than the
+    /// immutable map binding vector (708960 initialization / 708620 release).
+    pub runtime_definition: Option<std::sync::Arc<crate::assets::entities::audio::AudioBinding>>,
     pub startup: Startup,
     pub allocated: bool,
     pub started: bool,
 }
 impl Default for AudioComponent {
     fn default() -> Self {
-        Self { owner: Default::default(), startup: Startup::default(), allocated: false, started: false }
+        Self { owner: Default::default(), runtime_definition: None, startup: Startup::default(), allocated: false, started: false }
     }
 }
 impl crate::gameplay::component_state::ComponentInstance for AudioComponent {

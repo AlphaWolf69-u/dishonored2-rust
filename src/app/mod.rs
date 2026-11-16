@@ -83,6 +83,7 @@ mod world_instances;
 mod water_objects;
 mod water_scene;
 mod physics_scene;
+mod time_sync;
 mod state;
 mod interaction_focus;
 mod interactions;
@@ -227,7 +228,19 @@ mod runtime_entities;
 mod throwable;
 
 mod carrying;
+mod pickups;
+use physics_scene::carrying_resources;
 
 mod projectiles;
 
 mod weapon_firing;
+
+mod explosions;
+
+mod breakables;
+
+mod entity_functions;
+
+mod entity_removal;
+mod fx_gameplay;
+mod water_impacts;

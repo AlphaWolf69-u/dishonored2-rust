@@ -7,6 +7,7 @@ use super::ball_socket::SolverVelocities;
 pub mod build;
 pub mod correspondence;
 pub(crate) mod material;
+pub mod reconstruction;
 pub mod restitution;
 pub use build::{build, ContactBuild, ContactCache, ContactPoint};
 
@@ -65,7 +66,13 @@ pub struct SolveResult {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ContactRows {
+    /// c583a0 stream header byte0 and manifold response type byte2. The
+    /// 81b420/81b440 callbacks inspect/edit these same rows, not a fake event.
+    pub stream_flags: u8,
+    pub stream_type: u8,
     pub normal: [f32; 3],
+    /// c583a0 header+20.W/+30, used by cb9320 after the manifold is destroyed.
+    pub reconstruction: reconstruction::ManifoldHeader,
     pub rows: [NormalRow; 4],
     pub count: u8,
     /// Stream header bit4 at +4. Ordinary rows permit undoing old impulses.
@@ -85,6 +92,9 @@ impl ContactRows {
         final_iteration: bool,
     ) -> SolveResult {
         let mut result = SolveResult::default();
+        if self.stream_type == 3 {
+            return result;
+        }
         for index in 0..usize::from(self.count).min(4) {
             let row = self.rows[index];
             let velocity: [f32; 3] = std::array::from_fn(|i| {

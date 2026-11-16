@@ -180,7 +180,7 @@ impl Definition {
             })
             .map(String::as_str)
     }
-    /// Ordered native preconstruction requests. Equal declarations still have
+    /// Ordered preconstruction requests. Equal declarations still have
     /// separate actor generations; immutable resource owners may share payloads.
     pub fn chunks(&self) -> impl Iterator<Item = (usize, usize, &str)> {
         self.steps

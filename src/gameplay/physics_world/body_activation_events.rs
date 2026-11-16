@@ -7,6 +7,8 @@ use crate::gameplay::{component_state::entity::ComponentHandle, signal::Signal};
 pub(crate) struct ActivationSubscriber {
     pub handle: ComponentHandle,
     pub generation: u32,
+    ///0: component8097f0;1: player-instigator world notifier852730.
+    pub callback: u8,
 }
 
 struct Transition { body: u32, active: bool, prepared: bool }
@@ -37,6 +39,14 @@ impl BodyActivationEvents {
         Ok(())
     }
 
+    ///852730 subscribes to the lower body's real signal even before it is
+    ///published. The caller validates the actual body ID and component lease.
+    pub(crate) fn subscribe_instigator(&mut self, body: u32, subscriber: ActivationSubscriber) -> Result<(), String> {
+        self.slot(body)?;
+        if subscriber.callback != 1 { return Err("instigator body callback differs".into()); }
+        self.listeners.entry(body & 0x00ff_ffff).or_default().subscribe(subscriber, 0);
+        Ok(())
+    }
     pub(crate) fn unsubscribe(&mut self, body: u32, subscriber: ActivationSubscriber) -> Result<(), String> {
         self.slot(body)?;
         if let Some(signal) = self.listeners.get_mut(&(body & 0x00ff_ffff)) {

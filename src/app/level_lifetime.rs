@@ -17,10 +17,12 @@ pub(super) struct LevelLifetime {
     catalog: Option<std::sync::Arc<crate::assets::archive::Catalog>>,
     producers_retired: bool,
     equipment_retired: bool,
+    actors_retired: bool,
     physics_retired: bool,
     player_retired: bool,
     effect_requests_retired: bool,
     effects_retired: bool,
+    fx_gameplay_retired: bool,
     wind_retired: bool,
     audio_retirement_started: bool,
     cleared: bool,
@@ -50,6 +52,11 @@ impl LevelLifetime {
 
     pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
         if self.cleared { return Ok(true); }
+        // SourceReady/EventPlaying cookies can keep an actual projectile ID
+        // alive after FX shutdown. Pump their real audio owner and immediately
+        // deliver resulting C6/29 messages before any actor can lose that ID.
+        super::audio::poll_accepted_effects(world)?;
+        super::entity_messages::finish_accepted(world)?;
         // The source read callback is synchronous. Finish its already accepted
         // host cursor while the real components and render/audio owners remain.
         super::interactions::finish_accepted_pickups(world)?;
@@ -57,25 +64,29 @@ impl LevelLifetime {
         // Keep real player/clock/physics owners until power and equipment Stop
         // have withdrawn their requests and acknowledged actual render/audio.
         if !self.producers_retired {
+            super::physics_scene::simulation::finish_accepted(world)?;
+            super::physics_scene::carrying_host::finish_accepted_loot_pull(world)?;
+            super::pickups::finish_accepted(world)?;
+            super::physics_scene::water_publication::update(world)?;
+            super::water_impacts::update(world)?;
+            if super::water_impacts::accepted_pending(world) { return Ok(false); }
+            super::physics_scene::water_publication::release_queries(world)?;
+            super::physics_scene::carrying_host::retire(world)?;
+            if !super::breakables::finish_accepted(world)? { return Ok(false); }
+            super::breakables::begin_retirement(world);
+            super::entity_functions::begin_retirement(world);
+            super::water_impacts::begin_retirement(world);
+            super::water_impacts::retire(world)?;
+            super::fx_gameplay::begin_retirement(world);
+            super::explosions::shutdown(world);
             super::player_actions::retire_effects(world)?;
             super::power_execution::begin_wind_retirement(world)?;
             super::power_world::retire(world)?;
             self.producers_retired = true;
         }
-        if !self.equipment_retired {
-            if !super::runtime_materials::equipment_admission::shutdown(world)? { return Ok(false); }
-            self.equipment_retired = true;
-        }
-        // Pending/errors preserve the sole registry, pools and body world.
-        if !self.physics_retired {
-            if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
-            self.physics_retired = true;
-        }
-        if !self.player_retired {
-            super::player_lifetime::retire(world)?;
-            super::interactions::stop_level(world);
-            self.player_retired = true;
-        }
+        // The FX manager acknowledges producer tickets before the equipment
+        // and entity resource scopes which prepared those effects can close.
+        // Keep physics, player and audio callback owners throughout this drain.
         if !self.effect_requests_retired {
             super::usable_effects::begin_retirement(world)?;
             self.effect_requests_retired = true;
@@ -91,6 +102,37 @@ impl LevelLifetime {
             world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
+        }
+        if !self.fx_gameplay_retired {
+            super::fx_gameplay::retire(world)?;
+            self.fx_gameplay_retired = true;
+        }
+        // An already accepted ordinary batch can await a projectile/ContactFX
+        // tail. Finish it only after the real FX manager acknowledges shutdown;
+        // waiting for it above would prevent that acknowledgement forever.
+        // finish_accepted never admits another ordinary removal snapshot.
+        if !super::entity_removal::finish_accepted(world)? { return Ok(false); }
+        if !self.equipment_retired {
+            if !super::weapon_firing::shutdown(world)? { return Ok(false); }
+            if !super::explosions::retirement_complete(world)? { return Ok(false); }
+            if !super::runtime_materials::equipment_admission::shutdown(world)? { return Ok(false); }
+            self.equipment_retired = true;
+        }
+        if !self.actors_retired {
+            if !super::projectiles::shutdown(world) { return Ok(false); }
+            if !super::runtime_entities::begin_retirement(world)? { return Ok(false); }
+            if !super::world_models::shutdown(world)? { return Ok(false); }
+            self.actors_retired = true;
+        }
+        // Pending/errors preserve the sole registry, pools and body world.
+        if !self.physics_retired {
+            if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
+            self.physics_retired = true;
+        }
+        if !self.player_retired {
+            super::player_lifetime::retire(world)?;
+            super::interactions::stop_level(world);
+            self.player_retired = true;
         }
         if !self.audio_retirement_started {
             super::audio::begin_level_retirement(world)?;
@@ -197,9 +239,9 @@ impl LevelLifetime {
                 eprintln!("RESOURCE_SCENE_RETIREMENT phase=complete passes={passes} output=false");
                 return Ok(());
             }
-            let progress = (self.producers_retired, self.equipment_retired,
+            let progress = (self.producers_retired, self.equipment_retired, self.actors_retired,
                 self.physics_retired, self.player_retired, self.effect_requests_retired,
-                self.effects_retired, self.audio_retirement_started, self.wind_retired,
+                self.effects_retired, self.fx_gameplay_retired, self.audio_retirement_started, self.wind_retired,
                 super::physics_scene::lifetime::retirement_progress(world));
             if previous.is_some_and(|previous| progress <= previous) {
                 return Err(format!("windowless retirement made no synchronous owner progress: {progress:?}"));
@@ -286,9 +328,11 @@ fn reset_scene_publications(world: &mut World) {
         super::local_shadow_updates::LocalShadowDraws,
         super::shadow_updates::ParallelWorldDraws,
         super::shadow_updates::ModelCasterFrame,
+        super::shadow_updates::RuntimeSurfaceCasters,
         super::shadow_updates::ParallelModelDraws,
         super::model_motion::ModelPoseUpdates,
         super::model_motion::ModelMotionBindings,
+        super::model_motion::ModelShaderData,
         super::LocalLightCullStats,
         super::VisibilityElapsedTiming,
         backend::fog::FogSceneFrame,
@@ -328,6 +372,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::projected_decals::DecalScene,
         backend::projected_decals::DynamicProxyReadiness,
         super::projected_decals::GeometryLayouts,
+        super::projected_decals::ModelProjectionContexts,
         super::material_loading::alpha::AlphaDepthMaterials,
     );
     super::audio::begin_level(world);

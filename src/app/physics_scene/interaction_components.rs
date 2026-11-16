@@ -237,11 +237,7 @@ impl PhysicsScene {
                     &mut self.entities[index].components,
                     declaration.scheduling.starts_on_spawn(),
                     |_, _, _| {
-                        Ok(crate::gameplay::loot_component::EmptyLootComponent {
-                            owner: Default::default(),
-                            definition: definition.clone(),
-                            enabled: true,
-                        })
+                        Ok(crate::gameplay::loot_component::LootComponent::new(definition.clone()))
                     },
                     |_, _, _| Ok(()),
                 )?
@@ -539,8 +535,9 @@ impl crate::gameplay::component_state::updates::ComponentUpdateWorld for Physics
 }
 
 pub(super) struct Startup<'a> {
+    pub world: Option<&'a mut bevy::prelude::World>,
     pub scene: &'a mut PhysicsScene,
-    pub live: &'a LiveEntities,
+    pub live: &'a mut LiveEntities,
     pub events: &'a mut crate::gameplay::entity_events::EntityEvents,
 }
 impl Startup<'_> {
@@ -575,9 +572,30 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if self.scene.is_rigid_class(handle.class_id) {
+            if handle.class_id == self.scene.classes[17] {
+                self.scene.initialize_sound_volume(
+                    self.world.as_deref_mut().ok_or("sound volume Initialize requires its published world")?,
+                    self.live, handle,
+                )
+            } else if self.scene.is_rigid_class(handle.class_id) {
                 self.scene
-                    .initialize_placed_rigid(self.live, handle, registry, self.events)
+                    .initialize_placed_rigid(self.live, handle, registry, self.events)?;
+                self.scene
+                    .finish_rigid_instigator_initialize(self.live, handle)?;
+                if handle.class_id == self.scene.classes[12] {
+                    self.scene.initialize_throwable_component(handle)?;
+                }
+                Ok(())
+            } else if handle.class_id == self.scene.classes[7] {
+                self.scene.initialize_loot(handle)
+            } else if handle.class_id == self.scene.classes[11] {
+                self.scene.initialize_breakable(handle)
+            } else if handle.class_id == self.scene.classes[13] {
+                self.scene.initialize_projectile(handle)
+            } else if handle.class_id == self.scene.classes[14] {
+                self.scene.initialize_level_bodies(handle, registry)
+            } else if handle.class_id == self.scene.classes[15] {
+                self.scene.initialize_animation(handle)
             } else if handle.class_id == self.scene.classes[9] {
                 self.scene
                     .factions
@@ -596,9 +614,30 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if self.scene.is_rigid_class(handle.class_id) {
+            if handle.class_id == self.scene.classes[17] {
+                self.scene.start(handle, registry)?;
+                self.scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Start payload absent")?.started = true;
+                Ok(())
+            } else if self.scene.is_rigid_class(handle.class_id) {
                 self.scene
-                    .start_placed_rigid(self.live, handle, registry, self.events)
+                    .start_placed_rigid(self.live, handle, registry, self.events)?;
+                if handle.class_id == self.scene.classes[12] {
+                    self.scene
+                        .start_throwable_component(handle, registry, self.events)?;
+                }
+                Ok(())
+            } else if handle.class_id == self.scene.classes[7] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_loot(self.live,self.events,registry,handle)
+            } else if handle.class_id == self.scene.classes[11] {
+                self.scene.start(handle, registry)?;
+                self.scene.start_breakable(handle, self.events)
+            } else if handle.class_id == self.scene.classes[13] {
+                self.scene.start(handle, registry)?;
+                self.scene.start_projectile(handle,self.events)
+            } else if handle.class_id == self.scene.classes[15] {
+                self.scene.start(handle, registry)?;
+                self.scene.start_animation(handle)
             } else if handle.class_id == self.scene.classes[9] {
                 let index = self
                     .scene
@@ -717,8 +756,67 @@ impl PhysicsScene {
             membership!(self.factions)
         } else if handle.class_id == self.classes[10] {
             membership!(self.health)
+        } else if handle.class_id == self.classes[11] {
+            membership!(self.breakables)
+        } else if handle.class_id == self.classes[13] {
+            membership!(self.projectiles)
+        } else if handle.class_id == self.classes[14] {
+            membership!(self.level_bodies)
+        } else if handle.class_id == self.classes[15] {
+            membership!(self.animations)
+        } else if handle.class_id == self.classes[16] {
+            membership!(self.health_doors)
+        } else if handle.class_id == self.classes[17] {
+            membership!(self.sound_volumes)
         } else {
             Err("component update class unsupported".into())
         }
+    }
+}
+
+impl PhysicsScene {
+    /// Drain the shared source component registry for dynamically admitted actors.
+    /// The caller retains the registry cursor on failure; no second startup queue.
+    pub(in crate::app) fn run_runtime_startup(
+        &mut self,
+        world: &mut bevy::prelude::World,
+        live: &mut LiveEntities,
+        events: &mut crate::gameplay::entity_events::EntityEvents,
+        registry: &mut ComponentRegistry,
+    ) -> Result<(), String> {
+        let mut host = Startup { world: Some(world), scene: self, live, events };
+        registry.initialize_and_start(&mut host)?;
+        registry.drain_update_changes(&mut host)
+    }
+    pub(in crate::app) fn run_runtime_startup_with_registry(
+        &mut self,
+        live: &mut LiveEntities,
+        events: &mut crate::gameplay::entity_events::EntityEvents,
+        registry: &mut ComponentRegistry,
+    ) -> Result<(), String> {
+        let mut host = Startup {
+            world: None,
+            scene: self,
+            live,
+            events,
+        };
+        registry.initialize_and_start(&mut host)?;
+        registry.drain_update_changes(&mut host)
+    }
+    fn initialize_level_bodies(
+        &mut self,
+        handle: ComponentHandle,
+        registry: &mut ComponentRegistry,
+    ) -> Result<(), String> {
+        let shared = self.world.clone();
+        let mut guard = shared
+            .write()
+            .map_err(|_| "level physics query owner is poisoned")?;
+        let world = &mut *guard;
+        scene_publication_events!(self, registry, events);
+        self.level_bodies
+            .get_mut(handle.slot)
+            .ok_or("PhysicsWorld component absent")?
+            .initialize(handle, &mut world.storage, &mut world.geometry, &mut events)
     }
 }

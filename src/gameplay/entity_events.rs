@@ -63,6 +63,23 @@ pub struct Event {
 #[derive(Clone, Debug)]
 pub enum Payload {
     None,
+    ///4d86c1 posts the normal numeric14c packet consumed by626ff0:
+    ///six velocity floats, keep-finite byte and a real culprit entity ID.
+    ProjectileDeflection { linear:[f32;3], angular:[f32;3], keep_finite:bool,
+        culprit:Option<EntityId> },
+    ///6dd740's C6 and6dfa50/6df8c0's29 retain the canonical sound
+    ///object identity instead of copying a process pointer across owners.
+    SoundStimulus { object:super::sound::Emitter, position:[f32;3],
+        context:i32, distance:f32, attention_meter:i32,
+        vertical_attenuation:bool, call_for_help:bool },
+    ///779e00: ARK_MSG_TRIGGER_TOUCH (d2), owned by the actual trigger.
+    TriggerTouch { trigger: ComponentHandle, other: EntityId, entered: bool },
+    ///779e00: ARK_MSG_TRIGGER_CONTACT (d3), delivered to the other entity.
+    TriggerContact { trigger: ComponentHandle, entered: bool },
+    ///77ff90 ->80bc60: actual Wind component and full-generation body ID.
+    WindContact { wind: ComponentHandle, body: u32, entered: bool,
+        ///Host projection of the same immutable Wind declaration and payload.
+        source_index: usize, priority: i32 },
     Use { instigator: Option<EntityId> },
     Bytes(Vec<u8>),
     Entity(EntityId),

@@ -362,8 +362,10 @@ Inventory quantities and ownership remain in `app/inventory.rs`, nested under
 requests, owned-equipment preparation and source state callbacks. Every owned
 equipment actor is prepared before loading completes, retained when unequipped,
 and retired on depletion through managed identity, renderer and audio receipts.
-Ammunition and upgrade children share those resource owners and use their actual
-entity clocks and bindings. They do not create a second model/material cache.
+The selected ammunition is prepared on demand; visiting a weapon does not load
+every projectile variant. Ammunition and upgrade children share those resource
+owners and use their actual entity clocks and bindings. They do not create a
+second model/material cache.
 
 `gameplay/damage` supplies typed damage parameters and receiver rules;
 `player_damage` publishes real player health/death notifications. The existing
@@ -378,12 +380,33 @@ physics, clock, FX, audio and damage owners. Far Reach's hand additives and beam
 use the ordinary clip banks and canonical particle beam endpoint pipeline.
 Swimming and counted physics impulses also use the shared player state owners.
 
-Remaining boundaries include projectile actor/contact/bounce integration (ranged
-fire is not admitted without a real projectile consumer), NPC-dependent powers
-and damage receivers, Breakable destruction, dynamic Far Reach targets,
+Remaining boundaries include NPC-dependent powers and damage receivers,
+unadmitted projectile component families, dynamic Far Reach targets,
 hit-reaction camera additives, and the mantle-dummy Midnight group. The detailed
 source addresses, host differences and verification status are tracked in
 `resource-parity.md`; compilation does not establish gameplay or visual parity.
+
+`app/runtime_entities.rs` owns scoped preparation and construction journals for
+projectiles and breakable chunks. The actors use the same managed identities,
+component registry, bodies and immutable resources as placed objects.
+`app/physics_scene` supplies their typed lifecycle callbacks; its frame driver
+owns contact preparation, solving, callbacks and pose publication. Carrying
+binds the existing object to the actual player and releases that same body when
+thrown. Breakable steps activate preconstructed chunk actors rather than loading
+replacement geometry during the impact.
+HealthDoor retains its own typed factory and damage behavior. SoundVolumeControl
+initializes against the shared acoustic world before Breakable startup; broken
+steps update its zone coefficients and invalidate existing propagation paths.
+Projectile recovery uses the player LootObject state, the same physical pull
+owner and the existing inventory, followed by named pickup notifications.
+
+`app/entity_removal.rs` advances the sole managed removal batch. Component Stop,
+contact and trigger retirement, accepted FX/audio notifications and renderer
+acknowledgements finish before identity reuse. Level shutdown finishes accepted
+work, closes acquisition, drains its workers and releases the canonical resource
+scopes; an asynchronous request cannot outlive its source owner. Host journals
+retain failed callback positions so retry does not repeat damage, impulses,
+random draws or asset acquisition already acknowledged by their owner.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):

@@ -49,6 +49,10 @@ pub struct CollisionWorld {
     owner_ids: HashMap<Arc<str>, Vec<u32>>,
     owner_names: Vec<Option<Arc<str>>>,
     owner_active: Vec<bool>,
+    ///Host compatibility: actual native rigid admission permanently replaces
+    ///the corresponding immutable placed snapshot. Death never resurrects it.
+    placed_owner_count: usize,
+    physics_owned: Box<[u64]>,
     /// Placed bodies normally occupy one contiguous triangle run. Keep one
     /// compact locator per owner; arbitrary interleaved inputs retain a scan.
     owner_spans: Vec<OwnerSpan>,
@@ -355,6 +359,8 @@ impl CollisionWorld {
             owner_ids,
             owner_names,
             owner_active: vec![true; owner_count],
+            placed_owner_count: owner_count,
+            physics_owned: vec![0;owner_count.div_ceil(64)].into_boxed_slice(),
             owner_spans,
         })
     }
@@ -456,6 +462,13 @@ impl CollisionWorld {
     /// Nearest hit used by first_hit: (distance, triangle index, owner,
     /// vertices). The index is the key `triangles_in` reports.
     pub fn first_hit_details(&self, start: Vec3, end: Vec3, filter: QueryFilter) -> Option<(f32, u32, u32, [Vec3; 3])> {
+        self.first_hit_details_where(start, end, filter, |_| true)
+    }
+
+    /// Keep the verified triangle ray while excluding owners replaced by
+    /// their actual movable bodies in the canonical physics world.
+    pub(crate) fn first_hit_details_where(&self, start: Vec3, end: Vec3, filter: QueryFilter,
+        mut accepts_owner: impl FnMut(u32) -> bool) -> Option<(f32, u32, u32, [Vec3; 3])> {
         let segment = end - start;
         let length = segment.length();
         if length <= 1e-5 {
@@ -466,6 +479,7 @@ impl CollisionWorld {
             .into_iter()
             .filter_map(|index| {
                 let triangle = self.triangle(index)?;
+                if !accepts_owner(triangle.owner) { return None; }
                 let distance = segment_triangle_hit(start, direction, triangle)?;
                 (distance > 0.001 && distance < length).then_some((
                     distance,
@@ -475,6 +489,22 @@ impl CollisionWorld {
                 ))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    ///Mark only existing immutable placed-owner indices. Runtime interaction
+    ///box slots have their own generations and are outside this admission map.
+    pub(crate) fn mark_physics_owned(&mut self,entity:&str){
+        if let Some(owners)=self.owner_ids.get(entity){
+            for &owner in owners{
+                if (owner as usize)<self.placed_owner_count{
+                    self.physics_owned[owner as usize/64]|=1u64<<(owner&63);
+                }
+            }
+        }
+    }
+    pub(crate) fn physics_owns_placed_owner(&self,owner:u32)->bool{
+        (owner as usize)<self.placed_owner_count
+            &&self.physics_owned[owner as usize/64]>>(owner&63)&1!=0
     }
 
     pub fn owner_name(&self, owner: u32) -> Option<&str> {

@@ -37,6 +37,8 @@ fn to_game(v: Vec3) -> Vec3 {
 
 /// The level collision in game coordinates (Z up). Level triangles are one
 /// static body; placed colliders are bodies of their owner.
+mod collision;
+
 pub(super) struct GameCollision<'a>(pub &'a CollisionWorld);
 
 impl PlayerWorld for GameCollision<'_> {
@@ -68,6 +70,29 @@ impl PlayerWorld for GameCollision<'_> {
         cast: &mut Vec<WorldHit>,
         start: Option<&mut Vec<WorldHit>>,
     ) {
+        self.cast_shape_where(filter, shape, rotation, from, displacement, tolerance, cast, start, |_| true);
+    }
+    fn cast_shape_filtered(&self, filter: QueryFilter, shape: &[Vec3], rotation: Mat3,
+        from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>,
+        start: Option<&mut Vec<WorldHit>>, _accepts_body: &mut dyn FnMut(u32,bool)->bool) {
+        // Navigation owner indices are not WorldStorage body identities.
+        self.cast_shape(filter,shape,rotation,from,displacement,tolerance,cast,start);
+    }
+    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+        self.cast_ray_where(filter, from, direction, length, |_| true)
+    }
+}
+impl GameCollision<'_> {
+    fn cast_shape_where(&self, filter: QueryFilter,
+        shape: &[Vec3],
+        rotation: Mat3,
+        from: Vec3,
+        displacement: Vec3,
+        tolerance: f32,
+        cast: &mut Vec<WorldHit>,
+        start: Option<&mut Vec<WorldHit>>,
+        mut accepts_owner: impl FnMut(u32) -> bool,
+    ) {
         let points: Vec<Vec3> = shape.iter().map(|p| to_view(from + rotation * *p)).collect();
         let motion = to_view(displacement);
         let (mut min, mut max) = (points[0], points[0]);
@@ -78,29 +103,30 @@ impl PlayerWorld for GameCollision<'_> {
         let margin = Vec3::splat(tolerance.max(0.0) + 0.01);
         let mut start = start;
         for (key, triangle, owner) in self.0.triangles_in(min - margin, max + margin, filter) {
+            if !accepts_owner(owner) { continue; }
             let body = if owner == u32::MAX { 0 } else { owner + 1 };
             if let Some((fraction, contact)) = shape_cast::cast(&points, motion, &triangle, 0.001) {
-                cast.push(WorldHit { position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
+                cast.push(WorldHit { material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
             }
             if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                 let contact = shape_cast::closest(&points, &triangle);
                 if contact.distance <= tolerance {
-                    start.push(WorldHit { position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
+                    start.push(WorldHit { material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
                 }
             }
         }
     }
 
-    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+    fn cast_ray_where(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32, accepts_owner: impl FnMut(u32) -> bool) -> Option<RayHit> {
         let start = to_view(from);
         let end = to_view(from + direction * length);
-        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details(start, end, filter)?;
+        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details_where(start, end, filter, accepts_owner)?;
         let mut normal = to_game((b - a).cross(c - a).normalize_or_zero());
         if normal.dot(direction) > 0.0 {
             normal = -normal;
         }
         let body = if owner == u32::MAX { 0 } else { owner + 1 };
-        Some(RayHit { distance, position: from + direction * distance, normal, body, key })
+        Some(RayHit { material_id: None, distance, position: from + direction * distance, normal, body, key })
     }
 }
 
@@ -662,24 +688,26 @@ pub(super) fn update_player(
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut contact_sounds: MessageWriter<super::audio::ContactSound>,
-    mut walk: Local<DebugBenchmarkWalk>,
+    query: (Local<DebugBenchmarkWalk>, Local<std::cell::RefCell<collision::Scratch>>,
+        Option<Res<super::physics_scene::PhysicsScene>>),
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
     inventory: Option<ResMut<super::interaction_focus::DiscoveredDocuments>>,
     mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
-) {
+) -> Result<(), bevy::ecs::error::BevyError> {
+    let (mut walk, query_scratch, scene) = query;
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
-        return;
+        return Ok(());
     }
     let PlayerState {
         player, difficulty, ..
     } = &mut *state;
     let (Some(player), Some(collision)) = (player.as_mut(), collision) else {
-        return;
+        return Ok(());
     };
     if paused.0 {
         // In a non-game logic state the input components are cleared.
@@ -690,10 +718,19 @@ pub(super) fn update_player(
             input.held.clear();
             input.cleared = true;
         }
-        return;
+        return Ok(());
     }
     input.cleared = false;
-    let world = GameCollision(&collision.0);
+    let Some(scene)=scene.as_deref() else{return Ok(());};
+    let query_owner = match scene.point_queries() {
+        Ok(owner) => owner,
+        Err(error) => return Err(error.into()),
+    };
+    let query_world = match query_owner.read() {
+        Ok(world) => world,
+        Err(_) => return Err("Player canonical query owner is poisoned".into()),
+    };
+    let world = collision::Collision::new(&collision.0,scene,&query_world,&query_scratch);
     player.swimming_contact = water.0.as_ref().and_then(|water| {
         let plane = water.head_water_surface?;
         let current = water_scene.as_ref()?.swimming_current()?;
@@ -787,6 +824,9 @@ pub(super) fn update_player(
             }
         }
     }
+    if let Some(error) = world.take_error() {
+        return Err(format!("Player canonical collision query failed: {error}").into());
+    }
     for event in player.machine.take_sound_events() {
         sound_events.write(super::audio::SoundEvent(
             crate::gameplay::sound::Request::Post {
@@ -806,7 +846,7 @@ pub(super) fn update_player(
     }
     let view = player.view();
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {
-        return;
+        return Ok(());
     };
     let origin = to_view(view.origin);
     *transform = Transform::from_translation(origin)
@@ -819,6 +859,7 @@ pub(super) fn update_player(
             }
         }
     }
+    Ok(())
 }
 
 /// Send the dead state's authored screen FX to the shared level FX owner.

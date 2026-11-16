@@ -12,6 +12,7 @@ struct Object {
     listener: ListenerState,
     audible_mask: u32,
     error: Option<String>,
+    volume_revision:u64,
 }
 
 pub(super) struct Evaluation {
@@ -29,6 +30,7 @@ pub(in crate::app) struct LevelAudio {
     auxiliary_buses: crate::gameplay::sound::auxiliary::Buses,
 }
 impl LevelAudio {
+    pub(in crate::app) fn acoustic_world(&self)->Arc<Mutex<AcousticWorld>>{self.world.clone()}
     pub(in crate::app) fn load(catalog: &crate::archive::Catalog, entities: &str) -> Result<Self, String> {
         let path = format!("{}.soundpropa", entities.trim_end_matches(".entities"));
         let graph = crate::assets::sound_propagation::Propagation::load(catalog, &path)?
@@ -57,6 +59,7 @@ impl LevelAudio {
             self.listener_position = Some(listener.position);
         }
         let object = self.objects.entry(emitter).or_default();
+        let volume_revision=world.volume_revision();
         if object.source != Some(position) {
             object.zone = world.zone_at(position.to_array())?;
             object.source = Some(position);
@@ -77,8 +80,10 @@ impl LevelAudio {
             if unranged {
                 object.listener.update_unranged(&world.graph, &path_query, 1, &mut object.audible_mask)?;
             } else {
-                object.listener.update(&world.graph, &path_query, query.range, false, 1, &mut object.audible_mask)?;
+                object.listener.update(&world.graph, &path_query, query.range,
+                    object.volume_revision!=volume_revision, 1, &mut object.audible_mask)?;
             }
+            object.volume_revision=volume_revision;
         }
         // Resolve host inputs before consuming the component's pending
         // start; an unsupported path must not lose its startup request.
@@ -102,14 +107,13 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
     physics: Option<ResMut<super::super::physics_scene::PhysicsScene>>,
     bound: Option<Res<super::super::model_motion::BoundModels>>, mut scene: ResMut<Scene>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     engine: Res<super::bevy_backend::Engine>,
     playing: Query<&super::AudioTarget>, mut events: MessageWriter<super::SoundEvent>)
 {
-    let (Some(mut level), Some(mut physics), Some(listener), Some(bound), Some(clock)) = (level, physics, scene.listener(), bound, clock) else { return };
+    let (Some(mut level), Some(mut physics), Some(listener), Some(bound), Some(clock), Some(live)) = (level, physics, scene.listener(), bound, clock, live) else { return };
     let Ok(clock) = clock.clock() else { return };
-    // Default world entity timespace 0 maps to group 3 (877eb0, 8abb10).
-    let Some(rates) = clock.rates(3) else { return };
     let detail = crate::platform::console::shared().read().cvars.int("s_environmentalDetailLevel");
     let Some(detail) = detail else { error!("Environmental audio detail cvar is absent"); return };
     let level = &mut *level;
@@ -119,13 +123,15 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
             Err(error) => { error!("Audio listener zone query failed: {error}"); return; }
         }
     }
-    let result = physics.visit_audio(|handle, binding, audio| {
-        if !audio.started || !audio.startup.deferred { return Ok(()); }
+    let result = physics.visit_audio_instances(&live, clock, |handle, binding, audio, frame, rate| {
+        if !audio.startup.deferred && !audio.allocated { return Ok(()); }
         let emitter = Emitter::Component { handle: handle.packed(), generation: audio.owner.generation };
-        scene.set_rate(emitter, binding.settings.rate(rates[1]), rates[1] == 0.0);
-        let mut position = Vec3::from_array(binding.frame.position);
-        let mut front = Vec3::from_array(binding.frame.basis[0]);
-        if let Some(delta) = bound.entity_delta(&binding.entity_id) {
+        scene.set_rate(emitter, binding.settings.rate(rate), rate == 0.0);
+        let dynamic = audio.runtime_definition.is_some();
+        let frame = if dynamic { frame } else { binding.frame };
+        let mut position = Vec3::from_array(frame.position);
+        let mut front = Vec3::from_array(frame.basis[0]);
+        if let Some(delta) = (!dynamic).then(|| bound.entity_delta(&binding.entity_id)).flatten() {
             let rotate = |value: Vec3| Vec3::from_array(std::array::from_fn(|row|
                 delta[row][0] * value.x + delta[row][1] * value.y + delta[row][2] * value.z));
             position = rotate(position) + Vec3::new(delta[0][3], delta[1][3], delta[2][3]);
@@ -135,7 +141,7 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
             let evaluation = level.evaluate(emitter, position, front, audio.startup.max_distance,
                 binding.propagation, binding.settings, audio.allocated, false, &scene, detail)?;
             // A zero owner clock freezes the component update (8abb10).
-            if rates[1] != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {
+            if rate != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {
                 match audio.startup.update(audio.allocated, evaluation.inaudible, evaluation.origin == Admission::Inaudible) {
                     StartupAction::Stop => {
                         // 1400c5d80 stops every playing ID, zero milliseconds,
@@ -164,7 +170,7 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
                     positions: Vec::new(), levels: Default::default(), auxiliary: Vec::new(),
                 });
                 scene.publish(emitter, Position { position, front: Some(front) }, propagated,
-                    binding.settings.rate(rates[1]), rates[1] == 0.0);
+                    binding.settings.rate(rate), rate == 0.0);
             }
             Ok(())
         })();

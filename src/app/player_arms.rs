@@ -42,7 +42,32 @@ struct ArmSurface {
     _mesh: Handle<Mesh>,
     source_index: usize,
     probe_index: u32,
+    _probe_slot: Option<super::model_motion::ProbeSlot>,
     material: MaterialHandle,
+}
+
+/// Worker records use local indices; only publication allocates actual shared
+/// bank rows. Mesh/material handles remain shared across model instances.
+fn assign_probe_slots(surfaces: &mut [ArmSurface], records: Option<&[[Vec4; 9]]>,
+    world: &mut World, commands: &mut super::setup_commands::SetupCommands) -> Result<(), String> {
+    let records = surfaces.iter().filter(|surface| surface.probe_index & 0x8000_0000 == 0).map(|surface| {
+        let record = match records {
+            Some(records) => records.get(surface.probe_index as usize)
+                .ok_or("runtime model probe record missing")?.map(|row| row.to_array()),
+            None => [[0.; 4]; 9], // Actual world bounds publish before visibility.
+        };
+        Ok(super::model_motion::probe_record_bytes(record))
+    }).collect::<Result<Vec<_>, String>>()?;
+    if records.is_empty() { return Ok(()) }
+    let slots = super::model_motion::ModelProbeLighting::allocate_draws(world, records)?;
+    for (surface, slot) in surfaces.iter_mut().filter(|surface| surface.probe_index & 0x8000_0000 == 0).zip(slots) {
+        surface.probe_index = slot.index();
+        surface._probe_slot = Some(slot);
+        let entity = surface.entity;
+        let index = surface.probe_index;
+        commands.queue(move |world: &mut World| { world.entity_mut(entity).insert(MeshTag(index)); });
+    }
+    Ok(())
 }
 
 struct ArmModel {
@@ -114,6 +139,12 @@ pub(super) struct PlayerArms {
 }
 
 pub(super) struct PreparedEquipmentModel(ArmModel);
+impl PreparedEquipmentModel {
+    pub(super) fn assign_probe_slots(&mut self, records: &[[Vec4; 9]], world: &mut World,
+        commands: &mut super::setup_commands::SetupCommands) -> Result<(), String> {
+        assign_probe_slots(&mut self.0.surfaces, Some(records), world, commands)
+    }
+}
 
 impl PreparedEquipmentModel {
     pub(super) fn entity(&self) -> crate::gameplay::entity_lifetime::EntityId {
@@ -130,6 +161,30 @@ impl PreparedEquipmentModel {
 }
 
 impl PlayerArms {
+    ///878230 reads the player's own render model even when leg materials are
+    ///hidden.771a00 installs that model; its bounds share the same source
+    ///geometry and root pose as the body draw, independent of arm visibility.
+    pub(super) fn body_model_bounds(&self, player: &crate::gameplay::player::Player) -> Result<[[f32; 3]; 2], String> {
+        let body = self.body_models.checked_sub(1).and_then(|index| self.arms.get(index))
+            .ok_or("player body render model is not prepared")?;
+        if body.model != player.body_model() { return Err("player body render model disagrees with the actual character".into()); }
+        let root = player.reference_local_joint(0)?;
+        let axis = player.physics.axis();
+        let position = player.physics.position() + axis * Vec3::from(root.position);
+        let basis = axis * Mat3::from_cols_array_2d(&root.basis);
+        Ok(render_model::transformed_bounds(body.info.authored_bounds, position.to_array(), basis.to_cols_array_2d(), [1.; 3]))
+    }
+    pub(super) fn has_managed_model(&self,id:crate::gameplay::entity_lifetime::EntityId)->bool{
+        self.arms.iter().any(|model|model.managed_entity==Some(id)) || self.attachments.has(id)
+    }
+    pub(super) fn publish_shader_clock(&self,id:crate::gameplay::entity_lifetime::EntityId,
+        bank:&mut model_motion::ModelProbeLighting,patches:&mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,time:[f32;2]){
+        for model in self.arms.iter().filter(|model|model.managed_entity==Some(id)){
+            for surface in &model.surfaces{if surface.probe_index&0x80000000==0{bank.publish_clock(patches,surface.probe_index,time);}}
+        }
+        if let Some(draws)=self.attachments.projection_draws(id){for(_,_,_,tag,_)in draws{if tag&0x80000000==0{bank.publish_clock(patches,tag,time);}}}
+    }
+
     pub(super) fn retire_completed_models(&mut self) {
         self.retiring_equipment.retain(|entry| !entry.complete());
     }
@@ -228,6 +283,7 @@ fn prepare_rigid_surface(
         _mesh: mesh,
         source_index,
         probe_index: resolved.probe_index,
+        _probe_slot: None,
         material: resolved.handle.clone(),
     }))
 }
@@ -695,6 +751,7 @@ fn prepare_model(
             _mesh: mesh,
             source_index: index,
             probe_index,
+            _probe_slot: None,
             material,
         });
     }
@@ -1023,6 +1080,7 @@ pub(super) fn update_player_arms(
             &mut joint_transforms,
             identities.as_deref(),
             clock.as_deref(),
+            None,
         )
         .err();
     let PlayerArms {

@@ -241,8 +241,19 @@ impl PhysicsActorLinks {
                 ActorUpdatePhase::PostPhysics => &mut actor.last_post_frame,
             };
             // Mutable owner access supplies exclusivity for source1581e0.
-            if std::mem::replace(marker, stamp) != stamp {
-                update(self, index, phase)?;
+            let previous = std::mem::replace(marker, stamp);
+            if previous != stamp {
+                if let Err(error) = update(self, index, phase) {
+                    // Host callbacks can fail; retain the actual request rather
+                    // than acknowledging the source's infallible callback.
+                    if let Some(actor) = self.actors.get_at_mut(index) {
+                        match phase {
+                            ActorUpdatePhase::PrePhysics => actor.last_queued_frame = previous,
+                            ActorUpdatePhase::PostPhysics => actor.last_post_frame = previous,
+                        }
+                    }
+                    return Err(error);
+                }
             }
             Ok(())
         })

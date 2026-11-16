@@ -172,7 +172,7 @@ fn fragment(
 #ifdef VERTEX_COLORS
         color = vertex_output.color;
 #endif
-        let authored = evaluate_surface(uv, uv1, color);
+        let authored = evaluate_surface(uv, uv1, color,mesh[vertex_output.instance_index].tag);
         pbr_input.material.base_color = authored.albedo;
         emissive=authored.emissive;
         diffuse_response=authored.diffuse_response;

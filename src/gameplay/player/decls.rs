@@ -603,7 +603,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
 /// Never synthesize default-mode states that are absent from the swim mode.
 pub fn swimming_equipment_states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
     Ok(states_in(&declarations.swimming_states)?.into_iter().filter(|state|
-        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_))).collect())
+        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_))).collect())
 }
 
 fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl>, String> {
@@ -615,7 +615,8 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
             SupportedDefaultState::GrabObject => {
                 if !matches!(atom(fields,"m_id").and_then(state_id).unwrap_or(StateId(47)),StateId(47)|StateId::GRAB_OBJECT){continue;}
-                Kind::GrabObject(std::sync::Arc::new(super::carrying::GrabDecl::read(fields)?))
+                let declaration=std::sync::Arc::new(super::carrying::GrabDecl::read(fields)?);
+                if declaration.id==StateId::LOOT_OBJECT {Kind::LootObject(declaration)} else {Kind::GrabObject(declaration)}
             }
             SupportedDefaultState::HoldObject => Kind::HoldObject(std::sync::Arc::new(super::carrying::HoldDecl::read(fields)?)),
             SupportedDefaultState::ReleaseObject => Kind::ReleaseObject(std::sync::Arc::new(super::combat::ActionDecl::read(fields)?)),
@@ -788,7 +789,7 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             _ => continue,
         };
         let mut decl = StateDecl::class_default(kind);
-        if matches!(decl.kind,Kind::GrabObject(_)|Kind::HoldObject(_)|Kind::ReleaseObject(_)) {
+        if matches!(decl.kind,Kind::LootObject(_)|Kind::GrabObject(_)|Kind::HoldObject(_)|Kind::ReleaseObject(_)) {
             decl.flags.allow_self=boolean(fields,"m_allowSelf",decl.flags.allow_self)?;
             decl.flags.quit_self=boolean(fields,"m_quitSelf",decl.flags.quit_self)?;
             decl.flags.cancelable=boolean(fields,"m_cancelable",decl.flags.cancelable)?;

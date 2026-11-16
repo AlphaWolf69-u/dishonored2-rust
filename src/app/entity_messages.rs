@@ -3,9 +3,10 @@
 use crate::gameplay::{entity_events::EntityEvents, entity_lifetime::LiveEntities};
 use bevy::prelude::*;
 
-pub(super) fn update(world: &mut World) {
+/// Preserve real callback failures at outgoing lifetime boundaries.
+pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
     let Some(mut events) = world.remove_resource::<EntityEvents>() else {
-        return;
+        return Ok(());
     };
     // 6170b0/615840/6147f0 notifications join the same normal queue as
     // damage and power messages, after mutation and before listener delivery.
@@ -24,7 +25,11 @@ pub(super) fn update(world: &mut World) {
         {
             world.resource_scope(
                 |world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
-                    scene.pump_entity_messages(world.resource::<LiveEntities>(), &mut events)
+                    scene.pump_entity_messages(
+                        world.resource::<LiveEntities>(),
+                        &mut events,
+                        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),
+                    )
                 },
             )
         } else {
@@ -43,7 +48,11 @@ pub(super) fn update(world: &mut World) {
         }
     });
     world.insert_resource(events);
-    if let Err(error) = result {
+    result
+}
+
+pub(super) fn update(world: &mut World) {
+    if let Err(error) = finish_accepted(world) {
         error!("Entity message delivery failed: {error}");
         crate::platform::client_diagnostics::record(&format!(
             "Entity message delivery failed: {error}"

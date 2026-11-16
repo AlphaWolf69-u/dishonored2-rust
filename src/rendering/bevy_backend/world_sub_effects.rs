@@ -24,6 +24,7 @@ pub(super) struct Chains<'a> {
 const MINIMUM_PERIOD: f32 = 0.001;
 
 pub(super) struct SubEffect {
+    pub(super) gameplay_events: Vec<super::world_gameplay_effects::Event>,
     owner: Arc<WorldEffectDefinition>,
     group: usize,
     index: usize,
@@ -94,6 +95,7 @@ impl SubEffect {
             }
         }
         Self {
+            gameplay_events: Vec::new(),
             next: crate::float::add(delay, offsets[0]),
             remaining,
             period,
@@ -149,6 +151,9 @@ impl SubEffect {
 
     /// 223dd0: every family chain of the child stops at `now`.
     fn reset(&mut self, now: f32, context: &mut Chains) -> Result<(), String> {
+        for event in &mut self.gameplay_events {
+            event.stop();
+        }
         context.systems.stop(self.head, now);
         context.decals.stop(self.decal_head, now);
         context
@@ -162,6 +167,7 @@ impl SubEffect {
 
     /// 2307e0 / 222e10: release the child chains.
     pub(super) fn clear(&mut self, context: &mut Chains) -> Result<(), String> {
+        self.gameplay_events.clear();
         context.systems.clear(&mut self.head)?;
         context.decals.clear(&mut self.decal_head, |_| {})?;
         if self.sound_head != u16::MAX {
@@ -223,6 +229,7 @@ impl SubEffect {
                     &mut self.head,
                     &mut self.sound_head,
                     &mut self.decal_head,
+                    &mut self.gameplay_events,
                     &mut self.children,
                     context,
                 )?;

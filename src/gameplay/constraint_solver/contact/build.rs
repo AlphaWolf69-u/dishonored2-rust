@@ -143,7 +143,16 @@ pub fn build(
     let linear_mass = a.inverse_mass + b.inverse_mass;
     let step = input.step;
     let mut output = ContactRows {
+        // c583a0: ordinary response type0, contact Jacobian flag1. Its
+        // impulse-clipping flag2 is set only below the source's max sentinel.
+        stream_flags: 1 | u8::from(
+            input
+                .impulse_limit
+                .is_some_and(|limit| limit.maximum < f32::from_bits(0x7f7f_0000)),
+        ) * 2,
+        stream_type: 0,
         normal: input.normal,
+        reconstruction: super::reconstruction::ManifoldHeader::build(input),
         rows: [NormalRow::default(); 4],
         count: input.points.len() as u8,
         retract_normal_impulses: true,

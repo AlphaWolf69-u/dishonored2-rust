@@ -12,12 +12,147 @@ use crate::{
     },
 };
 
+/// The level preparation owner transfers its one already-read source lease.
+pub(in crate::app) struct PreparedLevelBodies {
+    pub path: String,
+    pub source: Arc<ShapeSource>,
+    pub materials: Vec<Arc<entities::physics_material::resources::Definition>>,
+}
+
+impl PhysicsScene {
+    /// 882300's real worldspawn header and 852100's material table precede
+    /// 852560's ordinary shared component initialization/body publication.
+    pub(super) fn admit_level_bodies(
+        &mut self,
+        document: &entities::Document,
+        prepared: &PreparedLevelBodies,
+        live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+        registry: &mut ComponentRegistry,
+        constructor_tag: crate::gameplay::name_pool::NameId,
+    ) -> Result<(), String> {
+        let mut worldspawns = document.definitions.iter().filter(|definition| definition.kind == "entity"
+            && definition.fields.iter().any(|(key,value)| key == "class"
+                && matches!(value, entities::Value::Atom(value) if value.trim_matches('"') == "idWorldspawn")));
+        let definition = worldspawns
+            .next()
+            .ok_or("level physics worldspawn absent")?;
+        if worldspawns.next().is_some() {
+            return Err("multiple physics worldspawns".into());
+        }
+        let class = self
+            .types
+            .classes()
+            .hierarchy()
+            .registration_order()
+            .iter()
+            .copied()
+            .find(|&index| {
+                self.types
+                    .classes()
+                    .metadata(index)
+                    .is_some_and(|metadata| {
+                        self.types.classes().name_text(metadata.name)
+                            == Some(b"idWorldspawn".as_slice())
+                    })
+            })
+            .ok_or("worldspawn class metadata absent")?;
+        let index = if let Some(index) = self
+            .entities
+            .iter()
+            .position(|entity| entity.name == definition.id)
+        {
+            if self.entities[index].class != class {
+                return Err("worldspawn admitted with a different class".into());
+            }
+            index
+        } else {
+            let index = self.entities.len();
+            let shared = live.allocate_managed(
+                Arc::from(definition.id.as_str()),
+                class,
+                None,
+                0,
+                constructor_tag,
+            )?;
+            self.entities.push(PhysicsEntity {
+                retired: false,
+                external: false,
+                name: definition.id.clone(),
+                shared,
+                components: EntityComponents::new(index),
+                class,
+                environment: None,
+                flags: 0,
+                entity_flags: 0x001e_8008,
+                entity_flags_d7: 0,
+                priority: 0,
+                frame: crate::gameplay::reference_frame::ReferenceFrameCache::default().published(),
+                timespace: 0,
+            });
+            self.entity_flags_d4.push(4); // 882300 marks the actual worldspawn.
+            index
+        };
+        self.entity_flags_d4[index] |= 4;
+        let mut table = Vec::with_capacity(prepared.source.physics.material_map.len());
+        {
+            let mut world = self
+                .world
+                .write()
+                .map_err(|_| "level physics owner poisoned")?;
+            let mut ids = Vec::with_capacity(prepared.materials.len());
+            for (name, definition) in prepared
+                .source
+                .physics
+                .materials
+                .iter()
+                .zip(&prepared.materials)
+            {
+                let handle = world
+                    .storage
+                    .materials
+                    .admit_definition(name, definition.clone())?;
+                ids.push(world.storage.materials.resolve(handle, |_, _, _, _| {
+                    panic!("material subscriber before level initialization")
+                })?);
+            }
+            for &entry in &prepared.source.physics.material_map {
+                table.push(
+                    *ids.get(entry as usize)
+                        .ok_or("level physics material map exceeds declarations")?,
+                );
+            }
+        }
+        let declaration = self.types.declaration(
+            self.factories[14],
+            0,
+            DeclarationScheduling::from_base_flags(0),
+        )?;
+        let handle = ComponentFactory {
+            declaration: &declaration,
+            pool: &mut self.level_bodies,
+            registry,
+            grow_one_at_a_time: false,
+        }
+        .create(
+            &mut self.entities[index].components,
+            declaration.scheduling.starts_on_spawn(),
+            |_, _, _| {
+                PhysicsWorldComponent::new(prepared.path.clone(), prepared.source.clone(), table)
+            },
+            |_, _, _| Ok(()),
+        )?
+        .ok_or("physics world component creation disabled")?;
+        self.declarations.insert(handle.packed(), declaration);
+        Ok(())
+    }
+}
+
 pub(super) struct PhysicsWorldComponent {
     pub owner: ComponentOwner,
     pub source: Option<Arc<ShapeSource>>,
     pub path: String,
     /// 852100's +40 remap table, retained by each +10 collision-data owner.
-    pub materials: Vec<u16>,
+    pub materials: Arc<[u16]>,
     pub bodies: Vec<u32>,
     shapes: Vec<usize>,
     creation: Vec<BodyInfo>,
@@ -54,7 +189,7 @@ impl PhysicsWorldComponent {
             owner: Default::default(),
             source: Some(source),
             path,
-            materials,
+            materials: materials.into(),
             bodies: Vec::with_capacity(count),
             shapes: Vec::with_capacity(count),
             creation,
@@ -102,7 +237,7 @@ impl PhysicsWorldComponent {
             // never the static motion anchor or an artificial rigid component.
             info.user_data = CollisionUserData { component: handle }.encode();
             if !self.creation_entered {
-                world.begin_disabled_component_body(handle, self.owner.generation, info)?;
+                world.begin_disabled_component_body(handle, self.owner.generation, &info)?;
                 self.creation_entered = true;
             }
             let body = world.resume_disabled_component_body(
@@ -114,6 +249,9 @@ impl PhysicsWorldComponent {
             self.bodies.push(body);
             self.created += 1;
             self.creation_entered = false;
+            //851760/694c20's +10 table belongs to this actual component;
+            //WorldStorage keeps the same Arc under full body generation.
+            world.register_body_materials(body, self.materials.clone())?;
         }
         if !self.published {
             world.add_bodies(
@@ -161,7 +299,7 @@ impl PhysicsWorldComponent {
         }
         self.shapes.clear();
         self.source = None;
-        self.materials.clear();
+        self.materials = Arc::from([]);
         self.creation.clear();
         Ok(())
     }

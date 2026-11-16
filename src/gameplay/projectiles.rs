@@ -104,13 +104,19 @@ pub struct Projectile {
     pub flags: Flags,
     pub sleep_timer_multiplier: f32,
     pub homing_target: Option<HomingTarget>,
+    pub explosion_fx_override: Option<Arc<str>>,
     pub forward_extent: f32,
     pub unbent_distance: f32,
-    pub has_hit_npc: bool,
     pub has_hit_and_stopped: bool,
+    /// Source+a5 bit80, distinct from a Stick/Break response.629590 sets
+    ///it for the impact-stopping (explosion FX) contact mode;626ff0 also
+    ///sets it when an external deflection transfers motion ownership.
+    pub impact_stopped: bool,
+    /// Source+a4 bit20:627110 enables repeated contact processing for NPC
+    ///launchers or a declaration without m_explosionFx (+180).
+    pub process_all_contacts: bool,
     pub picked_up: bool,
     pub pass_through_entities: Vec<EntityId>,
-    pub removal: Option<Removal>,
 }
 impl Projectile {
     /// 626eb0 preserves an explicitly supplied velocity; only zero velocity
@@ -131,6 +137,7 @@ impl Projectile {
             velocity
         };
         let gravity_multiplier = gravity_factor.unwrap_or(1.) * declaration.gravity_multiplier;
+        let process_all_contacts = declaration.effects.explosion.is_none();
         Self {
             declaration,
             identity,
@@ -149,11 +156,11 @@ impl Projectile {
             explosion_fx_override: None,
             forward_extent: 0.,
             unbent_distance: 0.,
-            has_hit_npc: false,
             has_hit_and_stopped: false,
+            impact_stopped: false,
+            process_all_contacts,
             picked_up: false,
             pass_through_entities: Vec::new(),
-            removal: None,
         }
     }
 
@@ -206,10 +213,6 @@ impl Projectile {
         self.velocity = bevy_math::Quat::from_axis_angle(axis.normalize(), angle) * self.velocity;
     }
 
-    pub fn schedule_removal(&mut self, now: f64) {
-        self.removal = Some(Removal::after_hit(&self.declaration, now));
-    }
-
     /// 629590 stops the model's forward extent short of the witness point,
     /// capped by distance from its original spawn position.
     pub fn impact_position(&self, hit: Hit) -> Vec3 {
@@ -222,7 +225,7 @@ impl Projectile {
     /// matching player/equipment frames and canonical WorldStorage; a Bevy
     /// collision adapter performs its ordinary conversion at the boundary.
     pub fn flight(&self, dt: f32, world_gravity: Vec3) -> Option<Flight> {
-        if !self.movement_enabled || dt == 0. {
+        if !self.movement_enabled || self.impact_stopped || dt == 0. {
             return None;
         }
         let mut velocity = self.velocity;
@@ -356,7 +359,7 @@ pub struct Contact {
     pub can_stick: bool,
     pub can_break: bool,
     pub angle: f32,
-    pub stick_blocked_by_pickable: bool,
+    pub active_water_trigger: bool,
     pub absorbed_by_armor: bool,
     pub desired_deflection: u32,
     pub npc_break_probability: Option<f32>,
@@ -385,10 +388,7 @@ pub fn response(
                 } else {
                     declaration.required_stick_angle
                 };
-                if contact.can_stick
-                    && contact.angle >= required
-                    && !contact.stick_blocked_by_pickable
-                {
+                if contact.can_stick && contact.angle >= required && !contact.active_water_trigger {
                     result = Response::Stick;
                 }
                 if contact.can_break && declaration.can_break {

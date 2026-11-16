@@ -48,6 +48,7 @@ struct RigidPostHost<'a> {
         i32,
         &'a mut ComponentPool<crate::app::rigid_body::RigidBodyComponent>,
     ); 2],
+    projectiles: (i32, &'a ComponentPool<crate::app::projectiles::Component>),
     placements: &'a HashMap<usize, usize>,
     initial: &'a HashMap<usize, ReferenceFrame>,
     poses: Option<&'a mut ModelPoseUpdates>,
@@ -62,6 +63,31 @@ struct RigidPostHost<'a> {
     commands: &'a crate::gameplay::physics_world::commands::PhysicsCommands,
 }
 impl RigidPostHost<'_> {
+    fn projectile_body(
+        &self,
+        actors: &PhysicsActorLinks,
+        actor: usize,
+    ) -> Result<Option<usize>, String> {
+        let entity = self.actor_entity(actors, actor)?;
+        for &packed in self.entities[entity].components.entries.values() {
+            let handle = ComponentHandle::from_packed(packed)?;
+            if handle.class_id != self.projectiles.0 {
+                continue;
+            }
+            let component = self
+                .projectiles
+                .1
+                .get(handle.slot)
+                .ok_or("projectile movement component absent")?;
+            if component.owner.entity != Some(entity) {
+                return Err("projectile movement owner differs".into());
+            }
+            if component.movement_body == Some(actors.actors[actor].current_body) {
+                return Ok(component.movement_body);
+            }
+        }
+        Ok(None)
+    }
     fn entity(&self, index: usize) -> Result<&PhysicsEntity, String> {
         let entity = self
             .entities
@@ -343,11 +369,19 @@ impl crate::gameplay::collision_user_data::velocity::BodyVelocityWorld for Rigid
 impl ActorMotionBody for RigidPostHost<'_> {
     fn accepts(&mut self, actors: &mut PhysicsActorLinks, actor: usize) -> Result<bool, String> {
         self.actor_entity(actors, actor)?;
+        if let Some(body) = self.projectile_body(actors, actor)? {
+            return BasicBody::Projectile { body }.accepts(actors, actor);
+        }
         if actors.actors[actor].current_body == actors.actors[actor].default_body {
             BasicBody::Embedded.accepts(actors, actor)
         } else {
-            Ok(self.body(actors, actor)?.1.flags & 8 != 0)
-        } // 808e30
+            //8079d0 is the +8 motion predicate. +16 is the component's
+            //motion type; -20 is its bound parent physics interface, not Wind.
+            let body=self.body(actors,actor)?.1;
+            if body.flags&1!=0{return Ok(false);}
+            Ok(body.flags&4!=0||actors.actors[actor].binding.entity.is_none()
+                ||body.next_attached_body_id==body.id)
+        }
     }
     fn apply(
         &mut self,
@@ -356,6 +390,9 @@ impl ActorMotionBody for RigidPostHost<'_> {
         motion: ResolvedMotion,
     ) -> Result<u8, String> {
         self.actor_entity(actors, actor)?;
+        if let Some(body) = self.projectile_body(actors, actor)? {
+            return BasicBody::Projectile { body }.apply(actors, actor, motion);
+        }
         if actors.actors[actor].current_body == actors.actors[actor].default_body {
             return BasicBody::Embedded.apply(actors, actor, motion);
         }
@@ -471,13 +508,24 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         actors: &mut PhysicsActorLinks,
         actor: usize,
     ) -> Result<bool, String> {
-        self.accepts(actors, actor)
+        if let Some(body) = self.projectile_body(actors, actor)? {
+            return BasicBody::Projectile { body }.accepts_pose(actors, actor);
+        }
+        if actors.actors[actor].current_body==actors.actors[actor].default_body {
+            return BasicBody::Embedded.accepts_pose(actors,actor);
+        }
+        //808e30 is the distinct +10 pose predicate, using body deactivation.
+        Ok(self.body(actors,actor)?.1.flags&8!=0)
     }
     fn update_body_pose(
         &mut self,
         actors: &mut PhysicsActorLinks,
         actor: usize,
     ) -> Result<(), String> {
+        if let Some(body) = self.projectile_body(actors, actor)? {
+            BasicBody::Projectile { body }.update_pose(actors, actor)?;
+            return Ok(());
+        }
         self.publish_body(actors, actor)
     }
     fn body_handles_render_entity(
@@ -486,6 +534,9 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         actor: usize,
     ) -> Result<bool, String> {
         let entity = self.actor_entity(actors, actor)?;
+        if let Some(body) = self.projectile_body(actors, actor)? {
+            return BasicBody::Projectile { body }.handles_render_entity(actors, actor);
+        }
         if actors.actors[actor].current_body == actors.actors[actor].default_body {
             return BasicBody::Embedded.handles_render_entity(actors, actor);
         }
@@ -494,9 +545,39 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         // true immediately; pickup's existing owner has already projected the
         // hide to the render sources. 753c10 still publishes the entity frame
         // before this predicate and skips only additional render pose work.
-        // With both flags clear, this admitted null binding returns false.
-        Ok(self.entity(entity)?.entity_flags & 3 != 0
-            || actors.actors[actor].binding.entity.is_some())
+        if self.entity(entity)?.entity_flags & 3 != 0 {
+            return Ok(true);
+        }
+        if actors.actors[actor].binding.entity.is_none() {
+            return Ok(false);
+        }
+        //808880 owns the bound render pose itself. Returning true without
+        //publishing this frame would leave a carried object's mesh behind.
+        let delta = self
+            .clock
+            .entity_delta(self.entity(entity)?.timespace)
+            .ok_or("bound render timespace absent")?;
+        let pose = self
+            .resolved_bound(actors, actor, delta.max(f32::MIN_POSITIVE))?
+            .pose;
+        let Some(&placement) = self.placements.get(&entity) else {
+            return Ok(true);
+        };
+        let initial = *self
+            .initial
+            .get(&entity)
+            .ok_or("bound render initial frame absent")?;
+        let delta = render_delta(initial, pose)?;
+        let poses = self
+            .poses
+            .as_deref_mut()
+            .ok_or("bound render publication during pre-physics")?;
+        poses
+            .0
+            .try_reserve(1)
+            .map_err(|error| format!("bound render publication: {error}"))?;
+        poses.0.push(ModelPose { placement, delta });
+        Ok(true)
     }
     fn render_entity(&self, entity: usize) -> Result<Option<usize>, String> {
         self.entity(entity)?;
@@ -595,13 +676,104 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
 }
 
 impl PhysicsScene {
+    /// Deferred 18d020 adapter for gameplay producers outside an actor task.
+    pub(in crate::app) fn queue_rigid_velocity(
+        &mut self,
+        body: u32,
+        linear: [f32; 4],
+        angular: [f32; 4],
+    ) -> Result<(), String> {
+        use crate::gameplay::collision_user_data::velocity::{
+            BodyVelocityWorld, CollisionVelocities, publish_velocities,
+        };
+        struct Host<'a> {
+            world: &'a crate::gameplay::physics_world::storage::WorldStorage,
+            pools: [(
+                i32,
+                &'a mut ComponentPool<super::super::rigid_body::RigidBodyComponent>,
+            ); 2],
+            commands: &'a crate::gameplay::physics_world::commands::PhysicsCommands,
+        }
+        impl BodyVelocityWorld for Host<'_> {
+            type Reference = u32;
+            fn body_id(&self, id: u32) -> Result<u32, String> {
+                self.world
+                    .bodies
+                    .get(id)
+                    .map(|b| b.id)
+                    .ok_or("queued rigid body stale".into())
+            }
+            fn velocity_scale(&self, id: u32) -> Result<f32, String> {
+                self.world.motion_properties.body_velocity_scale(
+                    &self.world.bodies,
+                    &self.world.motions,
+                    id,
+                )
+            }
+            fn set_velocity(&mut self, _: u32, _: [f32; 4], _: [f32; 4]) -> Result<(), String> {
+                Err("gameplay rigid velocity requires deferred publication".into())
+            }
+            fn queue_velocity(
+                &mut self,
+                id: u32,
+                linear: [f32; 4],
+                angular: [f32; 4],
+            ) -> Result<(), String> {
+                self.commands.enqueue_velocity(id, linear, angular, false)
+            }
+            fn collision_velocities(
+                &mut self,
+                id: u32,
+            ) -> Result<&mut CollisionVelocities, String> {
+                let body = self
+                    .world
+                    .bodies
+                    .get(id)
+                    .ok_or("queued rigid payload body stale")?;
+                let handle = CollisionUserData::decode(body.user_data)?.component;
+                let (_, pool) = self
+                    .pools
+                    .iter_mut()
+                    .find(|(class, _)| *class == handle.class_id)
+                    .ok_or("queued rigid payload class unsupported")?;
+                let component = pool
+                    .get_mut(handle.slot)
+                    .ok_or("queued rigid component absent")?;
+                if component.body() != Some(id) {
+                    return Err("queued rigid body owner differs".into());
+                }
+                Ok(&mut component.velocities)
+            }
+            fn next_attached_body(&self, id: u32) -> Result<u32, String> {
+                Ok(self
+                    .world
+                    .bodies
+                    .get(id)
+                    .ok_or("queued rigid ring body stale")?
+                    .next_attached_body_id)
+            }
+            fn body_capacity(&self) -> usize {
+                self.world.bodies.capacity()
+            }
+        }
+        let shared = self.world.clone();
+        let guard = shared.read().map_err(|_| "queued rigid world poisoned")?;
+        let mut host = Host {
+            world: &guard.storage,
+            pools: [
+                (self.classes[8], &mut self.rigid_bodies),
+                (self.classes[12], &mut self.throwables),
+            ],
+            commands: &self.body_commands,
+        };
+        publish_velocities(&mut host, body, linear, angular, true)
+    }
     ///752870/7527e0: one-evaluation priority-two requests on the real actor.
-    pub(in crate::app) fn carry_motion_request(
+    pub(in crate::app) fn request_actor_velocity(
         &mut self,
         id: crate::gameplay::entity_lifetime::EntityId,
         linear: [f32; 3],
         angular: [f32; 3],
-        _clock: &GameClock,
     ) -> Result<(), String> {
         let index = *self
             .shared_indices
@@ -661,13 +833,16 @@ impl PhysicsScene {
         live: &LiveEntities,
         joint_frames: Option<&super::super::joint_frames::JointFrames>,
     ) -> Result<(), String> {
-        self.pre_updates.frame = self.pre_frame;
-        self.pre_updates.stamp = self.pre_frame.wrapping_add(1);
-        self.pre_frame = self.pre_frame.wrapping_add(2);
-        let queued = !self.pre_updates.queue_is_empty();
-        if queued {
-            self.pre_updates.publish_sentinels(1);
+        if !self.rigid_pre_started {
+            self.pre_updates.frame = self.pre_frame;
+            self.pre_updates.stamp = self.pre_frame.wrapping_add(1);
+            self.pre_frame = self.pre_frame.wrapping_add(2);
+            if !self.pre_updates.queue_is_empty() {
+                self.pre_updates.publish_sentinels(1);
+            }
+            self.rigid_pre_started = true;
         }
+        let queued = !self.pre_updates.queue_is_empty();
         let world = self
             .world
             .read()
@@ -680,6 +855,7 @@ impl PhysicsScene {
                 (self.classes[8], &mut self.rigid_bodies),
                 (self.classes[12], &mut self.throwables),
             ],
+            projectiles: (self.classes[13], &self.projectiles),
             placements: &self.rigid_placements,
             initial: &self.initial_rigid_frames,
             poses: None,
@@ -723,6 +899,7 @@ impl PhysicsScene {
                 host.publish_motion(&self.actors, actor)?;
             }
         }
+        self.rigid_pre_started = false;
         Ok(())
     }
 
@@ -762,15 +939,21 @@ impl PhysicsScene {
     ) -> Result<(), String> {
         // 8af6a0: one actual host worker, snapshot enqueue frame then advance
         // by two before it can enqueue further post requests during traversal.
-        self.post_updates.frame = self.post_frame;
-        self.post_updates.stamp = self.post_frame.wrapping_add(1);
-        self.post_frame = self.post_frame.wrapping_add(2);
+        if !self.rigid_post_started {
+            self.post_updates.frame = self.post_frame;
+            self.post_updates.stamp = self.post_frame.wrapping_add(1);
+            self.post_frame = self.post_frame.wrapping_add(2);
+            if !self.post_updates.queue_is_empty() {
+                self.post_updates.publish_sentinels(1);
+            }
+            self.rigid_post_started = true;
+        }
         // Host: an empty single-worker batch has no work or sentinel to drain.
         // Preserve its phase stamps without taking the physics-world lock.
         if self.post_updates.queue_is_empty() {
+            self.rigid_post_started = false;
             return Ok(());
         }
-        self.post_updates.publish_sentinels(1);
         let world = self
             .world
             .read()
@@ -783,6 +966,7 @@ impl PhysicsScene {
                 (self.classes[8], &mut self.rigid_bodies),
                 (self.classes[12], &mut self.throwables),
             ],
+            projectiles: (self.classes[13], &self.projectiles),
             placements: &self.rigid_placements,
             initial: &self.initial_rigid_frames,
             poses: Some(poses),
@@ -800,7 +984,9 @@ impl PhysicsScene {
             &self.post_updates,
             &mut host,
             &mut self.rigid_post_path,
-        )
+        )?;
+        self.rigid_post_started = false;
+        Ok(())
     }
 }
 

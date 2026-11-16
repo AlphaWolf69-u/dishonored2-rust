@@ -1,6 +1,6 @@
 //! 753c10 publication/traversal, sharing the real request and prediction owners.
-use super::{pre_update::PrePhysicsWorld, ActorUpdatePhase, PhysicsActorLinks};
-use crate::gameplay::reference_frame::{relative_binding, PublishedFrame, ReferenceFrame};
+use super::{ActorUpdatePhase, PhysicsActorLinks, pre_update::PrePhysicsWorld};
+use crate::gameplay::reference_frame::{PublishedFrame, ReferenceFrame, relative_binding};
 
 pub struct BoundFrame {
     pub pose: ReferenceFrame,

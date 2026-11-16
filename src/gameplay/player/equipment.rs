@@ -64,7 +64,7 @@ impl EquipmentTree {
         let clip = *self.animation_aliases.get(alias).ok_or_else(|| format!("equipment default animation is not prepared: {alias}"))?;
         match &mut self.input {
             EquipmentInput::DefaultAnimation { clip: current, time } => {
-                if *current != clip { *current = clip; *time = 0.0; }
+                if *current != Some(clip) { *current = Some(clip); *time = 0.0; }
                 Ok(())
             }
             EquipmentInput::Basic(_) => Err("equipment defaultAnim alias was routed to an AnimBasic input".into()),

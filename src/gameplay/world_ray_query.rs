@@ -142,6 +142,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
         };
         // 128ed70 rejects the invalid broadphase ID at body+78 before filter.
         body.broadphase_id != u32::MAX
+            && self.bodies.accepts_body(body)
             && self
                 .request
                 .filter

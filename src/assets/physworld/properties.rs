@@ -1,5 +1,6 @@
 //! Retained shape properties and ae3b50's last-matching-entry lookup.
 use super::{le32, slice, PhysWorld};
+pub mod generated;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ShapeProperty {

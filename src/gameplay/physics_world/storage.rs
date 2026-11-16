@@ -29,6 +29,8 @@ use crate::gameplay::{
 };
 mod motion_type;
 mod body_policy;
+pub(crate) mod material_sources;
+pub(crate) mod collision_pairs;
 pub(crate) mod simulation;
 
 pub(crate) struct WorldStorage {
@@ -39,12 +41,15 @@ pub(crate) struct WorldStorage {
     pub broadphase: HybridBroadphase,
     pub quantization: BroadphaseQuantization,
     pub qualities: BodyQualityLibrary,
+    pub(crate) lod_variants: crate::gameplay::body_lod::LodVariants,
     pub cells: SpaceCells,
     pub step: SweptBoundsStep,
     pub phase: u32,
     pub step_index: u32,
     pub properties: Vec<BodyPropertyBits>,
     pub materials: MaterialOwner<usize, usize>,
+    pub(crate) material_sources: material_sources::MaterialSources,
+    pub(crate) collision_pairs: collision_pairs::CollisionPairs,
     pub motion_properties: crate::gameplay::motion_properties::MotionPropertiesLibrary<usize, usize>,
     pub(crate) motion_timespaces: Option<crate::gameplay::motion_timespaces::MotionTimespaces>,
     /// Per-body event chains (world+9e8). The source's signal-head word is an
@@ -252,6 +257,8 @@ impl WorldStorage {
             }
             if progress.abort_step == 5 {
                 if progress.body != u32::MAX {
+                    self.material_sources.remove(progress.body);
+                    self.collision_pairs.retire_body(progress.body);
                     if progress.step < 9 { self.bodies.cancel_uninitialized_reservation(progress.body)?; }
                     else { self.bodies.release_detached(progress.body)?; }
                 }
@@ -624,6 +631,8 @@ impl WorldStorage {
         if mutable {
             self.registry.remove_body(shape, id, geometry)?;
         }
+        self.material_sources.remove(id);
+        self.collision_pairs.retire_body(id);
         Ok(())
     }
 
@@ -658,6 +667,7 @@ impl WorldStorage {
             enable_welding_for_critical_objects: info.enable_welding_for_critical_objects,
             enable_contact_caching: info.enable_contact_caching,
         });
+        let lod_variants = crate::gameplay::body_lod::LodVariants::new(info.lod);
         let cells = if info.simulation_type == 1 {
             SpaceCells::dynamic(info.num_splitter_cells as usize)?
         } else {
@@ -685,12 +695,15 @@ impl WorldStorage {
             simulation: Default::default(),
             simulation_busy: false,
             qualities,
+            lod_variants,
             cells,
             step: SweptBoundsStep::initial(),
             phase: 0,
             step_index: 0,
             properties: Vec::new(),
             materials,
+            material_sources: Default::default(),
+            collision_pairs: Default::default(),
             motion_properties,
             motion_timespaces: None,
             body_events: BodyProperties::default(),

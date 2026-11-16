@@ -111,3 +111,9 @@ pub mod world_convex_query;
 pub mod throwable;
 
 pub mod breakable;
+
+pub mod explosions;
+
+pub mod compressed_mesh_query;
+
+pub mod water_forces;
