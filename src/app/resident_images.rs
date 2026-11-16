@@ -720,6 +720,16 @@ pub(super) fn service_ui_images(
     service.service(&pause, &state.catalog);
 }
 
+/// The outgoing acquisition controller can already be borrowed by its
+/// retirement caller. Use that same catalog lease for the ordinary UI RPC.
+pub(super) fn service_ui_images_for_catalog(
+    In(catalog): In<Arc<archive::Catalog>>,
+    mut service: UiImageService,
+    pause: NonSend<super::pause_menu::PauseMenu>,
+) {
+    service.service(&pause, &catalog);
+}
+
 fn separate_scene_views() -> bool {
     static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_SCENE_IMAGE_VIEWS").as_deref() == Ok("1"))

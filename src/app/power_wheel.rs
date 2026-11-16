@@ -177,10 +177,11 @@ fn finish(world: &mut World, state: &mut State) -> Result<(), String> {
 }
 
 /// Retire before the existing world clock and game-logic owners disappear.
-pub(super) fn retire(world: &mut World) -> Result<bool, String> {
+pub(super) fn retire(world: &mut World, catalog: Option<&Arc<crate::archive::Catalog>>) -> Result<bool, String> {
     if !world.contains_resource::<State>() {
         return Ok(true);
     }
+    let catalog = catalog.ok_or("wheel retirement lost its actual catalog owner")?;
     world.resource_scope(|world, mut state: Mut<State>| {
         if state.retired {
             return Ok(true);
@@ -202,7 +203,7 @@ pub(super) fn retire(world: &mut World) -> Result<bool, String> {
             state.clear_requested = true;
         }
         world
-            .run_system_once(super::resident_images::service_ui_images)
+            .run_system_once_with(super::resident_images::service_ui_images_for_catalog, catalog.clone())
             .map_err(|error| error.to_string())?;
         let mut acknowledged = false;
         loop {

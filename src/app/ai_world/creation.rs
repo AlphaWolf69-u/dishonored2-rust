@@ -15,15 +15,14 @@ pub(in crate::app) struct CreationPlan{
     source:Option<String>,sections:Vec<Section>,movers:usize,navigation:usize,
     navmesh:Option<Arc<crate::assets::physworld::navmesh::Metadata>>,
 }
-fn reference(value:Option<&Value>,context:&str)->Result<Option<String>,String>{
-    match value{
-        None=>Ok(None),Some(Value::Atom(value)) if value.is_empty()||value.eq_ignore_ascii_case("NULL")=>Ok(None),
-        Some(Value::Atom(value))=>Ok(Some(value.clone())),_=>Err(format!("{context}: expected nullable source declaration reference")),
-    }
+fn reference(fields:&[(String,Value)],key:&str,context:&str)->Result<Option<String>,String>{
+    if entities::field(fields,key).is_none(){return Ok(None);}
+    let value=atom(fields,key).ok_or_else(||format!("{context}: expected nullable source declaration reference"))?;
+    Ok((!value.is_empty()&&!value.eq_ignore_ascii_case("NULL")).then(||value.to_owned()))
 }
 fn inherited_fields(catalog:&Catalog,entity:&entities::Definition)->Result<Vec<(String,Value)>,String>{
     let mut result=Vec::new();
-    if let Some(source)=reference(entities::field(&entity.fields,"inherit"),&entity.id)?{
+    if let Some(source)=reference(&entity.fields,"inherit",&entity.id)?{
         for layer in entities::player::entity_chain(&source,&mut|path|crate::assets::declaration_texts::read_common_or_catalog(catalog,path))?{
             entities::overlay_owned(&mut result,layer);
         }
@@ -50,11 +49,11 @@ impl CreationPlan{
         let world=worlds.next().ok_or("AIWorld creation has no actual worldspawn declaration")?;
         if worlds.next().is_some(){return Err("AIWorld creation has multiple worldspawn owners".into());}
         let direct=child(&world.fields,"edit");
-        let source=if let Some(value)=entities::field(direct,"m_aiWorldEntityDef"){
-            reference(Some(value),"world.m_aiWorldEntityDef")?
+        let source=if entities::field(direct,"m_aiWorldEntityDef").is_some(){
+            reference(direct,"m_aiWorldEntityDef","world.m_aiWorldEntityDef")?
         }else{
             let fields=inherited_fields(catalog,world)?;
-            reference(entities::field(child(&fields,"edit"),"m_aiWorldEntityDef"),"world.m_aiWorldEntityDef")?
+            reference(child(&fields,"edit"),"m_aiWorldEntityDef","world.m_aiWorldEntityDef")?
         };
         //A null native reference disables this creation branch. It does not
         //mean "load aiworld_default" or construct a numeric-only recipient.

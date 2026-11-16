@@ -82,7 +82,7 @@ impl LevelLifetime {
         self.retirement_phase = "component producers";
         if !self.producers_retired {
             if !super::ai_world::creation::close_admission(world)? { return Ok(false); }
-            if !super::power_wheel::retire(world)? { return Ok(false); }
+            if !super::power_wheel::retire(world, self.catalog.as_ref())? { return Ok(false); }
             super::physics_scene::simulation::finish_accepted(world)?;
             super::physics_scene::carrying_host::finish_accepted_loot_pull(world)?;
             super::pickups::finish_accepted(world)?;
