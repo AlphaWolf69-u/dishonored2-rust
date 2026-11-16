@@ -104,13 +104,11 @@ Open, in order:
 - Hair OIT is connected: AlphaGpu draws the hair lit pass (depth writes)
   and the OIT pass into RGBA16F/R8 targets, then resolves the hair term
   before render_particles; the particle resolve after it composes to the
-  original's single composite. Open: pixel history of the menu capture
-  shows the original clears the scene target after the main alpha list
-  (10329-10330) and recomposes it, so the lit pass's own colour does not
-  survive under the OIT resolve there. At opaque hair the OIT colour
-  equals the lit colour (3.365 vs 3.372 at 580,70), but thin strands
-  (beard) differ from the rewrite's lit-then-resolve until that frame
-  structure is traced.
+  original's single composite. The original keeps the lit pass's colour
+  in the scene target under the resolve (the clears at 10329-10330 are
+  of other targets; its passes run on deferred command lists, which
+  makes RenderDoc pixel history unreliable there). At opaque hair the
+  OIT colour equals the lit colour (3.365 vs 3.372 at 580,70).
 - One-sided translucency (shadow-map depth).
 
 ## Particle declaration census (2026-11-10)
