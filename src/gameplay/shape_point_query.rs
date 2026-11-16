@@ -14,7 +14,7 @@ use super::{
         distance::{query_point, ConvexClosestPoint},
         ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
     },
-    polytope_query::zero_distance_point_geometry,
+    polytope_query::{inside_point_geometry, zero_distance_point_geometry},
     shape_tags::{decode_shape_tag, ShapeTagSource},
     shape_transform::{transform_bounds, transform_point, ScaledShapeTransform, ShapeMatrix},
 };
@@ -180,19 +180,28 @@ impl ShapePointQuery {
         let result: Result<(), String> = (|| match (&shape.geometry, handler) {
             (QueryGeometry::Polytope(_) | QueryGeometry::Convex(_), ClosestPointHandler::ConvexConvex) => {
                 let polytope = match &shape.geometry { QueryGeometry::Polytope(p) => Some(p), _ => None };
-                let geometry = if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some()) {
+                //Preserve d11cb0/12b7aa0's actual inside-face tie/witness.
+                //Host strategy: rounded outside-core cases use the existing
+                //full d10960 GSK owner on the SAME authored vertices/radius.
+                //None from the inside-only helper selects GSK, never no-hit.
+                let specialized = if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some() && p.radius == 0.) {
                     let polytope = polytope.ok_or("polytope point connectivity absent")?;
                     let local = transform_point(relative, sphere.vertex);
-                    if polytope.radius != 0.
-                        || !local.iter().all(|v| v.is_finite())
+                    if !local.iter().all(|v| v.is_finite())
                         || !polytope.planes.iter().flatten().all(|v| v.is_finite())
                     {
                         return Err(
-                            "specialized nonfinite/radius polytope point query is not implemented"
+                            "specialized nonfinite polytope point query is not implemented"
                                 .into(),
                         );
                     }
-                    zero_distance_point_geometry(polytope, local)?
+                    Some(zero_distance_point_geometry(polytope, local)?)
+                } else if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some()) {
+                    inside_point_geometry(polytope.expect("connected polytope checked"),
+                        transform_point(relative, sphere.vertex))?.map(Some)
+                } else { None };
+                let geometry = if let Some(geometry) = specialized {
+                    geometry
                 } else {
                     let prepared = self.support.prepare(ConvexSupportInput {
                         shape_type: shape.header.shape_type,

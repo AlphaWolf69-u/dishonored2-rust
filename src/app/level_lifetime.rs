@@ -26,6 +26,7 @@ pub(super) struct LevelLifetime {
     wind_retired: bool,
     audio_retirement_started: bool,
     cleared: bool,
+    retirement_phase: &'static str,
 }
 
 impl LevelLifetime {
@@ -50,19 +51,24 @@ impl LevelLifetime {
             .collect();
     }
 
+    pub(super) fn retirement_phase(&self) -> &'static str { self.retirement_phase }
+
     pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
         if self.cleared { return Ok(true); }
         // SourceReady/EventPlaying cookies can keep an actual projectile ID
         // alive after FX shutdown. Pump their real audio owner and immediately
         // deliver resulting C6/29 messages before any actor can lose that ID.
+        self.retirement_phase = "accepted audio and entity events";
         super::audio::poll_accepted_effects(world)?;
         super::entity_messages::finish_accepted(world)?;
         // The source read callback is synchronous. Finish its already accepted
         // host cursor while the real components and render/audio owners remain.
+        self.retirement_phase = "accepted interactions";
         super::interactions::finish_accepted_pickups(world)?;
         // 1408a4830 releases component producers before their shared managers.
         // Keep real player/clock/physics owners until power and equipment Stop
         // have withdrawn their requests and acknowledged actual render/audio.
+        self.retirement_phase = "component producers";
         if !self.producers_retired {
             super::physics_scene::simulation::finish_accepted(world)?;
             super::physics_scene::carrying_host::finish_accepted_loot_pull(world)?;
@@ -87,22 +93,26 @@ impl LevelLifetime {
         // The FX manager acknowledges producer tickets before the equipment
         // and entity resource scopes which prepared those effects can close.
         // Keep physics, player and audio callback owners throughout this drain.
+        self.retirement_phase = "FX requests";
         if !self.effect_requests_retired {
             super::usable_effects::begin_retirement(world)?;
             self.effect_requests_retired = true;
         }
         // begin_retirement closes late producers; observe real canceled IO
         // completion before any map-scoped source lease can be purged.
+        self.retirement_phase = "FX acquisition";
         if world.get_resource_mut::<super::usable_effects::UsableEffects>()
             .is_some_and(|mut effects| !effects.retire_acquisitions()) { return Ok(false); }
         // Keep accepted FX/audio tickets and their resource owners alive
         // through the real consumer's acknowledgement. Successful shutdown is
         // never replayed if a later phase suspends or fails.
+        self.retirement_phase = "FX instances";
         if !self.effects_retired {
             world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
         }
+        self.retirement_phase = "FX gameplay actors";
         if !self.fx_gameplay_retired {
             super::fx_gameplay::retire(world)?;
             self.fx_gameplay_retired = true;
@@ -111,13 +121,16 @@ impl LevelLifetime {
         // tail. Finish it only after the real FX manager acknowledges shutdown;
         // waiting for it above would prevent that acknowledgement forever.
         // finish_accepted never admits another ordinary removal snapshot.
+        self.retirement_phase = "accepted entity removals";
         if !super::entity_removal::finish_accepted(world)? { return Ok(false); }
+        self.retirement_phase = "equipment and weapon scopes";
         if !self.equipment_retired {
             if !super::weapon_firing::shutdown(world)? { return Ok(false); }
             if !super::explosions::retirement_complete(world)? { return Ok(false); }
             if !super::runtime_materials::equipment_admission::shutdown(world)? { return Ok(false); }
             self.equipment_retired = true;
         }
+        self.retirement_phase = "runtime actor render and component receipts";
         if !self.actors_retired {
             if !super::projectiles::shutdown(world) { return Ok(false); }
             if !super::runtime_entities::begin_retirement(world)? { return Ok(false); }
@@ -125,29 +138,35 @@ impl LevelLifetime {
             self.actors_retired = true;
         }
         // Pending/errors preserve the sole registry, pools and body world.
+        self.retirement_phase = "placed physics components";
         if !self.physics_retired {
             if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
             self.physics_retired = true;
         }
+        self.retirement_phase = "player components";
         if !self.player_retired {
             super::player_lifetime::retire(world)?;
             super::interactions::stop_level(world);
             self.player_retired = true;
         }
+        self.retirement_phase = "audio output";
         if !self.audio_retirement_started {
             super::audio::begin_level_retirement(world)?;
             self.audio_retirement_started = true;
         }
+        self.retirement_phase = "audio output";
         if !super::audio::poll_level_retirement(world)? { return Ok(false); }
         // Windblast's real tickets include old render snapshots and audio
         // tails. Their weak leases must expire before its managed identity,
         // clock overrides or source declarations can leave the world.
+        self.retirement_phase = "wind effects";
         if !self.wind_retired {
             if !super::power_execution::poll_wind_retirement(world)? { return Ok(false); }
             self.wind_retired = true;
         }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
+        self.retirement_phase = "level resource purge";
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
         let material_history = world.remove_resource::<super::level_prepare::MaterialHistoryScope>();
         let skeletal_history = world.remove_resource::<super::level_prepare::SkeletalHistoryScope>();

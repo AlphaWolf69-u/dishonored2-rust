@@ -1168,11 +1168,6 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
     let Some(mut owner) = world.remove_resource::<RuntimeEntities>() else {
         return Err("runtime entity lifetime owner is absent".into());
     };
-    if owner.active_retirement.is_some_and(|active| active != id) {
-        world.insert_resource(owner);
-        return Ok(false);
-    }
-    owner.active_retirement = Some(id);
     let result = (|| {
         // Placed actors share the exact same component destructor; absence
         // from the dynamic allocation journal is not proof of retirement.
@@ -1204,6 +1199,14 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
         {
             return Ok(false);
         }
+        //The shared component registry owns one resumable entity destructor.
+        //Independent renderer withdrawals precede that lease: claiming it
+        //before GPU acknowledgement serializes world exit by one frame/actor.
+        if owner.active_retirement.is_some_and(|active| active != id) {
+            return Ok(false);
+        }
+        owner.active_retirement = Some(id);
+        let actor = owner.actors.get_mut(&id).ok_or("runtime retirement actor vanished")?;
         let rollback = actor.rollback;
         let release = actor.release.get_or_insert_with(Default::default);
         with_scene(world, |world, scene, live, events| {

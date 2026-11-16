@@ -912,6 +912,10 @@ impl Draw<'_> {
     fn range(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, inside: Option<usize>) {
         let mut at = first;
         let mut clear = target.clear;
+        //1402e5b80 begins each movie render with clean stencil bits. The
+        //main target retains scene colour, but must not retain last frame's
+        //mask coverage (a shrinking gauge would otherwise only add coverage).
+        let mut clear_stencil = true;
         let mut index = inside.map_or(0, |i| i + 1);
         while index < self.layers.len() {
             let layer = &self.layers[index];
@@ -922,8 +926,8 @@ impl Draw<'_> {
                 index += 1;
                 continue;
             }
-            self.batches_pass(encoder, target, at, layer.first, &mut clear);
-            self.layer(encoder, target, index, &mut clear);
+            self.batches_pass(encoder, target, at, layer.first, &mut clear, &mut clear_stencil);
+            self.layer(encoder, target, index, &mut clear, &mut clear_stencil);
             at = layer.end;
             // Skip the layers nested in this one.
             index += 1;
@@ -931,16 +935,18 @@ impl Draw<'_> {
                 index += 1;
             }
         }
-        self.batches_pass(encoder, target, at, end, &mut clear);
+        self.batches_pass(encoder, target, at, end, &mut clear, &mut clear_stencil);
     }
 
 
-    fn batches_pass(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, clear: &mut bool) {
+    fn batches_pass(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, clear: &mut bool, clear_stencil: &mut bool) {
         if first >= end && !*clear {
             return;
         }
-        let (colour_load, stencil_load) = if *clear { (LoadOp::Clear(LinearRgba::NONE.into()), LoadOp::Clear(0)) } else { (LoadOp::Load, LoadOp::Load) };
+        let colour_load = if *clear { LoadOp::Clear(LinearRgba::NONE.into()) } else { LoadOp::Load };
+        let stencil_load = if *clear || *clear_stencil { LoadOp::Clear(0) } else { LoadOp::Load };
         *clear = false;
+        *clear_stencil = false;
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("flash ui"),
             color_attachments: &[Some(RenderPassColorAttachment { view: target.color, depth_slice: None, resolve_target: None, ops: Operations { load: colour_load, store: StoreOp::Store } })],
@@ -959,7 +965,7 @@ impl Draw<'_> {
         }
     }
 
-    fn layer(&self, encoder: &mut CommandEncoder, target: &TargetViews, index: usize, clear: &mut bool) {
+    fn layer(&self, encoder: &mut CommandEncoder, target: &TargetViews, index: usize, clear: &mut bool, clear_stencil: &mut bool) {
         let (layer, plan) = (&self.layers[index], &self.plans[index]);
         let size = (plan.rect[2] - plan.rect[0], plan.rect[3] - plan.rect[1]);
         if size.0 <= 0 || size.1 <= 0 {
@@ -980,8 +986,10 @@ impl Draw<'_> {
         }
         // Draw the result back.
         let group = self.device.create_bind_group(Some("flash layer composite"), &self.programs.texture_layout, &BindGroupEntries::sequential((&source.1, &self.programs.samplers[1])));
-        let (colour_load, stencil_load) = if *clear { (LoadOp::Clear(LinearRgba::NONE.into()), LoadOp::Clear(0)) } else { (LoadOp::Load, LoadOp::Load) };
+        let colour_load = if *clear { LoadOp::Clear(LinearRgba::NONE.into()) } else { LoadOp::Load };
+        let stencil_load = if *clear || *clear_stencil { LoadOp::Clear(0) } else { LoadOp::Load };
         *clear = false;
+        *clear_stencil = false;
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("flash ui"),
             color_attachments: &[Some(RenderPassColorAttachment { view: target.color, depth_slice: None, resolve_target: None, ops: Operations { load: colour_load, store: StoreOp::Store } })],

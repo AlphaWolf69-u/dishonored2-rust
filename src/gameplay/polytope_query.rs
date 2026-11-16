@@ -56,7 +56,19 @@ pub fn zero_distance_point_geometry(
     shape: &ConvexPolytope,
     point: [f32; 4],
 ) -> Result<Option<super::convex_support::distance::ConvexClosestPoint>, String> {
-    if shape.radius != 0. || shape.connectivity.is_none() || !point.iter().all(|v| v.is_finite()) {
+    if shape.radius != 0. { return Ok(None); }
+    inside_point_geometry(shape, point)
+}
+
+///12b7aa0 cold inside-face branch: keep its four-lane face tie reduction,
+///then subtract the authored convex radius from the signed core distance.
+///Outside-core edge/vertex queries require the general distance owner.
+///None here selects that owner; it is not a no-contact result for a radius.
+pub fn inside_point_geometry(
+    shape: &ConvexPolytope,
+    point: [f32; 4],
+) -> Result<Option<super::convex_support::distance::ConvexClosestPoint>, String> {
+    if shape.connectivity.is_none() || !point.iter().all(|v| v.is_finite()) {
         return Ok(None);
     }
     if shape.planes.len() < 4 {
@@ -100,6 +112,7 @@ pub fn zero_distance_point_geometry(
         return Ok(None);
     }
     let normal = shape.planes[face];
+    let distance = distance - shape.radius;
     Ok(Some(super::convex_support::distance::ConvexClosestPoint {
         point: std::array::from_fn(|i| point[i] - distance * normal[i]),
         normal,
