@@ -39,7 +39,17 @@ struct Owned {
 }
 struct Delivery { id: EntityId, effect: Effect, born: Option<EntityId> }
 #[derive(Resource,Default)]
-struct Throwing { owned: HashMap<EntityId,Owned>, deliveries: VecDeque<Delivery>, generation:u64, error:Option<String> }
+pub(super) struct Throwing { owned: HashMap<EntityId,Owned>, deliveries: VecDeque<Delivery>, generation:u64, error:Option<String> }
+
+impl Throwing {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  throwable owners={} callbacks={} front_callback={:?} error={:.240}", self.owned.len(), self.deliveries.len(), self.deliveries.front().map(|delivery| (delivery.id, delivery.born)), self.error.as_deref().unwrap_or("<none>"));
+        for entry in self.owned.values().take(4) {
+            let _ = writeln!(report, "    entity={:?} ammo={} ready={} preparing={} retired={} held_admitted={} held_prepared={} selected_prepared={} acquired={:?} requested={:?} failure={:.240}", entry.id, entry.selected, entry.ready, entry.pending.is_some(), entry.retired, entry.held_admitted, entry.held_prepared, entry.prepared.get(entry.selected).is_some_and(Option::is_some), entry.acquired.get(entry.selected), entry.requested.get(entry.selected), entry.failure.as_deref().unwrap_or("<none>"));
+        }
+    }
+}
 
 pub(in crate::app) fn request_owned(world:&mut World, identity:Arc<str>, descriptor:Arc<Descriptor>)->Result<(),String>{
     let Some(settings)=descriptor.throwable.as_ref() else { return Ok(()); };

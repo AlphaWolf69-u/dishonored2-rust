@@ -41,6 +41,7 @@ pub(super) fn from_resolved(
     if matches!(kind,"cpntaicrewcollectorarea"|"cpntaicrewcollectorcombat"|"cpntaicrewcollectorsearch"|"cpntaicrewcollectorherd") {
         defaults.add_updates(4);
     }
+    if kind=="cpntaisearchspotdynamic" { defaults.add_updates(1); }
     let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
     let (native, payload) = match kind {
         "cpntrigidbody" => (
@@ -70,6 +71,11 @@ pub(super) fn from_resolved(
         "cpntbreakable" => {
             let value = Arc::new(assets::breakable::Definition::read(&fields)?);
             ("arkCpntBreakable", Kind::Breakable(value))
+        }
+        "cpntaiinvestigatespot" | "cpntaisearchspotdynamic" => {
+            let value=Arc::new(assets::ai_smart_objects::Definition::read(catalog,kind,fields,inline)?);
+            let class=std::str::from_utf8(value.factory_name()).map_err(|_|"AISmartObject class name invalid")?;
+            (class,Kind::AISmartSpot(value))
         }
         "cpntgrenade" => ("arkCpntGrenade", Kind::Grenade(Arc::new(assets::grenades::Definition::read(fields)?))),
         "cpntaidangerzone" => ("arkCpntAIDangerZone", Kind::AIDangerZone(Arc::new(assets::ai_world::DangerDefinition::read(fields)?))),

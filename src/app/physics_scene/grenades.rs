@@ -1440,7 +1440,7 @@ fn component_armed(scene: &PhysicsScene, handle: ComponentHandle) -> Result<bool
 pub(in crate::app) fn finish_accepted(world: &mut World) -> Result<(), String> {
     run(world, false, true)
 }
-///8af8a0 executes source stages1/2 before the entity Think879ba0.
+///8af8a0 executes source stages0/1/2 before the entity Think879ba0.
 pub(in crate::app) fn before_actors(world:&mut World)->Result<(),String>{run(world,true,false)}
 pub(in crate::app) fn update(world: &mut World) -> Result<(), String> {
     run(world, true, true)
@@ -1470,13 +1470,13 @@ fn run(world: &mut World, advance: bool, after_actors:bool) -> Result<(), String
             if !clock.advanced(){return Ok(())}
             let marker=clock.clock().map_err(str::to_owned)?.frame_marker();
             match scene.ai_stage_frame {
-                Some((accepted,phase)) if accepted!=marker&&phase<7=>return Err("previous accepted AI source-stage frame is unfinished".into()),
+                Some((accepted,phase)) if accepted!=marker&&phase<9=>return Err("previous accepted AI source-stage frame is unfinished".into()),
                 Some((accepted,_)) if accepted==marker=>{},
                 _=>scene.ai_stage_frame=Some((marker,0)),
             }
             loop {
                 let phase=scene.ai_stage_frame.ok_or("AI stage retry position absent")?.1;
-                if phase==5&&!after_actors{return Ok(())}
+                if phase==7&&!after_actors{return Ok(())}
                 match phase {
                     0=>{
                         //8ab880 drains7ea6e0 before the update task stages.
@@ -1487,17 +1487,21 @@ fn run(world: &mut World, advance: bool, after_actors:bool) -> Result<(), String
                             world:Some(world),scene:&mut scene,live:&mut live,events:&mut events});
                         scene.registry=Some(registry);result?;
                     }
-                    1=>scene.update_ai_timers(world,&live,&mut events)?,
+                    //Dynamic SearchSpot's update_mask1 is actual stage0;
+                    //its accepted messages pump before stage1 Timers.
+                    1=>scene.update_dynamic_search_spots(world,&live)?,
                     2=>super::super::entity_messages::finish_borrowed(world,&mut scene,&live,&mut events)?,
-                    3=>{
+                    3=>scene.update_ai_timers(world,&live,&mut events)?,
+                    4=>super::super::entity_messages::finish_borrowed(world,&mut scene,&live,&mut events)?,
+                    5=>{
                         scene.finish_ai_cues(world,&mut live,&mut events,true)?;
                         scene.advance_grenades(world,&mut live,&mut events)?;
                         scene.update_ai_danger_sources(&live)?;
                     }
-                    4=>super::super::entity_messages::finish_borrowed(world,&mut scene,&live,&mut events)?,
-                    5=>scene.update_crew_decisions(world,&mut events)?,
                     6=>super::super::entity_messages::finish_borrowed(world,&mut scene,&live,&mut events)?,
-                    7=>return Ok(()),
+                    7=>scene.update_crew_decisions(world,&mut events)?,
+                    8=>super::super::entity_messages::finish_borrowed(world,&mut scene,&live,&mut events)?,
+                    9=>return Ok(()),
                     _=>return Err("AI stage retry position invalid".into()),
                 }
                 scene.ai_stage_frame=Some((marker,phase+1));

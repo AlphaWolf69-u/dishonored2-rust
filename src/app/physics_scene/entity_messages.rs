@@ -45,6 +45,9 @@ impl PhysicsScene {
             if matches!(listener, Listener::AIWorldStartup { .. }) {
                 return self.dispatch_ai_startup(live,registry,listener,event,_commands,clock,ai_worlds.as_deref());
             }
+            if matches!(listener,Listener::Component{handle,..} if self.is_smart_object_class(handle.class_id)) {
+                return self.dispatch_smart_object_event(live,listener,event);
+            }
             if matches!(listener,Listener::Component{handle,..} if self.classes.get(48)==Some(&handle.class_id)) {
                 return self.dispatch_observable_event(live,ai_worlds.as_deref().ok_or("Observable callback has no canonical AIWorld list")?,listener,event,_commands);
             }

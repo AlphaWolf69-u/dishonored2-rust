@@ -32,6 +32,10 @@ struct Voice {
     priority: i32,
 }
 impl Device {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "      bark retiring={} pending_delay={:?} voice={:?} completion_callbacks={}", self.retiring, self.pending.as_ref().map(|pending| pending.remaining), self.voice.as_ref().map(|voice| (voice.line, voice.event, voice.stopping, voice.priority)), self.completion_callbacks);
+    }
     pub(super) fn new(definition: Arc<barks::Definition>) -> Self {
         let handlers = definition
             .handlers

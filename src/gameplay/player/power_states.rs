@@ -75,6 +75,14 @@ pub struct Runtime {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PowerInputs { pub held: bool, pub pressure: f32, pub analog: bool }
+
+impl Runtime {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  power selected={:?} phase={:?} owned={} available={} active={} cancel={} execution_requested={} action={:?} button={} pressure={} analog={} overcast={} cost_factor={} cooldown_bypass={} potion_requested={}", self.selected.as_ref().map(|cast| cast.settings.id), self.selected.as_ref().map(Cast::phase), self.owned, self.family_available, self.active, self.cancel, self.execution_requested, self.action_state, self.action_button, self.input_pressure, self.input_analog, self.health_overcast, self.cost_factor, self.cooldown_bypass, self.mana_potion_requested);
+        let _ = writeln!(report, "    blink present={} pending={} finished={} aborted={} contacts={} grapple present={} pending={} effects={} equipment_events={} sound_events={} lifecycle_callbacks={}", self.blink.is_some(), self.blink_pending, self.blink_finished, self.blink_aborted, self.contacts.len(), self.grapple.is_some(), self.grapple_pending, self.grapple_effects.len(), self.grapple_equipment_events.len(), self.sound_events.len(), self.lifecycle.len());
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub enum PowerLifecycle { Began(i32), Finished { id: i32, committed: bool } }
 

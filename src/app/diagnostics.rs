@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    (display_capture, rendered_arms, arm_lighting, shader_buffers): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>),
+    (display_capture, rendered_arms, arm_lighting, shader_buffers, melee, throwing, hearts, animation_events): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>, Option<Res<super::melee::Melee>>, Option<Res<super::weapon_throwing::Throwing>>, Option<Res<super::heart::Hearts>>, Option<Res<super::player_animation_events::Events>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -472,8 +472,15 @@ pub(super) fn collision_report(
             player.body.midnight.drives(1), player.body.midnight.drives(2)));
         report.push_str(&format!("  action history [mantle, catfall]={:?}\n", player.arm_action_history()));
         report.push_str(&format!("  latest midnight start error={:?}\n", player.body.midnight.last_start_error));
+        // Current owner publications only: no extra recorder, resource loads,
+        // physics queries or render work are introduced by this snapshot.
+        player.write_combat_diagnostics(&mut report);
         if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic(scene.environment_probes.as_deref(), arm_lighting.as_deref(), &shader_buffers)); }
     }
+    if let Some(owner) = melee.as_ref() { owner.write_diagnostics(&mut report); }
+    if let Some(owner) = throwing.as_ref() { owner.write_diagnostics(&mut report); }
+    if let Some(owner) = hearts.as_ref() { owner.write_diagnostics(&mut report); }
+    if let Some(owner) = animation_events.as_ref() { owner.write_diagnostics(&mut report); }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
     report.push_str("\nLens CPU publication (not proof of GPU submission):\n");

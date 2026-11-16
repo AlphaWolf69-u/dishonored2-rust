@@ -379,6 +379,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  ranged entity={:?} family={:?} active={} ammo={} item={:.160} magazine={}/{} total={} scene={} ready={} attachment_ready={} prepared={} targeting={} reload={} charged={} flags={:#x} queued_fire={} queued_effects={} dispersion={}", self.managed_entity, self.settings.family, self.active, self.selected_ammunition, self.ammunition().item, self.magazine, self.capacity, self.total_ammo, self.active_scene, self.bevy_backend_projectile_ready, self.projectile_attachment_ready, self.prepared_projectile().is_some(), self.targeting_requested, self.reload_requested, self.charged_shot, self.target_flags, self.pending_fire.len(), self.effects.len(), self.dispersion_ratio);
+    }
     /// Capacity is supplied by the actual subclass/attribute owner; the
     /// generic constructor's default is one (637580+0x67).
     pub fn new(settings: std::sync::Arc<Ranged>, capacity: i32, total_ammo: u32, equipment_target: usize) -> Result<Self, String> {

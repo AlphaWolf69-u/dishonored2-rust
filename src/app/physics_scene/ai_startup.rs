@@ -90,6 +90,11 @@ impl PhysicsScene {
         component.areas = areas;
         if count > 0 {
             component.valid = vec![u32::MAX; count.div_ceil(32)];
+            //5bab80's fresh branch finishes with5b9a80: source cells with
+            //invalid nav-faceFFFFFFFF are not valid influence recipients.
+            for (index,cell) in graph.cells.iter().enumerate(){
+                if cell.nav_face_id==u32::MAX{component.valid[index>>5]&=!(1u32<<(index&31));}
+            }
             component.touched = vec![0; count.div_ceil(32)];
             component.search_values = vec![127; count];
             component.static_values = static_values;
@@ -185,6 +190,7 @@ impl PhysicsScene {
             component.navigation_listener = false;
         }
         component.graph = None;
+        component.clear_spot_influence();
         component.cell_access = Default::default();
         component.valid = Vec::new();
         component.touched = Vec::new();

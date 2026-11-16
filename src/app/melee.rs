@@ -62,11 +62,24 @@ struct Owned {
     shape_length: f32,
 }
 #[derive(Resource, Default)]
-struct Melee {
+pub(super) struct Melee {
     owned: HashMap<EntityId, Owned>,
     queries: MeleeQueries,
     generation: u64,
     error: Option<String>,
+}
+
+impl Melee {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  melee owners={} query_work_pending={} error={:.240}", self.owned.len(), self.queries.has_pending(), self.error.as_deref().unwrap_or("<none>"));
+        for entry in self.owned.values().take(4) {
+            let _ = writeln!(report, "    entity={:?} ready={} requested={} retiring={} active={} stop_pending={} forward={} heavy_block={} damage_factor={} previous_frame={} hit_count={} seen_count={} contact_callbacks={} tails={} world_hit_duration={}", entry.entity, entry.ready, entry.requested, entry.retiring, entry.active, entry.stop_after_update, entry.forward_attack, entry.heavy_block, entry.factor, entry.previous.is_some(), entry.hits.len(), entry.seen.len(), entry.deliveries.len(), entry.tails.len(), entry.world_hit_duration);
+            if let Some(delivery) = entry.deliveries.front() {
+                let _ = writeln!(report, "      front_contact target={:?} phase={} focused={} recoil={} velocity={:?}", delivery.target, delivery.phase, delivery.focused, delivery.recoil, delivery.velocity);
+            }
+        }
+    }
 }
 
 pub(super) fn request_owned(

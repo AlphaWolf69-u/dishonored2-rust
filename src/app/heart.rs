@@ -31,6 +31,17 @@ pub(super) struct Hearts {
     subscription: Option<EntityId>,
     view: Option<bevy::ecs::query::QueryState<&'static Projection, With<Camera3d>>>,
 }
+impl Hearts {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  Heart owners={} listener={:?}", self.entries.len(), self.subscription);
+        for (id, entry) in self.entries.iter().take(4) {
+            let runtime = &entry.runtime;
+            let _ = writeln!(report, "    entity={:?} equipped={} target={:?} bark_target={:?} bark_playing={} bark_time={} last_tick={} device={}", id, runtime.equipped, runtime.target, runtime.bark_target, runtime.bark_playing, runtime.bark_time, runtime.last_tick, entry.device.is_some());
+            if let Some(device) = &entry.device { device.write_diagnostics(report); }
+        }
+    }
+}
 fn initialize(world: &mut World) {
     if !world.contains_resource::<Hearts>() {
         world.insert_resource(Hearts::default());

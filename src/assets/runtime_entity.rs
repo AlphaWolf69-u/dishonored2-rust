@@ -42,6 +42,7 @@ pub(crate) enum Kind {
     CrewModule(Arc<super::ai_world::crew_modules::Definition>),
     AIStatistics,
     TimersManager,
+    AISmartSpot(Arc<super::ai_smart_objects::Definition>),
     Observable(Arc<super::ai_cues::ObservableDefinition>),
     AttentionSource(Arc<super::ai_cues::AttentionDefinition>),
     Audio(Arc<super::entities::audio::AudioBinding>),

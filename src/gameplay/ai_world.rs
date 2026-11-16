@@ -6,6 +6,7 @@ use super::{component_state::{ComponentOwner, ComponentInstance}, pickable_compo
 use std::sync::Arc;
 pub mod managers;
 pub mod startup_managers;
+mod dsm_influence;
 pub mod crew;
 pub mod crew_collectors;
 pub mod crew_modules;

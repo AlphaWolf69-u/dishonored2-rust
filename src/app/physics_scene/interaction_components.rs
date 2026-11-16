@@ -612,6 +612,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if self.scene.is_smart_object_class(handle.class_id) {
+                return self.scene.initialize_smart_object(self.live,self.events,handle);
+            }
             if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
                 return self.scene.initialize_cue_component(self.live,handle);
             }
@@ -670,6 +673,10 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if self.scene.is_smart_object_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);
+            }
             if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
                 self.scene.start(handle,registry)?;
                 return self.scene.start_cue_component(self.world.as_deref(),self.live,self.events,handle);
@@ -923,6 +930,10 @@ impl PhysicsScene {
             membership!(self.observables)
         } else if handle.class_id==self.classes[49] {
             membership!(self.attention_sources)
+        } else if handle.class_id==self.classes[50] {
+            membership!(self.investigate_spots)
+        } else if handle.class_id==self.classes[51] {
+            membership!(self.dynamic_search_spots)
         } else if handle.class_id == self.classes[18] {
             membership!(self.damage_zones)
         } else {

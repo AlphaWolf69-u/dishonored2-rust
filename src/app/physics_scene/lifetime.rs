@@ -853,6 +853,9 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if self.scene.is_smart_object_class(handle.class_id) {
+            return self.scene.initialize_smart_object(self.live,self.events,handle);
+        }
         if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
             return self.scene.initialize_cue_component(self.live,handle);
         }
@@ -879,6 +882,10 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if self.scene.is_smart_object_class(handle.class_id) {
+            self.scene.start(handle,registry)?;
+            return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);
+        }
         if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
             self.scene.start(handle,registry)?;
             return self.scene.start_cue_component(self.world.as_deref(),self.live,self.events,handle);
@@ -1119,6 +1126,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_timers(handle)?;
         } else if handle.class_id == scene.classes[20] {
             scene.stop_ai_danger(handle,self.events)?;
+        } else if scene.is_smart_object_class(handle.class_id) {
+            scene.stop_smart_object(self.world.as_deref(),self.live,handle)?;
         } else if handle.class_id==scene.classes[48]||handle.class_id==scene.classes[49] {
             scene.stop_cue_component(self.world.as_deref(),self.live,self.events,handle)?;
         } else if scene.is_ai_startup_class(handle.class_id) {
@@ -1190,6 +1199,9 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, true)?;
+        if self.scene.is_smart_object_class(handle.class_id) {
+            self.scene.deinitialize_smart_object(self.events,handle)?;
+        }
         if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
             self.scene.deinitialize_cue_component(handle)?;
         }
@@ -1478,6 +1490,10 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle,scene.observables.get_mut(handle.slot).ok_or("Observable absent")?)
         } else if handle.class_id==scene.classes[49] {
             entity.components.release(handle,scene.attention_sources.get_mut(handle.slot).ok_or("AttentionSource absent")?)
+        } else if handle.class_id==scene.classes[50] {
+            entity.components.release(handle,scene.investigate_spots.get_mut(handle.slot).ok_or("InvestigateSpot absent")?)
+        } else if handle.class_id==scene.classes[51] {
+            entity.components.release(handle,scene.dynamic_search_spots.get_mut(handle.slot).ok_or("SearchSpotDynamic absent")?)
         } else if handle.class_id == scene.classes[18] {
             entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
@@ -1628,6 +1644,10 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.observables.release(handle.slot)?;
         } else if handle.class_id==scene.classes[49] {
             scene.attention_sources.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[50] {
+            scene.investigate_spots.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[51] {
+            scene.dynamic_search_spots.release(handle.slot)?;
         } else if handle.class_id == scene.classes[18] {
             scene.damage_zones.release(handle.slot)?;
         } else {

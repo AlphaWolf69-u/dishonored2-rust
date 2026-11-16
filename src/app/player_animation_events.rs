@@ -10,11 +10,22 @@ struct Delivery {
     bound: std::sync::Arc<[EntityId]>,
 }
 #[derive(Resource, Default)]
-struct Events {
+pub(super) struct Events {
     entries: Vec<Delivery>,
     cursor: usize,
     consumer: u8,
     staging: Vec<AnimationEvent>,
+}
+
+impl Events {
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  animation callbacks={} cursor={} consumer={} staging={}", self.entries.len(), self.cursor, self.consumer, self.staging.len());
+        if let Some(delivery) = self.entries.get(self.cursor) {
+            let event = &delivery.event;
+            let _ = writeln!(report, "    front_event name={:.160} class={:.160} handle={} target={} active={:?} equipment={:?} bound_count={}", event.name, event.class, event.handle, event.target, event.active, delivery.equipment, delivery.bound.len());
+        }
+    }
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {

@@ -54,5 +54,6 @@ pub(crate) mod breakable;
 pub(crate) mod grenades;
 pub(crate) mod ai_world;
 pub(crate) mod ai_cues;
+pub(crate) mod ai_smart_objects;
 
 pub mod explosions;

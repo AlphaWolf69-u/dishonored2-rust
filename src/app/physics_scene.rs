@@ -56,6 +56,7 @@ pub(super) mod ai_sections;
 pub(super) mod ai_managers;
 mod ai_startup;
 mod ai_cue_components;
+mod ai_smart_objects;
 mod ai_cue_events;
 mod entity_activation;
 mod crew;
@@ -134,8 +135,8 @@ pub(super) struct PhysicsScene {
         crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 50],
-    classes: [i32; 50],
+    factories: [u32; 52],
+    classes: [i32; 52],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -191,6 +192,8 @@ pub(super) struct PhysicsScene {
     crew_alarm: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
     observables: ComponentPool<crate::gameplay::ai_cues::Observable>,
     attention_sources: ComponentPool<crate::gameplay::ai_cues::AttentionSource>,
+    investigate_spots: ComponentPool<crate::gameplay::ai_smart_objects::Component>,
+    dynamic_search_spots: ComponentPool<crate::gameplay::ai_smart_objects::Component>,
     cue_actions:std::collections::VecDeque<ai_cue_events::Action>,
     cue_update_marker:Option<i32>,
     ///Host callback retry position in the actual clock's1/2/3 stage frame.
@@ -513,6 +516,8 @@ impl PhysicsScene {
             factory(b"arkCpntAICrewModule_CombatAlarm")?,
             factory(b"arkCpntObservable")?,
             factory(b"arkCpntAIAttentionSource")?,
+            factory(b"arkCpntAIInvestigateSpot")?,
+            factory(b"arkCpntAISearchSpot_Dynamic")?,
         ];
         let names = types
             .classes()
@@ -537,8 +542,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 50];
-        for i in 0..50 {
+        let mut classes = [0; 52];
+        for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -686,6 +691,8 @@ impl PhysicsScene {
             crew_alarm: types.create_pool(factories[47], &cvars.cvars)?,
             observables: types.create_pool(factories[48], &cvars.cvars)?,
             attention_sources: types.create_pool(factories[49], &cvars.cvars)?,
+            investigate_spots: types.create_pool(factories[50], &cvars.cvars)?,
+            dynamic_search_spots: types.create_pool(factories[51], &cvars.cvars)?,
             cue_actions:Default::default(),
             cue_update_marker:None,
             ai_stage_frame:None,
@@ -1434,6 +1441,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.observables.get(handle.slot).map(|v|&v.owner)
         } else if handle.class_id==self.classes[49] {
             self.attention_sources.get(handle.slot).map(|v|&v.owner)
+        } else if self.is_smart_object_class(handle.class_id) {
+            self.smart_object(handle).ok().map(|v|&v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1501,6 +1510,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.observables.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if handle.class_id==self.classes[49] {
             self.attention_sources.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if self.is_smart_object_class(handle.class_id) {
+            self.smart_object_mut(handle).ok().map(|v|&mut v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner_mut(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1795,6 +1806,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.observables.schedule(handle.slot)?;
                 } else if handle.class_id==self.classes[49] {
                     self.attention_sources.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[50] {
+                    self.investigate_spots.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[51] {
+                    self.dynamic_search_spots.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[18] {
                     self.damage_zones.schedule(handle.slot)?;
                 } else {

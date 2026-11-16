@@ -112,6 +112,7 @@ pub struct Dsm {
     pub navigation_listener: bool,
     pub initialized: bool,
     pub started: bool,
+    pub(super) spot_influence:Option<super::dsm_influence::State>,
 }
 impl Dsm {
     pub fn new(definition: Arc<Definition>) -> Result<Self, String> {
@@ -136,6 +137,7 @@ impl Dsm {
             navigation_listener: false,
             initialized: false,
             started: false,
+            spot_influence:None,
         })
     }
 }
@@ -219,6 +221,13 @@ impl Flee {
 }
 ///417740's32-byte row: cue managed identity, NPC managed-ID list and word+18.
 pub struct CuePerception {pub cue:EntityId,pub perceivers:Vec<EntityId>,pub midnight_handle:u32}
+///415800's actual40-byte SearchSpot row (managed component plus usage data).
+pub struct SearchSpot {
+    pub component:crate::gameplay::pickable_component::CheckedComponent,
+    pub last_used:f64,
+    pub state:u32,
+    pub tag:u32,
+}
 pub struct Coordination {
     pub owner: ComponentOwner,
     pub definition: Arc<Definition>,
@@ -226,6 +235,8 @@ pub struct Coordination {
     pub bark_written: bool,
     pub cue_perception:Vec<CuePerception>,
     pub cue_perception_dirty:bool,
+    pub search_spots:Vec<SearchSpot>,
+    pub search_spots_written:bool,
     pub initialized: bool,
     pub started: bool,
 }
@@ -241,6 +252,8 @@ impl Coordination {
             bark_written: false,
             cue_perception:Vec::new(),
             cue_perception_dirty:false,
+            search_spots:Vec::new(),
+            search_spots_written:false,
             initialized: false,
             started: false,
         })
@@ -256,7 +269,23 @@ impl Coordination {
     pub fn finish_bark_update(&mut self) {
         self.bark_written = !self.barks.is_empty();
     }
+    ///417210 clears the uncommitted list;4e4960 appends the actual row.
+    pub fn add_search_spot(&mut self,component:crate::gameplay::pickable_component::CheckedComponent) {
+        if !self.search_spots_written {self.search_spots.clear();}
+        self.search_spots.push(SearchSpot{component,last_used:-1.,state:0,tag:0x3fff0010});
+        self.search_spots_written=!self.search_spots.is_empty();
+    }
+    ///4e5d70/4e5e70 remove the first matching managed component, in order.
+    pub fn remove_search_spot(&mut self,component:crate::gameplay::pickable_component::CheckedComponent) {
+        if !self.search_spots_written {self.search_spots.clear();}
+        if let Some(index)=self.search_spots.iter().position(|row|row.component==component) {
+            self.search_spots.remove(index);
+            self.search_spots_written=!self.search_spots.is_empty();
+        }
+    }
     pub fn reset(&mut self) {
+        self.search_spots=Vec::new();
+        self.search_spots_written=false;
         self.cue_perception=Vec::new();
         self.cue_perception_dirty=false;
         self.barks.clear();

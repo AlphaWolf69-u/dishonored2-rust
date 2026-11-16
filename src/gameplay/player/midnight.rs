@@ -360,6 +360,18 @@ pub struct PointEvent {
 }
 
 impl Midnight {
+    pub(super) fn write_combat_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  current Midnight instances={} (first 8):", self.instances.len());
+        for instance in self.instances.iter().take(8) {
+            let _ = writeln!(report, "    handle={} node={} time_ms={} absolute_ms={} rate={} parts={:#x} clips={:?} queued_events={} scheduled_sounds={}", instance.handle, instance.current, instance.time, instance.abs, instance.rate, instance.parts, instance.clips.each_ref().map(Vec::len), instance.events.len(), instance.sounds.len());
+            for (target, clips) in instance.clips.iter().enumerate() {
+                for clip in clips.iter().take(2) {
+                    let _ = writeln!(report, "      target={} animation={} scene_ms={}..{} animation_ms={}..{} priority={} main={}", target, clip.anim, clip.scene_from, clip.scene_to, clip.anim_from, clip.anim_to, clip.priority, clip.main);
+                }
+            }
+        }
+    }
     ///7d8fe0 resolves the live instance;7d1740 writes its playback rate.
     ///A finished or absent handle is a normal false result.
     pub fn set_rate(&mut self, handle: u32, rate: f32) -> Result<bool, String> {

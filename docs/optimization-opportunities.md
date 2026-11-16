@@ -5,6 +5,65 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+GPU regression audit, 2026-11-17 (read-only renderer review):
+
+- Current normal release walking sample: `analysis/gameplay-repair-20261116/gpu-passes.log`,
+  317 measured frames at 1920x1080. GPU timeline reports 16.976 ms busy and
+  6.942 ms between measured systems (23.918 ms total). Broad system costs are
+  `render_atmosphere` 4.380 ms, `prepare_scene_depth` 1.882 ms,
+  `render_screen_shadow` 1.805 ms, directional shadows 2.264 ms and main opaque
+  3.487 ms. These are system boundaries, not individual effect timings. In
+  particular, atmosphere includes ocean/water colour, refraction/SSR,
+  underwater effects, radial rays and composition; scene-depth preparation
+  includes water depth, ocean work, boat masks and alpha-depth copies. The gap
+  is not identified as CPU work or diagnostic overhead by this measurement.
+  The saved original 5.19 ms fixture is not a matched walking comparison.
+- No excessive fog sample count or resolution was established: the active
+  downsample default is 1 (half-size world fog), projected shadow sampling is
+  eight taps, local scattering traverses actual tile lists capped at 32 lights
+  per type with eight shadow steps, and the two-direction filter follows
+  original `307530`. The old 64-ray experiment is not active. Screen shadows
+  retain the original full-resolution output. The historical second opaque
+  colour pass is absent: `ensure_screen_depth_source` inserts a depth prepass,
+  then the normal opaque colour pass runs once. Lowering quality is not an
+  optimization justified by this audit.
+- Proven unused work: `bevy_backend/sun_rays.rs` constructs a private
+  `DepthPyramid` from `alpha.full` in `SunRays::new`, creates a view restricted
+  to mip 0 (`mip_level_count: Some(1)`), and rebuilds all four mips in
+  `SunRays::prepare` on each active frame. Both actual consumers bind that
+  single-mip view: `dh2_fog_sun_mask.wgsl:57` and
+  `dh2_fog_rays.wgsl:58` sample level 0 only. The installed shader evidence in
+  `analysis/fog-rays-shaders.decl:61` and `:195` likewise explicitly samples
+  level 0 for sun depth and turbulence depth. This proves no lower-mip
+  consumer in this owner; it does not prove that its current depth arithmetic
+  is interchangeable with another owner's depth target.
+- Candidate same-output change: give this owner a first-mip-only producer,
+  preserving the current first-level texel arithmetic, RGBA16F rounding,
+  allocation padding, active extent, scale and sampling. The shared producer
+  in `coarse_depth.rs:237` currently dispatches one fused four-level kernel;
+  this is not three removable dispatches. Remove its unused lower-level
+  reductions/stores only in the SunRays variant; keep the common four-level
+  owner for actual mip consumers. Do not alias the opaque coarse pyramid:
+  this owner's source is the post-water alpha depth. Prediction: identical
+  SunRays inputs/output with fewer lower-mip operations/stores and less private
+  texture storage. No GPU-time saving has been measured, and this small
+  finding does not explain the reported halving of FPS. Implementation waits
+  for the renderer owner and targeted measurement.
+- Existing deeper measurement paths: `analysis/renderdoc_timings.py` already
+  captures an injected original-game target and replays `EventGPUDuration`
+  counters into per-event/marker-path CSV without screenshots; it accepts
+  `DH2_RDC_MODE`, `DH2_RDC_PID`, `DH2_RDC_CAPTURE` and target-name overrides.
+  This is an external capture path, not a resident per-effect timestamp hook,
+  and requires an already instrumented compatible process. Existing
+  `analysis/record_rgp_capture.ps1` can collect per-pass RGP data, but currently
+  launches a visible process and terminates it afterward, so must not be used
+  unchanged for an unattended hidden run. `DH2_GPU_TIMELINE=1` and
+  `analysis/gameplay-repair-20261116/profile-gpu-passes.ps1` provide only the
+  broad system timings above. Fog and screen-shadow render-pass descriptors
+  have `timestamp_writes: None`; no existing effect-specific internal timer
+  was found in those owners. GPU event capture can subdivide their existing
+  labeled passes without generating renderer code or changing effect quality.
+
 Resource lifetime audit follow-ups (full owner inventory and evidence in
 `resource-lifetimes.md`):
 

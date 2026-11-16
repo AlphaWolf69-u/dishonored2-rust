@@ -1411,6 +1411,24 @@ impl StateMachine {
         self.state(StateId::SLASH).is_some_and(|state| state.active && state.slash.focus_active)
     }
 
+    pub(super) fn write_combat_diagnostics(&self, report: &mut String, owner: &str) {
+        use std::fmt::Write;
+        let _ = write!(report, "  {owner} active_ids({})=", self.active.len());
+        for id in self.active.iter().take(32) { let _ = write!(report, " {:?}", id); }
+        let _ = writeln!(report, " queued_commands={} slash_interrupt_pending={}", self.queue.len(), self.queue.iter().any(|command| matches!(command, Command::FinishSlash)));
+        if let Some(state) = self.state(StateId::SLASH) {
+            let s = &state.slash;
+            let _ = writeln!(report, "    slash active={} action={:?} last_type={} last_time={} chained={} left_response={} focus_ready={} focus_active={} focused={} can_focus={} release_seen={} press_again={} selection={} dispersion_active={}", state.active, s.action, s.last_type, s.last_time, s.chained_scene, s.secondary_scene, s.focus_ready, s.focus_active, s.focused, s.can_focus, s.release_seen, s.press_again, s.selected.is_some(), s.dispersion_active);
+        }
+        for id in [StateId::FIRE_WEAPON, StateId::THROW_WEAPON, StateId::USE_HEART, StateId::PLAY_HEART_BARK] {
+            if let Some(state) = self.state(id) {
+                if state.active {
+                    let _ = writeln!(report, "    state={:?} scene={} fire={:?} throw={:?} heart={:?} bark_action={:?}", id, state.midnight, state.fire, state.throw_weapon, state.heart, state.heart_bark);
+                }
+            }
+        }
+    }
+
     ///630810/6302e0 set the retained Recoil outcome, stop Slash, and request40.
     pub fn request_melee_recoil(&mut self, kind: usize) {
         let selection=self.state(StateId::SLASH).and_then(|state|state.slash.selected.clone());

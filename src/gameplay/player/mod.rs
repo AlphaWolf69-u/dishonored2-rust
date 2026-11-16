@@ -13,6 +13,7 @@ pub mod power_states;
 pub mod grapple;
 pub mod grapple_state;
 pub mod combat;
+mod diagnostics;
 pub mod combat_fx;
 pub mod chaos;
 pub mod melee;

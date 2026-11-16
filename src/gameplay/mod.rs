@@ -123,4 +123,5 @@ pub mod damage_zone;
 pub mod grenade;
 pub mod ai_world;
 pub mod ai_cues;
+pub mod ai_smart_objects;
 pub mod power_wheel;
