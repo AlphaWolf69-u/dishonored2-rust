@@ -320,12 +320,16 @@ impl PhysicsScene {
                 Ok(BodyResources {
                     component: body.component,
                     variant: body.variant,
-                    resources: Arc::new(
-                        body.draft
-                            .publish(&mut query.storage.materials, |_, _, _, _| {
-                                unreachable!("material subscriber list was checked empty")
-                            })?,
-                    ),
+                    resources: body
+                        .draft
+                        .map(|draft| {
+                            draft
+                                .publish(&mut query.storage.materials, |_, _, _, _| {
+                                    unreachable!("material subscriber list was checked empty")
+                                })
+                                .map(Arc::new)
+                        })
+                        .transpose()?,
                 })
             })
             .collect()
@@ -685,8 +689,13 @@ impl PhysicsScene {
                                 && resource.variant == u8::from(append && model_changed)
                         })
                         .ok_or("runtime rigid prepared resource is absent")?;
-                    self.rigid_component_mut(handle)?
-                        .bind_prepared_resources(None, resource.resources.clone_refs())?;
+                    self.rigid_component_mut(handle)?.bind_prepared_shape(
+                        None,
+                        resource
+                            .resources
+                            .as_ref()
+                            .map(|resources| resources.clone_refs()),
+                    )?;
                     created_rigid = true;
                 }
                 if handle.class_id == self.classes[6] {

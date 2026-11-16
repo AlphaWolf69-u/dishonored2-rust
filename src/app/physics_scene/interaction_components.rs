@@ -580,6 +580,7 @@ impl ComponentLifecycleWorld for Startup<'_> {
             } else if self.scene.is_rigid_class(handle.class_id) {
                 self.scene
                     .initialize_placed_rigid(self.live, handle, registry, self.events)?;
+                if self.scene.owner(handle)?.entity.is_none(){return Ok(());}
                 self.scene
                     .finish_rigid_instigator_initialize(self.live, handle)?;
                 if handle.class_id == self.scene.classes[12] {

@@ -2719,6 +2719,10 @@ pub(crate) fn model_descriptor(
             _ => None,
         }
     } else { None };
+    if matches!(explicit, Some(Value::Atom(path)) if path.trim_matches('"').is_empty() || path.trim_matches('"').eq_ignore_ascii_case("NULL"))
+        || (explicit.is_none() && inherited.as_deref().is_some_and(|path| path.is_empty() || path.eq_ignore_ascii_case("NULL"))) {
+        return Ok(None);
+    }
     let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true);
     if descriptor.is_none() && (explicit.is_some() || inherited.is_some()) {
         return Err(format!("{}: authored RenderModel descriptor is unsupported or incomplete: model={explicit:?}, inherited={inherited:?}", definition.id));
@@ -2738,7 +2742,11 @@ fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blu
         },
     };
     let model_path = model_path.trim_matches('"');
-    let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
+    let resource_path = if model_path.ends_with(".lwo$cpu") {
+        //The installed source identity retains this literal modifier; the
+        //compiled resource appends .bmodel instead of replacing .lwo$cpu.
+        format!("generated/model/{model_path}.bmodel")
+    } else if let Some(stem) = model_path.strip_suffix(".lwo") {
         format!("generated/model/{stem}.bmodel")
     } else if model_path.ends_with(".bmodel") {
         format!("generated/model/{model_path}")

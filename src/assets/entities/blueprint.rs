@@ -2,7 +2,7 @@
 //! declaration ctor/dtor1401c10d0/1401c1270; assembly1401bc1f0 reads a
 //! shared child array while1401bc3c0 retains separate runtime instance state.
 //! Host: typed definitions live only through each static expansion batch.
-use super::{PlacedModel, Value, field, float, parse_declaration, scope, vector};
+use super::{field, float, parse_declaration, scope, vector, PlacedModel, Value};
 use crate::archive::Catalog;
 use std::collections::HashMap;
 
@@ -141,6 +141,15 @@ impl Blueprint {
     }
 }
 
+///1bdd60's pristine assembly material identities in143650 name order.
+/// The caller applies the RenderModel custom slots to this exact table.
+/// Only paths survive; child model leases remain with their existing owner.
+pub(crate) struct MaterialPaths(Vec<String>);
+impl MaterialPaths {
+    pub(crate) fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
 /// No source bytes or generic declaration tree survive parsing. This owner
 /// retires before static instance setup continues; instances own their paths
 /// and transforms independently. Failed immutable sources coalesce too.
@@ -165,6 +174,66 @@ impl<'a> Sources<'a> {
             trace: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
             separate: std::env::var("DH2_DEBUG_SEPARATE_BLUEPRINTS").as_deref() == Ok("1"),
         }
+    }
+    pub(crate) fn material_paths(&mut self, parent: &PlacedModel) -> Result<MaterialPaths, String> {
+        let mut paths = Vec::new();
+        self.collect_material_paths(parent, &mut std::collections::HashSet::new(), &mut paths)?;
+        //1bdd60->1be980 compares material+8 names with143650 (ASCII Icmp).
+        paths.sort_by(|a, b| {
+            a.bytes()
+                .map(|byte| byte.to_ascii_lowercase())
+                .cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()))
+        });
+        paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        Ok(MaterialPaths(paths))
+    }
+    fn collect_material_paths(
+        &mut self,
+        parent: &PlacedModel,
+        active: &mut std::collections::HashSet<String>,
+        paths: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let identity = parent.resource_path.replace('\\', "/").to_ascii_lowercase();
+        if !active.insert(identity.clone()) {
+            return Err("blueprint material assembly cycle".into());
+        }
+        let children = self.expand(parent)?.ok_or_else(|| {
+            format!(
+                "blueprint material source is missing: {}",
+                parent.resource_path
+            )
+        })?;
+        for child in children {
+            if child.resource_path.ends_with(".blueprint.decl") {
+                self.collect_material_paths(&child, active, paths)?;
+            } else {
+                let model = crate::assets::bmodel::acquire(
+                    self.catalog,
+                    &child.resource_path,
+                    crate::assets::bmodel::CommonModels::shared(self.catalog),
+                )?
+                .ok_or_else(|| {
+                    format!(
+                        "blueprint child material model is missing: {}",
+                        child.resource_path
+                    )
+                })?;
+                for (index, surface) in model.surfaces.iter().enumerate() {
+                    let material = child
+                        .custom_materials
+                        .get(index)
+                        .and_then(Option::as_deref)
+                        .unwrap_or(&surface.material_path);
+                    //Material declarations have one case-insensitive registry
+                    //identity. Keep first acquisition; sorting follows dedupe.
+                    if !paths.iter().any(|path| path.eq_ignore_ascii_case(material)) {
+                        paths.push(material.to_owned());
+                    }
+                }
+            }
+        }
+        active.remove(&identity);
+        Ok(())
     }
     pub fn expand(&mut self, parent: &PlacedModel) -> Result<Option<Vec<PlacedModel>>, String> {
         let _tag = crate::platform::allocation_tags::tag("Blueprint preparation");

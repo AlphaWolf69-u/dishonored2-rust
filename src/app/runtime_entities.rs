@@ -32,12 +32,12 @@ pub(super) struct SpawnOptions {
 pub(super) struct BodyDraft {
     pub component: usize,
     pub variant: u8,
-    pub draft: Arc<super::rigid_body::RigidBodyDraft>,
+    pub draft: Option<Arc<super::rigid_body::RigidBodyDraft>>,
 }
 pub(super) struct BodyResources {
     pub component: usize,
     pub variant: u8,
-    pub resources: Arc<super::rigid_body::RigidBodyResources>,
+    pub resources: Option<Arc<super::rigid_body::RigidBodyResources>>,
 }
 struct SourceWorker {
     shapes: crate::physworld::source::ShapeSources,
@@ -641,17 +641,24 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                             Kind::Throwable(definition) => &definition.rigid.settings,
                             _ => continue,
                         };
-                        let base = definition
-                            .model
-                            .as_ref()
-                            .ok_or("runtime rigid component has no actual RenderModel resource")?;
-                        let mut models = vec![(0, base)];
+                        let mut models = vec![(0, definition.model.as_ref())];
                         if index >= definition.components.len() {
                             if let Some(model) = &definition.stick_model {
-                                models.push((1, model));
+                                models.push((1, Some(model)));
                             }
                         }
                         for (variant, model) in models {
+                            let Some(model) = model else {
+                                //808ef9 shares the actual virtual10 self-unlink
+                                //path with NoPhysicsShape. Keep the real component
+                                //through that Init boundary; do not invent a body.
+                                drafts.push(BodyDraft {
+                                    component: index,
+                                    variant,
+                                    draft: None,
+                                });
+                                continue;
+                            };
                             let render = match &model.geometry {
                                 Geometry::Rigid(model) => {
                                     Some(super::rigid_body::MaterialSurfaces::Rigid(&***model))
@@ -675,7 +682,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                             drafts.push(BodyDraft {
                                 component: index,
                                 variant,
-                                draft: Arc::new(draft),
+                                draft: draft.map(Arc::new),
                             });
                         }
                     }

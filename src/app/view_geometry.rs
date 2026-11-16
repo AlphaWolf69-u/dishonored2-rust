@@ -527,8 +527,19 @@ pub(super) fn model_havok_path(
         return None;
     }
     let source = if let Some(model) = placement.resource_path.strip_prefix("generated/model/") {
-        model.strip_suffix(".bmodel")?;
-        physworld::replace_shape_extension(model, "lwo")
+        let stem = model.strip_suffix(".bmodel")?;
+        //Compiled CPU-only models retain the literal authored .lwo$cpu name;
+        //08c330 appends the shape suffix without removing this modifier.
+        if stem.ends_with(".lwo$cpu") {
+            stem.to_owned()
+        } else {
+            physworld::replace_shape_extension(model, "lwo")
+        }
+    } else if let Some(model) = placement.resource_path.strip_prefix("generated/basemodel/") {
+        model.strip_suffix(".bmd6model")?;
+        // 808ea0 passes RenderModel+1bb0 to 08c840 unchanged. Animated
+        // models retain their authored .md6 name in the physics key.
+        physworld::replace_shape_extension(model, "md6")
     } else {
         // The root renderer retains .blueprint; its children have no bodies.
         placement

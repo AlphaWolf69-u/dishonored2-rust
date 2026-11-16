@@ -23,6 +23,15 @@ impl PhysicsScene {
         if live.get(id).is_none() {
             return Err("placed rigid managed entity is stale".into());
         }
+        if component.missing_physics_shape(){
+            //8097bc dispatches virtual10=7e7530, which unlinks the actual
+            //component without initializing or publishing a substitute body.
+            let pool=if handle.class_id==self.classes[8]{&mut self.rigid_bodies}else{&mut self.throwables};
+            let component=pool.get_mut(handle.slot).ok_or("missing-shape rigid slot absent")?;
+            self.entities[index].components.release(handle,component)?;
+            self.rigid_placements.remove(&index);
+            return Ok(());
+        }
         if component.is_initialized() {
             return Ok(());
         }
@@ -168,6 +177,37 @@ impl PhysicsScene {
         component.finish_initialize()
     }
 
+    ///807f80 is the actual virtual78 failed-Initialize callback after the
+    ///NoRenderModel/NoPhysicsShape self-unlink.7ea340 has already called7e7c00, canceling
+    ///the pending Start before48ff20 destroys this unused pool instance.
+    pub(super) fn release_missing_shape_component(&mut self,handle:ComponentHandle,
+        registry:&mut ComponentRegistry)->Result<bool,String>{
+        if !self.is_rigid_class(handle.class_id){return Ok(false);}
+        let component=self.rigid_component(handle)?;
+        if !component.missing_physics_shape(){return Ok(false);}
+        if component.owner.entity.is_some()||component.owner.declaration.is_some()||component.owner.flags&3!=0{
+            return Err("missing-shape rigid failed to self-unlink".into());
+        }
+        if registry.pending_start.values().contains(&handle.packed())||registry.pending_stop.values().contains(&handle.packed())
+            ||registry.pending_release.values().contains(&handle.packed()){
+            return Err("missing-shape rigid retains lifecycle work before pool release".into());
+        }
+        registry.ensure_no_update_references(handle)?;
+        if !component.can_release(){return Err("missing-shape rigid acquired live resources".into());}
+        let movement=component.movement_body()?;
+        let body=self.actors.bodies.get(movement).ok_or("missing-shape rigid interface absent")?;
+        if body.actor.is_some()||body.body_id&0x00ff_ffff!=0x00ff_ffff
+            ||self.actors.actors.iter().any(|actor|actor.current_body==movement||actor.default_body==movement)
+            ||self.free_rigid_movement.contains(&movement){
+            return Err("missing-shape rigid interface remains referenced".into());
+        }
+        self.free_rigid_movement.try_reserve(1).map_err(|error|format!("missing-shape rigid interface release: {error}"))?;
+        self.rigid_pool_mut(handle.class_id)?.release(handle.slot)?;
+        self.free_rigid_movement.push(movement);
+        self.declarations.remove(&handle.packed());
+        Ok(true)
+    }
+
     pub(super) fn checked_rigid_component(
         &self,
         handle: ComponentHandle,
@@ -192,6 +232,8 @@ impl PhysicsScene {
         live: &mut crate::gameplay::entity_lifetime::LiveEntities,
         constructor_tag: crate::gameplay::name_pool::NameId,
     ) -> Result<(), String> {
+        let mut animated_models = crate::assets::bmd6::ModelSources::new(catalog);
+        let mut blueprint_models = crate::assets::entities::blueprint::Sources::new(catalog);
         let model_indices: HashMap<_, _> = models
             .iter()
             .enumerate()
@@ -282,37 +324,45 @@ impl PhysicsScene {
                 //808ea0 consumes the RenderModel name and scale, not a color draw.
                 // Hidden entities keep that authored descriptor without allocating
                 // a mesh/material/GPU projection merely to acquire their bodies.
-                let descriptor;
-                let model = match source_index {
-                    Some(index) => &models[index],
-                    None => {
-                        descriptor = entities::model_descriptor(authored, |path| catalog.read(path)
-                            .map_err(|error| error.to_string()).map(|bytes| bytes.map(entities::owned_declaration_text)))?
-                            .ok_or_else(|| format!("readable rigid {}: no authored RenderModel descriptor", binding.entity))?;
-                        &descriptor
-                    }
-                };
+                let descriptor = if source_index.is_none() {
+                    entities::model_descriptor(authored, |path| catalog.read(path)
+                        .map_err(|error| error.to_string()).map(|bytes| bytes.map(entities::owned_declaration_text)))?
+                } else { None };
+                let model = source_index.map(|index| &models[index]).or(descriptor.as_ref());
                 let hidden = entities::entity_hidden(authored);
                 if hidden { self.entities[index].entity_flags |= 1; }
                 let settings = &definition.settings;
-                if definition.declaration_flags & 0x80 != 0 {
-                    return Err(format!("{}: authored rigid requires unhosted critical-quality owner", binding.entity));
-                }
-                let behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
-                    .ok_or("document rigid behavior absent")?;
-                //809d80 retains the authored dynamic/asleep state. The shared
-                //097bc0/c8e0a0/099a00 driver now owns active-body simulation.
-                let render = if settings.material.is_none() {
-                    crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
-                } else { None };
-                if !world.storage.materials.library.added.is_empty() {
-                    return Err("rigid resource preparation requires actual material observer host".into());
-                }
-                let resources = super::super::rigid_body::prepare_resources(catalog, sources, texts,
-                    &mut world.storage.materials, settings, model, render.as_deref(), Some(&mut materials),
-                    |_,_,_,_| unreachable!("startup material observers absent"))
-                    .map_err(|error| format!("readable rigid {} [{}], model={}, hidden={hidden}, color_projection={source_index:?}: {error}",
-                        binding.entity, settings.declaration_id, model.resource_path))?;
+                let resources = if let Some(model) = model {
+                    let _behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
+                        .ok_or("document rigid behavior absent")?;
+                    //809d80 retains the authored dynamic/asleep state. The shared
+                    //097bc0/c8e0a0/099a00 driver now owns active-body simulation.
+                    let render = if settings.material.is_none() && model.resource_path.starts_with("generated/model/") {
+                        crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
+                    } else { None };
+                    let animated_render = if settings.material.is_none() && model.resource_path.starts_with("generated/basemodel/") {
+                        Some(animated_models.acquire(catalog, &model.resource_path)?)
+                    } else { None };
+                    let blueprint_render = if settings.material.is_none() && model.resource_path.starts_with("generated/decls/blueprint/") {
+                        Some(blueprint_models.material_paths(model)?)
+                    } else { None };
+                    let render_surfaces = render.as_deref().map(super::super::rigid_body::MaterialSurfaces::Rigid)
+                        .or_else(|| animated_render.as_deref().map(super::super::rigid_body::MaterialSurfaces::Animated))
+                        .or_else(|| blueprint_render.as_ref().map(super::super::rigid_body::MaterialSurfaces::Blueprint));
+                    if !world.storage.materials.library.added.is_empty() {
+                        return Err("rigid resource preparation requires actual material observer host".into());
+                    }
+                    super::super::rigid_body::prepare_draft_with_surfaces(catalog, sources, texts,
+                        settings, model, render_surfaces, Some(&mut materials))
+                        .and_then(|draft| draft.map(|draft| draft.publish(&mut world.storage.materials,
+                            |_,_,_,_| unreachable!("startup material observers absent"))).transpose())
+                        .map_err(|error| format!("placed rigid {} [{}], model={}, hidden={hidden}, color_projection={source_index:?}: {error}",
+                            binding.entity, settings.declaration_id, model.resource_path))?
+                } else {
+                    //808ef9 joins the same virtual10 self-unlink path as
+                    //NoPhysicsShape. Do not invent a render model or body.
+                    None
+                };
                 let class = match &binding.definition { entities::rigid_body::BodyDefinition::Rigid(_) => 8,
                     entities::rigid_body::BodyDefinition::Throwable(_) => 12 };
                 let declaration = self.types.declaration(self.factories[class], Arc::as_ptr(definition) as usize,
@@ -327,20 +377,20 @@ impl PhysicsScene {
                                 entities::rigid_body::BodyDefinition::Rigid(value) => super::super::rigid_body::RigidBodyComponent::new(value.clone(), bodies, free)?,
                                 entities::rigid_body::BodyDefinition::Throwable(value) => super::super::rigid_body::RigidBodyComponent::new_throwable(value.clone(), bodies, free)?,
                             };
-                            component.bind_prepared_resources(source_index, resources)?;
+                            component.bind_prepared_shape(source_index, resources)?;
                             Ok(component)
                         }, |_,_,_| Ok(()))?.ok_or("document rigid creation disabled")?;
                 if let Some(source_index) = source_index { self.rigid_placements.insert(index, source_index); }
                 self.declarations.insert(handle.packed(), declaration);
                 projections[usize::from(source_index.is_some())] += 1;
                 Ok(())
-            })().map_err(|error| format!("readable rigid entity={} declaration={}: {error}",
+            })().map_err(|error| format!("placed rigid entity={} declaration={}: {error}",
                 binding.entity, definition.settings.declaration_id))?;
         }
         materials.finish_body_physics_preparation();
         if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
             eprintln!(
-                "READABLE_RIGID_RESOURCES phase=prepared descriptor_only={} color_projection={}",
+                "RIGID_RESOURCES phase=prepared descriptor_only={} color_projection={}",
                 projections[0], projections[1]
             );
         }
@@ -442,7 +492,7 @@ impl PhysicsScene {
             .get_mut(handle.slot)
             .ok_or("rigid component slot is absent")?
             .start_behavior = Some(behavior);
-        if step == 3 {
+        if step == 4 {
             return Ok(());
         }
         let shared = self.world.clone();
@@ -467,6 +517,20 @@ impl PhysicsScene {
                 .advance_start_publication()?;
         }
         if step <= 1 {
+            if let Some(quality) = self.rigid_component(handle)?.start_quality() {
+                scene_publication_events!(self, registry, events);
+                //809d80: c87700(body,7,0) follows c85860 and must finish
+                //before c8e930 publishes this same body.
+                world.storage.set_body_quality(
+                    &mut world.geometry, &mut events, body, quality, 0,
+                )?;
+            }
+            rigid_pool_mut!(self, handle.class_id)?
+                .get_mut(handle.slot)
+                .ok_or("rigid component slot is absent")?
+                .advance_start_publication()?;
+        }
+        if step <= 2 {
             {
                 scene_publication_events!(self, registry, events);
                 world.storage.add_dynamic_body_resumable(

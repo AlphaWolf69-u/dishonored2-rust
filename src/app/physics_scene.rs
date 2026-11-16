@@ -1605,8 +1605,11 @@ impl ComponentLifecycleWorld for PhysicsScene {
     fn initialization_failed(
         &mut self,
         handle: ComponentHandle,
-        _: &mut ComponentRegistry,
+        registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if self.release_missing_shape_component(handle, registry)? {
+            return Ok(());
+        }
         Err(format!(
             "level physics component initialization failed: {handle:?}"
         ))
