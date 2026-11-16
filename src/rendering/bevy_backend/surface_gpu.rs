@@ -73,7 +73,8 @@ pub struct SurfaceUniform {
     pub hair: [Vec4; 5],
     /// Resolved arkHair options: .x bit 0 useFlowMap, bit 1 useSpecularMask,
     /// bit 2 useSpecularNoiseMask, bit 3 hairTranslucencyType, bit 4
-    /// translucency/enable, bit 5 twoSidedLighting; .y fresnelStrength bits.
+    /// translucency/enable, bit 5 twoSidedLighting; .y fresnelStrength bits;
+    /// .z r_hairAlphaTestAlpha bits.
     pub hair_flags: UVec4,
 }
 

@@ -126,6 +126,7 @@ impl MaterialResolver<'_> {
                             | "arkvista"
                             | "arksimplesprite"
                             | "particle/filing_container"
+                            | "arkhair"
                     )
                 {
                     return Err(format!("alpha-depth program {main} is not yet integrated"));

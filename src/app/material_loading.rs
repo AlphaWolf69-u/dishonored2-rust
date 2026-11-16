@@ -1076,8 +1076,10 @@ impl MaterialResolver<'_> {
             // hairLuminanceHack per pass from these cvars (14031dce0).
             let console = crate::platform::console::shared().read();
             let value = |name: &str| console.cvars.float(name);
-            match (value("r_hairLuminanceHack"), value("r_hairAlphaTestLit"), value("r_hairAlphaTestOpaque")) {
-                (Some(hack), Some(lit), Some(opaque)) => {
+            match (value("r_hairLuminanceHack"), value("r_hairAlphaTestLit"), value("r_hairAlphaTestOpaque"),
+                value("r_hairAlphaTestAlpha")) {
+                (Some(hack), Some(lit), Some(opaque), Some(alpha)) => {
+                    uniform.hair_flags.z = alpha.to_bits();
                     uniform.hair[4].y = hack;
                     uniform.hair[4].z = lit;
                     uniform.hair[4].w = opaque;

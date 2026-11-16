@@ -45,6 +45,21 @@ fn clip_surface(uv0:vec2<f32>,uv1:vec2<f32>,world_position:vec4<f32>,vertex_colo
         }
         return;
     }
+    if compiled_misc.z == 12u {
+        // arkHair Z/alpha-depth branch: $hairAlphaMap is never enabled, so
+        // alpha is the diffuse alpha at $texcoords. The engine binds
+        // hairAlphaTest per pass: r_hairAlphaTestOpaque in the opaque depth
+        // prepass, r_hairAlphaTestAlpha in the alpha-depth passes (14031dce0).
+#ifdef VERTEX_UVS_A
+        let alpha=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv0,dpdx(uv0),dpdy(uv0)).a;
+#ifdef DH2_ALPHA_DEPTH
+        if alpha<bitcast<f32>(surface.hair_flags.z) { discard; }
+#else
+        if alpha<surface.hair[4].w { discard; }
+#endif
+#endif
+        return;
+    }
     if compiled_misc.z == 4u {
         if (compiled_misc.w & 1u) != 0u {
 #ifdef VERTEX_UVS_A

@@ -183,6 +183,9 @@ fn prepare(
                                         .ok_or("alpha depth MAIN has no fragment")?;
                                     fragment.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
                                     fragment.shader = SHADER;
+                                    // Programs whose alpha test differs in the
+                                    // alpha-depth passes (arkHair: r_hairAlphaTestAlpha).
+                                    fragment.shader_defs.push("DH2_ALPHA_DEPTH".into());
                                     if material.flags49 & 1 != 0 {
                                         fragment.shader_defs.push("DH2_REFRACTION".into());
                                     }
