@@ -229,11 +229,12 @@ struct Instance {
     graph: GraphState,
 }
 
-struct GraphState { booleans: Vec<bool>, loops: Vec<i32> }
+struct GraphState { booleans: Vec<bool>, loops: Vec<i32>, loop_limits: Vec<i32> }
 impl GraphState {
     fn new(scene: &PreparedScene) -> Self {
         Self { booleans: scene.decl.bool_nodes.iter().map(|node|
-            scene.decl.bool_nodes.iter().find(|first| first.name == node.name).unwrap().default).collect(), loops: vec![-1; scene.decl.loops.len()] }
+            scene.decl.bool_nodes.iter().find(|first| first.name == node.name).unwrap().default).collect(),
+            loops: vec![-1; scene.decl.loops.len()], loop_limits: scene.decl.loops.iter().map(|node| node.count).collect() }
     }
     fn loop_slot(scene: &PreparedScene, index: usize) -> usize {
         scene.decl.loops.iter().position(|node| node.name == scene.decl.loops[index].name).unwrap()
@@ -323,6 +324,16 @@ impl Midnight {
         let mut found = false;
         for (index, node) in instance.scene.decl.bool_nodes.iter().enumerate() {
             if node.name == name { instance.graph.booleans[index] = value; found = true; }
+        }
+        found
+    }
+    /// 7d7180 changes the existing named loop's iteration limit. Its current
+    /// progress and authored break outputs belong to the same instance.
+    pub fn set_loop_count(&mut self, handle: u32, name: &str, count: i32) -> bool {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.handle == handle) else { return false };
+        let mut found = false;
+        for (index, node) in instance.scene.decl.loops.iter().enumerate() {
+            if node.name == name { instance.graph.loop_limits[index] = count; found = true; }
         }
         found
     }
@@ -525,10 +536,12 @@ impl Midnight {
                     if let Some((index, node)) = scene.decl.loops.iter().enumerate().find(|(_, node)| node.uid == uid) {
                         // 7cd040 /813280: break markers -3/-2 leave the
                         // loop; ordinary visits increment before count test.
-                        let state = &mut graph.loops[GraphState::loop_slot(scene, index)];
+                        let slot = GraphState::loop_slot(scene, index);
+                        let limit = graph.loop_limits[slot];
+                        let state = &mut graph.loops[slot];
                         let broken = matches!(*state, -3 | -2);
                         if !broken { *state = state.saturating_add(1); }
-                        if broken || (node.count >= 0 && *state >= node.count) {
+                        if broken || (limit >= 0 && *state >= limit) {
                             *state = -1;
                             next = node.end;
                         } else { next = node.looping; }
@@ -607,9 +620,18 @@ impl Midnight {
     /// 8549c0 invokes OnSceneStarted before Start resolves its first node.
     /// These named values therefore apply before the initial graph walk.
     pub fn start_with_bools(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, booleans: &[(&str, bool)]) -> Result<u32, String> {
+        self.start_with_variables(prepared, md6, rate, cast, parts, seconds, booleans, &[])
+    }
+    /// Scene-start callbacks63a7c0 set Burst/BurstLoop before graph Start,
+    /// just as Windblast initializes its bool before conditional resolution.
+    pub fn start_with_variables(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast,
+        parts: u8, seconds: f32, booleans: &[(&str, bool)], loop_counts: &[(&str, i32)]) -> Result<u32, String> {
         let mut graph = GraphState::new(prepared);
         for (index, node) in prepared.decl.bool_nodes.iter().enumerate() {
             if let Some((_, value)) = booleans.iter().rev().find(|(name, _)| *name == node.name) { graph.booleans[index] = *value; }
+        }
+        for (index, node) in prepared.decl.loops.iter().enumerate() {
+            if let Some((_, count)) = loop_counts.iter().rev().find(|(name, _)| *name == node.name) { graph.loop_limits[index] = *count; }
         }
         let Some(index) = Self::resolve_graph(prepared, prepared.decl.first, md6, &mut graph)? else { return Ok(0) };
         let time = (seconds * 1000.0) as i32;

@@ -610,7 +610,7 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `cpntAudioListener` | `assets::entities::player`, `app::player`, `app::audio` | host: the selected character's inherited listener fields convert to typed listener settings before the declaration bundle is returned. The active listener is a world/audio runtime object. |
 | `cpntFaction` | `gameplay::faction_registry`, `gameplay::faction_manager`, `app::faction_component` | ported: session declaration identities05fc00/0610d0 and real component Initialize/Start/Stop5bd9a0/5bda20/5bdad0; host: Catalog-scoped declaration/header registration and typed Arc leases, independent level runtime matrices/entity registrations, consumed preload gate and final release. Source021c7586 passes paired graph/faction semantic equality and all36 acquisition/retirement. This supplies faction resource/runtime ownership, not unimplemented NPC behavior. |
 | `cpntInventory` | `assets::inventory_item`, `app::interaction_focus` | host: the inherited component contributes initial item references. Runtime inventory owns item leases and quantities, with no component text cache retained by those entries. |
-| `cpntPickable_Simple` | `assets::entities::usable`, `assets::inventory_item::sources`, `gameplay::pickable_component`, `app::physics_scene` | ported: typed READ_NOTE bindings share the scoped item Arc with the admitted component and read UI; per-batch syntax retires after preparation. Stop cancels pending acquisition, source retirement joins the reader, and component shutdown releases its item after body/graph retirement. The native pickedUp-before-inventory ordering and ordinary readable keyframe/filter/hide branches are connected to the same body. General pickup families remain outside this coverage. The200df5cf cohort completed supported readable-body acquisition and retirement across EotW/Dust/EotW. Final371c6435 compiles and passes paired acquisition/retirement; it additionally admits hidden readable physical descriptors without creating color projections. Their six affected variants pass the021c7586 all36 publication/retirement and GPU acquisition/removal sweep. Runtime pickup interaction and general pickup families are not certified by these acquisition observations. |
+| `cpntPickable_Simple` | `assets::entities::{usable,carrying}`, `assets::inventory_item::sources`, `gameplay::pickable_component`, `app::physics_scene` | ported: typed READ_NOTE bindings share the scoped item Arc with the admitted component and read UI; per-batch syntax retires after preparation. Stop cancels pending acquisition, source retirement joins the reader, and component shutdown releases its item after body/graph retirement. The native pickedUp-before-inventory ordering and ordinary readable keyframe/filter/hide branches are connected to the same body. Hold-and-throw fields now share this same definition/component owner; the 2026-11-16 carrying section records its separate runtime/body integration. Other pickup families remain outside this coverage. The200df5cf cohort completed supported readable-body acquisition and retirement across EotW/Dust/EotW. Final371c6435 compiles and passes paired acquisition/retirement; it additionally admits hidden readable physical descriptors without creating color projections. Their six affected variants pass the021c7586 all36 publication/retirement and GPU acquisition/removal sweep. Runtime pickup interaction and general pickup families are not certified by these acquisition observations. |
 | `cpntPlayerSensorInteraction` | `assets::entities::usable`, `app::interactions` | host: the selected character's inherited definition supplies the interaction distance and five cast radii (1403b7a40, 1403b8d60). Only the typed sensor settings survive acquisition. |
 | `cpntPlayer*` | `assets::entities::player`, `app::player`, `gameplay::player` | partial: observed physics, camera, controller, body, state machine, auto-crouch, lean, mantle, breath and FX-manager fields feed supported runtime owners. Shared player/arm preparation retains field leases until their final setup and screen-effect consumers. This row covers the observed inputs, with unimplemented component behavior excluded. |
 | `cpntTrigger` | `assets::entities::triggers`, `gameplay::trigger_volume` | partial: the map loader resolves typed trigger settings and shape leases. Generic inherited fields retire after preparation. The map owns supported overlap and event state; shape lifetimes are tracked separately under `physhape`. |
@@ -10862,3 +10862,269 @@ No tests, visible launches, screenshot comparisons or performance measurements
 were run. Runtime/visual parity is not promoted to verified. The final main
 sync also retains the concurrent particle-rendering changes; the normal main
 release build is a separate background operation.
+
+
+### Pickable carrying state and declaration ownership (2026-11-16)
+
+Prediction before implementation: this feature adds one compact optional
+hold-and-throw projection to each eligible Pickable_Simple declaration, shared
+by actual component instances. It adds source gameplay/physics work only while
+an object is being pulled, carried or released; no archive I/O, model decoding,
+converted asset, inventory acquisition or repeated declaration parse belongs in
+the input/update loop. No CPU/RAM improvement is claimed.
+
+| Lifecycle | Owner and original functions | Status |
+| --- | --- | --- |
+| Declaration construction/eligibility | `assets::entities::carrying::definition`, canonical `PickableDefinition`; `14076e0e0`, reflection `141737fa0/141738440` | ported: exact optional `m_holdAndThrowProps`, pickup interaction default state47, actual sound lease. Readables/runtime entity prototypes share this decoder; no separate Holdable class or component pool. |
+| Grab/hold/release state admission | `gameplay::player::carrying`, `states`, `decls`; `14083f360/14083f590`, `140841500`, `14083c2e0/14083d770`, `1408451e0` | ported state/data protocol: authored Grab48, Hold49/50, Release51, source mode rules and real equipment requests; original installed grab/release declarations contain no replacement hand animation. Host actual body/tag placement and interaction admission are being connected in this feature batch. |
+| State cancellation and level stop | `app::carrying`, `gameplay::player::carrying`; `14083ce70`, `14083cfb0`, `14083fe70` | host transaction journal retains each unacknowledged operation on errors; source pending/held Arc and actual EntityId survive until the canonical body owner acknowledges detach. PhysicsScene must drain this owner before retiring entities/bodies. No inventory collection, disappearing bottle or arbitrary timeout substitutes for release. |
+
+### Awake rigid world simulation and moving broadphase entries (2026-11-16)
+
+Owner: `gameplay/physics_world/storage/simulation.rs`, owned by the existing
+`WorldStorage`. The work arrays contain motion/body IDs, solver velocities,
+profiles, history and phase cursors only. They retain no archive resources,
+models, materials, audio handles or second physics world. Numeric capacities
+are reused while the world lives, and drop with that world. The sparse-ID
+lookup grows only to real active IDs; an all-static world needs no lookup.
+
+`ported`: existing `SolverParameters` source097bc0/c9f5b0/c9f6c0 supplies the
+actual largest advancing physics-timespace delta and120Hz substep count.
+The orchestration follows d0f5c0: actual contact preparation, each solver
+iteration, the configured additional post-step pass,12b4ce0 intermediate
+velocity accumulation, then12b5130 final damping/caps/integration.12812f0
+rotation limits retain their signed-bfloat16 quantization. BodyPose12815e0
+uses the existing normalized Euler-quaternion integrator, not an axis-angle
+replacement. Motion+60/+70 retain actual integrated velocity history; the
+cage reset and factor1 match12b5130. Sourcece91c0 sees the newly integrated
++60 velocity and its previous value. Whole contact-linked groups sleep
+through the existing body activation owner and cd8310 island/link owner.
+
+`host`: source12816e0 body-cache publication is routed through the existing
+selected-shape bounds/quality publisher. The canonical hybrid broadphase
+now drains1286530's marked body slots: same-layer entries retain their leaf
+and refit exact packed bounds/ancestors, while classification changes use
+the existing body-layer classifier and insertion/removal owners. This host
+index topology policy differs from the executable's update traversal. It
+does not replace shape contact by AABB overlap or create another collider.
+Native12903a0 leaf ordering is preserved. Updates borrow actual body IDs
+and generations, and no publication of a moved pose leaves stale tree bounds.
+
+`ported`: collision-data velocity capture18d420, called by native099a00,
+now has a shared owner helper. It stores actual solved world-space velocities
+and restores unscaled requested vectors with the actual inverse-timespace
+factor, preserving the source flag lane. A zero factor leaves cached requested
+velocities intact. The app physics host must run this actual post-step pass;
+it cannot keep using the original throw velocity after gravity and contact.
+
+The contact owner is required explicitly by `SimulationContacts`; there are
+no empty/default collision methods. It must build actual retained shape
+manifolds, activate real sleeping recipients, preserve per-manifold caches,
+solve the source contact rows and export genuine contact callbacks. The
+actual097bc0 timespace profile/body-velocity pass precedes this module.
+These app/contact integration steps are in progress in the same feature
+batch and this entry does not declare playable physics or visual parity
+verified merely because its numerical kernels already exist.
+
+Prediction before this integration: no additional archive reads, image/model
+uploads, independent pose owner or per-step clone of world geometry. CPU work
+scales with actual active motions, attached body members and real contact
+links. Numeric storage grows at observed active-ID/contact peaks and is freed
+at world teardown. No measured speed, RAM or frame-time improvement is claimed.
+Validation here is source/format/whitespace review only; no tests, compilation
+or visible launches were run by this owner.
+
+### Convex feature-pair distance (2026-11-16)
+
+`ported`, not runtime-verified: `gameplay::convex_support::pair_distance` owns
+141212780's separate query/target feature packets, packed five-byte warm cache,
+support improvement/duplicate selection, signed 4x1 tetrahedron scoring, all
+1x1/1x2/2x1/2x2/1x3/3x1/2x3/3x2/1x4/4x1 feature reductions and query witness
+publication. The segment/triangle paths distinguish a newly inserted triangle
+vertex from a newly inserted segment endpoint; they retain native incident-edge
+selection and endpoint barycentric transitions. Existing c0ed40 penetration and
+EPA owners handle genuine penetration/degenerate feature results. The d10960
+cold-query wrapper shares the existing radius and transformed-witness publication
+owner. No temporary Minkowski hull or fabricated contact is introduced. Shared
+point-feature reduction keeps its existing point entry and adds the opposite
+query-feature orientation. Expected cost is stack-local feature/cache arithmetic
+plus the canonical support/EPA scratch owner, without per-query heap allocation
+in this new distance kernel. No performance measurement or runtime parity claim
+is made; builds, tests and launches were excluded from this agent's work.
+
+
+### Projectile actor and canonical runtime source followup (2026-11-16)
+
+- Owner: assets/projectiles.rs typed component projection; assets/runtime_entity.rs owns the resolved entity/component/model dependency lease; app/projectiles.rs uses that SAME factory request/readiness/spawn pipeline. Prepared retains the canonical entity lease and actual model bounds. No generic Value tree remains inside the projectile declaration; no flight-time archive reads or private body/model cache.
+- 623800 declaration construction: ported typed speed/gravity/range/material masks, nested damage/falloff/stick/break/bounce, homing, authored trail/break/explosion/sound references, lifespan and optional upgrade settings. Declaration scheduling calls00cc90 with no extra constructor flags. Optional behavior still requires its actual host/component owner; parsing alone does not mark it playable.
+- 626eb0 Initialize: ported supplied-velocity preservation, authored default speed, gravity-factor sentinel and actual render forward extent. physics_scene/projectiles.rs requires the actual attached Throwable handle/generation and actual managed entity before initialization. Root canonical factory owns component ordering/publication.
+- 6291a0/629590: ported forward-hemisphere homing, finite flight using actual entity delta, world gravity Z, separate maximum translation speed versus stored velocity, exact range predicate, canonical ray witnesses sorted by actual fraction, forward model extent and roll110210. Hit query scratch remains component-owned between updates. Source initial point collector and spawner overlap require their actual canonical query bridge; no unconditional attacker ignore or manufactured witness is used.
+- 624610/6262d0/624300: ported authored distance falloff and declaration-backed damage parameters into existing world Health dispatch; actual material projectile-can-stick/break settings select response. 629590 BounceOnce preserves finite flight; ordinary bounce returns real Throwable handoff plus actual FA point impulse, using verified separation141ab3814=.05, radians141ad188c and full-turn14228a74c. Authored stick angles625cb0, normal-plane frame624b90, circular clamp624930 and sink627f60 are ported. Target binding4c6b70 remains the canonical Throwable owner, never a replacement static body or fake entity.
+- 627620/627780 -> removeWhenHidden877140: ported authored after-hit delay and retry delay with exactly10 visibility retries. Actual model absence/hidden/current/previous visibility determines removal; no frame-count or perpetual invisible-wait substitute. Shared entity retirement and world-model GPU receipts retain resource leases until actual completion.
+- Host: Bevy publication uses the existing reference-frame actor and world-model owner; root owns scheduling and actual subtype activation/binding. NPC/armor/deflection/explosion/FX owners must supply their actual callbacks before those authored branches can be reported complete. Static aggregate bodies lacking original entity user-data mapping cannot be passed to4c6b70, which unconditionally resolves that owner; do not fabricate a parent.
+- Resource prediction: source dependency/model/shape/material leases are shared across fired instances through their canonical owners; each live projectile adds only its component state and retained collision collector capacity. No memory or timing savings were measured or claimed. No builds/tests/visible launches were run for this followup at user instruction.
+
+- Followup within this batch: canonical LevelPointQueries::point_hits now supplies actual initial-overlap position/normal/body/material witnesses before the ray contacts (no deduplication). Native initial mask excludes low three layers independently of the ray mask; ray flags2 and the actual model forward extent are preserved. The source shooter-overlap path uses actual entity world-bound containment outside its specialized class range and an actual zero-distance point query inside that range; no guessed tolerance/radius was introduced.
+
+
+Breakable class implementation (2026-11-16, integration in progress):
+`assets/breakable.rs` uses the existing component inheritance/list overlay
+owner to project actual cpntBreakable bindings. Native7ec6d0 defaults impulse
+scale3, falloff2, allowThrowHits false. Reflected1416c3630/3870/3ab0 and
+1416f27f0 supply step/chunk/FX fields. Constructors9d64d0 and9d8f10 construct
+omitted list rows: threshold0, occlusion1, hide/remove true; null chunk,
+removeAfterDelay-1; FX local zero/identity, attached false. Chunk FX is m_fx
+(case verified at141b76e88). No resource-name branch or fabricated fragments.
+
+Actual arkCpntBreakable7ec630 has its own pool payload and checked Health
+reference. Start7ed9f0 registers A2,1A6,A5 and flags d7 bits8/10; Stop7edb50
+unregisters them and preserves the component's retained chunk state for actual
+context restart. Metadata or base Health alone does not classify a collider
+as Breakable. Initialize7ed430 preconstructs each non-null authored chunk for
+ALL configured steps, at the owner's real pose and scale. 8ae9b0 param5 null
+uses the ordinary independent entity clock/tag; param6 true invokes87c350,
+setting hidden and disabled BEFORE normal entity registration. This is resource
+warm-up for actual placed/spawned actors, never an unowned asset enumeration.
+Preconstructed chunk ownership is not a fabricated transform hierarchy link.
+
+A2 thunk7ee960->7ed920 checks positive calculated health damage, then actual
+post-hit health against the current threshold (or the runtime thrown flag),
+except infinite health. A5->7ee990 and1A6->7ee970 advance one bounded step;
+A5/A2 clear the thrown flag and mark owner d4 bit4 as specified by source.
+7ee050 prediction calls the real Health calculation after its separate type
+filter, so directional rejection does not silently remove a thrown override.
+The culprit is exactly damageParams+54 (attacker), not an inflictor fallback.
+
+7ed000 hides the owner and detaches its bound CHILDREN when configured; it
+stops the actual cached rigid component. An owner FX suppresses the direct
+remove branch; otherwise m_removeEntity schedules ordinary removal. 7ee0e0
+transfers each real chunk out of the component array, copies actual owner pose
+and linear/angular velocities, enables/shows it via87caa0, transfers applicable
+model decals, and sends FA with the authored impulse scale and linear distance
+falloff. The vector is exactly params+3c (hit_direction), not damage amount or
+invented launch velocity. 878230 uses the actual model's transformed bounds
+center, or the entity origin only for a genuinely model-less entity. Missing
+required hit location remains an explicit source-data error. keepBindInfo uses
+the original OWNER's parent/tag, not a new bind to that owner. Authored nonnegative
+removeAfterDelay alone schedules a chunk removal; INSTANT_KILL bit4 schedules
+the same actual damage parameters after source0.01. Reflection1413977e0 proves
+that delayed event is damage. Local FX use the canonical effect/audio owner.
+Sound-volume occlusion changes only an actual optional component. Named broken
+callback (141397390) receives old step index and true, followed by global A1.
+
+The runtime journals ordered effects until the shared host acknowledges them,
+retaining a failure cursor. Component retirement destroys only unreleased
+preconstructed actors; released debris remains independently owned until its
+authored removal or map exit. The central dynamic entity/model/physics owners
+must carry actual generations, shape/frame/scale, ordinary material/image
+leases and real GPU/audio acknowledgements; there is no private chunk spawner.
+
+Prediction: admitted chunk count is exactly the sum of non-null authored chunk
+rows for actual admitted Breakable actors. Damage advances the configured steps
+and releases those actors rather than generating shard geometry. Source reads,
+model/rig decode, shape/material preparation belong to admission; ordinary
+callbacks perform no archive IO. No timing, residency or frame-rate measurement
+was made and no improvement is claimed. No builds, tests, visible launches or
+visual checks were run. Host factory/FX/removal integration remains in progress;
+this entry does not certify unported WhaleOilTank, NPC, AI or sound-volume
+component families as implemented.
+### Level physics body batches and compressed query tables (2026-11-16)
+
+- Owner: `assets/physworld/source.rs` owns the existing map `physworld` read;
+  `assets/physworld/compressed_mesh.rs` borrows its compressed tables;
+  `app/physics_scene/level_bodies.rs` owns the real `arkCpntPhysicsWorld`
+  component's body IDs and material-table lease in the canonical world.
+- Original: `140852100` acquires the physworld resource and resolves its material
+  table, `140852560` creates each authored body disabled, installs one
+  `arkCpntPhysicsWorld::havokUserData` record per body (`140851760`, `140694c20`,
+  `14018cc90`), and publishes the batch. `140852d60` destroys the bodies through
+  `140c8f6b0` before freeing the collision-data array and body list.
+- Ported: retained source table access and ordinary triangle/quad/convex leaf
+  decoding reuse `14127f590`/`14127f030` codecs and `14124e030` primitive tags;
+  registration preserves resource-local shape IDs, compound trees, tags and
+  source generations. No renderer/navigation triangle array is installed as a
+  level collider. Primitive vertices use caller-owned reusable scratch.
+- Host: native pointers are actual component handles and generation-bearing
+  body IDs. Body creation/publication/retirement use the existing resumable
+  canonical world owners; source bytes retire after the last shape/query lease.
+- Integration in progress: the parent map loader and central component lifecycle
+  must admit this component on the actual managed worldspawn entity and pass the
+  existing read without copying; the query owner is integrating compressed-mesh
+  traversal. This entry does not claim working wall contacts before that wiring.
+- Prediction: retaining source compressed tables increases live physics-source
+  bytes compared with the previous navigation-only drop, while avoiding a second
+  expanded triangle collider and second resource read. This is required collision
+  functionality, not a measured memory or CPU improvement. No tests, build or
+  visible launch was run for this change, per the current user instructions.
+
+
+### Carryable Pickable and placed rigid-family admission (2026-11-16)
+
+`ported`, not runtime-verified: Interactions admits authored hold-and-throw
+bindings from the canonical Pickable_Simple projection (76e0e0/76e750). Holding
+and READ_NOTE share one retained definition, pool6 slot and generation; a hold
+prop without inventoryItem acquires no fabricated inventory declaration. The
+focused action22 passes the live EntityId and exact declaration to the carrying
+owner, without collecting or retiring the prop. Candidate checks use the
+existing 3b80a0 policy/facing/distance/height filter, current reference-actor
+frame, canonical render bounds and 8780d0's null-render origin branch. Authored
+state47 remains distinct from Grab48: the absent generic LootObject admission
+is not silently aliased to a grab. Both raypass checks now require a live,
+started actual Breakable component and CAN_BLINK_THROUGH material; the separate
+authored-name HashSet no longer admits transparency.
+
+The existing 808ea0/809d80 preparation path now resolves all placed cpntRigidBody
+and cpntThrowable declarations, rather than only readable bodies. The same
+entity header/retirement roster owns each actual body, with base8 and Throwable12
+factory/pool identity preserved; 4c6600 constructs the real subtype state. Shared
+readable/body declarations reuse their retained Arc. Resource preparation still
+uses the canonical model/material/shape owners. Hierarchy admission starts from
+all actual entity headers, preserving bound carry props and ordinary bodies.
+Expected additional cost is startup work/resources for genuinely admitted body
+instances, not per-cast archive work or a second body cache. No measured speed
+or memory claim is made.
+
+`blocked`: the existing focused sensor's underlying NavigationWorld triangle
+casts still require the actual canonical world/body sphere-cast producer for
+moving targets; current live admission does not convert those casts into native
+phase2 queries. Generic LootObject47 admission, rotation-lock mass distribution,
+positive-wind/critical rigid branches and awake-rigid startup are still explicit
+dependencies of their existing owners. No new timer, actor placeholder or
+metadata-only eligibility gate stands in for those missing branches.
+
+### Convex vector-shape ray (2026-11-16)
+
+`ported`, not runtime-verified: `convex_support::ray` owns the actual
+1412151a0/141215320/141215de0 generic convex ray. Callback1412156e0 zeroes the
+secondary support/offset and calls the original vector support141215390, proving
+that this wrapper reaches only Nx1 feature reductions. The owner shares the
+verified query-side reducer, with the ray's additional fourth-vertex projected
+triangle gate before tetrahedron scoring. Its own support insertion/padding,
+raw direction support ties, radius and .001 tolerance, world-length fraction
+margin, cumulative small-change convergence and last-advance normal remain the
+ray algorithm. The source wrapper rejects zero-fraction initial overlap and
+does not inspect the copied query-flags field; the enclosing generic convex
+callback publishes hit-kind2. Sphere/capsule specialized ray policy remains with
+those actual primitive dispatchers. No triangulated proxy, fabricated topology
+or host contact fallback is introduced. Expected per-query storage is fixed
+stack features, with no per-ray heap allocation; no measured performance or
+runtime parity claim is made. Builds, tests and launches were excluded from
+this agent's work.
+
+Carrying host integration source details: `physics_scene::carrying_host` uses
+`WorldConvexQuery` over the retained physical shape, including enabled compound
+children and the existing child scaling preparation. The release query is
+`14083c860` (0.08 m extension, 0.001 tolerance, layer mask0x1ffff,
+required flags0x800); it uses the actual render-model center and published camera
+axis. Throw targeting reuses the shared actual sensor9 owner and `14010fc20`
+camera-axis pitch in degrees, with ballistic construction `1406dd030` and source
+`14083de90` velocity scaling. Cached player model tags/body joints come from the
+existing controlled player pose, not another rig or animation sample. The
+`m_attachTag` constructor default is `camera_tag`, proven by startup14138b300
+interning string141c5a518 into DAT14398e1f0, then constructor14076e0e0.
+The operation journal/cursors retain exact source declaration Arcs and managed
+entity generations across state/mode changes; accepted operations are never
+replayed after later failures. Normal held frames need only the managed entity
+liveness check: binding movement remains with the shared reference actor owner.
+No compile, oracle test or appearance verification has been run for this batch
+by the carrying worker; those remain the parent integration boundary.

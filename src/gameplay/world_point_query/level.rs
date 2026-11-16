@@ -94,6 +94,40 @@ impl LevelPointQueries {
         Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: None })
     }
 
+    /// Borrow the same retained geometry used by point queries and body creation.
+    pub(crate) fn ray_hits(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+        hits: &mut Vec<crate::gameplay::shape_ray_query::ShapeRayContact>,
+    ) -> Result<(), String> {
+        self.storage.ray_query(executor, request, query_flags, |index| self.shape(index), hits)
+    }
+
+    pub(crate) fn convex_hits(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+        start_hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        self.storage.convex_query(executor, request, |index| self.shape(index), hits, start_hits)
+    }
+
+    /// Append the actual closest witnesses for an already admitted body pair.
+    pub(crate) fn convex_body_closest(
+        &self, executor: &mut crate::gameplay::shape_convex_query::ShapeConvexQuery,
+        request: &crate::gameplay::shape_convex_query::ConvexClosestQuery<'_>, target_id: u32,
+        contacts: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        self.storage.convex_body_closest(executor,request,target_id,|index|self.shape(index),contacts)
+    }
+
+    pub(crate) fn point_hits(
+        &self,executor:&mut WorldPointQuery,request:&WorldPointRequest,
+        contacts:&mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    )->Result<(),String>{
+        self.storage.point_query_geometry(executor,request,|index|self.shape(index),contacts)
+    }
+
     /// 677ec0/678070 keep native hit order when two wind priorities are equal.
     pub(crate) fn wind_entities(
         &self, executor: &mut WorldPointQuery, point: [f32; 3],

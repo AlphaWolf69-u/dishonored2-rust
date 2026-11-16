@@ -82,6 +82,8 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
                 crate::gameplay::motion_info::calculate_compound_mass(config, shape.bounds),
             physworld::query_geometry::QueryGeometry::Polytope(polytope) =>
                 physworld::mass::convex::calculate(&polytope.vertices, polytope.radius, config, shape.bounds),
+            physworld::query_geometry::QueryGeometry::CompressedMesh(_) =>
+                Err("compressed world mesh has no dynamic mass calculator".into()),
         }.map_err(|error| format!("{}: {error}", shape.path))
     }
 }
@@ -142,6 +144,50 @@ impl crate::gameplay::physics_world::PublicationGeometry for TriggerAssets {
 }
 
 impl TriggerAssets {
+    /// 852560 admits the level physics system on this same geometry owner.
+    /// Keep serialized item references local to the resource and give body
+    /// creation its canonical shape slot. Shared roots have one decoded tree.
+    pub(crate) fn register_world_shape(&mut self, path: &str,
+        source: std::sync::Arc<physworld::source::ShapeSource>, root: usize) -> Result<usize, String> {
+        if let Some((index,_)) = self.shapes.iter().enumerate().find(|(_,shape)|
+            shape.as_ref().is_some_and(|shape| shape.standalone.is_none() && shape.retain_for_admission
+                && shape.root == root && std::sync::Arc::ptr_eq(&shape.source,&source))) {
+            self.shape_references[index] = self.shape_references[index].checked_add(1).ok_or("world shape reference overflow")?;
+            return Ok(index);
+        }
+        let query_shapes = source.query_shapes(root)?;
+        let header = query_shapes.get(root)?.header;
+        let is_mutable = match &query_shapes.get(root)?.geometry {
+            physworld::query_geometry::QueryGeometry::Compound(shape) => shape.is_mutable,
+            _ => false,
+        };
+        let identity = [[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.],[0.,0.,0.,1.]];
+        let bounds = query_shapes.bounds(root,identity)?;
+        let asset = TriggerShapeAsset { path: path.to_owned(), source, standalone: None,
+            _standalone_extra: None, standalone_key: None, root, retain_for_admission: true,
+            header, bounds, is_mutable, query_shapes: std::sync::Arc::new(query_shapes),
+            cached_mass: None, signals: Default::default() };
+        self.shapes.try_reserve(1).map_err(|error| error.to_string())?;
+        self.shape_references.try_reserve(1).map_err(|error| error.to_string())?;
+        let index = self.shapes.len();
+        self.shapes.push(Some(asset));
+        self.shape_references.push(1);
+        Ok(index)
+    }
+
+    pub(crate) fn retire_world_shape(&mut self, index: usize) -> Result<(),String> {
+        let shape = self.shapes.get(index).and_then(Option::as_ref).ok_or("world shape absent")?;
+        if shape.standalone.is_some() || !shape.retain_for_admission { return Err("shape is not a level-world lease".into()); }
+        let count = *self.shape_references.get(index).ok_or("world shape references absent")?;
+        if count == 0 { return Err("world shape already retired".into()); }
+        if count > 1 { self.shape_references[index] -= 1; return Ok(()); }
+        self.free_shapes.try_reserve(1).map_err(|error| error.to_string())?;
+        self.shapes[index] = None;
+        self.shape_references[index] = 0;
+        self.free_shapes.push(index);
+        Ok(())
+    }
+
     /// Retain an actual standalone shape and each alias resource in the same
     /// geometry owner used by WorldStorage. One component lease owns one
     /// reference; the runtime body must be destroyed before it is released.
@@ -177,7 +223,7 @@ impl TriggerAssets {
         let header = root_shape.header;
         let is_mutable = match &root_shape.geometry {
             QueryGeometry::Compound(shape) => shape.is_mutable,
-            QueryGeometry::Polytope(_) => false,
+            QueryGeometry::Polytope(_) | QueryGeometry::CompressedMesh(_) => false,
         };
         let identity = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
         let bounds = query_shapes.bounds(query_shapes.root(), identity)?;

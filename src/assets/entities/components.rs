@@ -1,7 +1,7 @@
 //! Shared component declaration inheritance and inline field overlays.
 use super::{field, parse_declaration, scope, Definition, Value};
 use std::collections::HashMap;
-pub(super) type Fields = Vec<(String, Value)>;
+pub(crate) type Fields = Vec<(String, Value)>;
 
 /// Common scheduling for a component class, using its resolved declaration and
 /// inline overlays. Payload readers and lifecycle composition share this path.
@@ -29,7 +29,7 @@ pub fn scheduling_bindings(
 
 /// Common declaration fields from1414fc060, with enum values from1419fa950
 /// and141a017b0. Apply after the concrete declaration constructor's defaults.
-pub(super) fn scheduling(
+pub(crate) fn scheduling(
     fields: &[(String, Value)],
     mut value: crate::gameplay::component_state::declaration::DeclarationScheduling,
 ) -> Result<crate::gameplay::component_state::declaration::DeclarationScheduling, String> {
@@ -76,7 +76,7 @@ pub(super) fn scheduling(
     Ok(value)
 }
 
-pub(super) fn entry_class(
+pub(crate) fn entry_class(
     entry: &[(String, Value)],
     declarations: &HashMap<&str, &Definition>,
 ) -> Result<Option<String>, String> {
@@ -93,7 +93,7 @@ pub(super) fn entry_class(
 
 /// Resolve one binding using the same inheritance and overlays as the other
 /// component readers. The caller keeps a cache for this component class.
-pub(super) fn entry_fields(
+pub(crate) fn entry_fields(
     entry: &[(String, Value)],
     kind: &str,
     declarations: &HashMap<&str, &Definition>,

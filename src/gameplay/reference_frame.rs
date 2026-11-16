@@ -242,6 +242,14 @@ pub fn basis_product(left: [[f32; 3]; 3], right: [[f32; 3]; 3]) -> [[f32; 3]; 3]
     ]
 }
 
+///110990/110ad0 multiply binding quaternions without normalization.
+pub fn multiply_binding_quaternion(a:[f32;4],b:[f32;4])->[f32;4] {
+    [subtract(add(add(multiply(a[0],b[3]),multiply(b[0],a[3])),multiply(a[1],b[2])),multiply(a[2],b[1])),
+     subtract(add(add(multiply(a[1],b[3]),multiply(b[1],a[3])),multiply(a[2],b[0])),multiply(b[2],a[0])),
+     subtract(add(add(multiply(a[2],b[3]),multiply(b[2],a[3])),multiply(b[1],a[0])),multiply(a[1],b[0])),
+     subtract(subtract(subtract(multiply(b[3],a[3]),multiply(a[0],b[0])),multiply(b[1],a[1])),multiply(a[2],b[2]))]
+}
+
 /// 111410 produces the game's compact row basis, distinct from Havok's padded
 /// aa0390 matrix. It does not normalize the supplied binding quaternion.
 pub fn quaternion_basis(q: [f32; 4]) -> [[f32; 3]; 3] {

@@ -8,6 +8,7 @@ pub(crate) mod alias;
 pub enum QueryGeometry {
     Compound(CompoundShape),
     Polytope(ConvexPolytope),
+    CompressedMesh(super::compressed_mesh::CompressedMesh),
 }
 
 #[derive(Debug)]
@@ -108,6 +109,7 @@ impl QueryShapes {
                         }
                     }
                 }
+                QueryGeometry::CompressedMesh(mesh) => mesh.scale *= factor,
             }
         }
         self
@@ -127,6 +129,9 @@ impl QueryShapes {
             QueryGeometry::Polytope(shape) => {
                 crate::gameplay::convex_support::convex_bounds(&shape.vertices, frame, shape.radius)
             }
+            QueryGeometry::CompressedMesh(shape) => {
+                crate::gameplay::shape_transform::transform_bounds(frame, shape.bounds())
+            }
         })
     }
 }
@@ -136,6 +141,14 @@ impl PhysWorld {
     /// indices, tags and connectivity; do not turn geometry into volume hits.
     /// Compound free-list slots without enabled bit64 are not shape references.
     pub fn query_shapes(&self, bytes: &[u8], root: usize) -> Result<QueryShapes, String> {
+        self.query_shapes_inner(bytes, root, None)
+    }
+
+    pub(crate) fn query_shapes_retained(&self, source: &std::sync::Arc<super::source::ShapeSource>, root: usize) -> Result<QueryShapes, String> {
+        self.query_shapes_inner(&source.bytes, root, Some(source))
+    }
+
+    fn query_shapes_inner(&self, bytes: &[u8], root: usize, source: Option<&std::sync::Arc<super::source::ShapeSource>>) -> Result<QueryShapes, String> {
         let mut shapes = BTreeMap::new();
         let mut pending = vec![root];
         while let Some(index) = pending.pop() {
@@ -160,6 +173,8 @@ impl PhysWorld {
                 "hknpConvexPolytopeShape" | "hknpBoxShape" => {
                     QueryGeometry::Polytope(self.convex_polytope(bytes, index)?)
                 }
+                "hknpCompressedMeshShape" => QueryGeometry::CompressedMesh(
+                    super::compressed_mesh::CompressedMesh::new(source.ok_or("compressed mesh queries require their source lease")?.clone(), index)?),
                 _ => return Err(format!("query geometry for {kind} is not implemented")),
             };
             shapes.insert(index, QueryShape { header, geometry });

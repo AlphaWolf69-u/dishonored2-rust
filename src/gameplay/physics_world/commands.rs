@@ -159,6 +159,14 @@ impl PhysicsCommands {
         Ok(())
     }
 
+    ///809ab0 queues source command1E with deactivate=false before the
+    ///component publishes its desired velocities.
+    pub fn enqueue_activation(&self,body:u32,deactivate:bool,grow_one_at_a_time:bool)->Result<(),String> {
+        let mut packet=[0u8;16];packet[..2].copy_from_slice(&16u16.to_le_bytes());
+        packet[2..6].copy_from_slice(&0x1e0200u32.to_le_bytes());packet[8..12].copy_from_slice(&body.to_le_bytes());packet[12]=u8::from(deactivate);
+        self.buffer.append_packet(&packet,grow_one_at_a_time)?;Ok(())
+    }
+
     pub fn enqueue_velocity(
         &self,
         body: u32,

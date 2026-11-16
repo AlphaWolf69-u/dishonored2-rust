@@ -35,6 +35,8 @@ use std::{
 };
 #[macro_use]
 mod publication;
+#[macro_use]
+mod rigid_family;
 mod startup;
 mod interaction_components;
 mod blink_queries;
@@ -43,6 +45,13 @@ pub(super) mod document_hierarchy;
 pub(super) mod preparation;
 mod document_pickup;
 mod damage;
+mod breakable;
+mod projectiles;
+mod throwable;
+mod player_reference;
+mod carrying_host;
+mod runtime_entities;
+mod level_bodies;
 mod entity_messages;
 pub(super) mod windblast;
 pub(super) mod rigid_actor;
@@ -50,6 +59,10 @@ use interaction_components::UsableComponent;
 pub(super) mod lifetime;
 
 struct PhysicsEntity {
+    /// Host slot reuse starts only after all native consumer acknowledgements.
+    retired: bool,
+    /// The actual Player owns its identity; the scene hosts its reference actor.
+    external: bool,
     name: String,
     shared: crate::gameplay::entity_lifetime::EntityId,
     components: EntityComponents,
@@ -69,13 +82,18 @@ pub(super) struct PhysicsScene {
     entity_flags_d4: Vec<u8>,
     post_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
     post_frame: i32,
+    pre_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
+    pre_frame: i32,
+    pre_path: Vec<usize>,
+    body_commands: crate::gameplay::physics_world::commands::PhysicsCommands,
     rigid_post_path: Vec<usize>,
     body_activation_events: crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 11],
-    classes: [i32; 11],
+    factories: [u32; 14],
+    classes: [i32; 14],
     entities: Vec<PhysicsEntity>,
+    free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
     declarations: HashMap<u64, ComponentDeclaration>,
     water_bindings: Vec<entities::water::WaterBinding>,
@@ -91,6 +109,10 @@ pub(super) struct PhysicsScene {
     readable_components: HashMap<String, crate::gameplay::pickable_component::CheckedComponent>,
     loots: ComponentPool<crate::gameplay::loot_component::EmptyLootComponent>,
     rigid_bodies: ComponentPool<super::rigid_body::RigidBodyComponent>,
+    // Concrete subtype factories retain their own handles and generations.
+    throwables: ComponentPool<super::rigid_body::RigidBodyComponent>,
+    breakables: ComponentPool<breakable::BreakableComponent>,
+    projectiles: ComponentPool<super::projectiles::Component>,
     free_rigid_movement: Vec<usize>,
     rigid_placements: HashMap<usize, usize>,
     initial_rigid_frames: HashMap<usize, crate::gameplay::reference_frame::ReferenceFrame>,
@@ -264,6 +286,9 @@ impl PhysicsScene {
             factory(b"arkCpntRigidBody")?,
             factory(b"arkCpntFaction")?,
             factory(b"arkCpntHealth")?,
+            factory(b"arkCpntBreakable")?,
+            factory(b"arkCpntRigidBodyThrowable")?,
+            factory(b"arkCpntProjectile")?,
         ];
         let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
             let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
@@ -276,8 +301,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 11];
-        for i in 0..11 {
+        let mut classes = [0; 14];
+        for i in 0..14 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -344,6 +369,10 @@ impl PhysicsScene {
             entity_flags_d4: Vec::new(),
             post_updates: Default::default(),
             post_frame: 0,
+            pre_updates: Default::default(),
+            pre_frame: 0,
+            pre_path: Vec::new(),
+            body_commands: crate::gameplay::physics_world::commands::PhysicsCommands::new()?,
             body_activation_events: Default::default(),
             world: Arc::new(RwLock::new(LevelPointQueries::new(world, geometry))),
             triggers: types.create_pool(factories[0], &cvars.cvars)?,
@@ -355,6 +384,9 @@ impl PhysicsScene {
             readable_components: HashMap::new(),
             loots: types.create_pool(factories[7], &cvars.cvars)?,
             rigid_bodies: types.create_pool(factories[8], &cvars.cvars)?,
+            breakables: types.create_pool(factories[11], &cvars.cvars)?,
+            throwables: types.create_pool(factories[12], &cvars.cvars)?,
+            projectiles: types.create_pool(factories[13], &cvars.cvars)?,
             free_rigid_movement: Vec::new(),
             rigid_post_path: Vec::new(),
             rigid_placements: HashMap::new(),
@@ -374,6 +406,7 @@ impl PhysicsScene {
             factories,
             classes,
             entities: Vec::new(),
+            free_entities: Vec::new(),
             shared_indices: HashMap::new(),
             declarations: HashMap::new(),
             water_bindings,
@@ -431,7 +464,7 @@ impl PhysicsScene {
                     .ok_or_else(|| format!("trigger entity class unsupported: {class}"))?;
                 if existing.is_none() {
                     let shared = live.allocate_managed(Arc::from(placement.binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
-                    let entity = PhysicsEntity {
+                    let entity = PhysicsEntity { retired: false, external: false,
                         name: placement.binding.entity_id.clone(),
                         shared,
                         components: EntityComponents::new(entity_index),
@@ -541,7 +574,7 @@ impl PhysicsScene {
                         let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
                         let index = scene.entities.len();
                         let shared = live.allocate_managed(Arc::from(binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
-                        scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
+                        scene.entities.push(PhysicsEntity { retired: false, external: false, name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
                             environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0,
                             entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
                             frame: crate::gameplay::reference_frame::PublishedFrame { pose: binding.frame, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
@@ -609,7 +642,7 @@ impl PhysicsScene {
             let pose=entities::spawn_frame(definition)?;
             let index=self.entities.len();
             let shared=live.allocate_managed(Arc::from(definition.id.as_str()),class,None,0,tag)?;
-            self.entities.push(PhysicsEntity{name:definition.id.clone(),shared,components:EntityComponents::new(index),class,environment:None,
+            self.entities.push(PhysicsEntity { retired: false, external: false,name:definition.id.clone(),shared,components:EntityComponents::new(index),class,environment:None,
                 flags:0,entity_flags:0x001e_8008,entity_flags_d7:0,priority:0,frame:crate::gameplay::reference_frame::PublishedFrame{pose,
                     ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published()},timespace:0});
             self.entity_flags_d4.push(0);
@@ -827,6 +860,12 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.factions.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[10] {
             self.health.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[11] {
+            self.breakables.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[12] {
+            self.throwables.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[13] {
+            self.projectiles.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -858,6 +897,12 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.factions.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[10] {
             self.health.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[11] {
+            self.breakables.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[12] {
+            self.throwables.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[13] {
+            self.projectiles.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };

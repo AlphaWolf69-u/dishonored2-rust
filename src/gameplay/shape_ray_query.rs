@@ -8,7 +8,7 @@ use super::{
     constraint_solver::reciprocal,
     ray_query::RayQueryControl,
     shape_tags::{decode_shape_tag, ShapeTagSource},
-    shape_transform::inverse_rotate_vector,
+    shape_transform::{inverse_rotate_vector, rotate_vector, transform_point, ShapeMatrix},
 };
 use crate::{
     assets::physworld::{
@@ -27,11 +27,42 @@ pub struct RayQueryTarget<'a> {
 pub struct ShapeRayContact {
     pub target: ShapeHitInfo,
     pub fraction: f32,
+    /// Geometry is expressed in the receiving query owner's frame.
+    pub position: [f32; 4],
+    pub normal: [f32; 4],
+    /// cb0fd0 hit/inside-exit bits, separate from body/filter flags.
+    pub flags: u32,
+}
+impl ShapeRayContact {
+    /// 123ec60 transports the witness by scale then pose; normals use
+    /// reciprocal scale then pose and one RSQRTPS/Newton normalization.
+    /// All identity/fraction fields pass through unchanged.
+    pub fn transformed_scaled(mut self, pose: ShapeMatrix, scale: [f32; 4]) -> Self {
+        self.position = transform_point(
+            pose,
+            std::array::from_fn(|i| multiply(self.position[i], scale[i])),
+        );
+        let normal = rotate_vector(
+            pose,
+            std::array::from_fn(|i| multiply(self.normal[i], reciprocal(scale[i]))),
+        );
+        let squared = (normal[1] * normal[1] + normal[0] * normal[0]) + normal[2] * normal[2];
+        let estimate = super::convex_support::faces::reciprocal_sqrt_estimate(squared);
+        let correction = 3.0 - estimate * squared * estimate;
+        self.normal = normal.map(|lane| ((lane * correction) * estimate) * 0.5);
+        self
+    }
+    pub fn transformed_rigid(mut self, pose: ShapeMatrix) -> Self {
+        self.position = transform_point(pose, self.position);
+        self.normal = rotate_vector(pose, self.normal);
+        self
+    }
 }
 #[derive(Default)]
 pub struct ShapeRayQuery {
     pending: Vec<Vec<u16>>,
     active: Vec<usize>,
+    query_flags: u32,
 }
 fn min(a: f32, b: f32) -> f32 {
     if a < b {
@@ -71,8 +102,7 @@ fn interval(bounds: [[f32; 3]; 2], origin: [f32; 3], inverse: [f32; 3], limit: f
 
 impl ShapeRayQuery {
     /// Origin/direction are in the body's rigid local frame. 123ec60 copies
-    /// the hit's fraction/identity unchanged while transporting geometry; this
-    /// caller consumes exactly that projection, not normal/witness geometry.
+    /// the hit's fraction/identity unchanged while transporting geometry.
     pub fn cast(
         &mut self,
         target: RayQueryTarget<'_>,
@@ -83,7 +113,21 @@ impl ShapeRayQuery {
         control: &mut RayQueryControl,
         submit: &mut dyn FnMut(ShapeRayContact, &mut RayQueryControl),
     ) -> Result<(), String> {
+        self.cast_with_flags(target, origin, direction, query, filter, 0, control, submit)
+    }
+    pub fn cast_with_flags(
+        &mut self,
+        target: RayQueryTarget<'_>,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        query_flags: u32,
+        control: &mut RayQueryControl,
+        submit: &mut dyn FnMut(ShapeRayContact, &mut RayQueryControl),
+    ) -> Result<(), String> {
         self.active.clear();
+        self.query_flags = query_flags;
         let key = ShapeKey {
             value: target.hit.shape_key,
             bits: 0,
@@ -129,12 +173,34 @@ impl ShapeRayQuery {
                         origin,
                         direction,
                         control.fraction,
-                        0,
+                        self.query_flags,
                     )? {
                         submit(
                             ShapeRayContact {
                                 target: hit,
                                 fraction: candidate.fraction,
+                                position: [
+                                    crate::float::add(
+                                        origin[0],
+                                        multiply(direction[0], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[1],
+                                        multiply(direction[1], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[2],
+                                        multiply(direction[2], candidate.fraction),
+                                    ),
+                                    0.0,
+                                ],
+                                normal: [
+                                    candidate.normal[0],
+                                    candidate.normal[1],
+                                    candidate.normal[2],
+                                    0.0,
+                                ],
+                                flags: candidate.flags,
                             },
                             control,
                         );
@@ -277,7 +343,15 @@ impl ShapeRayQuery {
                                     query,
                                     filter,
                                     control,
-                                    submit,
+                                    &mut |contact, control| {
+                                        submit(
+                                            contact.transformed_scaled(
+                                                instance.transform,
+                                                instance.scale,
+                                            ),
+                                            control,
+                                        )
+                                    },
                                 )?;
                                 if control.early_out {
                                     break;

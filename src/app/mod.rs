@@ -219,3 +219,15 @@ mod projected_decals;
 mod rigid_body;
 
 mod entity_graphs;
+
+mod world_models;
+
+mod runtime_entities;
+
+mod throwable;
+
+mod carrying;
+
+mod projectiles;
+
+mod weapon_firing;

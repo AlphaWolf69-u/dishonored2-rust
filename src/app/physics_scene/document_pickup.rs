@@ -3,7 +3,7 @@ use super::*;
 use crate::gameplay::{entity_lifetime::{EntityId, LiveEntities}, pickable_component::CheckedComponent};
 
 impl PhysicsScene {
-    fn document_pickable(&self, live: &LiveEntities, reference: CheckedComponent) -> Result<(usize, EntityId), String> {
+    pub(super) fn document_pickable(&self, live: &LiveEntities, reference: CheckedComponent) -> Result<(usize, EntityId), String> {
         if reference.handle.class_id != self.classes[6] { return Err("pickup is not PickableSimple".into()); }
         let owner = self.owner(reference.handle)?;
         if owner.generation != reference.generation || owner.flags & 0xf != 0xa {
@@ -17,8 +17,8 @@ impl PhysicsScene {
         Ok((index,id))
     }
 
-    fn document_rigid(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
-        self.entities[index].components.find_component([self.classes[8];2], [0x20,0], |handle| {
+    pub(super) fn document_rigid(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
+        self.entities[index].components.find_component(self.rigid_class_range()?, [0x20,0], |handle| {
             Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                 flags: self.owner(handle)?.flags,
                 start_phases: self.declarations.get(&handle.packed()).map(|declaration| declaration.scheduling.start_phases),
@@ -46,7 +46,7 @@ impl PhysicsScene {
             return Err("document render source is not ready".into());
         }
         if let Some(handle) = self.document_rigid(index)? {
-            let component = self.rigid_bodies.get(handle.slot).ok_or("document rigid absent")?;
+            let component = self.rigid_component(handle)?;
             if component.freeze_state != 0 { return Err("frozen document requires actual thaw callback".into()); }
             let body = component.body().ok_or("document body absent")?;
             let world = self.world.read().map_err(|_| "level physics query owner is poisoned")?;
@@ -74,7 +74,7 @@ impl PhysicsScene {
                     self.entities[index].entity_flags &= !0x80;
                     if let Some(handle) = self.document_rigid(index)? {
                         if self.owner(handle)?.flags & 3 > 1 {
-                            let body = self.rigid_bodies.get(handle.slot).and_then(|component| component.body()).ok_or("bound document body absent")?;
+                            let body = self.rigid_component(handle)?.body().ok_or("bound document body absent")?;
                             let shared = self.world.clone();
                             let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
                             let world = &mut *guard;
@@ -86,7 +86,7 @@ impl PhysicsScene {
                 self.detach_document(live, index)?;
             }
             if let Some(handle) = self.document_rigid(index)? {
-                let body = self.rigid_bodies.get(handle.slot).and_then(|component| component.body()).ok_or("document body retired")?;
+                let body = self.rigid_component(handle)?.body().ok_or("document body retired")?;
                 let shared = self.world.clone();
                 let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
                 let world = &mut *guard;

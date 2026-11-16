@@ -383,6 +383,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         rules: decls::rules(&declarations.mode)?,
         default_state: decls::default_state(&declarations.mode),
         attributes,
+        ranged_target: crate::gameplay::player::weapons::shooting::RangedTargetDecl::read(&declarations.ranged_target_sensor)?,
         body,
         autocrouch: decls::autocrouch_sensor(&declarations.autocrouch_sensor)?,
         lean: decls::lean_sensor(&declarations.lean_sensor)?,

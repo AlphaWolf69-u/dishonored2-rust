@@ -20,6 +20,7 @@ pub struct PlayerDeclarations {
     pub autocrouch_sensor: Vec<(String, Value)>,
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
+    pub ranged_target_sensor: Vec<(String, Value)>,
     pub blink_mantle_sensor: Vec<(String, Value)>,
     pub grapple_sensor: Vec<(String, Value)>,
     pub grapple_to_mantle_sensor: Vec<(String, Value)>,
@@ -127,7 +128,7 @@ pub(crate) fn player_listener_trace_path(path: &str) -> bool {
         || path.starts_with("generated/decls/cpntaudiolistener/")
 }
 
-fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
+pub(crate) fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
     let mut entries: Vec<(String, Fields)> = Vec::new();
     for fields in chain {
         let Some(components) = scope(field(fields, "edit")).and_then(|edit| scope(field(edit, "m_componentDecls"))) else { continue };
@@ -197,6 +198,7 @@ const PLAYER_COMPONENTS: [&str; 20] = [
     "cpntplayersensorlean",
     "cpntplayerbody",
     "cpntplayersensormantle",
+    "cpntplayersensorrangedtarget",
     "cpntplayersensorblinktomantle",
     "cpntplayersensorgrapple",
     "cpntplayersensorgrappletomantle",
@@ -312,6 +314,7 @@ fn player_declarations_with_listener(
     let autocrouch_sensor = take("cpntplayersensorautocrouch")?;
     let lean_sensor = take("cpntplayersensorlean")?;
     let mantle_sensor = take("cpntplayersensormantle")?;
+    let ranged_target_sensor = take("cpntplayersensorrangedtarget")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
     let powers = take("cpntplayerpowersystem")?;
@@ -364,7 +367,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

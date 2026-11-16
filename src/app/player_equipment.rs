@@ -1,6 +1,6 @@
-//! bevy_backend: unequipped first-person models use the existing render
+//! bevy_backend: equipment and ordinary world models use the existing render
 //! queue's submission acknowledgement before their resource leases retire.
-//! Geometry, materials, probe queries and skinning remain in PlayerArms.
+//! Geometry, materials, probe queries and skinning stay with each actor owner.
 use super::PlayerArms;
 use bevy::{
     prelude::*,
@@ -22,7 +22,7 @@ struct Lease {
 pub(in crate::app) struct RetiredModel(Arc<Lease>);
 
 impl RetiredModel {
-    pub(super) fn new(model: impl Send + Sync + 'static) -> Self {
+    pub(in crate::app) fn new(model: impl Send + Sync + 'static) -> Self {
         Self(Arc::new(Lease {
             _model: Box::new(model),
             state: AtomicU8::new(0),
@@ -36,11 +36,10 @@ impl RetiredModel {
 #[derive(Resource, Default)]
 struct Retirements(Vec<RetiredModel>);
 
-fn extract(mut commands: Commands, arms: Extract<Option<Res<PlayerArms>>>) {
-    commands.insert_resource(Retirements(
-        arms.as_ref()
-            .map_or_else(Vec::new, |arms| arms.retiring_equipment.clone()),
-    ));
+fn extract(mut commands: Commands, arms: Extract<Option<Res<PlayerArms>>>,world_models:Extract<Option<Res<super::super::world_models::WorldModels>>>) {
+    let mut receipts=arms.as_ref().map_or_else(Vec::new,|arms|arms.retiring_equipment.clone());
+    if let Some(models)=world_models.as_ref(){receipts.extend(super::super::world_models::retirement_receipts(models));}
+    commands.insert_resource(Retirements(receipts));
 }
 
 fn acknowledge(retirements: Res<Retirements>, queue: Res<RenderQueue>) {

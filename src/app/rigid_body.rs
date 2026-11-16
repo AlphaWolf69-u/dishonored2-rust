@@ -35,6 +35,38 @@ pub(super) struct RigidBodyResources {
     pub filter_info: u32,
 }
 
+/// Immutable worker output. Only canonical source references and resolved
+/// material declarations cross the handoff; IDs belong to the real live world.
+pub(super) struct RigidBodyDraft {
+    shape:StandaloneShape,extra:Option<(StandaloneShape,[u16;2])>,
+    materials:Vec<Option<std::sync::Arc<crate::assets::entities::physics_material::resources::Definition>>>,filter_info:u32,
+}
+fn physics_material_definition(catalog:&crate::archive::Catalog,name:&str,texts:&mut crate::assets::declaration_texts::PhysicsSeed)
+    ->Result<std::sync::Arc<crate::assets::entities::physics_material::resources::Definition>,String> {
+    crate::assets::entities::physics_material::resources::acquire_with(catalog,name,
+        |path|texts.read(catalog,path,crate::assets::declaration_texts::PhysicsUse::Runtime))
+}
+fn clone_shape(source:&StandaloneShape)->StandaloneShape {StandaloneShape {
+    catalog_identity:source.catalog_identity,shareable:source.shareable,source:source.source.clone(),
+    source_path:source.source_path.clone(),source_header:source.source_header,wrappers:source.wrappers.clone()}}
+impl RigidBodyDraft {
+    /// No archive IO occurs under the live world's lock. Existing material
+    /// registration/dedup and its actual subscriber callback remain canonical.
+    pub(super) fn publish(&self,owner:&mut crate::gameplay::materials::MaterialOwner<usize,usize>,
+        mut dispatch:impl FnMut(&mut crate::gameplay::signal::Signal<usize,usize>,usize,usize,u16))->Result<RigidBodyResources,String> {
+        let mut materials=Vec::new();materials.try_reserve_exact(self.materials.len()).map_err(|error|format!("rigid material publication: {error}"))?;
+        for definition in &self.materials {
+            let id=if let Some(definition)=definition {
+                let handle=owner.admit_definition(&definition.name,definition.clone())?;
+                owner.resolve(handle,&mut dispatch)?
+            } else {0};materials.push(id);
+        }
+        let body_material=if self.extra.is_none()&&materials.len()==1 {materials[0]}else{0};
+        Ok(RigidBodyResources {shape:clone_shape(&self.shape),extra:self.extra.as_ref().map(|(source,tags)|(clone_shape(source),*tags)),
+            materials,body_material,filter_info:self.filter_info})
+    }
+}
+
 pub(super) fn prepare_resources(
     catalog: &crate::assets::archive::Catalog,
     shape_sources: &mut crate::physworld::source::ShapeSources,
@@ -46,6 +78,19 @@ pub(super) fn prepare_resources(
     render_materials: Option<&mut super::material_loading::MaterialCache>,
     mut dispatch: impl FnMut(&mut crate::gameplay::signal::Signal<usize, usize>, usize, usize, u16),
 ) -> Result<RigidBodyResources, String> {
+    prepare_draft(catalog,shape_sources,texts,settings,model,render_model,render_materials)?
+        .publish(material_owner,&mut dispatch)
+}
+
+pub(super) fn prepare_draft(
+    catalog: &crate::assets::archive::Catalog,
+    shape_sources: &mut crate::physworld::source::ShapeSources,
+    texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+    settings: &crate::entities::RigidBodySettings,
+    model: &crate::entities::PlacedModel,
+    render_model: Option<&crate::assets::bmodel::Model>,
+    render_materials: Option<&mut super::material_loading::MaterialCache>,
+) -> Result<RigidBodyDraft, String> {
     let kind = settings.shape_type.as_deref().and_then(crate::entities::rigid_body_shape_kind)
         .and_then(|kind| ["hkt", "cvx", "msh", "box", "cvd"].get(kind as usize).copied())
         .ok_or("rigid-body shape type is invalid")?;
@@ -62,9 +107,8 @@ pub(super) fn prepare_resources(
     let mut materials = Vec::new();
     materials.try_reserve_exact(count).map_err(|error| format!("rigid-body material table: {error}"))?;
     if let Some(override_name) = settings.material.as_deref() {
-        let declaration = material_owner.declaration_with_texts(catalog, override_name, texts)?;
-        let id = material_owner.resolve(declaration, &mut dispatch)?;
-        materials.resize(count, id);
+        let declaration = physics_material_definition(catalog, override_name, texts)?;
+        materials.resize(count, Some(declaration));
     } else {
         // 140807c80 visits exactly the shape-derived slot count, not every
         // render surface. Unused material slots must not block this shape.
@@ -75,9 +119,9 @@ pub(super) fn prepare_resources(
             let name = model.custom_materials.get(index).and_then(Option::as_deref)
                 .unwrap_or(&surface.material_path);
             let id = if let Some(name) = render_materials.body_physics_material(catalog, name)? {
-                let declaration = material_owner.declaration_with_texts(catalog, name.as_ref(), texts)?;
-                material_owner.resolve(declaration, &mut dispatch)?
-            } else { 0 };
+                let declaration = physics_material_definition(catalog, name.as_ref(), texts)?;
+                Some(declaration)
+            } else { None };
             materials.push(id);
         }
     }
@@ -94,19 +138,17 @@ pub(super) fn prepare_resources(
             } else { 1 };
             let base = u16::try_from(materials.len()).map_err(|_| "extra-HD material offset exceeds shape tag")?;
             if base > 0x7fff { return Err("extra-HD material offset exceeds shape tag".into()); }
-            let declaration = material_owner.declaration_with_texts(catalog, name, texts)?;
-            let id = material_owner.resolve(declaration, &mut dispatch)?;
+            let declaration = physics_material_definition(catalog, name, texts)?;
             let end = materials.len().checked_add(extra_count).ok_or("extra-HD material table overflow")?;
             materials.try_reserve(extra_count).map_err(|error| format!("extra-HD material table: {error}"))?;
-            materials.resize(end, id);
+            materials.resize(end, Some(declaration));
             let tags = [if raw_count > 0 { 0x8000 } else { 0 },
                 base | if raw_extra_count > 0 { 0x8000 } else { 0 }];
             extra = Some((child, tags));
         }
     }
-    let body_material = if extra.is_none() && count == 1 { materials[0] } else { 0 };
     let filter_info = settings.collision_filter().ok_or("rigid-body collision filter is invalid")?;
-    Ok(RigidBodyResources { shape, extra, materials, body_material, filter_info })
+    Ok(RigidBodyDraft { shape, extra, materials, filter_info })
 }
 
 /// Body values resolved by the real material/mass and motion-property
@@ -117,6 +159,13 @@ pub(super) struct RigidBodyCreationValues {
     pub motion_properties_id: u16,
     /// Reflected declaration byte +0xc4 from 140806eb0.
     pub declaration_flags: u8,
+}
+
+impl RigidBodyResources {
+    pub(super) fn clone_refs(&self)->Self {
+        Self {shape:clone_shape(&self.shape),extra:self.extra.as_ref().map(|(source,tags)|(clone_shape(source),*tags)),
+            materials:self.materials.clone(),body_material:self.body_material,filter_info:self.filter_info}
+    }
 }
 
 /// 140808ea0 starts from the native 140ca65f0 body-info constructor and
@@ -156,6 +205,7 @@ pub(super) use crate::entities::rigid_body::Definition as RigidBodyDefinition;
 
 pub(super) struct RigidBodyComponent {
     pub owner: ComponentOwner,
+    throwable:Option<crate::gameplay::throwable::State>,
     /// Embedded +0xe8 movement interface in the shared actor-body table.
     movement_body: Option<usize>,
     pub velocities: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
@@ -192,7 +242,7 @@ pub(super) struct RigidBodyComponent {
 
 impl Default for RigidBodyComponent {
     fn default() -> Self {
-        Self { owner: ComponentOwner::default(), movement_body: None, velocities: Default::default(), definition: None, prepared_resources: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
+        Self { owner: ComponentOwner::default(),throwable:None, movement_body: None, velocities: Default::default(), definition: None, prepared_resources: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
             requested_motion: [0.0; 6], requested_motion_flags: 0, requested_motion_additive: false, requested_motion_pending: false, freeze_state: 0, update_paused_by_body: false,
             materials: Vec::new(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, start_behavior: None, stop: None, deinit: None }
     }
@@ -221,11 +271,25 @@ impl RigidBodyComponent {
         };
         Ok(Self { definition: Some(definition), movement_body: Some(movement_body), ..Self::default() })
     }
+    ///4c6600 calls806de0 once, then constructs this subtype's own state.
+    pub(super) fn new_throwable(definition:std::sync::Arc<crate::assets::throwable::Definition>,
+        bodies:&mut Vec<crate::gameplay::physics_actor::ActorBody>,free:&mut Vec<usize>)->Result<Self,String> {
+        let mut component=Self::new(definition.rigid.clone(),bodies,free)?;
+        component.throwable=Some(crate::gameplay::throwable::State::new(definition));Ok(component)
+    }
+    pub(super) fn throwable(&self)->Result<&crate::gameplay::throwable::State,String> {self.throwable.as_ref().ok_or_else(||"RigidBody is not actual Throwable subtype".into())}
+    pub(super) fn throwable_mut(&mut self)->Result<&mut crate::gameplay::throwable::State,String> {self.throwable.as_mut().ok_or_else(||"RigidBody is not actual Throwable subtype".into())}
+
     pub(super) fn movement_body(&self) -> Result<usize, String> {
         self.movement_body.ok_or_else(|| "rigid movement interface is absent".into())
     }
     pub(super) fn definition(&self) -> Option<&RigidBodyDefinition> { self.definition.as_deref() }
     pub(super) fn body(&self) -> Option<u32> { self.body }
+    ///80a720/81a5d0/81a5f0 reconstruct the authored filter on release.
+    pub(super) fn hold_restore_filter(&self)->Result<u32,String> {
+        self.definition().ok_or("held rigid declaration is absent")?.settings.collision_filter()
+            .ok_or_else(||"held rigid authored collision filter is invalid".into())
+    }
     pub(super) fn material_table(&self) -> &[u16] { &self.materials }
     pub(super) fn is_initialized(&self) -> bool { self.initialization == Initialization::Ready }
     pub(super) fn creation_pending(&self) -> bool { matches!(self.initialization, Initialization::GeometryReady | Initialization::Creating) }
@@ -233,7 +297,7 @@ impl RigidBodyComponent {
     pub(super) fn initialize_listeners_pending(&self) -> bool { self.initialization == Initialization::BaseReady && self.initialize_listeners.is_none() }
 
     pub(super) fn can_release(&self) -> bool {
-        self.prepared_resources.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none()
+        self.throwable.as_ref().is_none_or(|state|state.can_release()) && self.prepared_resources.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none()
             && matches!(self.initialization, Initialization::Empty | Initialization::Retired)
     }
 

@@ -546,6 +546,8 @@ fn retain_owned(
                 Arc::new(settings.clone()),
                 inventory,
             )?;
+            player.bind_ranged_entity(identity, entity)?;
+            super::super::weapon_firing::request_owned(world, Arc::from(identity), descriptor.clone())?;
             let component = player
                 .registered_ranged(identity)
                 .ok_or("owned ranged Start did not retain its runtime")?;
@@ -633,6 +635,7 @@ pub(in crate::app) fn advance(world: &mut World) {
         }
 
         for path in std::mem::take(&mut actions.removed_equipment) {
+            super::super::weapon_firing::remove_owned(world, &path);
             player.retire_equipment(&path);
             player.retire_ranged(&path);
             for side in 0..2 {

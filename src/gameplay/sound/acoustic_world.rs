@@ -264,7 +264,7 @@ impl BodyCreationGeometry for Geometry<'_> {
     fn is_mutable(&self, shape: usize) -> Result<bool, String> {
         Ok(match &self.root(shape)?.geometry {
             QueryGeometry::Compound(shape) => shape.is_mutable,
-            QueryGeometry::Polytope(_) => false,
+            QueryGeometry::Polytope(_) | QueryGeometry::CompressedMesh(_) => false,
         })
     }
     fn rotation_limit_measure(&self, _: usize) -> Result<f32, String> {

@@ -13,6 +13,28 @@ pub struct CollisionVelocities {
 }
 
 impl CollisionVelocities {
+    /// 18d420, called by099a00 after the physical solve for each actual active
+    /// body. A stopped timespace retains its unscaled requested velocities.
+    /// The requested-linear W lane is flags, not a velocity component.
+    pub(crate) fn capture_body_velocities(
+        &mut self,
+        linear: [f32; 4],
+        angular: [f32; 4],
+        inverse_factor: f32,
+    ) {
+        if inverse_factor == 0.0 {
+            return;
+        }
+        for axis in 0..3 {
+            self.requested_linear[axis] = inverse_factor * linear[axis];
+        }
+        self.requested_linear[3] =
+            f32::from_bits((self.requested_linear[3].to_bits() & !1) | 0x3f00_0000);
+        self.scaled_linear = linear;
+        self.requested_angular = angular.map(|value| inverse_factor * value);
+        self.scaled_angular = angular;
+    }
+
     /// 14018cf30 precedes deactivation listeners. A zero timespace preserves
     /// requested vectors; the requested-linear flag lane is always retained.
     pub(crate) fn body_deactivated(&mut self, factor: f32) {

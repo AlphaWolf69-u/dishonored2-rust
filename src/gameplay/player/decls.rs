@@ -550,13 +550,16 @@ enum SupportedDefaultState {
     Dead, ReadNote, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
     FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
-    EquipChange, DrawEquipment, Undraw,
+    EquipChange, DrawEquipment, Undraw, GrabObject, HoldObject, ReleaseObject,
 }
 
 fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
     Some(match kind {
         "playerstatedead" => SupportedDefaultState::Dead,
         "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstatelootobject" => SupportedDefaultState::GrabObject,
+        "playerstateholdobject" => SupportedDefaultState::HoldObject,
+        "playerstatereleaseobject" => SupportedDefaultState::ReleaseObject,
         "playerstateequipchange" => SupportedDefaultState::EquipChange,
         "playerstatedraw" => SupportedDefaultState::DrawEquipment,
         "playerstateundraw" => SupportedDefaultState::Undraw,
@@ -610,6 +613,12 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::GrabObject => {
+                if !matches!(atom(fields,"m_id").and_then(state_id).unwrap_or(StateId(47)),StateId(47)|StateId::GRAB_OBJECT){continue;}
+                Kind::GrabObject(std::sync::Arc::new(super::carrying::GrabDecl::read(fields)?))
+            }
+            SupportedDefaultState::HoldObject => Kind::HoldObject(std::sync::Arc::new(super::carrying::HoldDecl::read(fields)?)),
+            SupportedDefaultState::ReleaseObject => Kind::ReleaseObject(std::sync::Arc::new(super::combat::ActionDecl::read(fields)?)),
             SupportedDefaultState::EquipChange => {
                 let definition = super::equipment_states::Declaration::read(fields)?;
                 if result.iter().any(|state: &StateDecl| state.id == definition.state()) { continue; }
@@ -779,6 +788,18 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             _ => continue,
         };
         let mut decl = StateDecl::class_default(kind);
+        if matches!(decl.kind,Kind::GrabObject(_)|Kind::HoldObject(_)|Kind::ReleaseObject(_)) {
+            decl.flags.allow_self=boolean(fields,"m_allowSelf",decl.flags.allow_self)?;
+            decl.flags.quit_self=boolean(fields,"m_quitSelf",decl.flags.quit_self)?;
+            decl.flags.cancelable=boolean(fields,"m_cancelable",decl.flags.cancelable)?;
+            decl.flags.canceling=boolean(fields,"m_canceling",decl.flags.canceling)?;
+        }
+        if matches!(decl.kind, Kind::HoldObject(_)) {
+            decl.id = atom(fields,"m_id").and_then(state_id).unwrap_or(StateId::HOLD_ONE_HAND);
+            if !matches!(decl.id,StateId::HOLD_ONE_HAND|StateId::HOLD_TWO_HAND) {
+                return Err("HoldObject has an unsupported state identity".into());
+            }
+        }
         if let Some(primary) = atom(fields, "m_primary") {
             decl.flags.primary = primary == "true";
         }

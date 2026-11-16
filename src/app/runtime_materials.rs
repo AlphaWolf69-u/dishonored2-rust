@@ -230,6 +230,7 @@ pub(super) struct PreparedBatch {
     pub assets: MaterialAssets,
     pub equipment: Vec<super::player_arms::PreparedEquipmentModel>,
     pub attachments: Vec<equipment_admission::PreparedAttachment>,
+    pub world_models: Vec<super::world_models::Prepared>,
     pub equipment_commands: Option<super::setup_commands::SetupCommands<'static, 'static>>,
     pub surfaces: Vec<super::particle_surface::PreparedSurface>,
     pub surface_images: HashMap<String, RuntimeImages>,
@@ -258,6 +259,8 @@ pub(super) struct MaterialWork {
     pub equipment: Vec<equipment_admission::EquipmentRequest>,
     pub equipment_reservations: Option<crate::rendering::bevy_backend::entity_preparation::Reservations>,
     pub attachments: Vec<equipment_admission::AttachmentRequest>,
+    pub world_models: Vec<super::world_models::Request>,
+    pub world_reservations: Option<crate::rendering::bevy_backend::entity_preparation::Reservations>,
     pub player_depth_hack: f32,
     pub snapshot: MaterialSnapshot,
     pub assets: MaterialAssets,
@@ -383,6 +386,18 @@ impl MaterialWork {
                     .insert(MaterialConsumer::Attachment(request.entity));
             }
         }
+        let mut world_models=Vec::new();
+        let mut world_commands=self.world_reservations.take().map(super::setup_commands::SetupCommands::reserved);
+        for request in &self.world_models{
+            check_active()?;resolver.cache.take_dependencies();
+            let model=super::player_arms::attachment::prepare_template(request.descriptor.clone(),&mut resolver,&mut self.assets.meshes,
+                world_commands.as_mut().ok_or("world model prototype allocator is absent")?)?;
+            world_models.push(super::world_models::Prepared{key:request.key,model});
+            for key in resolver.cache.take_dependencies(){equipment_dependencies.entry(key).or_insert_with(HashSet::new).insert(MaterialConsumer::WorldModel(request.key));}
+        }
+        // No world actor exists during prewarm. Return these unpublished
+        // proxy reservations; templates retain only shared GPU asset handles.
+        drop(world_commands);
         let world_meshes: Vec<_> = self
             .sources
             .world_meshes()
@@ -504,6 +519,7 @@ impl MaterialWork {
             assets: self.assets,
             equipment,
             attachments,
+            world_models,
             equipment_commands,
             surfaces,
             surface_images,
@@ -590,6 +606,7 @@ enum MaterialConsumer {
     Decal(DecalKey),
     Equipment(crate::gameplay::entity_lifetime::EntityId),
     Attachment(crate::gameplay::entity_lifetime::EntityId),
+    WorldModel(usize),
 }
 
 struct SurfaceLease {
@@ -664,6 +681,12 @@ impl RuntimeMaterialCoordinator {
         }
         self.task = None;
         true
+    }
+}
+
+pub(super) fn invalidate_world_models(world:&mut World){
+    if let Some(mut state)=world.get_resource_mut::<RuntimeMaterialCoordinator>(){
+        state.cancel_acquisition();state.waiting=None;state.revision=None;state.published_generation=None;
     }
 }
 
@@ -904,6 +927,7 @@ pub(super) fn coordinate(world: &mut World) {
     let result = coordinate_inner(world, &mut state);
     if let Err(error) = result {
         equipment_admission::failed(world, &mut state, &error);
+        super::world_models::failed(world,&error);
         let generation = world
             .get_resource::<super::usable_effects::DynamicWorldMaterials>()
             .map_or(0, |request| request.generation);
@@ -1082,7 +1106,7 @@ fn coordinate_inner(
                 let owners = match consumer {
                     MaterialConsumer::Mesh(key) => mesh_leases.get(key),
                     MaterialConsumer::Decal(key) => decal_leases.get(key),
-                    MaterialConsumer::Equipment(_) | MaterialConsumer::Attachment(_) => None,
+                    MaterialConsumer::Equipment(_) | MaterialConsumer::Attachment(_) | MaterialConsumer::WorldModel(_) => None,
                 };
                 if let Some(owners) = owners {
                     for lease in owners {
@@ -1201,7 +1225,8 @@ fn coordinate_inner(
         .collect();
     let equipment = equipment_admission::requested(world, state);
     let attachments = equipment_admission::requested_attachments(world, state);
-    if !meshes.is_empty() || !decals.is_empty() || !equipment.is_empty() || !attachments.is_empty()
+    let world_models=super::world_models::requested(world);
+    if !meshes.is_empty() || !decals.is_empty() || !equipment.is_empty() || !attachments.is_empty() || !world_models.is_empty()
     {
         let mut requests: Vec<_> = meshes
             .iter()
@@ -1221,6 +1246,7 @@ fn coordinate_inner(
                 .into_iter()
                 .map(|path| (path, MaterialGeometry::Model))
         }));
+        requests.extend(world_models.iter().flat_map(|request|request.descriptor.material_requests().into_iter().map(|path|(path,MaterialGeometry::Model))));
         requests.extend(decals.iter().map(|(name, world)| {
             (
                 name.clone(),
@@ -1271,6 +1297,7 @@ fn coordinate_inner(
             superseded: superseded.clone(),
             equipment_reservations: (!equipment.is_empty() || !attachments.is_empty())
                 .then(|| crate::rendering::bevy_backend::entity_preparation::Reservations::new(world)),
+            world_reservations: (!world_models.is_empty()).then(||crate::rendering::bevy_backend::entity_preparation::Reservations::new(world)),
             player_depth_hack: if equipment.is_empty() && attachments.is_empty() {
                 0.0
             } else {
@@ -1281,6 +1308,7 @@ fn coordinate_inner(
             },
             equipment,
             attachments,
+            world_models,
         };
         let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle()
             .then(std::time::Instant::now);
@@ -1349,6 +1377,7 @@ fn publish_batch(
         assets,
         equipment,
         attachments,
+        world_models,
         equipment_commands,
         surfaces,
         surface_images,
@@ -1448,7 +1477,7 @@ fn publish_batch(
             .iter()
             .any(|(mesh, material, _)| mesh == &key.0 && material == &key.1),
         MaterialConsumer::Decal(key) => source.decal_materials().contains(key),
-        MaterialConsumer::Equipment(_) | MaterialConsumer::Attachment(_) => false,
+        MaterialConsumer::Equipment(_) | MaterialConsumer::Attachment(_) | MaterialConsumer::WorldModel(_) => false,
     };
     for (key, consumers) in &dependencies {
         if let Some(cached) = state.cache.get_mut(key) {
@@ -1463,6 +1492,7 @@ fn publish_batch(
                 consumers,
                 &mut cached.attachments,
             );
+            super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut cached.attachments);
             for lease in &state.leases {
                 if let Some(source) = lease.upgrade() {
                     if consumers
@@ -1484,6 +1514,7 @@ fn publish_batch(
             &attachment.model,
         )?;
     }
+    for model in &world_models{super::world_models::validate(world,model)?;}
     // Reserved identities become live before any proxy entity is spawned.
     assets.publish(world);
     {
@@ -1532,6 +1563,7 @@ fn publish_batch(
             consumers,
             &mut attachment_leases,
         );
+        super::world_models::add_leases(world,consumers.iter().filter_map(|consumer|if let MaterialConsumer::WorldModel(id)=consumer{Some(*id)}else{None}),&mut attachment_leases);
         state.cache.insert(
             key,
             CacheLease {
@@ -1559,6 +1591,7 @@ fn publish_batch(
     for attachment in attachments {
         super::equipment_attachment_admission::publish(world, attachment.entity, attachment.model)?;
     }
+    for model in world_models{super::world_models::publish(world,model)?;}
     for (surface, binding) in surfaces {
         let key = (surface.source.clone(), surface.material.clone());
         let images = surface_images

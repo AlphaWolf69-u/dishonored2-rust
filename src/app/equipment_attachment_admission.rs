@@ -769,6 +769,11 @@ pub(super) fn animate_upgrade(
         Ok(())
     })
 }
+/// Borrow the actual ordered upgrade declarations already acquired for this
+/// equipment actor. Firing shares their ammo metadata instead of rereading it.
+pub(super) fn upgrade_definitions(world: &World, weapon: EntityId) -> Option<&[Arc<Upgrade>]> {
+    world.get_resource::<Attachments>()?.upgrades.get(&weapon)?.definitions.as_deref()
+}
 /// 639410(param,5) chooses the first authored upgrade, not the first ready
 /// child. Returning false retains44f240's pending magazine command.
 pub(super) fn animate_magazine(

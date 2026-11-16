@@ -153,19 +153,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
             let component = if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
                 shared.clone()
             } else {
-                let begin_pickup_sound = atom(&fields, "m_beginPickupSoundEvent")
-                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
-                    .map(|name| crate::assets::wwise::event_resources::acquire_with(catalog, name, &mut read)).transpose()?;
-                let definition = Arc::new(crate::gameplay::pickable_component::PickableDefinition {
-                    item: item.to_owned(), quantity: atom(&fields, "m_quantity").unwrap_or("0").parse()
-                        .map_err(|_| "invalid pickable quantity")?, begin_pickup_sound,
-                    shadow_grapple: boolean(&fields, "m_canBeShadowGrappled", true)?,
-                    usable_by_player: boolean(&fields, "m_usableByPlayer", true)?,
-                    invisible_npc_loot: boolean(&fields, "m_invisibleNpcLoot", false)?,
-                    pickup_interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(interaction)?,
-                    scheduling: components::scheduling(&fields,
-                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
-                });
+                let definition = super::carrying::definition(catalog, &fields)?;
                 if !catalog.has_overlays() {
                     if let Some(key) = identity { definitions.insert(key, definition.clone()); }
                 }

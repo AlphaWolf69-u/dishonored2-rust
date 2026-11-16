@@ -2377,3 +2377,5 @@ Audiograph/objective integration sweep (2026-11-15):
   for a measurement in a view with many world-material instances (Dust
   District leaves, `red_leaves_falling`, once that emitter publishes
   surfaces) to size it against the shader/pipeline work.
+
+- Projectile629590 collector sorting currently uses stable Rust slice sorting to retain collector-order ties after initial-point/ray merge. The hit vectors and query scratch are retained, but stable sort may use temporary storage for larger hit sets. Port the source collector sorting implementation or supply a retained sorting workspace after source tie behavior is resolved; expected effect is only per-projectile collision collector scratch allocation, not a measured frame-time or memory saving. No performance test was run at user instruction.

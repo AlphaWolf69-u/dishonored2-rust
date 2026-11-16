@@ -20,7 +20,51 @@ enum PreparedGeometry {
     Animated(ArmModel),
 }
 
+struct SurfaceTemplate {mesh:Handle<Mesh>,source_index:usize,probe_index:u32,material:MaterialHandle}
+enum TemplateGeometry {Rigid(Vec<SurfaceTemplate>),Animated{model:String,info:Arc<crate::bmd6::ModelInfo>,skeleton:Arc<crate::edge_skeleton::EdgeSkeleton>,surfaces:Vec<SurfaceTemplate>}}
+pub(in crate::app) struct Template {descriptor:Arc<Descriptor>,geometry:TemplateGeometry}
+impl Template{
+    pub(in crate::app) fn descriptor(&self)->&Arc<Descriptor>{&self.descriptor}
+    pub(in crate::app) fn uploads(&self)->Vec<(bevy::asset::AssetId<Mesh>,bevy::asset::UntypedAssetId)>{
+        let surfaces=match &self.geometry{TemplateGeometry::Rigid(surfaces)|TemplateGeometry::Animated{surfaces,..}=>surfaces};
+        surfaces.iter().map(|surface|(surface.mesh.id(),match &surface.material{MaterialHandle::Probe(handle)=>handle.id().untyped(),_=>unreachable!("ordinary model template material") })).collect()
+    }
+    pub(in crate::app) fn instantiate(&self,commands:&mut super::super::setup_commands::SetupCommands)->Result<PreparedModel,String>{
+        let sources=match &self.geometry{TemplateGeometry::Rigid(surfaces)|TemplateGeometry::Animated{surfaces,..}=>surfaces};
+        let mut surfaces=Vec::with_capacity(sources.len());
+        for source in sources{
+            let MaterialHandle::Probe(material)=&source.material else{return Err("world model template is not an ordinary material".into())};
+            let mut entity=commands.spawn((Mesh3d(source.mesh.clone()),MeshMaterial3d(material.clone()),Transform::IDENTITY,GlobalTransform::IDENTITY,Visibility::Hidden,MeshTag(source.probe_index)));
+            if !self.descriptor.cast_shadows{entity.insert(bevy::light::NotShadowCaster);}
+            surfaces.push(ArmSurface{entity:entity.id(),_mesh:source.mesh.clone(),source_index:source.source_index,probe_index:source.probe_index,material:source.material.clone()});
+        }
+        let geometry=match &self.geometry{
+            TemplateGeometry::Rigid(_)=>PreparedGeometry::Rigid(surfaces),
+            TemplateGeometry::Animated{model,info,skeleton,..}=>PreparedGeometry::Animated(ArmModel{managed_entity:None,model:model.clone(),joints:Vec::new(),inverse_bindposes:None,_equipment:None,skeleton:skeleton.clone(),info:info.clone(),surfaces,lighting:Default::default(),shown:false,world_bounds:None,depth_hack:1.}),
+        };
+        Ok(PreparedModel{descriptor:self.descriptor.clone(),geometry})
+    }
+}
+
+/// Share the existing geometry/material builders, then discard their queued
+/// ECS proxy reservations. The template retains assets only, no actor IDs.
+pub(in crate::app) fn prepare_template(descriptor:Arc<Descriptor>,resolver:&mut MaterialResolver,meshes:&mut dyn AssetWrite<Mesh>,commands:&mut super::super::setup_commands::SetupCommands)->Result<Template,String>{
+    let model=prepare_world(descriptor,resolver,meshes,commands)?;
+    let project=|surface:ArmSurface|SurfaceTemplate{mesh:surface._mesh,source_index:surface.source_index,probe_index:surface.probe_index,material:surface.material};
+    let geometry=match model.geometry{
+        PreparedGeometry::Rigid(surfaces)=>TemplateGeometry::Rigid(surfaces.into_iter().map(project).collect()),
+        PreparedGeometry::Animated(model)=>TemplateGeometry::Animated{model:model.model,info:model.info,skeleton:model.skeleton,surfaces:model.surfaces.into_iter().map(project).collect()},
+    };
+    Ok(Template{descriptor:model.descriptor,geometry})
+}
+
 impl PreparedModel {
+    pub(in crate::app) fn uploads(&self) -> Vec<(bevy::asset::AssetId<Mesh>, bevy::asset::UntypedAssetId)> {
+        self.surfaces().iter().map(|surface| {
+            let material = match &surface.material { MaterialHandle::Probe(handle)=>handle.id().untyped(), _=>unreachable!("model preparation admits ordinary probe materials") };
+            (surface._mesh.id(),material)
+        }).collect()
+    }
     fn surfaces(&self) -> &[ArmSurface] {
         match &self.geometry {
             PreparedGeometry::Rigid(surfaces) => surfaces,
@@ -115,12 +159,22 @@ pub(in crate::app) fn prepare(
     })
 }
 
+pub(in crate::app) fn prepare_world(descriptor:Arc<Descriptor>,resolver:&mut MaterialResolver,meshes:&mut dyn AssetWrite<Mesh>,commands:&mut super::super::setup_commands::SetupCommands)->Result<PreparedModel,String>{
+    let model=prepare(descriptor,0.0,resolver,meshes,commands)?;
+    for surface in model.surfaces(){let entity=surface.entity;commands.queue(move|world:&mut World|{
+        world.entity_mut(entity).remove::<bevy::camera::visibility::NoFrustumCulling>();
+    });}
+    Ok(model)
+}
+
 struct Model {
     prepared: PreparedModel,
     // Source weapon rig is the actual tag owner, retained while bound.
-    weapon: Arc<Weapon>,
-    parent: EntityId,
-    binding: crate::gameplay::player::equipment_attachment::Binding,
+    weapon: Option<Arc<Weapon>>,
+    parent: Option<EntityId>,
+    binding: Option<crate::gameplay::player::equipment_attachment::Binding>,
+    world: Option<ReferenceFrame>,
+    world_scale: Option<[f32;3]>,
     node: Option<crate::gameplay::player::animation::AnimBasicNode>,
     command: Option<crate::gameplay::player::animation::AnimBasicCommand>,
     visible: bool,
@@ -135,6 +189,34 @@ pub(in crate::app) struct Models {
     live: HashMap<EntityId, Model>,
 }
 impl Models {
+    /// World actors share geometry/material/skinning primitives, while their
+    /// actual entity frame and lifecycle stay with the world-model owner.
+    pub(in crate::app) fn publish_world(&mut self, id: EntityId, prepared: PreparedModel, frame: ReferenceFrame, visible: bool) -> Result<(), String> {
+        if self.live.contains_key(&id) { return Err("world model generation already published".into()); }
+        let node = match &prepared.descriptor.geometry { Geometry::Animated {rig,..} => Some(rig.template.clone()), Geometry::Rigid(_) => None };
+        self.live.insert(id, Model { prepared, weapon:None,parent:None,binding:None,world:Some(frame),world_scale:None,node,command:None,
+            visible,shown:false,frame:Some(frame),bounds:None,lighting:Default::default() });
+        Ok(())
+    }
+    pub(in crate::app) fn set_world_frame(&mut self, id:EntityId, frame:ReferenceFrame)->Result<(),String>{
+        let model=self.live.get_mut(&id).ok_or("world model generation is absent")?;
+        if model.weapon.is_some(){return Err("bound equipment cannot accept a world actor frame".into());}
+        model.world=Some(frame);Ok(())
+    }
+    pub(in crate::app) fn set_world_scale(&mut self,id:EntityId,scale:[f32;3])->Result<(),String>{
+        self.live.get_mut(&id).ok_or("world model generation is absent")?.world_scale=Some(scale);Ok(())
+    }
+    pub(in crate::app) fn draw_entities(&self)->impl Iterator<Item=Entity>+'_ {
+        self.live.values().flat_map(|model|model.prepared.surfaces().iter().map(|surface|surface.entity))
+    }
+    pub(in crate::app) fn view_visible(&self,id:EntityId,views:&Query<&ViewVisibility>)->bool{
+        self.live.get(&id).is_some_and(|model|model.prepared.surfaces().iter().any(|surface|views.get(surface.entity).is_ok_and(ViewVisibility::get)))
+    }
+    pub(in crate::app) fn submit_area(&self,id:EntityId,area:f32,bindings:&bevy::platform::collections::HashMap<MaterialHandle,Vec<usize>>,demands:&[crate::texture::ProjectedAreaDemand])->Result<(),String>{
+        let Some(model)=self.live.get(&id).filter(|model|model.shown)else{return Ok(())};
+        for surface in model.prepared.surfaces(){for &slot in bindings.get(&surface.material).into_iter().flatten(){demands.get(slot).ok_or("world model material references an unknown image")?.submit_dynamic(area);}}
+        Ok(())
+    }
     /// The caller supplies visibility from the actual magazine callback. There
     /// is no inferred loaded round or fallback bind joint.
     pub(in crate::app) fn publish(
@@ -157,9 +239,11 @@ impl Models {
             id,
             Model {
                 prepared,
-                weapon,
-                parent,
-                binding,
+                weapon: Some(weapon),
+                parent: Some(parent),
+                binding: Some(binding),
+                world: None,
+                world_scale: None,
                 node,
                 command: None,
                 visible,
@@ -291,17 +375,15 @@ impl Models {
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
     ) -> Result<(), String> {
         for (&id, model) in &mut self.live {
-            let render = renders.iter().find(|render| {
-                render.managed_entity == Some(model.parent) && render.model == model.weapon.model
-            });
+            let render = model.weapon.as_ref().and_then(|weapon| renders.iter().find(|render| {
+                render.managed_entity == model.parent && render.model == weapon.model
+            }));
             let parent = identities
-                .and_then(|identities| identities.published_frame(model.parent))
+                .and_then(|identities| model.parent.and_then(|parent|identities.published_frame(parent)))
                 .map(|(frame, _)| frame);
             let joint = render
                 .and_then(|render| {
-                    model
-                        .binding
-                        .joint
+                    model.binding.as_ref().and_then(|binding|binding.joint)
                         .and_then(|joint| render.joints.get(joint))
                 })
                 .map(|rows| ReferenceFrame {
@@ -310,17 +392,18 @@ impl Models {
                         std::array::from_fn(|row| rows[row][column])
                     }),
                 });
-            let frame = parent.and_then(|parent| model.binding.world(parent, joint));
+            let frame = model.world.or_else(|| parent.and_then(|parent| model.binding.as_ref().and_then(|binding|binding.world(parent, joint))));
             model.frame = frame;
             let shown =
-                model.visible && render.is_some_and(|render| render.visible) && frame.is_some();
+                model.visible && (model.world.is_some() || render.is_some_and(|render| render.visible)) && frame.is_some();
             if let Some(frame) = frame {
                 let placement = &model.prepared.descriptor.placement;
+                let scale=model.world_scale.unwrap_or(placement.scale);
                 let bounds = render_model::transformed_bounds(
                     model.prepared.descriptor.geometry.bounds(),
                     frame.position,
                     frame.basis,
-                    placement.scale,
+                    scale,
                 );
                 model.bounds = Some(bounds);
                 publish_model_lighting(
@@ -335,7 +418,7 @@ impl Models {
                 match &mut model.prepared.geometry {
                     PreparedGeometry::Rigid(surfaces) => {
                         let rows =
-                            render_model::affine_rows(frame.position, frame.basis, placement.scale);
+                            render_model::affine_rows(frame.position, frame.basis, scale);
                         let matrix = std::array::from_fn(|index| rows[index / 4][index % 4]);
                         let transform = super::super::view_geometry::game_affine_to_view(&matrix);
                         let global = GlobalTransform::from(transform);
@@ -377,7 +460,7 @@ impl Models {
                             &rig.root,
                         )?;
                         let axis = Mat3::from_cols_array_2d(&frame.basis)
-                            * Mat3::from_diagonal(Vec3::from_array(placement.scale));
+                            * Mat3::from_diagonal(Vec3::from_array(scale));
                         let position = Vec3::from_array(frame.position);
                         let rows = matrices
                             .iter()

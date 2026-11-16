@@ -18,6 +18,7 @@ use std::{
 
 pub(crate) mod attachment;
 mod tree;
+mod firing;
 
 /// Immutable selected-entity projection. No live playback state or independent
 /// material/geometry cache lives here. The host retains this lease while the
@@ -42,6 +43,8 @@ pub struct Descriptor {
     pub animation_aliases: HashMap<String, usize>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     default_clip: usize,
+    ///62ba10's cached model-local bolt socket sampled at the Fire scene key.
+    pub projectile_offset: Option<bevy_math::Vec3>,
 }
 
 impl std::ops::Deref for Descriptor {
@@ -383,7 +386,7 @@ impl Sources {
         check_active(cancelled)?;
         let rig = Rig::acquire(catalog, &model)?;
         check_active(cancelled)?;
-        let (default_clip, animations, animation_aliases) = {
+        let (default_clip, projectile_offset, animations, animation_aliases) = {
             let mut clips = Clips {
                 catalog,
                 rig: &rig,
@@ -392,7 +395,11 @@ impl Sources {
                 loaded: HashMap::new(),
             };
             let default_clip = clips.clip(default_alias)?;
-            (default_clip, clips.animations, clips.loaded)
+            let projectile_offset = if let Some(settings) = metadata.ranged.as_ref().filter(|settings| settings.family == RangedFamily::Crossbow) {
+                if let Some(alias) = settings.fired_animation.as_deref() { clips.clip_cancellable(alias, cancelled)?; }
+                Some(firing::crossbow_offset(&mut sources, settings, &rig, &mut clips, cancelled)?)
+            } else { None };
+            (default_clip, projectile_offset, clips.animations, clips.loaded)
         };
         check_active(cancelled)?;
         let stem = model
@@ -411,6 +418,7 @@ impl Sources {
             animation_aliases,
             sound_settings,
             default_clip,
+            projectile_offset,
         });
         if !catalog.has_overlays() {
             self.entities.insert(key, Arc::downgrade(&descriptor));

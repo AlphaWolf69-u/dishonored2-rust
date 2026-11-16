@@ -49,6 +49,64 @@ pub fn zero_distance_point_depth(
     Ok(Some(maximum))
 }
 
+/// 12b7aa0's cold inside-face witness, including four-lane face tie order.
+/// This covers only the same finite, unscaled zero-radius case as the depth
+/// predicate above; outside edge/vertex distance still belongs to GSK.
+pub fn zero_distance_point_geometry(
+    shape: &ConvexPolytope,
+    point: [f32; 4],
+) -> Result<Option<super::convex_support::distance::ConvexClosestPoint>, String> {
+    if shape.radius != 0. || shape.connectivity.is_none() || !point.iter().all(|v| v.is_finite()) {
+        return Ok(None);
+    }
+    if shape.planes.len() < 4 {
+        return Err("polytope point query requires at least four source planes".into());
+    }
+    if !shape.planes.iter().flatten().all(|v| v.is_finite()) {
+        return Ok(None);
+    }
+    let score = |index: usize| {
+        let p = shape.planes[index];
+        ((p[3] + p[2] * point[2]) + p[1] * point[1]) + p[0] * point[0]
+    };
+    let tail = shape.planes.len() - 4;
+    let mut faces: [usize; 4] = std::array::from_fn(|i| tail + i);
+    let mut scores = faces.map(score);
+    for first in (0..tail).step_by(4) {
+        for lane in 0..4 {
+            let candidate = score(first + lane);
+            if scores[lane] < candidate {
+                scores[lane] = candidate;
+                faces[lane] = first + lane;
+            }
+        }
+    }
+    let pair_faces: [usize; 4] = std::array::from_fn(|i| {
+        if scores[i] < scores[(i + 1) & 3] {
+            faces[(i + 1) & 3]
+        } else {
+            faces[i]
+        }
+    });
+    let pairs: [f32; 4] = std::array::from_fn(|i| max(scores[(i + 1) & 3], scores[i]));
+    let face = if pairs[0] < pairs[2] {
+        pair_faces[2]
+    } else {
+        pair_faces[0]
+    };
+    let opposite: [f32; 4] = std::array::from_fn(|i| max(scores[(i + 2) & 3], scores[i]));
+    let distance = max(opposite[0], opposite[1]);
+    if !(distance < 0.) {
+        return Ok(None);
+    }
+    let normal = shape.planes[face];
+    Ok(Some(super::convex_support::distance::ConvexClosestPoint {
+        point: std::array::from_fn(|i| point[i] - distance * normal[i]),
+        normal,
+        distance: [distance; 4],
+    }))
+}
+
 fn min(a: f32, b: f32) -> f32 {
     if a < b {
         a

@@ -11,9 +11,10 @@ use super::{
         CompoundQuery, CompoundQueryVisitor, CompoundTree,
     },
     convex_support::{
-        distance::query_point, ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
+        distance::{query_point, ConvexClosestPoint},
+        ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
     },
-    polytope_query::zero_distance_point_depth,
+    polytope_query::zero_distance_point_geometry,
     shape_tags::{decode_shape_tag, ShapeTagSource},
     shape_transform::{transform_bounds, transform_point, ScaledShapeTransform, ShapeMatrix},
 };
@@ -81,6 +82,20 @@ impl ShapePointQuery {
         filter: Option<CollisionQueryFilter>,
         submit: &mut dyn FnMut(ShapePointContact, f32),
     ) -> Result<(), String> {
+        self.hits_with_geometry(target, point, query, filter, &mut |contact, geometry| {
+            submit(contact, geometry.distance[0])
+        })
+    }
+
+    /// The same traversal and collector order with actual world witness data.
+    pub fn hits_with_geometry(
+        &mut self,
+        target: PointQueryTarget<'_>,
+        point: [f32; 4],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        submit: &mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
+    ) -> Result<(), String> {
         let root = target.shapes.get(target.shapes.root())?;
         let bounds = match &root.geometry {
             QueryGeometry::Compound(shape) => {
@@ -130,7 +145,7 @@ impl ShapePointQuery {
         sphere: &mut PointSphere,
         query: ShapeHitInfo,
         filter: Option<CollisionQueryFilter>,
-        submit: &mut dyn FnMut(ShapePointContact, f32),
+        submit: &mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
     ) -> Result<(), String> {
         let shape = target.shapes.get(item)?;
         let handler = self.dispatch.select(
@@ -150,14 +165,18 @@ impl ShapePointQuery {
         self.active.push(item);
         let result: Result<(), String> = (|| match (&shape.geometry, handler) {
             (QueryGeometry::Polytope(polytope), ClosestPointHandler::ConvexConvex) => {
-                let distance = if !state.scaled && polytope.connectivity.is_some() {
+                let geometry = if !state.scaled && polytope.connectivity.is_some() {
                     let local = transform_point(relative, sphere.vertex);
-                    let distance =
-                        zero_distance_point_depth(polytope, [local[0], local[1], local[2]])?
-                            .ok_or(
-                            "specialized nonfinite/radius polytope point query is not implemented",
-                        )?;
-                    (distance < 0.).then_some(distance)
+                    if polytope.radius != 0.
+                        || !local.iter().all(|v| v.is_finite())
+                        || !polytope.planes.iter().flatten().all(|v| v.is_finite())
+                    {
+                        return Err(
+                            "specialized nonfinite/radius polytope point query is not implemented"
+                                .into(),
+                        );
+                    }
+                    zero_distance_point_geometry(polytope, local)?
                 } else {
                     let prepared = self.support.prepare(ConvexSupportInput {
                         shape_type: shape.header.shape_type,
@@ -185,10 +204,22 @@ impl ShapePointQuery {
                         prepared.radius,
                         0.,
                     )?
-                    .map(|geometry| geometry.distance[0])
                 };
-                if let Some(distance) = distance {
-                    submit(ShapePointContact { target: hit }, distance);
+                if let Some(geometry) = geometry {
+                    submit(
+                        ShapePointContact { target: hit },
+                        ConvexClosestPoint {
+                            point: transform_point(
+                                state.transform.world_from_local,
+                                geometry.point,
+                            ),
+                            normal: super::shape_transform::rotate_vector(
+                                state.transform.world_from_local,
+                                geometry.normal,
+                            ),
+                            distance: geometry.distance,
+                        },
+                    );
                 }
                 Ok(())
             }
@@ -262,7 +293,7 @@ struct InstanceVisitor<'a, 'b> {
     sphere: &'a mut PointSphere,
     query: ShapeHitInfo,
     filter: Option<CollisionQueryFilter>,
-    submit: &'a mut dyn FnMut(ShapePointContact, f32),
+    submit: &'a mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
     error: Option<String>,
 }
 impl InstanceVisitor<'_, '_> {
@@ -356,14 +387,31 @@ impl ShapePointQuery {
         submit: &mut dyn FnMut(LeafClosestPoint) -> f32,
     ) -> Result<(), String> {
         let state = CompoundShapeState {
-            transform: ScaledShapeTransform { world_from_local: transform, scale: [1.; 4], offset: [0.; 4] },
+            transform: ScaledShapeTransform {
+                world_from_local: transform,
+                scale: [1.; 4],
+                offset: [0.; 4],
+            },
             scaled: false,
             keep_radius: false,
             radius: 0.,
         };
         let relative = super::shape_transform::relative_rigid(IDENTITY, transform);
         let point = PointSphere::new([point[0], point[1], point[2], 1.], 0.).vertex;
-        self.closest_leaf(shapes, shapes.root(), state, relative, ShapeKey { value: u32::MAX, bits: 0 }, point, threshold, submit, 0)
+        self.closest_leaf(
+            shapes,
+            shapes.root(),
+            state,
+            relative,
+            ShapeKey {
+                value: u32::MAX,
+                bits: 0,
+            },
+            point,
+            threshold,
+            submit,
+            0,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -390,19 +438,35 @@ impl ShapePointQuery {
                     vertices: &polytope.vertices,
                     radius: polytope.radius,
                     scaled: state.scaled.then_some(ConvexSupportScale {
-                        scale: [state.transform.scale[0], state.transform.scale[1], state.transform.scale[2]],
-                        offset: [state.transform.offset[0], state.transform.offset[1], state.transform.offset[2]],
+                        scale: [
+                            state.transform.scale[0],
+                            state.transform.scale[1],
+                            state.transform.scale[2],
+                        ],
+                        offset: [
+                            state.transform.offset[0],
+                            state.transform.offset[1],
+                            state.transform.offset[2],
+                        ],
                         radius: state.radius,
                     }),
                 })?;
-                if let Some(hit) = query_point(point, prepared.vertices, relative, 0., prepared.radius, *threshold)? {
+                if let Some(hit) = query_point(
+                    point,
+                    prepared.vertices,
+                    relative,
+                    0.,
+                    prepared.radius,
+                    *threshold,
+                )? {
                     let world = state.transform.world_from_local;
                     *threshold = submit(LeafClosestPoint {
                         position: transform_point(world, hit.point),
                         normal: super::shape_transform::rotate_vector(world, hit.normal),
                         distance: hit.distance[0],
                         shape_key: key.value,
-                        connectivity: shape.header.flags & 2 != 0 && polytope.connectivity.is_some(),
+                        connectivity: shape.header.flags & 2 != 0
+                            && polytope.connectivity.is_some(),
                     });
                 }
                 Ok(())
@@ -429,7 +493,17 @@ impl ShapePointQuery {
                         },
                     )?;
                     let child_key = key.compound_child(index as u16, compound.key_bits)?;
-                    self.closest_leaf(shapes, instance.shape, prepared.state, prepared.relative, child_key, point, threshold, submit, depth + 1)?;
+                    self.closest_leaf(
+                        shapes,
+                        instance.shape,
+                        prepared.state,
+                        prepared.relative,
+                        child_key,
+                        point,
+                        threshold,
+                        submit,
+                        depth + 1,
+                    )?;
                 }
                 Ok(())
             }

@@ -22,10 +22,10 @@ impl PhysicsScene {
         let Listener::Component { owner, handle, generation, handler } = listener else {
             return Err(format!("registered entity listener has no admitted callback owner: {listener:?}"));
         };
-        if owner != self.owner_id || handle.class_id != self.classes[8] {
+        if owner != self.owner_id || !self.is_rigid_class(handle.class_id) {
             return Err(format!("registered entity callback has no matching physics owner: {listener:?}"));
         }
-        let component = self.rigid_bodies.get(handle.slot).ok_or("entity message rigid slot is absent")?;
+        let component = self.rigid_component(handle)?;
         if component.owner.generation != generation { return Err("entity message rigid generation is stale".into()); }
         let index = component.owner.entity.ok_or("entity message rigid entity is absent")?;
         let entity = self.entities.get(index).ok_or("entity message owner is absent")?;
@@ -41,7 +41,7 @@ impl PhysicsScene {
             //80bc50 ->727100 retains/coalesces the actual typed motion
             // request. Its component update/publication owner consumes it.
             0x149 => match &event.payload {
-                Payload::Bytes(bytes) => self.rigid_bodies.get_mut(handle.slot).ok_or("motion request component absent")?.apply_motion_request(bytes),
+                Payload::Bytes(bytes) => rigid_pool_mut!(self, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.apply_motion_request(bytes),
                 _ => Err("rigid velocity request has no source message payload".into()),
             },
             0xfa | 0x148 => {
@@ -97,7 +97,7 @@ impl PhysicsScene {
         drop(guard);
 
         //18d2b0 retains requested vectors while publishing their new scale.
-        let component = self.rigid_bodies.get_mut(handle.slot).ok_or("timespace component absent")?;
+        let component = rigid_pool_mut!(self, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
         let mut flags = component.velocities.requested_linear[3].to_bits();
         let wake = factor != 0. && previous == 0. && flags & 1 != 0;
         let (linear, angular) = if factor == 0. {
@@ -119,7 +119,7 @@ impl PhysicsScene {
             if wake { world.storage.activate_body(&mut world.geometry, &mut publication, body)?; }
             world.storage.set_body_velocity(&mut world.geometry, &mut publication, body, linear, angular, 0)?;
         }
-        let component = self.rigid_bodies.get_mut(handle.slot).ok_or("timespace component disappeared")?;
+        let component = rigid_pool_mut!(self, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
         component.velocities.scaled_linear = linear;
         component.velocities.scaled_angular = angular;
         Ok(())

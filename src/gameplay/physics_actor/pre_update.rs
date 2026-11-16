@@ -44,6 +44,20 @@ impl PhysicsActorLinks {
         )
     }
 
+    /// Same7551c0 traversal with worker-owned retained path capacity.
+    pub fn consume_pre_updates_reuse(
+        &mut self,
+        task: &crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
+        world: &mut impl PrePhysicsWorld,
+        path: &mut Vec<usize>,
+    ) -> Result<(), String> {
+        self.consume_updates(
+            task,
+            super::ActorUpdatePhase::PrePhysics,
+            |actors, actor, _| actors.pre_update_inner(actor, world, path),
+        )
+    }
+
     pub fn pre_update(
         &mut self,
         actor: usize,

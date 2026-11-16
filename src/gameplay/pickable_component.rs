@@ -5,6 +5,8 @@ use super::component_state::{ComponentInstance, ComponentOwner};
 /// reference it. Inline declarations have their own owner.
 #[derive(Debug)]
 pub struct PickableDefinition {
+    /// Same Pickable_Simple component; holding never creates inventory data.
+    pub(crate) hold: Option<HoldProperties>,
     pub item: String,
     pub quantity: i32,
     pub(crate) begin_pickup_sound: Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>,
@@ -13,6 +15,18 @@ pub struct PickableDefinition {
     pub invisible_npc_loot: bool,
     pub(crate) pickup_interaction: super::interaction_definition::InteractionDef,
     pub scheduling: super::component_state::declaration::DeclarationScheduling,
+}
+
+/// arkDeclCpntPickable_Simple::holdAndThrowProps_t, ctor 14076e0e0.
+#[derive(Debug)]
+pub(crate) struct HoldProperties {
+    pub center_offset: [f32; 3],
+    pub angle_offset: [[f32; 3]; 3],
+    pub encumbrance: i32,
+    pub both_hands: bool,
+    pub attach_tag: String,
+    pub collide_with_sword: bool,
+    pub throw_factor: f32,
 }
 
 /// A checked component reference carries the factory generation, not just a

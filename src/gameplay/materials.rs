@@ -45,6 +45,11 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
             catalog, name, |path| texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Runtime),
         ))
     }
+    /// Publish an already acquired canonical declaration without archive IO.
+    /// This enters the same name/identity table as synchronous acquisition.
+    pub(crate) fn admit_definition(&mut self,name:&str,definition:Arc<Definition>)->Result<usize,String> {
+        self.declaration_using(name,||Ok(definition))
+    }
     fn declaration_using(
         &mut self,
         name: &str,
@@ -218,6 +223,9 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialLibrary<S, C> {
     }
     pub fn records(&self) -> &[MaterialRecord] {
         &self.records
+    }
+    pub(crate) fn contact_face_cosines(&self) -> &[f32;256] {
+        &self.constants.face_half_angle_cosines
     }
     pub fn free_head(&self) -> i32 {
         self.free_head

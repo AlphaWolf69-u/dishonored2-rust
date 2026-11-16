@@ -10,6 +10,8 @@ pub(super) struct DocumentHierarchy {
     /// Initial authored world frames for actual base entity ancestors.
     pub(super) ancestors: HashMap<usize, (ReferenceFrame, Option<usize>)>,
     render_frames: HashMap<usize, ReferenceFrame>,
+    /// Sparse actual player/externally published joints requested by live binds.
+    pub(super) external_joints: HashMap<(usize,i16),ReferenceFrame>,
 }
 
 pub(super) struct Binding {
@@ -21,6 +23,16 @@ pub(super) struct Binding {
     parent_actor: (ComponentHandle, u32),
     initial_render_frame: ReferenceFrame,
     last_render_frame: Option<ReferenceFrame>,
+}
+
+impl DocumentHierarchy {
+    pub(super) fn record_runtime_binding(&mut self,child:usize,parent:usize,parent_placement:Option<usize>,joint:i16,
+        child_actor:(ComponentHandle,u32),parent_actor:(ComponentHandle,u32),initial:ReferenceFrame,parent_frame:ReferenceFrame) {
+        self.ancestors.entry(parent).or_insert((parent_frame,parent_placement));
+        self.render_frames.entry(parent).or_insert(parent_frame);
+        self.render_frames.entry(child).or_insert(initial);
+        self.bindings.push(Binding {child,parent,parent_placement,joint,child_actor,parent_actor,initial_render_frame:initial,last_render_frame:None});
+    }
 }
 
 pub(in crate::app) fn joint_requests(document: &entities::Document,
@@ -82,8 +94,8 @@ impl PhysicsScene {
             let &index = self.shared_indices.get(&id).ok_or("bound parent identity is not admitted")?;
             for &packed in self.entities[index].components.entries.values() {
                 let handle = ComponentHandle::from_packed(packed)?;
-                if handle.class_id != self.classes[8] { continue; }
-                let component = self.rigid_bodies.get(handle.slot).ok_or("bound parent rigid component absent")?;
+                if !self.is_rigid_class(handle.class_id) { continue; }
+                let component = self.rigid_component(handle)?;
                 if component.owner.flags & 0xc < 8 { continue; }
                 let world = self.world.read().map_err(|_| "level physics query owner is poisoned")?;
                 let body = world.storage.bodies.get(component.body().ok_or("bound parent body absent")?).ok_or("bound parent body retired")?;
@@ -115,9 +127,9 @@ impl PhysicsScene {
             .collect::<HashMap<_, _>>();
         let mut requested = std::collections::HashSet::new();
         let mut ordered = Vec::new();
-        for readable in &interactions.readable {
+        for entity in &self.entities {
             let mut path = Vec::new();
-            let mut next = readable.entity.as_str();
+            let mut next = entity.name.as_str();
             while let Some(binding) = authored.get(next) {
                 if path.iter().any(|name: &String| name == next) { return Err("cyclic readable entity binding".into()); }
                 path.push(next.to_owned());
@@ -139,7 +151,7 @@ impl PhysicsScene {
                 let pose = entities::spawn_frame(definition)?;
                 let index = self.entities.len();
                 let shared = live.allocate_managed(Arc::from(name.as_str()), class, None, 0, constructor_tag)?;
-                self.entities.push(PhysicsEntity { name: name.clone(), shared, components: EntityComponents::new(index),
+                self.entities.push(PhysicsEntity { retired: false, external: false, name: name.clone(), shared, components: EntityComponents::new(index),
                     class, environment: None, flags: 0, entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
                     frame: crate::gameplay::reference_frame::PublishedFrame { pose,
                         ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
@@ -215,7 +227,12 @@ impl PhysicsScene {
         actor.parent = None;
         actor.binding.entity = None;
         self.entities[child].entity_flags &= !0x80;
+        let parent_index=binding.parent;
+        let joint=binding.joint;
         self.document_hierarchy.bindings.remove(index);
+        if !self.document_hierarchy.bindings.iter().any(|binding|binding.parent==parent_index&&binding.joint==joint) {
+            self.document_hierarchy.external_joints.remove(&(parent_index,joint));
+        }
         self.actors.propagate_body_flag(parent_actor, false)
     }
 
@@ -241,6 +258,7 @@ impl PhysicsScene {
         if !self.document_hierarchy.bindings.is_empty() { return Err("document attachments survived entity destruction".into()); }
         self.document_hierarchy.ancestors.clear();
         self.document_hierarchy.render_frames.clear();
+        self.document_hierarchy.external_joints.clear();
         eprintln!("DOCUMENT_HIERARCHY phase=retired bindings=0 ancestors=0 frames=0");
         Ok(())
     }
@@ -264,7 +282,7 @@ impl PhysicsScene {
             } else if let Some(delta) = bound.entity_delta(&self.entities[index].name) {
                 let basis: [[f32; 3]; 3] = std::array::from_fn(|axis| std::array::from_fn(|row| delta[row][axis]));
                 compose(ReferenceFrame { position: [delta[0][3], delta[1][3], delta[2][3]], basis }, initial)
-            } else { initial };
+            } else { self.entities[index].frame.pose };
             *self.document_hierarchy.render_frames.get_mut(&index).ok_or("bound ancestor render frame absent")? = current;
         }
         for binding in &mut self.document_hierarchy.bindings {
@@ -280,10 +298,14 @@ impl PhysicsScene {
                 .ok_or("bound render actor absent")?;
             let parent = *self.document_hierarchy.render_frames.get(&binding.parent).ok_or("bound parent render frame absent")?;
             let current = if binding.joint < 0 { bind(parent, actor.binding.offset, actor.binding.orientation) } else {
-                let placement = binding.parent_placement.ok_or("bound joint render placement absent")?;
-                let local = frames.local_frame(placement, binding.joint, 3, actor.binding.offset, actor.binding.orientation)?
-                    .ok_or("live bound joint frame absent")?;
-                compose(parent, local)
+                let local=if let Some(frame)=self.document_hierarchy.external_joints.get(&(binding.parent,binding.joint)) {
+                    bind(*frame,actor.binding.offset,actor.binding.orientation)
+                } else {
+                    let placement=binding.parent_placement.ok_or("bound joint render placement absent")?;
+                    frames.local_frame(placement,binding.joint,3,actor.binding.offset,actor.binding.orientation)?
+                        .ok_or("live bound joint frame absent")?
+                };
+                compose(parent,local)
             };
             *self.document_hierarchy.render_frames.get_mut(&binding.child).ok_or("bound child render frame absent")? = current;
             // 878c60/878d10 make808880 return immediately for hidden/retired

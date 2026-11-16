@@ -55,6 +55,7 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
         let count = scene.entities.iter().map(|entity| entity.components.entries.values().len()).sum();
         components.try_reserve_exact(count).map_err(|error| format!("physics retirement snapshot: {error}"))?;
         for entity in &scene.entities {
+            if entity.retired { continue; }
             if live.get(entity.shared).is_none() { return Err("physics retirement entity is stale".into()); }
             for &packed in entity.components.entries.values().iter().rev() {
                 let handle = ComponentHandle::from_packed(packed)?;
@@ -93,10 +94,14 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
         while host.scene.retirement.as_ref().unwrap().retire_next < host.scene.entities.len() {
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
+            if entity.retired {
+                host.scene.retirement.as_mut().unwrap().retire_next += 1;
+                continue;
+            }
             if let Some(world) = host.world.as_deref_mut() { super::super::entity_graphs::retire(world, entity.shared)?; }
             host.scene.destroy_document_attachments(host.live, index)?;
             let entity = &host.scene.entities[index];
-            if host.live.retire_for_world_shutdown(entity.shared).is_none() {
+            if !entity.external && host.live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }
             host.scene.retirement.as_mut().unwrap().retire_next += 1;
@@ -160,7 +165,7 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { membership!(scene.usables) }
         else if handle.class_id == scene.classes[6] { membership!(scene.pickables) }
         else if handle.class_id == scene.classes[7] { membership!(scene.loots) }
-        else if handle.class_id == scene.classes[8] { membership!(scene.rigid_bodies) }
+        else if scene.is_rigid_class(handle.class_id) { membership!(scene.rigid_pool_mut(handle.class_id)?) }
         else if handle.class_id == scene.classes[9] { membership!(scene.factions) }
         else if handle.class_id == scene.classes[10] { membership!(scene.health) }
         else { Err("physics update roster class is unsupported".into()) }
@@ -177,8 +182,8 @@ impl ComponentReleaseWorld for Host<'_> {
     fn stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
         let published = self.world.is_some();
         let scene = &mut self.scene;
-        if handle.class_id == scene.classes[8] {
-            if !scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?.can_release() { scene.stop_placed_rigid(handle, registry, self.events)?; }
+        if scene.is_rigid_class(handle.class_id) {
+            if !scene.rigid_component(handle)?.can_release() { scene.stop_placed_rigid(handle, registry, self.events)?; }
         } else if handle.class_id == scene.classes[0] {
             let declaration = scene.owner(handle)?.declaration.ok_or("trigger declaration absent")?;
             let shared = scene.world.clone();
@@ -250,8 +255,8 @@ impl ComponentReleaseWorld for Host<'_> {
     }
 
     fn deinitialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
-        if handle.class_id == self.scene.classes[8] {
-            if !self.scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?.can_release() {
+        if self.scene.is_rigid_class(handle.class_id) {
+            if !self.scene.rigid_component(handle)?.can_release() {
                 return self.scene.deinitialize_placed_rigid(handle, registry, self.events);
             }
             return self.shutdown(handle, registry);
@@ -308,8 +313,8 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle, component)
         }
         else if handle.class_id == scene.classes[7] { entity.components.release(handle, scene.loots.get_mut(handle.slot).ok_or("Loot absent")?) }
-        else if handle.class_id == scene.classes[8] {
-            let component = scene.rigid_bodies.get_mut(handle.slot).ok_or("RigidBody absent")?;
+        else if handle.class_id == scene.classes[8] || handle.class_id == scene.classes[12] {
+            let component = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
             if !component.can_release() { return Err("RigidBody resources remain at shutdown".into()); }
             entity.components.release(handle, component)
         }
@@ -347,8 +352,8 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[7] { scene.loots.release(handle.slot)?; }
-        else if handle.class_id == scene.classes[8] {
-            let component = scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?;
+        else if handle.class_id == scene.classes[8] || handle.class_id == scene.classes[12] {
+            let component = scene.rigid_component(handle)?;
             if !component.can_release() { return Err("RigidBody resources still live at release".into()); }
             let movement = component.movement_body()?;
             if scene.actors.bodies.get(movement).ok_or("rigid movement slot absent")?.actor.is_some()
@@ -358,7 +363,7 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.free_rigid_movement.try_reserve(1).map_err(|error| format!("rigid free slot: {error}"))?;
             scene.actors.bodies[movement].body_id = 0x00ff_ffff;
             scene.free_rigid_movement.push(movement);
-            scene.rigid_bodies.release(handle.slot)?;
+            scene.rigid_pool_mut(handle.class_id)?.release(handle.slot)?;
         }
         else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
         else if handle.class_id == scene.classes[10] { scene.health.release(handle.slot)?; }

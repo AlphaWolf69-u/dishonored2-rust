@@ -43,7 +43,7 @@ pub(super) fn rollback(scene: &mut PhysicsScene, live: &mut LiveEntities,
             else { return Err("entered physics startup component is not retained by its scene".into()); }
         }
         for handle in handles {
-            if handle.class_id == scene.classes[8] {
+            if scene.is_rigid_class(handle.class_id) {
                 rollback_rigid(scene, &mut registry, entity_events, handle)
                     .map_err(|error| format!("RigidBody {handle:?} preparation abort: {error}"))?;
             }
@@ -66,12 +66,12 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
     let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
     let world = &mut *guard;
     loop {
-        let request = scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?.unpublished_start_request();
+        let request = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.unpublished_start_request();
         let Some((frame, activation, step)) = request else { break; };
-        let body = scene.rigid_bodies.get(handle.slot).ok_or("rigid component absent")?.body().ok_or("rigid body absent")?;
+        let body = scene.rigid_component(handle)?.body().ok_or("rigid body absent")?;
         if step < 4 {
             let behavior = if step == 2 {
-                Some(scene.rigid_bodies.get(handle.slot).ok_or("rigid component absent")?
+                Some(scene.rigid_component(handle)?
                     .start_behavior.ok_or("entered rigid Start behavior absent")?)
             } else { None };
             scene_publication_events!(scene, registry, events);
@@ -95,7 +95,7 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
                 _ => unreachable!(),
             }
         } else {
-            let component = scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?;
+            let component = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
             component.unregister_start_listeners(entity_events, false, || Err("unadmitted wind registration".into()))?;
             component.unregister_activation_listener(&mut scene.body_activation_events)?;
             let movement = component.movement_body()?;
@@ -104,12 +104,12 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
             }
             component.clear_body_update_pause();
         }
-        scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?.advance_unpublished_start(step)?;
+        rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.advance_unpublished_start(step)?;
     }
     // Attachment precedes the Start cursor in 809d80; a failure there
     // still has to detach the actual interface before body destruction.
     {
-        let component = scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?;
+        let component = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?;
         component.unregister_start_listeners(entity_events, false, || Err("unadmitted wind registration".into()))?;
         component.unregister_activation_listener(&mut scene.body_activation_events)?;
         let movement = component.movement_body()?;
@@ -119,7 +119,7 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
         component.clear_body_update_pause();
     }
     loop {
-        let step = scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?.unpublished_abort_step()?;
+        let step = rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.unpublished_abort_step()?;
         match step {
             0 => {}, // Prepared immutable source leases have no world registration.
             1 => {
@@ -127,21 +127,21 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
                 scene_publication_events!(scene, registry, events);
                 world.storage.abort_disabled_component_body(&mut world.geometry, &mut events, handle, generation)?;
             },
-            2 => scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?
+            2 => rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?
                 .unregister_initialize_listeners(entity_events, false)?,
             3 => {
-                let body = scene.rigid_bodies.get(handle.slot).ok_or("rigid component absent")?.body().ok_or("rigid body absent")?;
+                let body = scene.rigid_component(handle)?.body().ok_or("rigid body absent")?;
                 scene_publication_events!(scene, registry, events);
                 world.storage.destroy_bodies(&mut world.geometry, &mut events, &[body], 0)?;
             },
             4 => {
-                let shape = scene.rigid_bodies.get(handle.slot).ok_or("rigid component absent")?.retained_shape().ok_or("rigid shape absent")?;
+                let shape = scene.rigid_component(handle)?.retained_shape().ok_or("rigid shape absent")?;
                 world.geometry.retire_standalone_shape(shape)?;
             },
             5 => break,
             _ => return Err("invalid rigid creation rollback step".into()),
         }
-        scene.rigid_bodies.get_mut(handle.slot).ok_or("rigid component absent")?.advance_unpublished_abort(step)?;
+        rigid_pool_mut!(scene, handle.class_id)?.get_mut(handle.slot).ok_or("rigid component slot is absent")?.advance_unpublished_abort(step)?;
     }
     Ok(())
 }

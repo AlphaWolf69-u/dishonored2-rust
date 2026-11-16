@@ -54,6 +54,18 @@ pub struct EquipmentTree {
 }
 
 impl EquipmentTree {
+    ///61b3a0/53f4f0 changes the declared defaultAnim input. Reposting its
+    ///unchanged alias preserves the live leaf clock instead of restarting it.
+    pub fn set_default_alias(&mut self, alias: &str) -> Result<(), String> {
+        let clip = *self.animation_aliases.get(alias).ok_or_else(|| format!("equipment default animation is not prepared: {alias}"))?;
+        match &mut self.input {
+            EquipmentInput::DefaultAnimation { clip: current, time } => {
+                if *current != clip { *current = clip; *time = 0.0; }
+                Ok(())
+            }
+            EquipmentInput::Basic(_) => Err("equipment defaultAnim alias was routed to an AnimBasic input".into()),
+        }
+    }
     /// 61aed0 binds to the actual arm tag; 61b010 rebinds the retained owned
     /// entity to the actual body tag. These are entity frames before MD6 root
     /// offsets, and remain available for holstered audio/effect ownership.

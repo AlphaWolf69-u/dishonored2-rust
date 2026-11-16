@@ -530,3 +530,5 @@ mod tests {
         assert_eq!(count, 256);
     }
 }
+
+pub mod contact;

@@ -45,3 +45,9 @@ pub mod damage;
 pub mod equipment;
 pub mod slash_rules;
 pub mod projectiles;
+
+pub(crate) mod runtime_entity;
+
+pub(crate) mod throwable;
+
+pub(crate) mod breakable;

@@ -50,6 +50,8 @@ impl WorldRayQuery {
             request,
             resolve,
             selected: &mut selected,
+            all_hits: None,
+            query_flags: 0,
             error: None,
         };
         self.broadphase.query(
@@ -68,6 +70,58 @@ impl WorldRayQuery {
         drop(visitor);
         error.map_or(Ok(selected), Err)
     }
+
+    /// Retain every submitted hit without reducing the traversal bound.
+    /// The caller owns scratch storage and any later source-specific ordering.
+    pub fn all_hits<'a>(
+        &mut self,
+        bodies: &dyn PointQueryBodies,
+        trees: &[PointQueryTree<'_>],
+        quantization: RayQuantization,
+        request: &WorldRayRequest,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        hits: &mut Vec<ShapeRayContact>,
+    ) -> Result<(), String> {
+        self.all_hits_with_flags(bodies, trees, quantization, request, 0, resolve, hits)
+    }
+
+    /// cb0fd0 bit 2 admits inside exits; all other query flags are forwarded.
+    pub fn all_hits_with_flags<'a>(
+        &mut self,
+        bodies: &dyn PointQueryBodies,
+        trees: &[PointQueryTree<'_>],
+        quantization: RayQuantization,
+        request: &WorldRayRequest,
+        query_flags: u32,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        hits: &mut Vec<ShapeRayContact>,
+    ) -> Result<(), String> {
+        hits.clear();
+        let mut selected = None;
+        let mut visitor = Bodies {
+            bodies,
+            shapes: &mut self.shapes,
+            request,
+            resolve,
+            selected: &mut selected,
+            all_hits: Some(hits),
+            query_flags,
+            error: None,
+        };
+        self.broadphase.query(
+            trees,
+            quantization,
+            request.origin,
+            request.direction,
+            request.maximum_fraction,
+            &mut RayQueryControl {
+                fraction: f32::from_bits(0x5f7f_fff0),
+                early_out: false,
+            },
+            &mut visitor,
+        )?;
+        visitor.error.take().map_or(Ok(()), Err)
+    }
 }
 struct Bodies<'a, F> {
     bodies: &'a dyn PointQueryBodies,
@@ -75,6 +129,8 @@ struct Bodies<'a, F> {
     request: &'a WorldRayRequest,
     resolve: F,
     selected: &'a mut Option<ShapeRayContact>,
+    all_hits: Option<&'a mut Vec<ShapeRayContact>>,
+    query_flags: u32,
     error: Option<String>,
 }
 impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor for Bodies<'_, F> {
@@ -121,7 +177,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
             );
             let direction =
                 std::array::from_fn(|i| if direction[i] == 0. { 0. } else { direction[i] });
-            self.shapes.cast(
+            self.shapes.cast_with_flags(
                 RayQueryTarget {
                     shapes: resource.shapes,
                     hit: ShapeHitInfo {
@@ -137,8 +193,14 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
                 direction,
                 self.request.hit,
                 self.request.filter,
+                self.query_flags,
                 control,
                 &mut |hit, control| {
+                    let hit = hit.transformed_rigid(body.transform);
+                    if let Some(hits) = self.all_hits.as_deref_mut() {
+                        hits.push(hit);
+                        return;
+                    }
                     // ca53a0 retains the first hit on equal fractions.
                     if hit.fraction < control.fraction {
                         control.fraction = hit.fraction;

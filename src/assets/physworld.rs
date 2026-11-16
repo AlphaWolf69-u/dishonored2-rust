@@ -9,6 +9,7 @@ pub mod body;
 pub mod polytope;
 pub mod shape;
 pub mod query_geometry;
+pub mod compressed_mesh;
 pub mod properties;
 pub mod source;
 #[cfg(test)]

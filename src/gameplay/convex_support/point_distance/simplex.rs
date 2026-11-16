@@ -19,22 +19,56 @@ pub(super) fn reduce(
     vertices: &mut [[f32; 4]; 4],
     count: &mut usize,
 ) -> Result<([f32; 4], bool), String> {
-    if *count == 4 && !tetrahedron(point, vertices) {
+    reduce_oriented(point, vertices, count, false)
+}
+
+/// Query-feature branches of 141212780: opposite face winding and signed
+/// tetrahedron scores, with the same edge/vertex classification rules.
+pub(super) fn reduce_query(
+    point: [f32; 4],
+    vertices: &mut [[f32; 4]; 4],
+    count: &mut usize,
+) -> Result<([f32; 4], bool), String> {
+    reduce_oriented(point, vertices, count, true)
+}
+
+fn reduce_oriented(
+    point: [f32; 4],
+    vertices: &mut [[f32; 4]; 4],
+    count: &mut usize,
+    query: bool,
+) -> Result<([f32; 4], bool), String> {
+    if *count == 4 && !tetrahedron(point, vertices, query) {
         return Ok(([0.; 4], true));
     }
     if *count == 4 {
         *count = 3;
     }
     if *count == 3 {
-        if let Some(direction) = triangle(point, vertices, count) {
+        if let Some(direction) = triangle(point, vertices, count, query) {
             return Ok((direction, false));
         }
     }
     if *count == 2 {
-        return Ok((segment(point, vertices, count), false));
+        let direction = segment(point, vertices, count);
+        return Ok((
+            if query {
+                direction.map(|v| -v)
+            } else {
+                direction
+            },
+            false,
+        ));
     }
     if *count == 1 {
-        return Ok((subtract(point, vertices[0]), false));
+        return Ok((
+            if query {
+                subtract(vertices[0], point)
+            } else {
+                subtract(point, vertices[0])
+            },
+            false,
+        ));
     }
     Err("invalid point distance feature count".into())
 }
@@ -60,7 +94,12 @@ fn segment(point: [f32; 4], v: &mut [[f32; 4]; 4], count: &mut usize) -> [f32; 4
 }
 
 /// Returns a face normal for an interior projection, or reduces to an edge.
-fn triangle(point: [f32; 4], v: &mut [[f32; 4]; 4], count: &mut usize) -> Option<[f32; 4]> {
+fn triangle(
+    point: [f32; 4],
+    v: &mut [[f32; 4]; 4],
+    count: &mut usize,
+    query: bool,
+) -> Option<[f32; 4]> {
     let [a, b, c, _] = *v;
     let ac = subtract(a, c);
     let cb = subtract(c, b);
@@ -75,7 +114,15 @@ fn triangle(point: [f32; 4], v: &mut [[f32; 4]; 4], count: &mut usize) -> Option
         .enumerate()
         .fold(0, |mask, (i, &value)| mask | ((value < 0.) as usize) << i);
     if mask == 7 {
-        if dot(subtract(point, a), n) < 0. {
+        if dot(
+            if query {
+                subtract(a, point)
+            } else {
+                subtract(point, a)
+            },
+            n,
+        ) < 0.
+        {
             v.swap(0, 1);
             n = n.map(|v| -v);
         }
@@ -86,7 +133,11 @@ fn triangle(point: [f32; 4], v: &mut [[f32; 4]; 4], count: &mut usize) -> Option
         let slot = (region + 8) as usize;
         if slot > 2 {
             *count = 1;
-            return Some(subtract(point, v[0]));
+            return Some(if query {
+                subtract(v[0], point)
+            } else {
+                subtract(point, v[0])
+            });
         }
         v[slot] = v[2];
         *count = 2;
@@ -108,20 +159,20 @@ fn triangle(point: [f32; 4], v: &mut [[f32; 4]; 4], count: &mut usize) -> Option
         let slot = if second == 2 { first } else { second };
         v[slot] = v[1];
         *count = 1;
-        return Some(subtract(point, v[0]));
+        return Some(if query {
+            subtract(v[0], point)
+        } else {
+            subtract(point, v[0])
+        });
     }
     *count = 2;
     None
 }
 
 fn max(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
-fn tetrahedron(point: [f32; 4], v: &mut [[f32; 4]; 4]) -> bool {
+fn tetrahedron(point: [f32; 4], v: &mut [[f32; 4]; 4], query: bool) -> bool {
     let d = v[3];
     let offset = subtract(point, d);
     let normals = [
@@ -131,7 +182,10 @@ fn tetrahedron(point: [f32; 4], v: &mut [[f32; 4]; 4]) -> bool {
     ];
     // Tetrahedron scoring uses Z+X+Y, unlike the support scan's Y+X+Z.
     let project = |a: [f32; 4], b: [f32; 4]| (a[2] * b[2] + a[0] * b[0]) + a[1] * b[1];
-    let projections = normals.map(|n| project(offset, n));
+    let projections = normals.map(|n| {
+        // Source's 4x1 path multiplies XYZ offset by -1 before projection.
+        project(if query { offset.map(|v| -v) } else { offset }, n)
+    });
     let scores = std::array::from_fn::<_, 3, _>(|i| {
         let squared = project(normals[i], normals[i]);
         if squared == 0. {

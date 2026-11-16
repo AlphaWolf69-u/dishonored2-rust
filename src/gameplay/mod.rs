@@ -103,3 +103,11 @@ pub mod scene_animation;
 pub mod damage;
 
 pub mod interaction_enums;
+
+pub mod shape_convex_query;
+
+pub mod world_convex_query;
+
+pub mod throwable;
+
+pub mod breakable;

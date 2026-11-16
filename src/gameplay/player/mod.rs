@@ -13,6 +13,7 @@ pub mod power_states;
 pub mod grapple;
 pub mod grapple_state;
 pub mod combat;
+pub mod carrying;
 pub mod consumables;
 pub mod slash_rules;
 pub mod equipment_states;
@@ -114,6 +115,7 @@ pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
     pub machine: StateMachine,
+    pub carrying: carrying::Runtime,
     swimming_machine: StateMachine,
     swimming_active: bool,
     swimming_eye_height: f32,
@@ -131,6 +133,8 @@ pub struct Player {
     body_parts: body_parts::BodyParts,
     pub stances: LocoStances,
     pub attributes: Attributes,
+    pub ranged_target: weapons::shooting::RangedTargetDecl,
+    ranged_target_hit: Option<Vec3>,
     active_modifiers: Vec<ActiveModifier>,
     next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
@@ -163,7 +167,7 @@ pub struct Player {
     pub weapon: Option<weapons::Runtime>,
     weapon_identity: Option<String>,
     holstered_weapons: std::collections::HashMap<String, weapons::Runtime>,
-    weapon_effects: Vec<weapons::WeaponEffect>,
+    weapon_effects: Vec<weapons::WeaponMessage>,
     pub adrenaline: adrenaline::Adrenaline,
     /// Populated by the combat and bloodthirsty owners when they exist.
     pub adrenaline_in_combat: bool,
@@ -199,6 +203,7 @@ pub struct PlayerSetup {
     pub rules: Vec<states::RuleDecl>,
     pub default_state: StateId,
     pub attributes: Attributes,
+    pub ranged_target: weapons::shooting::RangedTargetDecl,
     pub body: Body,
     pub autocrouch: sensors::AutoCrouchDecl,
     pub lean: sensors::LeanDecl,
@@ -276,13 +281,43 @@ impl Player {
         runtime.identity = Some(std::sync::Arc::from(identity));
         // Actual owned-component Start639f00 always invokes OnAmmoChanged100;
         // queue the gun's44e720 notification with its real actor identity.
-        if let Some(effect) = runtime.capacity_recomputed() { self.weapon_effects.push(effect); }
+        if let Some(message) = runtime.capacity_recomputed().and_then(|effect| runtime.message(effect)) { self.weapon_effects.push(message); }
         self.holstered_weapons.insert(identity.to_owned(), runtime);
         Ok(())
     }
     pub fn registered_ranged(&self, identity: &str) -> Option<&weapons::Runtime> {
         if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_ref() } else { self.holstered_weapons.get(identity) }
     }
+    /// The canonical actual owned Start supplies the component's parent
+    /// generation. Queued callbacks retain it across deletion/readmission.
+    pub fn bind_ranged_entity(&mut self, identity: &str, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+        let runtime = if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_mut() }
+            else { self.holstered_weapons.get_mut(identity) };
+        let runtime = runtime.ok_or("ranged entity bound before actual component Start")?;
+        if runtime.managed_entity.is_some_and(|previous| previous != entity) { return Err("live ranged component rebound to another entity generation".into()); }
+        runtime.managed_entity = Some(entity);
+        for message in &mut self.weapon_effects {
+            if message.entity.is_none() && message.identity.as_ref() == identity { message.entity = Some(entity); }
+        }
+        Ok(())
+    }
+    pub fn install_ranged_projectiles(&mut self, identity: &str,
+        leases: Vec<Option<std::sync::Arc<crate::assets::projectiles::Prepared>>>) -> Result<(), String> {
+        let runtime = if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_mut() }
+            else { self.holstered_weapons.get_mut(identity) };
+        runtime.ok_or("projectiles prepared before actual owned ranged Start")?.install_projectiles(leases)
+    }
+    pub fn install_ranged_ammunition_flags(&mut self, identity: &str, flags: Vec<u32>) -> Result<(), String> {
+        let runtime = if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_mut() }
+            else { self.holstered_weapons.get_mut(identity) };
+        runtime.ok_or("ammo upgrades prepared before actual owned ranged Start")?.install_ammunition_flags(flags)
+    }
+    pub fn ranged_identity(&self) -> Option<&str> { self.weapon_identity.as_deref() }
+    /// The last published camera world frame, available without sampling a
+    /// second body pose during a component callback.
+    pub fn published_camera_frame(&self) -> (Vec3, Mat3) { (self.camera.eye, self.camera_axis) }
+    pub fn set_ranged_target_hit(&mut self, hit: Option<Vec3>) { self.ranged_target_hit = hit; }
+    pub fn ranged_target_hit(&self) -> Option<Vec3> { self.ranged_target_hit }
     pub fn unequip_ranged(&mut self) {
         if let Some(mut weapon) = self.weapon.take() {
             let handle = weapon.scene_handle();
@@ -297,7 +332,7 @@ impl Player {
         if self.weapon_identity.as_deref() == Some(identity) { self.unequip_ranged(); }
         self.holstered_weapons.remove(identity);
     }
-    pub fn drain_weapon_effects(&mut self) -> std::vec::Drain<'_, weapons::WeaponEffect> {
+    pub fn drain_weapon_effects(&mut self) -> std::vec::Drain<'_, weapons::WeaponMessage> {
         if let Some(weapon) = &mut self.weapon { self.weapon_effects.extend(weapon.drain_effects()); }
         self.weapon_effects.drain(..)
     }
@@ -444,6 +479,36 @@ impl Player {
         } else { false }
     }
 
+    pub fn request_carried_object(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        definition: Arc<crate::gameplay::pickable_component::PickableDefinition>) -> bool {
+        let machine = if self.swimming_active { &mut self.swimming_machine } else { &mut self.machine };
+        let state=StateId(definition.pickup_interaction.player_state);
+        let grab=match machine.state(state).map(|state|&state.decl.kind){Some(Kind::GrabObject(value))=>value.clone(),_=>return false};
+        let hold_state=if definition.hold.as_ref().is_some_and(|props|props.both_hands){StateId(50)}else{StateId(49)};
+        let hold=match machine.state(hold_state).map(|state|&state.decl.kind){Some(Kind::HoldObject(value))=>value.clone(),_=>return false};
+        if !self.carrying.request(carrying::Target {entity,definition,grab,hold}){return false;}
+        machine.request(state);
+        true
+    }
+    pub fn carried_object_reached(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) {
+        if let Some(state) = self.carrying.reached(entity) {
+            let machine = if self.swimming_active { &mut self.swimming_machine } else { &mut self.machine };
+            machine.request(state);
+        }
+    }
+    pub fn carrying_grab_decl(&self) -> Option<Arc<carrying::GrabDecl>> {
+        let machine = if self.swimming_active { &self.swimming_machine } else { &self.machine };
+        match &machine.state(self.carrying.grab_state()?)?.decl.kind {
+            states::Kind::GrabObject(value) => Some(value.clone()), _ => None,
+        }
+    }
+    pub fn carrying_hold_decl(&self, id: StateId) -> Option<Arc<carrying::HoldDecl>> {
+        let machine = if self.swimming_active { &self.swimming_machine } else { &self.machine };
+        match &machine.state(id)?.decl.kind {
+            states::Kind::HoldObject(value) => Some(value.clone()), _ => None,
+        }
+    }
+
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
@@ -536,6 +601,7 @@ impl Player {
             controller,
             machine,
             swimming_machine: StateMachine::new(swimming_decls, &setup.swimming_rules, setup.swimming_default_state),
+            carrying: Default::default(),
             swimming_active: false,
             swimming_eye_height,
             swimming_current: swimming::WaterCurrent::default(),
@@ -552,6 +618,8 @@ impl Player {
             body_parts: Default::default(),
             stances,
             attributes: setup.attributes,
+            ranged_target: setup.ranged_target,
+            ranged_target_hit: None,
             active_modifiers: Vec::new(),
             next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
@@ -654,7 +722,7 @@ impl Player {
         // Spending a final-frame key after state exit would lose the hit.
         for event in self.body.midnight.drain_point_events() {
             if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
-                if let Err(error) = weapon.handle_event(&event, inventory) { eprintln!("Weapon animation event: {error}"); }
+                if let Err(error) = weapon.handle_event(&event, inventory, &mut self.random) { eprintln!("Weapon animation event: {error}"); }
             }
             self.animation_events.push(event);
         }
@@ -701,6 +769,8 @@ impl Player {
                     footstep: &mut self.body.footstep,
                     footstep_clock: &mut self.body.footsteps,
                     body_speed: self.body.speed,
+                    body_additives: &self.body.additives,
+                    body_additive_command: &mut self.body.additive_command,
                     camera: &mut self.camera,
                     camera_axis,
                     body_parts: &mut self.body_parts,
@@ -714,6 +784,7 @@ impl Player {
                     attribute_requests: &mut self.attribute_requests,
                     powers: &mut self.powers,
                     equipment_changes: &mut self.equipment_changes,
+                    carrying: &mut self.carrying,
                     mana: &mut self.mana,
                     mana_replenishes: self.mana_replenishes,
                     weapon: &mut self.weapon,
@@ -813,7 +884,7 @@ impl Player {
         }
         self.attribute_requests = attribute_requests;
         if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
-            weapon.flush_pending_fire(inventory);
+            weapon.flush_pending_fire(inventory, &mut self.random);
         }
         self.update_power_camera_modifier();
         // 1407f8e70 posts the player's forceGameOver event after 7 seconds.
@@ -836,6 +907,7 @@ impl Player {
         }
         if let Some(weapon) = &mut self.weapon {
             weapon.think(self.machine.ranged_is_charging());
+            weapon.update_aim(&self.attributes, dt);
         }
         let mut equipment_events = std::mem::take(&mut self.powers.grapple_equipment_events);
         for event in equipment_events.drain(..) {
@@ -911,6 +983,13 @@ impl Player {
             self.camera.update_fov(dt, base_fov, speed_state);
         }
         // Body DEFAULT (FUN_140777280).
+        //62b990 switches the crossbow's own default input on magazine changes;
+        //its loaded child's visibility remains a separate actual entity flag.
+        if let Some(alias) = self.weapon.as_ref().and_then(weapons::Runtime::default_animation) {
+            if let Some(tree) = self.body.equipment[0].as_mut() {
+                if let Err(error) = tree.set_default_alias(alias) { eprintln!("Weapon default animation: {error}"); }
+            }
+        }
         self.body.set_grapple_control(self.camera.grapple_control());
         let input_velocity = self.physics.input_velocity();
         let supported = self.controller.support_state != SupportState::Unsupported;
@@ -1180,6 +1259,26 @@ impl Player {
 
     /// The player's entity and model-tag frames, before render-camera collision
     /// adjustments. Uses the body pose/control matrices shared with its arms.
+    pub fn reference_tag_binding(&self, tag: &str) -> Result<(i16, [f32; 3], [f32; 4]), String> {
+        if tag.is_empty() { return Ok((-1, [0.0; 3], [0.0, 0.0, 0.0, 1.0])); }
+        let (joint, offset, orientation) = if let Some(&(joint, offset, orientation)) = self.body.tags.get(tag) {
+            (joint, offset, orientation)
+        } else {
+            let joint = self.body.skeleton.joint_names.iter().position(|name| name == tag)
+                .ok_or_else(|| format!("player body has no tag or joint {tag}"))?;
+            (joint, Vec3::ZERO, Mat3::IDENTITY)
+        };
+        Ok((i16::try_from(joint).map_err(|_| "player joint exceeds reference-frame index")?,
+            offset.to_array(), bevy_math::Quat::from_mat3(&orientation).to_array()))
+    }
+    pub fn reference_local_joint(&self, joint: i16) -> Result<crate::gameplay::reference_frame::ReferenceFrame, String> {
+        if joint == -1 { return Ok(Default::default()); }
+        let index = usize::try_from(joint).map_err(|_| "invalid player reference joint")?;
+        if index >= self.pose.positions.len() { return Err("player reference joint is outside its actual skeleton".into()); }
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let (position, rotation) = self.pose.joint_with_controls(index, &controls);
+        Ok(crate::gameplay::reference_frame::ReferenceFrame { position: position.to_array(), basis: rotation.to_cols_array_2d() })
+    }
     pub fn reference_frames(&self) -> (crate::gameplay::reference_frame::ReferenceFrame,
         hashbrown::HashMap<String, crate::gameplay::reference_frame::ReferenceFrame>) {
         use crate::gameplay::reference_frame::ReferenceFrame;

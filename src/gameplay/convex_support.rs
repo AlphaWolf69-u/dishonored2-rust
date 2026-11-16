@@ -11,6 +11,10 @@ pub mod horizon;
 pub mod hull;
 #[path = "convex_support/penetration.rs"]
 pub mod penetration;
+#[path = "convex_support/pair_distance.rs"]
+pub mod pair_distance;
+#[path = "convex_support/ray.rs"]
+pub mod ray;
 #[path = "convex_support/point_distance.rs"]
 pub mod point_distance;
 #[path = "convex_support/scaling.rs"]
