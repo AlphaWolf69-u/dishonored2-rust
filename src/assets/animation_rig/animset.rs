@@ -12,6 +12,7 @@ struct StoredAlias {
     _force_zero_speed: bool,
     movement: Option<std::num::NonZeroU32>,
     markers: Option<std::num::NonZeroU32>,
+    sounds: Option<std::num::NonZeroU32>,
 }
 
 pub(crate) struct AnimSet {
@@ -22,6 +23,7 @@ pub(crate) struct AnimSet {
     movements: Box<[crate::edge_animation::AnimMovement]>,
     marker_groups: Box<[Box<[crate::edge_animation::AnimMarker]>]>,
     marker_error: Option<Box<str>>,
+    sound_groups: Box<[Box<[super::animset_sounds::Sound]>]>,
     source_bytes: usize,
     // A composable digest is retained only for the existing rig diagnostic;
     // ordinary marker lookup reads its selected declaration lazily.
@@ -29,6 +31,11 @@ pub(crate) struct AnimSet {
 }
 
 impl AnimSet {
+    pub(crate) fn sounds(&self, name: &str) -> &[super::animset_sounds::Sound] {
+        self.aliases.get(name).and_then(|alias| alias.sounds)
+            .and_then(|index| self.sound_groups.get(index.get() as usize - 1))
+            .map_or(&[], |sounds| sounds.as_ref())
+    }
     pub(crate) fn alias(&self, name: &str) -> Option<&str> { self.aliases.get(name).map(|alias| alias.animation.as_ref()) }
     pub(crate) fn movement(&self, name: &str) -> Option<crate::edge_animation::AnimMovement> {
         let index = self.aliases.get(name)?.movement?.get() as usize - 1;
@@ -51,6 +58,9 @@ impl AnimSet {
             + self.marker_groups.len() * std::mem::size_of::<Box<[crate::edge_animation::AnimMarker]>>()
             + self.marker_groups.iter().map(|markers| markers.len() * std::mem::size_of::<crate::edge_animation::AnimMarker>()).sum::<usize>()
             + self.marker_error.as_ref().map_or(0, |error| error.len())
+            + self.sound_groups.len() * std::mem::size_of::<Box<[super::animset_sounds::Sound]>>()
+            + self.sound_groups.iter().map(|sounds| sounds.len() * std::mem::size_of::<super::animset_sounds::Sound>()
+                + sounds.iter().map(|sound| sound.joint.len()).sum::<usize>()).sum::<usize>()
             + self.aliases.iter().map(|(name, path)| name.len() + path.animation.len()).sum::<usize>()
     }
 }
@@ -270,6 +280,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     let mut movements = Vec::new();
     let mut marker_groups = Vec::new();
     let mut marker_error = None;
+    let mut sound_groups = Vec::new();
     let parsed = {
         let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
         let tokens = crate::entities::declaration_lexemes(&source)?;
@@ -290,7 +301,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
                 }
             }
             aliases.insert(name.into_boxed_str(), StoredAlias { animation: alias.animation.into_boxed_str(),
-                _force_load: alias.force_load, _force_zero_speed: alias.force_zero_speed, movement: alias.movement, markers: None });
+                _force_load: alias.force_load, _force_zero_speed: alias.force_zero_speed, movement: alias.movement, markers: None, sounds: None });
             Ok(())
         })?;
         movements.reserve_exact(tokens.iter().filter(|token| **token == "aliasRef").count());
@@ -319,6 +330,16 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
                 marker_groups.push(markers.into_boxed_slice());
             }
         }
+        super::animset_sounds::read(catalog, &tokens, |animation, sounds| {
+            let matching = |alias: &StoredAlias| alias.animation.replace('\\', "/").eq_ignore_ascii_case(animation);
+            if aliases.values().any(|alias| matching(alias)) {
+                let index = u32::try_from(sound_groups.len()).ok().and_then(|value| value.checked_add(1))
+                    .and_then(std::num::NonZeroU32::new).ok_or("too many animation sound groups")?;
+                for alias in aliases.values_mut().filter(|alias| matching(alias)) { alias.sounds = Some(index); }
+                sound_groups.push(sounds.into_boxed_slice());
+            }
+            Ok(())
+        })?;
         Ok::<(), String>(())
     };
     let parse_end = parse_start.and_then(|_| crate::loading::thread_cycles());
@@ -334,7 +355,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     let set = {
         let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
         Arc::new(AnimSet { path: path.clone(), aliases, movements: movements.into_boxed_slice(),
-            marker_groups: marker_groups.into_boxed_slice(), marker_error, source_bytes: source.len(), source_crc })
+            marker_groups: marker_groups.into_boxed_slice(), marker_error, sound_groups: sound_groups.into_boxed_slice(), source_bytes: source.len(), source_crc })
     };
     // Current callers are actual model/Rig acquisitions in level scope. A
     // future common preloader must pass its actual allocator scope here.

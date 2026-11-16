@@ -17,6 +17,7 @@ pub(super) struct Pending {
     pub maximum: u32,
     pub phase: u8,
     pub admitted: u32,
+    pub hud_notified: bool,
     pub from_grapple: bool,
     pub notice: crate::gameplay::effects::instances::PickupReceipt,
     pub rejected_notice: bool,
@@ -170,6 +171,16 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
 
 fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
     if pending.phase == 1 {
+        //841030 invokes6734b0 explicitly for this actual ammo pickup. This
+        //is independent of9B; silent loadout/script additions do not log.
+        if !pending.hud_notified {
+            if pending.admitted > 0 {
+                if let Some(hud) = world.get_non_send_resource::<super::pause_menu::PauseMenu>() {
+                    hud.queue_pickup(pending.item.clone(), pending.admitted)?;
+                }
+            }
+            pending.hud_notified = true;
+        }
         super::entity_graphs::picked_up(
             world,
             pending.entity,

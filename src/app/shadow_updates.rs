@@ -427,6 +427,7 @@ pub(super) fn collect_model_casters(
             .cull_distance;
         let mut collected = Vec::new();
         for (source_index, source) in sources.0.iter().enumerate() {
+            if source.flags_18bc&8==0 {continue;}
             if retired.as_ref().is_some_and(|retired| retired.0.contains(&source.placement)) { continue; }
             let surfaces = source
                 .surfaces
@@ -1051,6 +1052,7 @@ pub(super) fn prepare_model_shadow_instances(
     let mut instances = Vec::with_capacity(records.len());
     for &(source_id, index) in records {
         let source = &sources.0[source_id];
+        if source.flags_18bc&8==0 {continue;}
         let instance = &queue.instances[index];
         let probe_index = instance.probe_index;
         let mesh = instance.mesh.clone();

@@ -13,6 +13,10 @@ pub mod power_states;
 pub mod grapple;
 pub mod grapple_state;
 pub mod combat;
+pub mod combat_fx;
+pub mod chaos;
+pub mod melee;
+mod power_wheel;
 pub mod carrying;
 pub mod consumables;
 pub mod slash_rules;
@@ -117,6 +121,8 @@ pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
     pub machine: StateMachine,
+    pub combat_fx: Option<combat_fx::Runtime>,
+    pub chaos: chaos::Runtime,
     pub carrying: carrying::Runtime,
     swimming_machine: StateMachine,
     swimming_active: bool,
@@ -136,7 +142,12 @@ pub struct Player {
     pub stances: LocoStances,
     pub attributes: Attributes,
     pub ranged_target: weapons::shooting::RangedTargetDecl,
+    pub rune_charms: std::sync::Arc<weapons::heart::sensor::Definition>,
+    heart_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     ranged_target_hit: Option<Vec3>,
+    ranged_target_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
+    heart_bark_playing:bool,
+    heart_requests:std::collections::VecDeque<weapons::heart::UseRequest>,
     active_modifiers: Vec<ActiveModifier>,
     next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
@@ -167,6 +178,10 @@ pub struct Player {
     powers: power_states::Runtime,
     equipment_changes: equipment_states::Runtime,
     pub weapon: Option<weapons::Runtime>,
+    pub throwable: Option<weapons::throwable::WeaponRuntime>,
+    throwable_identity: Option<String>,
+    holstered_throwables: std::collections::HashMap<String,weapons::throwable::WeaponRuntime>,
+    throwable_effects: Vec<(crate::gameplay::entity_lifetime::EntityId,weapons::throwable::Effect)>,
     weapon_identity: Option<String>,
     holstered_weapons: std::collections::HashMap<String, weapons::Runtime>,
     weapon_effects: Vec<weapons::WeaponMessage>,
@@ -191,6 +206,10 @@ pub struct Player {
     arm_action_history: [Option<ArmActionDiagnostic>; 2],
     arm_action_active: [bool; 2],
     animation_events: Vec<AnimationEvent>,
+    animation_sound_emitters: Vec<crate::gameplay::sound::Emitter>,
+    /// Host receipt for the original pre-component Midnight stage. The
+    /// app's actual clock marker prevents a second advance in Player::frame.
+    prepared_animation_frame: Option<i32>,
     equipment_action_handles: [Option<u32>; 2],
     equipment_frames: [Option<(Vec3, Mat3)>; 2],
     equipment_entity_frames: Vec<(crate::gameplay::sound::Emitter, Vec3, Mat3, Option<crate::gameplay::sound::component::Settings>)>,
@@ -199,6 +218,8 @@ pub struct Player {
 
 /// Everything `Player::new` reads from the installed declarations.
 pub struct PlayerSetup {
+    pub chaos: chaos::Definition,
+    pub combat_fx: Option<std::sync::Arc<combat_fx::Definition>>,
     pub physics: physics::PhysicsDecl,
     pub camera: camera::CameraDecl,
     pub mapping: Vec<controller::StateMapping>,
@@ -207,6 +228,7 @@ pub struct PlayerSetup {
     pub default_state: StateId,
     pub attributes: Attributes,
     pub ranged_target: weapons::shooting::RangedTargetDecl,
+    pub rune_charms: std::sync::Arc<weapons::heart::sensor::Definition>,
     pub body: Body,
     pub autocrouch: sensors::AutoCrouchDecl,
     pub lean: sensors::LeanDecl,
@@ -325,6 +347,8 @@ impl Player {
     pub fn published_camera_frame(&self) -> (Vec3, Mat3) { (self.camera.eye, self.camera_axis) }
     pub fn set_ranged_target_hit(&mut self, hit: Option<Vec3>) { self.ranged_target_hit = hit; }
     pub fn ranged_target_hit(&self) -> Option<Vec3> { self.ranged_target_hit }
+    pub fn set_ranged_target_entity(&mut self, entity: Option<crate::gameplay::entity_lifetime::EntityId>) { self.ranged_target_entity = entity; }
+    pub fn ranged_target_entity(&self) -> Option<crate::gameplay::entity_lifetime::EntityId> { self.ranged_target_entity }
     pub fn unequip_ranged(&mut self) {
         if let Some(mut weapon) = self.weapon.take() {
             let handle = weapon.scene_handle();
@@ -631,6 +655,8 @@ impl Player {
             swimming_waves: swimming::WaveFilters::default(),
             swimming_wave_pose: (0.0, Vec3::Z),
             breath: setup.breath,
+            combat_fx: setup.combat_fx.map(combat_fx::Runtime::new),
+            chaos: chaos::Runtime::new(setup.chaos),
             incoming_damage_factor: 1.0,
             incoming_damage_back_factor: 1.0,
             health_regen_factor: 1.0,
@@ -642,7 +668,12 @@ impl Player {
             stances,
             attributes: setup.attributes,
             ranged_target: setup.ranged_target,
+            rune_charms: setup.rune_charms,
+            heart_entity: None,
             ranged_target_hit: None,
+            ranged_target_entity: None,
+            heart_bark_playing:false,
+            heart_requests:Default::default(),
             active_modifiers: Vec::new(),
             next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
@@ -671,6 +702,10 @@ impl Player {
             powers: Default::default(),
             equipment_changes: Default::default(),
             weapon: None,
+            throwable: None,
+            throwable_identity: None,
+            holstered_throwables: Default::default(),
+            throwable_effects: Vec::new(),
             weapon_identity: None,
             holstered_weapons: Default::default(),
             weapon_effects: Vec::new(),
@@ -687,6 +722,8 @@ impl Player {
             arm_action_history: [None, None],
             arm_action_active: [false; 2],
             animation_events: Vec::new(),
+            animation_sound_emitters: Vec::new(),
+            prepared_animation_frame: None,
             equipment_action_handles: [None; 2],
             equipment_frames: [None; 2],
             equipment_entity_frames: Vec::new(),
@@ -700,16 +737,29 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
-        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, None);
+        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, None, None);
     }
 
     pub fn frame_with_inventory(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
         inventory: &mut dyn weapons::AmmunitionInventory) {
-        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, Some(inventory));
+        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, Some(inventory), None);
     }
 
-    fn frame_impl(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
-        mut inventory: Option<&mut dyn weapons::AmmunitionInventory>) {
+    pub fn frame_with_inventory_for_clock(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent],
+        settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
+        inventory: &mut dyn weapons::AmmunitionInventory, marker: i32) {
+        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, Some(inventory), Some(marker));
+    }
+    /// 8ad260 advances Midnight and flushes its callbacks before the player
+    /// component/state phases. Standalone callers retain the same helper.
+    pub fn prepare_animation_frame(&mut self, marker: i32, dt: f32, now: f64,
+        inventory: &mut dyn weapons::AmmunitionInventory) {
+        if self.prepared_animation_frame == Some(marker) { return; }
+        self.advance_animation_events(dt, now, &mut Some(inventory));
+        self.prepared_animation_frame = Some(marker);
+    }
+    fn advance_animation_events(&mut self, dt: f32, now: f64,
+        inventory: &mut Option<&mut dyn weapons::AmmunitionInventory>) {
         let gun_socket = self.weapon.as_ref().filter(|weapon| weapon.settings.family == weapons::RangedFamily::Gun)
             .and_then(|weapon| weapon.settings.projectile_fire_tag.as_deref()).and_then(|tag| self.equipment_tag_world(0, tag));
         if let Some(weapon) = &mut self.weapon {
@@ -731,12 +781,29 @@ impl Player {
         match self.body.midnight.advance(dt, cast, &mut self.random) {
             Ok(messages) => {
                 for (event, handle) in messages {
+                    // 854fd0 subscribes the action owner to numeric0xf6;
+                    // its registered Midnight spelling is143df1790.
+                    if event == "ARK_MDNT_MSG_TRIGGER_PLAYER_STATE_ACTION" {
+                        self.power_action_message(handle);
+                        self.heart_action_message(handle);
+                    }
                     self.machine.handle_message(&event, handle);
                     self.swimming_machine.handle_message(&event, handle);
 
                 }
             }
             Err(error) => eprintln!("Midnight playback: {error}"),
+        }
+        for receipt in self.body.midnight.drain_animation_sounds() {
+            use crate::gameplay::sound::{Emitter, Request};
+            let emitter = if let Some(joint) = receipt.sound.joint {
+                let entity = match receipt.emitter { Emitter::Equipment { entity, .. } => Some(entity), _ => None };
+                Emitter::PlayerJoint { entity, part: receipt.emitter.player_part(), joint }
+            } else { receipt.emitter };
+            if matches!(emitter, Emitter::PlayerJoint { .. }) && !self.animation_sound_emitters.contains(&emitter) {
+                self.animation_sound_emitters.push(emitter);
+            }
+            self.body.sound_requests.push(Request::Post { event: receipt.sound.event.id, emitter });
         }
         if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
             weapon.update_inventory(inventory.quantity(&weapon.ammunition().item));
@@ -748,6 +815,14 @@ impl Player {
                 if let Err(error) = weapon.handle_event(&event, inventory, &mut self.random) { eprintln!("Weapon animation event: {error}"); }
             }
             self.animation_events.push(event);
+        }
+    }
+
+    fn frame_impl(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
+        mut inventory: Option<&mut dyn weapons::AmmunitionInventory>, marker: Option<i32>) {
+        let prepared = self.prepared_animation_frame.take();
+        if marker.is_none() || prepared != marker {
+            self.advance_animation_events(dt, now, &mut inventory);
         }
         if !self.health.is_dead() { self.controller.process_input(events, settings); }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
@@ -791,6 +866,8 @@ impl Player {
                     body: &mut self.stances,
                     footstep: &mut self.body.footstep,
                     footstep_clock: &mut self.body.footsteps,
+                    contact_requests: &mut self.body.contact_requests,
+                    sound_requests: &mut self.body.sound_requests,
                     body_speed: self.body.speed,
                     body_additives: &self.body.additives,
                     body_additive_command: &mut self.body.additive_command,
@@ -811,6 +888,8 @@ impl Player {
                     mana: &mut self.mana,
                     mana_replenishes: self.mana_replenishes,
                     weapon: &mut self.weapon,
+                    throwable: &mut self.throwable,
+                    holstered_throwables: &mut self.holstered_throwables,
                     equipment_transitioning,
                     equipment_archetypes: self.equipment_archetypes,
                     action_time: self.entity_event_time,
@@ -835,6 +914,10 @@ impl Player {
                     game_over_requested: &mut self.game_over_requested,
                     drowning_fx_requested: &mut self.drowning_fx_requested,
                     random: &mut self.random,
+                    heart_entity:self.heart_entity,
+                    heart_target:self.ranged_target_entity,
+                    heart_bark_playing:self.heart_bark_playing,
+                    heart_requests:&mut self.heart_requests,
                     small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
                     // The host reads keyboard and mouse only.
@@ -932,6 +1015,11 @@ impl Player {
             weapon.think(self.machine.ranged_is_charging());
             weapon.update_aim(&self.attributes, dt);
         }
+        //633990 ->63bfc0 requests the real ReloadWeapon action when empty;
+        //it never refills a cancelled/unequipped grenade directly.
+        if self.throwable.as_ref().is_some_and(|weapon|weapon.magazine==0&&weapon.total_ammo>0){
+            self.machine.request(StateId::RELOAD_WEAPON);
+        }
         let mut equipment_events = std::mem::take(&mut self.powers.grapple_equipment_events);
         for event in equipment_events.drain(..) {
             self.set_owned_equipment_hidden(matches!(event, grapple_state::EquipmentEvent::Stick));
@@ -941,6 +1029,12 @@ impl Player {
         self.mana.update(dt, &self.attributes, self.mana_replenishes);
         self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
         self.health.update_with_healing(dt, &self.attributes, self.health_regen_factor, self.health_heal_factor);
+        if let Some(effect) = &mut self.combat_fx {
+            //81fda0 reads actual Slash+d1, suppressed by state4c.
+            let focused = !self.machine.is_active(StateId(0x4c)) && self.machine.state(StateId::SLASH)
+                .is_some_and(|state| state.active && state.slash.focus_active);
+            if let Err(error) = effect.advance(focused, dt) { eprintln!("Player combat screen effect: {error}"); }
+        }
         // 1404c0cf0 spends the mana-first share before dispatching the
         // remaining authored water damage to health.
         if self.is_underwater() {
@@ -1372,6 +1466,7 @@ impl Player {
 
     pub fn sound_rate(&self, emitter: crate::gameplay::sound::Emitter, clock_rate: f32) -> Option<f32> {
         use crate::gameplay::sound::Emitter;
+        let emitter = emitter.player_owner();
         let settings = match emitter {
             Emitter::PlayerBody => self.body.sound_settings,
             Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
@@ -1381,9 +1476,19 @@ impl Player {
             Emitter::Equipment { entity, .. } => self.body.equipment.iter().flatten()
                 .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
                 .find(|tree| tree.managed_entity == Some(entity))?.sound_settings?,
-            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::PlayerJoint { .. } => return None,
         };
         Some(settings.rate(clock_rate))
+    }
+
+    pub fn visit_animation_sound_emitters(&self, mut visit: impl FnMut(crate::gameplay::sound::Emitter)) {
+        for &emitter in &self.animation_sound_emitters {
+            if self.sound_transform(emitter).is_some() { visit(emitter); }
+        }
+    }
+
+    pub fn forget_animation_sound_owner(&mut self, owner: crate::gameplay::sound::Emitter) {
+        self.animation_sound_emitters.retain(|emitter| emitter.player_owner() != owner);
     }
 
     /// 53dac0 -> 53d800 -> 53d3f0 reads the animation component's retained
@@ -1412,6 +1517,22 @@ impl Player {
     /// (1407506d0), before shoulder controls modify individual joints.
     pub fn sound_transform(&self, emitter: crate::gameplay::sound::Emitter) -> Option<(Vec3, Mat3)> {
         use crate::gameplay::sound::Emitter;
+        if let Emitter::PlayerJoint { entity, part, joint } = emitter {
+            let joint = usize::from(joint);
+            if let Some(entity) = entity { return self.equipment_joint_world(entity, joint); }
+            if part == 1 {
+                self.pose.positions.get(joint)?;
+                self.pose.rotations.get(joint)?;
+                let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+                let (p, r) = self.pose.joint_with_controls(joint, &controls);
+                return Some((self.physics.position() + self.physics.axis() * p, self.physics.axis() * r));
+            }
+            let side = match part { 2 => 0, 4 => 1, _ => return None };
+            let rows = self.arm_render.get(side)?.joints.get(joint)?;
+            return Some((Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
+                Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]),
+                Vec3::new(rows[0][2], rows[1][2], rows[2][2]))));
+        }
         let origin = self.physics.position();
         let axis = self.physics.axis();
         let side = match emitter {
@@ -1423,7 +1544,7 @@ impl Player {
             Emitter::Equipment { entity, .. } => return self.equipment_entity_frames.iter()
                 .find(|(emitter, ..)| matches!(emitter, Emitter::Equipment { entity: owner, .. } if *owner == entity))
                 .map(|(_, p, r, _)| (*p, *r)),
-            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::PlayerJoint { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
         let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);

@@ -436,36 +436,62 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             Update,
             (
               (
+                gameplay_system(super::power_wheel::before_ui).before(super::pause_menu::update_pause_menu),
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::interaction_focus::apply_inventory_modifiers,
                 super::player_actions::advance_selection,
                 super::runtime_materials::equipment_admission::advance,
                 super::runtime_entities::advance_frame,
+                super::ai_world::creation::update,
                 super::weapon_firing::prepare,
                 gameplay_system(super::fx_gameplay::prepare),
                 gameplay_system(super::water_impacts::prepare),
+                gameplay_system(super::physics_scene::grenades::prepare),
+                super::weapon_throwing::prepare,
                 super::carrying_resources::prepare,
                 super::power_world::update,
                 super::power_execution::before_frame,
               ).chain(),
               (
+                (
+                    gameplay_system(super::player::prepare_animation_frame),
+                    gameplay_system(super::player_animation_events::update),
+                    gameplay_system(super::power_execution::execute_animation_actions),
+                ).chain(),
+                gameplay_system(super::physics_scene::ai_managers::before_actors).run_if(super::loading_screen::is_playing),
+                (
                 super::player::update_player,
+                gameplay_system(super::power_wheel::after_player),
                 gameplay_system(super::physics_scene::damage::publish_player_context),
                 super::runtime_materials::equipment_admission::publish_callbacks,
                 gameplay_system(super::physics_scene::player_reference::update),
+                gameplay_system(super::heart::update_frame).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::physics_scene::carrying_host::update_loot_pull).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::pickups::update).run_if(super::loading_screen::is_playing),
                 super::physics_scene::carrying_host::update.run_if(super::loading_screen::is_playing),
                 super::weapon_firing::publish.run_if(super::loading_screen::is_playing),
+                super::weapon_throwing::publish.run_if(super::loading_screen::is_playing),
                 gameplay_system(super::projectiles::update).run_if(super::loading_screen::is_playing),
+                gameplay_system(super::physics_scene::ai_managers::update).run_if(super::loading_screen::is_playing),
                 super::power_execution::after_frame,
                 super::entity_messages::update,
                 gameplay_system(super::breakables::update).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::physics_scene::lifetime::advance).run_if(super::loading_screen::is_playing),
+                ).chain(),
+                (
                 super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
+                //State/partial-cast changes can enqueue accepted timed exits
+                //after the pre-component drain. Deliver those without another
+                //animation advance, before querying the newly published blade.
+                gameplay_system(super::player_animation_events::finish_accepted),
+                //Preparation and actual FX/audio retirement must also progress
+                //behind loading and while paused; the canonical entity delta
+                //inside this owner gates the gameplay contact/submit phase.
+                gameplay_system(super::melee::update),
+                ).chain(),
               ).chain(),
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
@@ -740,6 +766,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             Update,
             super::pause_fx::update_pause_screen_fx
                 .after(super::pause_menu::update_pause_menu)
+                .after(gameplay_system(super::power_wheel::after_player))
                 .run_if(resource_exists::<super::pause_fx::PauseScreenFx>),
         );
     bevy::asset::load_internal_asset!(

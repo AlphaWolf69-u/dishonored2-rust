@@ -12,6 +12,7 @@ use std::{collections::HashMap, sync::Arc};
 
 pub(super) struct PowerData {
     pub definitions: Arc<(Vec<crate::assets::power_journal::Power>, String)>,
+    pub enhancements: Arc<Vec<crate::assets::power_journal::Upgrade>>,
     pub quantities: HashMap<String, u32>,
     pub has_mark: bool,
     pub new_game_plus: bool,
@@ -27,7 +28,7 @@ fn quantity(data: &PowerData, path: &str) -> u32 {
 }
 
 fn write_power_tree<'a>(player: &mut Player, strings: &crate::assets::lang::StringTable, data: &PowerData,
-    target: &str, nodes: &'a [crate::assets::power_journal::Upgrade], ancestors: &mut Vec<&'a crate::assets::power_journal::Upgrade>) -> Result<(), String> {
+    target: &str, nodes: &'a [crate::assets::power_journal::Upgrade], ancestors: &mut Vec<&'a crate::assets::power_journal::Upgrade>, enhancement: bool) -> Result<(), String> {
     player.set_value(&format!("{target}.length"), (nodes.len() as u32).into()).map_err(|e| player.describe(&e))?;
     for (index, node) in nodes.iter().enumerate() {
         ancestors.push(node);
@@ -37,7 +38,9 @@ fn write_power_tree<'a>(player: &mut Player, strings: &crate::assets::lang::Stri
             player.set_value(&format!("{upgrades}.length"), (ancestors.len() as u32).into()).map_err(|e| player.describe(&e))?;
             for (index, upgrade) in ancestors.iter().enumerate() {
                 let Some(info) = &upgrade.info else { return Err(format!("power upgrade {} has no item", upgrade.id)); };
-                let id = crate::assets::power_journal::upgrade_id(&upgrade.id).ok_or_else(|| format!("unknown power upgrade {}", upgrade.id))?;
+                let id = if enhancement { crate::assets::power_journal::enhancement_id(&upgrade.id) }
+                    else { crate::assets::power_journal::upgrade_id(&upgrade.id) }
+                    .ok_or_else(|| format!("unknown journal upgrade {}", upgrade.id))?;
                 let path = format!("{upgrades}.data[{index}]");
                 for (field, text) in [("label", &info.name), ("description", &info.description), ("strategicTips", &info.tips)] {
                     player.set_value(&format!("{path}.{field}"), strings.lookup(text).into()).map_err(|e| player.describe(&e))?;
@@ -48,7 +51,7 @@ fn write_power_tree<'a>(player: &mut Player, strings: &crate::assets::lang::Stri
                 player.set_value(&format!("{path}.powerUpgradeID"), id.into()).map_err(|e| player.describe(&e))?;
             }
         } else {
-            write_power_tree(player, strings, data, &format!("{entry}.tree"), &node.children, ancestors)?;
+            write_power_tree(player, strings, data, &format!("{entry}.tree"), &node.children, ancestors, enhancement)?;
         }
         ancestors.pop();
     }
@@ -65,6 +68,7 @@ pub(super) enum Action {
     ShowMap(String),
     MarkTasks(bool, Vec<u32>),
     PurchasePower { root: bool, id: i32 },
+    PurchaseEnhancement { id: i32 },
 }
 
 pub(super) struct Movie {
@@ -214,7 +218,26 @@ impl Movie {
                 let id = crate::assets::power_journal::power_id(&power.power_id).ok_or_else(|| format!("unknown player power {}", power.power_id))?;
                 player.set_value(&format!("{entry}.powerUpgradeID"), id.into()).map_err(|e| player.describe(&e))?;
                 player.set_value(&format!("{entry}.itemIndex"), power.hud_index.into()).map_err(|e| player.describe(&e))?;
-                write_power_tree(&mut player, &strings, data, &format!("{entry}.tree"), &power.upgrades, &mut Vec::new())?;
+                write_power_tree(&mut player, &strings, data, &format!("{entry}.tree"), &power.upgrades, &mut Vec::new(), false)?;
+            }
+            //51c6e0 publishes the distinct enhancement roots and51cf30
+            //uses the same branch/ancestor shape as the power-upgrade tree.
+            let roots = if data.has_mark { data.enhancements.as_slice() } else { &[] };
+            player.set_value("journalData.powersData.enhancements.length", (roots.len() as u32).into()).map_err(|e| player.describe(&e))?;
+            for (index, root) in roots.iter().enumerate() {
+                let entry = format!("journalData.powersData.enhancements.data[{index}]");
+                let info = root.info.as_ref().ok_or_else(|| format!("enhancement {} has no item metadata", root.id))?;
+                for (field, text) in [("label", &info.name), ("description", &info.description), ("strategicTips", &info.tips)] {
+                    player.set_value(&format!("{entry}.{field}"), strings.lookup(text).into()).map_err(|e| player.describe(&e))?;
+                }
+                for (field, image) in [("image", &info.image), ("headerImage", &info.header_image)] {
+                    if let Some(image) = image { player.set_value(&format!("{entry}.{field}"), image.as_str().into()).map_err(|e| player.describe(&e))?; }
+                }
+                let owned = root.item.as_ref().is_some_and(|path| quantity(data, path) > 0);
+                player.set_value(&format!("{entry}.cost"), (if owned { 0 } else { info.rune_cost }).into()).map_err(|e| player.describe(&e))?;
+                let id = crate::assets::power_journal::enhancement_id(&root.id).ok_or_else(|| format!("unknown enhancement {}", root.id))?;
+                player.set_value(&format!("{entry}.powerUpgradeID"), id.into()).map_err(|e| player.describe(&e))?;
+                write_power_tree(&mut player, &strings, data, &format!("{entry}.tree"), &root.children, &mut Vec::new(), true)?;
             }
         }
         // 1405208e0 publishes the admitted audiographs in reverse order.
@@ -484,14 +507,15 @@ impl Movie {
                 }
                 continue;
             }
-            if name == "OnPowerUpgradeAcquired" {
+            if name == "OnPowerUpgradeAcquired" || name == "OnEnhancementUpgradeAcquired" {
                 if let Some(Value::Object(object)) = args.first() {
                     use crate::flash::avm2::name::Name;
                     let target = Value::Object(object.clone());
                     let root = self.player.vm.get_property(&target, &Name::public("isRootUpgrade")).map_err(|e| self.player.describe(&e))?.to_boolean();
                     let id = self.player.vm.get_property(&target, &Name::public("powerUpgradeID")).map_err(|e| self.player.describe(&e))?.primitive_to_number() as i32;
                     self.purchase_object = Some(object.clone());
-                    actions.push(Action::PurchasePower { root, id });
+                    actions.push(if name == "OnEnhancementUpgradeAcquired" { Action::PurchaseEnhancement { id } }
+                        else { Action::PurchasePower { root, id } });
                 }
                 continue;
             }

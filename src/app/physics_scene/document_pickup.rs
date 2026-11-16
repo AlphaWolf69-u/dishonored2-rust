@@ -64,6 +64,7 @@ impl PhysicsScene {
         let (index,_) = self.document_pickable(live,reference)?;
         if *step == 0 {
             self.begin_projectile_pickup(live, events, self.entities[index].shared)?;
+            self.begin_grenade_pickup(live,self.entities[index].shared)?;
         }
         let mut registry = self.registry.take().ok_or("document registry absent")?;
         let result = (|| {
@@ -119,7 +120,7 @@ impl PhysicsScene {
                 registry.resume_update_flags(reference.handle,&mut component.owner.flags)?;
                 *step = 4;
             }
-            registry.drain_update_changes(self)?;
+            registry.drain_update_changes(&mut super::interaction_components::Startup{world:None,scene:self,live,events})?;
             let sound = self.pickables.get(reference.handle.slot).ok_or("document Pickable retired")?.definition.begin_pickup_sound.clone();
             *step = 5;
             Ok(sound)

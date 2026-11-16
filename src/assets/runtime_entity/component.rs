@@ -36,6 +36,11 @@ pub(super) fn from_resolved(
     if kind == "cpntaudio" {
         defaults.add_updates(0x10);
     }
+    //57ca40 adds phase4, which clears spawn-start. Notification56d240
+    //then removes phase4 via00cd80, restoring the common mask0/flag4.
+    if matches!(kind,"cpntaicrewcollectorarea"|"cpntaicrewcollectorcombat"|"cpntaicrewcollectorsearch"|"cpntaicrewcollectorherd") {
+        defaults.add_updates(4);
+    }
     let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
     let (native, payload) = match kind {
         "cpntrigidbody" => (
@@ -65,6 +70,38 @@ pub(super) fn from_resolved(
         "cpntbreakable" => {
             let value = Arc::new(assets::breakable::Definition::read(&fields)?);
             ("arkCpntBreakable", Kind::Breakable(value))
+        }
+        "cpntgrenade" => ("arkCpntGrenade", Kind::Grenade(Arc::new(assets::grenades::Definition::read(fields)?))),
+        "cpntaidangerzone" => ("arkCpntAIDangerZone", Kind::AIDangerZone(Arc::new(assets::ai_world::DangerDefinition::read(fields)?))),
+        "cpntaicrewcore"|"cpntaicrewknowledgebb"|"cpntaicrewcoordinationbb"|"cpntaicrewdecision"=>{
+            let value=Arc::new(assets::ai_world::crew::Definition::read(catalog,kind,fields)?);
+            let class=std::str::from_utf8(value.factory_name()).map_err(|_|"Crew class name is not UTF-8")?;
+            (class,Kind::Crew(value))
+        }
+        "cpntaicrewcollectorarea"|"cpntaicrewcollectorcombat"|"cpntaicrewcollectornotification"|"cpntaicrewcollectorsearch"|"cpntaicrewcollectorherd"=>{
+            let value=Arc::new(assets::ai_world::crew_collectors::Definition::read(kind,fields)?);
+            let class=std::str::from_utf8(value.factory_name()).map_err(|_|"Crew collector class name is not UTF-8")?;
+            (class,Kind::CrewCollector(value))
+        }
+        "cpntaicrewmodulecombatchase"|"cpntaicrewmodulecombatmelee"|"cpntaicrewmodulesearch"|"cpntaicrewmodulespotlink"|"cpntaicrewmodulecombatranged"|"cpntaicrewmodulecombatfake"|"cpntaicrewmodulecombatflank"|"cpntaicrewmodulespothideout"|"cpntaicrewmodulecombattether"|"cpntaicrewmodulecombatalarm"=>{
+            let value=Arc::new(assets::ai_world::crew_modules::Definition::read(kind,fields)?);
+            let class=std::str::from_utf8(value.factory_name()).map_err(|_|"Crew module class name is not UTF-8")?;
+            (class,Kind::CrewModule(value))
+        }
+        "cpntaistatistics" => ("arkCpntAIStatistics", Kind::AIStatistics),
+        "cpnttimersmanager" => ("arkCpntTimersManager", Kind::TimersManager),
+        "cpntaimanager_cues" | "cpntaicrewdispatch" | "cpntdsm" | "cpntfleemanager"
+        | "cpntaiworldcoordinationbb" | "cpntaivisionmanager" => {
+            let class = match kind {
+                "cpntaimanager_cues" => "arkCpntAIManager_Cues",
+                "cpntaicrewdispatch" => "arkCpntAICrewDispatch",
+                "cpntdsm" => "arkCpntDSM",
+                "cpntfleemanager" => "arkCpntFleeManager",
+                "cpntaiworldcoordinationbb" => "arkCpntAIWorldCoordinationBB",
+                "cpntaivisionmanager" => "arkCpntAIVisionManager",
+                _ => unreachable!(),
+            };
+            (class, Kind::AIStartup(Arc::new(assets::ai_world::startup_managers::Definition::read(class, fields)?)))
         }
         "cpntdamagezone"=>("arkCpntDamageZone",Kind::DamageZone(Arc::new(
             crate::gameplay::damage_zone::Definition::read(catalog,fields)?))),
@@ -139,9 +176,7 @@ pub(super) fn from_resolved(
         }
         "cpntaiattentionsource" => (
             "arkCpntAIAttentionSource",
-            Kind::Unhosted {
-                class: "arkCpntAIAttentionSource",
-            },
+            Kind::AttentionSource(Arc::new(assets::ai_cues::AttentionDefinition::read(fields)?)),
         ),
         "cpntaimassist" => (
             "arkCpntAimAssist",
@@ -151,9 +186,7 @@ pub(super) fn from_resolved(
         ),
         "cpntobservable" => (
             "arkCpntObservable",
-            Kind::Unhosted {
-                class: "arkCpntObservable",
-            },
+            Kind::Observable(Arc::new(assets::ai_cues::ObservableDefinition::read(fields)?)),
         ),
         _ => {
             return Err(format!(

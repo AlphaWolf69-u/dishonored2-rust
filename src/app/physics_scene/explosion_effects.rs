@@ -410,7 +410,7 @@ impl Owner {
             let ticket = world
                 .get_resource_mut::<super::super::usable_effects::EffectRequests>()
                 .ok_or("canonical FX request owner is absent")?
-                .start_breakable_once(key.clone(), &path, placement, frame, context);
+                .start_context_once(key.clone(), &path, placement, frame, context);
             self.active.push((key, ticket.clone()));
             return Ok(Some(ticket));
         }
@@ -548,7 +548,7 @@ pub(in crate::app) fn projectile_impact(
     Ok(world
         .get_resource_mut::<super::super::usable_effects::EffectRequests>()
         .ok_or("canonical FX request owner is absent")?
-        .start_breakable_once(owner, path, placement, frame, context))
+        .start_context_once(owner, path, placement, frame, context))
 }
 
 ///60a8b0/6289c0: nearly vertical normals use a Y quarter-turn followed by

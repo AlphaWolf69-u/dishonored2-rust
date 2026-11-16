@@ -325,7 +325,7 @@ impl PhysicsScene {
             (0x1a6, Payload::DamageParameters(params)) => {
                 (Message::DamageAfterDeath, *params, false)
             }
-            (0xa5, Payload::DamageParameters(params)) => (Message::Incapacitated, *params, true),
+            (0xa5, Payload::Incapacitation {params,..}) => (Message::Incapacitated, *params, true),
             _ => return Err("breakable callback lacks its actual typed damage payload".into()),
         };
         self.breakables

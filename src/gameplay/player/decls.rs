@@ -241,12 +241,16 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
 pub fn state_id(name: &str) -> Option<StateId> {
     let value = match name.strip_prefix("PLAYER_STATE_")? {
         "READ_NOTE" => 52,
+        "POWERWHEEL" => 82,
         "EQUIP_CHANGE_RIGHT_HAND" => 53,
         "DRAW_RIGHT_HAND" => 54,
         "EQUIP_CHANGE_LEFT_HAND" => 64,
         "DRAW_LEFT_HAND" => 65,
         "UNDRAW" => 81,
         "FIRE_WEAPON" => 56,
+        "PLAY_HEART_BARKS"=>66,
+        "USE_HEART"=>67,
+        "LOCK_HEART_TARGET"=>73,
         "CANCEL_FIRE_WEAPON" => 57,
         "REQUEST_RELOAD_WEAPON" => 58,
         "RELOAD_WEAPON" => 59,
@@ -547,9 +551,11 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 
 #[derive(Clone, Copy)]
 enum SupportedDefaultState {
-    Dead, ReadNote, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
+    UseHeart,
+    PlayHeartBark,
+    Dead, ReadNote, PowerWheel, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
-    FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
+    FireWeapon, ThrowWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Recoil, Block,
     EquipChange, DrawEquipment, Undraw, GrabObject, HoldObject, ReleaseObject,
 }
 
@@ -557,6 +563,9 @@ fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
     Some(match kind {
         "playerstatedead" => SupportedDefaultState::Dead,
         "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstatepowerwheel" => SupportedDefaultState::PowerWheel,
+        "playerstateuseheart" => SupportedDefaultState::UseHeart,
+        "playerstateplayheartbark" => SupportedDefaultState::PlayHeartBark,
         "playerstatelootobject" => SupportedDefaultState::GrabObject,
         "playerstateholdobject" => SupportedDefaultState::HoldObject,
         "playerstatereleaseobject" => SupportedDefaultState::ReleaseObject,
@@ -564,7 +573,9 @@ fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
         "playerstatedraw" => SupportedDefaultState::DrawEquipment,
         "playerstateundraw" => SupportedDefaultState::Undraw,
         "playerstatefireweapon" => SupportedDefaultState::FireWeapon,
+        "playerstatethrowweapon" => SupportedDefaultState::ThrowWeapon,
         "playerstateslash" => SupportedDefaultState::Slash,
+        "playerstaterecoil" => SupportedDefaultState::Recoil,
         "playerstateblock" => SupportedDefaultState::Block,
         "playerstatecancelfireweapon" => SupportedDefaultState::CancelFireWeapon,
         "playerstaterequestreloadweapon" => SupportedDefaultState::RequestReloadWeapon,
@@ -603,7 +614,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
 /// Never synthesize default-mode states that are absent from the swim mode.
 pub fn swimming_equipment_states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
     Ok(states_in(&declarations.swimming_states)?.into_iter().filter(|state|
-        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_))).collect())
+        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) | Kind::PowerWheel)).collect())
 }
 
 fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl>, String> {
@@ -613,6 +624,9 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::PowerWheel if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::PowerWheel)) => Kind::PowerWheel,
+            SupportedDefaultState::UseHeart if !result.iter().any(|s:&StateDecl|matches!(s.kind,Kind::UseHeart(_))) => Kind::UseHeart(std::sync::Arc::new(super::states::use_heart::Declaration::read(fields)?)),
+            SupportedDefaultState::PlayHeartBark if !result.iter().any(|s:&StateDecl|matches!(s.kind,Kind::PlayHeartBark(_))) => Kind::PlayHeartBark(std::sync::Arc::new(super::states::play_heart_bark::Declaration::read(fields)?)),
             SupportedDefaultState::GrabObject => {
                 if !matches!(atom(fields,"m_id").and_then(state_id).unwrap_or(StateId(47)),StateId(47)|StateId::GRAB_OBJECT){continue;}
                 let declaration=std::sync::Arc::new(super::carrying::GrabDecl::read(fields)?);
@@ -631,10 +645,13 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
                 Kind::DrawEquipment(id == StateId::DRAW_LEFT)
             }
             SupportedDefaultState::Undraw => Kind::Undraw(number(fields, "m_holdDuration", 1.0)?),
+            SupportedDefaultState::ThrowWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ThrowWeapon)) => Kind::ThrowWeapon,
             SupportedDefaultState::FireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::FireWeapon(_))) =>
                 Kind::FireWeapon(std::sync::Arc::new(super::combat::FireDecl::read(fields)?)),
             SupportedDefaultState::Slash if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slash(_))) =>
                 Kind::Slash(std::sync::Arc::new(super::combat::SlashDecl::read(fields)?)),
+            SupportedDefaultState::Recoil if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Recoil(_))) =>
+                Kind::Recoil(std::sync::Arc::new(super::combat::ActionDecl::read(fields)?)),
             SupportedDefaultState::Block if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Block(_))) =>
                 Kind::Block(std::sync::Arc::new(super::combat::BlockDecl::read(fields)?)),
             SupportedDefaultState::CancelFireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CancelFireWeapon)) => Kind::CancelFireWeapon,
@@ -673,6 +690,8 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::Falling if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Falling(_))) => {
                 let d = FallingDecl::default();
                 Kind::Falling(FallingDecl {
+                    landing_material: atom(fields, "m_landingFootStep").filter(|v| !v.is_empty()).map(Into::into),
+                    dead_landing_material: atom(fields, "m_landingDeadFootStep").filter(|v| !v.is_empty()).map(Into::into),
                     smooth_gravity_adjustment: number(fields, "m_smoothGravityAdjustment", d.smooth_gravity_adjustment)?,
                     resume_sliding_max_height: number(fields, "m_resumeSlidingMaxHeight", d.resume_sliding_max_height)?,
                     full_fall_anim_height: number(fields, "m_fullFallAnimHeight", d.full_fall_anim_height)?,
@@ -688,6 +707,7 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::Sliding if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sliding(_))) => {
                 let d = SlidingDecl::default();
                 Kind::Sliding(SlidingDecl {
+                    contact_material: atom(fields, "m_slideFootStep").filter(|v| !v.is_empty()).map(Into::into),
                     in_speed: number(fields, "m_inSpeed", d.in_speed)?,
                     out_speed: number(fields, "m_outSpeed", d.out_speed)?,
                     distance: number(fields, "m_distance", d.distance)?,

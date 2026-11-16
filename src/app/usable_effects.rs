@@ -156,7 +156,7 @@ impl EffectRequests {
     }
     ///7ee610: retain source owner/culprit and inherited velocity on the same
     ///FX request/instance, without creating another acquisition or actor owner.
-    pub(super) fn start_breakable_once(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement,
+    pub(super) fn start_context_once(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement,
         initial_world: crate::gameplay::reference_frame::ReferenceFrame, context: crate::rendering::bevy_backend::world_effects::EntityEffectContext) -> EffectTicket {
         let retirement = Arc::new(Lifetime::new(true));
         let ticket = EffectTicket { lifetime: Arc::downgrade(&retirement), path: Arc::from(path) };

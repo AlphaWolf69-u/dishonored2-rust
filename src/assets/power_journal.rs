@@ -18,7 +18,41 @@ pub struct UpgradeInfo {
     pub description: String,
     pub tips: String,
     pub image: Option<String>,
+    pub header_image: Option<String>,
     pub rune_cost: i32,
+}
+
+///1419fa5d0 registers arkEnhancementUpgradeId_t in this order.
+pub fn enhancement_id(name: &str) -> Option<i32> {
+    const NAMES: [&str; 25] = ["NONE", "STRENGTH", "STRENGTH_GREATER",
+        "VITALITY_EXTEND_HEALTH", "VITALITY_IMPROVED_HEALTH_REGEN",
+        "REFLEXES_DEFLECT_PROJECTILES", "REFLEXES_SLIDE_SHOOTER",
+        "REFLEXES_PERFECT_DEFLECT", "REFLEXES_ADEPT_PARRY", "REFLEXES_BRISK_EYE",
+        "AGILITY_DOUBLE_JUMP", "AGILITY_SPRINT_FASTER", "AGILITY_REDUCED_FALL_DAMAGE",
+        "BLOODTHIRSTY_LETHAL_BLOW", "BLOODTHIRSTY_ADRENALINE_BURST", "BLOODTHIRSTY_GREATER",
+        "BONECHARMS_CRAFTING_APPRENTICE", "BONECHARMS_CRAFTING_WITCHCRAFT",
+        "BONECHARMS_CRAFTING_BLACKMAGIC", "BONECHARMS_CRAFTING_RUNECRAFTING",
+        "BONECHARMS_CRAFTING_TRAIT_SYNERGY", "BONECHARMS_CRAFTING_TRAIT_MASTERY",
+        "SHADOWKILL", "SHADOWKILL_GREATER", "SHADOWKILL_BLOODY_SWARM"];
+    let name = name.strip_prefix("ARK_ENHANCEMENT_")?;
+    NAMES.iter().position(|candidate| *candidate == name).map(|id| id as i32)
+}
+
+///51c6e0/456840 use these authored roots;51cf30 walks their sub-upgrades.
+///The already-resolved player component owns this one setup-time projection.
+pub fn enhancements_from_system(catalog: &Catalog, system: &[(String, Value)]) -> Result<Vec<Upgrade>, String> {
+    let mut mapping = HashMap::new();
+    if let Some(entries) = scope(system, "m_enhancementUpgradeItemList") {
+        for (key, value) in entries {
+            if let (Some(id), Value::Scope(fields)) = (enum_key(key), value) {
+                if let Some(item) = atom(fields, "m_item") { mapping.insert(id.to_owned(), item.to_owned()); }
+            }
+        }
+    }
+    match scope(system, "m_enhancements") {
+        Some(entries) => upgrades(catalog, entries, &mapping),
+        None => Ok(Vec::new()),
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Power {
@@ -145,6 +179,7 @@ fn upgrades(catalog: &Catalog, fields: &[(String, Value)], mapping: &HashMap<Str
             let fields = crate::assets::inventory_item::item_fields(catalog, item)?;
             Some(UpgradeInfo { name: value_text(&fields, "m_name"), description: value_text(&fields, "m_description"),
                 tips: value_text(&fields, "m_strategicTips"), image: image(&fields, "m_journalImage"),
+                header_image: image(&fields, "m_journalHeaderImage"),
                 rune_cost: atom(&fields, "m_runeCost").and_then(|v| v.parse().ok()).unwrap_or(1) })
         } else { None };
         let children = match scope(entry, "m_subUpgrades") { Some(children) => upgrades(catalog, children, mapping)?, None => Vec::new() };

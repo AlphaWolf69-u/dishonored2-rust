@@ -15,6 +15,11 @@ use std::{collections::HashMap, sync::Arc};
 
 #[derive(Resource, Default)]
 struct WorldEffectSequence(u64);
+/// Reuse the same canonical geometry/query adapter as player movement.
+/// One map-scoped scratch owner serves both traversal powers, retaining only
+/// numeric results and capacity; it holds no asset/body leases between calls.
+#[derive(Resource, Default)]
+struct PowerQueries(std::sync::Mutex<std::cell::RefCell<super::player::collision::Scratch>>);
 fn post_world_effect(world: &mut World, path: &str, frame: ReferenceFrame) -> Result<(), String> {
     world.init_resource::<WorldEffectSequence>();
     let key = {
@@ -248,6 +253,7 @@ fn service_wind(world: &mut World, mut player: Option<(&mut crate::gameplay::pla
 /// its completion notification. Both service phases use the same real owner.
 fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Player,
     clock: &mut ClockRuntime, aim: bool) -> Result<(), String> {
+    world.init_resource::<PowerQueries>();
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return Ok(()) };
     if !actions.has_family_work() { world.insert_resource(actions); return Ok(()); }
     let Some(mut effects) = world.remove_resource::<super::usable_effects::EffectRequests>() else {
@@ -269,9 +275,15 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
             if aim {
                 let aiming = player.power_cast_active(2) && player.selected_power().is_some_and(|cast| cast.settings.id == 2 && cast.phase() == Phase::Aiming);
                 if aiming && !blink.has_activity() {
+                    let scene = scene.ok_or("Blink canonical physics owner is absent")?;
+                    let query_owner = scene.point_queries()?;
+                    let query_world = query_owner.read().map_err(|_| "Blink canonical query world is poisoned")?;
+                    let scratch = world.resource::<PowerQueries>().0.lock().map_err(|_| "power query scratch is poisoned")?;
+                    let queries = super::player::collision::Collision::new(&collision.0, scene, &query_world, &scratch);
                     let view = player.view();
-                    blink.aim(player, &view, &super::player::GameCollision(&collision.0), &collision.0, live,
-                        world.get_resource::<super::interactions::Interactions>(), scene);
+                    blink.aim(player, &view, &queries, &collision.0, live,
+                        world.get_resource::<super::interactions::Interactions>(), Some(scene))?;
+                    if let Some(error) = queries.take_error() { return Err(error); }
                     blink.publish_helpers(&mut effects, player);
                 } else {
                     blink.stop_helpers(&mut effects);
@@ -283,6 +295,27 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
         }
         Ok(())
     })();
+    let result = result.and_then(|()| {
+        if aim || (!actions.blink.as_ref().is_some_and(|blink| blink.has_motion())
+            && !actions.active_blink.as_ref().is_some_and(|blink| blink.has_motion())) { return Ok(()); }
+        if !world.contains_resource::<super::physics_scene::PhysicsScene>()
+            || !world.contains_resource::<LiveEntities>() || !world.contains_resource::<EntityEvents>() {
+            return Err("Blink damage has no canonical scene/entity/event owner".into());
+        }
+        let dt = clock.player_delta().map_err(str::to_owned)?;
+        world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+            world.resource_scope(|world, mut live: Mut<LiveEntities>| {
+                let mut events = world.resource_mut::<EntityEvents>();
+                if let Some(blink) = actions.active_blink.as_ref() {
+                    blink.damage_breakables(player, dt, &mut scene, &mut live, &mut events)?;
+                }
+                if let Some(blink) = actions.blink.as_ref() {
+                    blink.damage_breakables(player, dt, &mut scene, &mut live, &mut events)?;
+                }
+                Ok(())
+            })
+        })
+    });
     world.insert_resource(effects); world.insert_resource(actions);
     result
 }
@@ -291,6 +324,7 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
 /// equipment changes. Service its real state completion independently of
 /// whichever power is currently selected.
 fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player, aim: bool) {
+    world.init_resource::<PowerQueries>();
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return };
     let mut impacts = [None, None];
     let result = (|| {
@@ -306,10 +340,16 @@ fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Pl
                 let aiming = player.power_cast_active(6) && player.selected_power().is_some_and(|cast| cast.phase() == Phase::Aiming);
                 if aiming && !far.has_activity() {
                     if let Some(collision) = world.get_resource::<super::NavigationWorld>() {
+                        let scene = world.get_resource::<super::physics_scene::PhysicsScene>().ok_or("Far Reach canonical physics owner is absent")?;
+                        let query_owner = scene.point_queries()?;
+                        let query_world = query_owner.read().map_err(|_| "Far Reach canonical query world is poisoned")?;
+                        let scratch = world.resource::<PowerQueries>().0.lock().map_err(|_| "power query scratch is poisoned")?;
+                        let queries = super::player::collision::Collision::new(&collision.0, scene, &query_world, &scratch);
                         let view = player.view();
                         let snapping = crate::platform::console::shared().read().cvars
                             .int("ark_shadow_grapple_snapping_enabled").unwrap_or(1) != 0;
-                        far.aim(player, &view, &super::player::GameCollision(&collision.0), snapping);
+                        far.aim(player, &view, &queries, snapping);
+                        if let Some(error) = queries.take_error() { return Err(error); }
                     }
                 } else if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
             }
@@ -328,7 +368,9 @@ fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Pl
 /// Map retirement releases both selected and detached consumers before the
 /// canonical clock, request queue and player are destroyed.
 pub(super) fn retire_blinks(world: &mut World) -> Result<(), String> {
-    super::player_actions::retire_effects(world)
+    super::player_actions::retire_effects(world)?;
+    world.remove_resource::<PowerQueries>();
+    Ok(())
 }
 
 fn power_error(world: &mut World, error: &str) {
@@ -396,6 +438,67 @@ pub(super) fn before_frame(world: &mut World) {
     world.insert_resource(state);
 }
 
+/// 854fd0/855750 dispatch the actual animation callback before state updates.
+/// In particular, the last scene frame can both cast and finish UsePower.
+pub(super) fn execute_animation_actions(world: &mut World) -> Result<(), String> {
+    if world.get_resource::<GamePaused>().is_none_or(|paused| paused.0) { return Ok(()); }
+    let Some(now) = world.get_resource::<ClockRuntime>().filter(|clock| clock.advanced())
+        .and_then(|clock| clock.player_time().ok()) else { return Ok(()); };
+    if !world.get_resource::<super::player::PlayerState>().and_then(|state| state.player.as_ref())
+        .is_some_and(|player| player.power_execution_pending()) { return Ok(()); }
+    let player_id = super::player_lifetime::id(world);
+    world.resource_scope(|world, mut state: Mut<super::player::PlayerState>| {
+        world.resource_scope(|world, mut clock: Mut<ClockRuntime>| {
+            world.resource_scope(|world, mut events: Mut<EntityEvents>| {
+                let player = state.player.as_mut().ok_or("power animation callback lost its player")?;
+                execute_pending(world, player, player_id, now, &mut clock, &mut events)
+            })
+        })
+    })
+}
+
+fn execute_pending(world: &mut World, player: &mut crate::gameplay::player::Player,
+    player_id: Option<EntityId>, now: f64, clock: &mut ClockRuntime, events: &mut EntityEvents) -> Result<(), String> {
+    if !player.take_power_execution_request() { return Ok(()); }
+    let id = player.selected_power().map(|cast| cast.settings.id);
+    let factor = id.map_or(1.0, |id| cast_factor(player, id, false));
+    let accepted = match id {
+        Some(1) => {
+            let input = player.power_inputs();
+            let attributes = BendTimeAttributes::read(&player.attributes);
+            let position = player.feet();
+            world.get_resource_mut::<super::power_world::PowerWorld>().is_some_and(|mut owner| {
+                let factor = if owner.bend_time_active() { 0.0 } else { factor };
+                owner.cast_bend_time(attributes, input.held,
+                    || { player.commit_power_cast(now, factor); }, clock, events, position)
+            })
+        }
+        Some(2) => {
+            let view = player.view();
+            let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
+                .and_then(|mut actions| actions.blink.as_mut().map(|blink| blink.execute(player, &view)))
+                .unwrap_or(false);
+            if accepted { player.commit_power_cast(now, factor); }
+            accepted
+        }
+        Some(6) => {
+            let view = player.view();
+            let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
+                .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(Ok(false))?;
+            if accepted { player.commit_power_cast(now, factor); }
+            accepted
+        }
+        Some(10) => {
+            let accepted = service_wind(world, player_id.map(|id| (&mut *player, id)), clock, events, true)?;
+            if accepted { player.commit_power_cast(now, factor); }
+            accepted
+        }
+        _ => false,
+    };
+    if accepted { player.finish_power_execution(); } else { player.cancel_power_use(); }
+    Ok(())
+}
+
 /// The action state, rather than raw mouse release, decides when to execute.
 pub(super) fn after_frame(world: &mut World) {
     if world.resource::<GamePaused>().0 { return; }
@@ -410,7 +513,6 @@ pub(super) fn after_frame(world: &mut World) {
         world.insert_resource(clock); world.insert_resource(state); return;
     };
     if let Some(player) = state.player.as_mut() {
-        let id = player.selected_power().map(|cast| cast.settings.id);
         let attributes = BendTimeAttributes::read(&player.attributes);
         let position = player.feet();
         for event in player.take_power_sound_events() {
@@ -466,42 +568,7 @@ pub(super) fn after_frame(world: &mut World) {
         }
         service_far_reach(world, player, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
-        if player.take_power_execution_request() {
-            let factor = id.map_or(1.0, |id| cast_factor(player, id, false));
-            let accepted = match id {
-                Some(1) => {
-                    let input = player.power_inputs();
-                    world.get_resource_mut::<super::power_world::PowerWorld>().is_some_and(|mut owner| {
-                        let factor = if owner.bend_time_active() { 0.0 } else { factor };
-                        owner.cast_bend_time(attributes, input.held,
-                            || { player.commit_power_cast(now, factor); }, &mut clock, &mut events, position)
-                    })
-                }
-                Some(2) => {
-                    let view = player.view();
-                    let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
-                        .and_then(|mut actions| actions.blink.as_mut().map(|blink| blink.execute(player, &view)))
-                        .unwrap_or(false);
-                    if accepted { player.commit_power_cast(now, factor); }
-                    accepted
-                }
-                Some(6) => {
-                    let view = player.view();
-                    let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
-                        .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(Ok(false));
-                    match accepted {
-                        Ok(accepted) => { if accepted { player.commit_power_cast(now, factor); } accepted },
-                        Err(error) => { power_error(world, &error); false },
-                    }
-                },
-                Some(10) => match service_wind(world, player_id.map(|id| (&mut *player, id)), &mut clock, &mut events, true) {
-                    Ok(accepted) => { if accepted { player.commit_power_cast(now, factor); } accepted },
-                    Err(error) => { power_error(world, &error); false },
-                },
-                _ => false,
-            };
-            if accepted { player.finish_power_execution(); } else { player.cancel_power_use(); }
-        }
+        if let Err(error) = execute_pending(world, player, player_id, now, &mut clock, &mut events) { power_error(world, &error); }
         // Body owner has already advanced its actual hand-tag endpoint;
         // family Start/Stop callbacks above are in this same ordered queue.
         if let Err(error) = publish_grapple_beam(world, player) { power_error(world, &error); }

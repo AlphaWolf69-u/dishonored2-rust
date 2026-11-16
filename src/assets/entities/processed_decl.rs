@@ -99,7 +99,7 @@ pub(super) fn encode_edit_id(value: u32) -> String {
         .collect()
 }
 
-fn decode_edit_id(value: &str) -> Result<u32, String> {
+pub(super) fn decode_edit_id(value: &str) -> Result<u32, String> {
     if value.len() != 6 {
         return Err("edit-list ID must contain six digits".into());
     }
@@ -1309,6 +1309,13 @@ impl ComponentList {
         }
         Ok(result)
     }
+}
+/// Normalize nested typed-owner edit lists through the same parsed-Fields
+/// rules as ComponentList. Call after inheritance/inline overlay, then drop
+/// the temporary tree after projecting the typed payload.
+pub(crate) fn normalize_edit_fields(fields:&mut Vec<(String,super::Value)>)->Result<(),String> {
+    value_prune(fields)?;
+    value_edits(fields,false)
 }
 fn value_merge(target: &mut Vec<(String, super::Value)>, incoming: &[(String, super::Value)]) {
     use super::Value;

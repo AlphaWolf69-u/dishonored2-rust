@@ -55,6 +55,8 @@ pub struct WorldspawnEntity(pub EntityId);
 struct Entry {
     name: Arc<str>,
     class: usize,
+    ///idEntity+2e0, constructor874c50 initializes the actual AIWorld index0.
+    ai_world_index: u32,
     stage: Stage,
     spawn_tag: NameId,
     tag_group: Option<u32>,
@@ -191,7 +193,7 @@ impl LiveEntities {
         let slot = &mut self.slots[index];
         slot.generation = generation;
         let id = EntityId((u64::from(slot.generation) << 32) | index as u64);
-        slot.entry = Some(Box::new(Entry { name: name.clone(), class, stage: Stage::Allocated, spawn_tag: constructor_spawn_tag, tag_group: None,
+        slot.entry = Some(Box::new(Entry { name: name.clone(), class, ai_world_index: 0, stage: Stage::Allocated, spawn_tag: constructor_spawn_tag, tag_group: None,
             children: Vec::new(), parent: None, owner: None, event_observers: None, event_subjects: None, trigger_touching: None, spawned_index: None, removal_requested: false, removal_queued: false,
             release_prepared: false, context: EntityContext::default(), update_mask: 0, update_active: false }));
         self.by_name.insert(Name(name), id);
@@ -278,6 +280,30 @@ impl LiveEntities {
     }
 
     pub fn find(&self, name: &str) -> Option<EntityId> { self.by_name.get(&NameQuery(name)).copied() }
+
+    pub fn ai_world_index(&self, id: EntityId) -> Result<u32, String> {
+        let slot = self.slots.get(id.0 as u32 as usize).ok_or("AIWorld entity slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("AIWorld entity generation stale".into()); }
+        Ok(slot.entry.as_ref().ok_or("AIWorld entity retired")?.ai_world_index)
+    }
+    pub fn set_ai_world_index(&mut self, id: EntityId, index: u32) -> Result<(), String> {
+        let slot = self.slots.get_mut(id.0 as u32 as usize).ok_or("AIWorld entity slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("AIWorld entity generation stale".into()); }
+        slot.entry.as_mut().ok_or("AIWorld entity retired")?.ai_world_index = index;
+        Ok(())
+    }
+    ///875fc0: queue the actual EC(old,new) packet before publishing2e0.
+    ///Birth assignments use set_ai_world_index before component admission.
+    pub fn change_ai_world_index(&mut self,id:EntityId,index:u32,
+        events:&mut super::entity_events::EntityEvents)->Result<bool,String>{
+        let previous=self.ai_world_index(id)?;
+        if previous==index{return Ok(false)}
+        let mut bytes=Vec::with_capacity(8);
+        bytes.extend_from_slice(&previous.to_le_bytes());bytes.extend_from_slice(&index.to_le_bytes());
+        events.post(super::entity_events::Event{id:0xec,target:Some(id),payload:super::entity_events::Payload::Bytes(bytes)});
+        self.set_ai_world_index(id,index)?;
+        Ok(true)
+    }
 
     pub fn stage(&self, id: EntityId) -> Option<Stage> {
         let slot = self.slots.get(id.0 as u32 as usize)?;

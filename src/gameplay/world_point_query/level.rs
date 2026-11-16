@@ -103,6 +103,12 @@ impl LevelPointQueries {
         self.storage.ray_query(executor, request, query_flags, |index| self.shape(index), hits)
     }
 
+    pub(crate) fn ray_closest_hit(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+    ) -> Result<Option<crate::gameplay::shape_ray_query::ShapeRayContact>, String> {
+        self.storage.ray_closest_hit(executor, request, |index| self.shape(index))
+    }
+
     pub(crate) fn ray_any_hit(
         &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
         query_flags: u32,
@@ -117,6 +123,14 @@ impl LevelPointQueries {
         start_hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
     ) -> Result<(), String> {
         self.storage.convex_query(executor, request, |index| self.shape(index), hits, start_hits)
+    }
+
+    pub(crate) fn convex_hits_each(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        submit: &mut dyn FnMut(crate::gameplay::shape_convex_query::ConvexContact, bool),
+    ) -> Result<(), String> {
+        self.storage.convex_query_each(executor, request, |index| self.shape(index), submit)
     }
 
     /// Append the actual closest witnesses for an already admitted body pair.

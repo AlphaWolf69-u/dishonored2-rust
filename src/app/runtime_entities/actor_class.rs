@@ -1,6 +1,32 @@
 //! Concrete idDynamicEntity constructor881d90, Spawn8820f0 and
 //! activation882070. Its destructor87e350 adds no resource owner to idEntity.
 use super::*;
+///Concrete3db480 members survive with the actual arkAICue generation.
+pub(in crate::app) struct Cue {
+    pub category: i32,
+    pub deadline: f64,
+    pub instigator: Option<EntityId>,
+    pub instigator_kind: u32,
+    pub gives_full_perception: bool,
+}
+impl Cue {
+    pub(super) fn new() -> Self { Self { category: 0, deadline: 0., instigator: None, instigator_kind: 0, gives_full_perception: false } }
+}
+
+///783940 initializes the real arkMovable members before4e65a0 installs
+///arkGrenade's concrete vtable. The managed link is distinct from owner+ac.
+pub(in crate::app) struct Movable {
+    #[allow(dead_code)]
+    linked_entity: Option<EntityId>,
+    picked_up: bool,
+}
+impl Movable {
+    pub(in crate::app) fn new() -> Self { Self { linked_entity: None, picked_up: false } }
+    pub(in crate::app) fn picked_up(&mut self, successful: bool) -> bool {
+        if successful { self.picked_up = true; }
+        self.picked_up
+    }
+}
 
 ///4e6540 constructs the actual reflected +360 bool. The source class
 ///inherits ordinary idEntity component/render lifetime; it owns no extra
@@ -57,7 +83,8 @@ pub(super) fn activate(world: &mut World, id: EntityId) -> Result<bool, String> 
     let owner = world.resource::<RuntimeEntities>();
     let actor = owner.actors.get(&id).ok_or("activation has no actual constructor journal")?;
     match actor.definition.as_ref().map(|definition| definition.class.as_str()) {
-        Some("idEntity" | "arkProjectile") => return Ok(false),
+        //1413c3200 registers actual no-op Spawn/activation0998b0 for Grenade.
+        Some("idEntity" | "arkProjectile" | "arkGrenade" | "arkAIWorld" | "arkAICue") => return Ok(false),
         Some("arkBreakable") => {
             actor.breakable_class.as_ref().ok_or("arkBreakable constructor state is absent")?;
             //Concrete vtable141b67bc8 +128 is actual no-op0998b0.

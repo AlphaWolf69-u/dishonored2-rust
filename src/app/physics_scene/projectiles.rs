@@ -492,7 +492,10 @@ impl PhysicsScene {
         result
     }
     fn projectile_hit_region(&self, hit: ShapeRayContact) -> Result<u32, String> {
-        let handle = CollisionUserData::decode(hit.target.user_data)?.component;
+        self.collision_hit_region(hit.target)
+    }
+    pub(super) fn collision_hit_region(&self, hit: crate::gameplay::collision_hit::ShapeHitInfo) -> Result<u32, String> {
+        let handle = CollisionUserData::decode(hit.user_data)?.component;
         //Collision-data virtual+30 is06d040 (returns NONE0) for all
         //admitted payloads: Rigid141c74578, Trigger141c5ba98,
         //PhysicsWorld141c7ff38. NPC limb packets require their real owner.

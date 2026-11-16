@@ -8,6 +8,27 @@ use crate::gameplay::{
     entity_lifetime::{EntityId, LiveEntities, Stage},
 };
 
+impl PhysicsScene {
+    pub(in crate::app) fn mark_player_incapacitated(&mut self,id:EntityId)->Result<(),String>{
+        let index=*self.shared_indices.get(&id).ok_or("incapacitated Player has no canonical scene header")?;
+        let actor=self.entities.get_mut(index).ok_or("incapacitated Player header is absent")?;
+        if actor.retired||actor.shared!=id{return Err("incapacitated Player generation is stale".into())}
+        actor.entity_flags=(actor.entity_flags&!0x2000)|0x800;
+        Ok(())
+    }
+    ///8769f0 records bit0 in the A5 packet at production, using the actual
+    ///idEntity+d1 flags and current28c context before deferred context commit.
+    pub(in crate::app) fn incapacitation_non_counting(&self,live:&LiveEntities,id:EntityId)->Result<bool,String>{
+        let index=*self.shared_indices.get(&id).ok_or("incapacitation source has no canonical header")?;
+        let actor=self.entities.get(index).ok_or("incapacitation source header is absent")?;
+        if actor.retired||actor.shared!=id{return Err("incapacitation source generation is stale".into())}
+        if actor.entity_flags&0x2800==0{return Ok(false)}
+        let context=live.entity_context(id)?.current;
+        if context.wrapping_sub(1)&0xffff_fffa==0&&context!=6{return Ok(false)}
+        Ok(context==0||context==3||context==4)
+    }
+}
+
 pub(super) struct HealthComponent {
     pub owner: ComponentOwner,
     pub receiver: Receiver,
@@ -292,7 +313,7 @@ impl PhysicsScene {
         let health = self.health_payload(handle)?;
         Ok(Some((health.current, health.maximum)))
     }
-    fn health_component(
+    pub(super) fn health_component(
         &self,
         live: &LiveEntities,
         id: EntityId,
@@ -386,7 +407,7 @@ impl PhysicsScene {
             events.post(Event {
                 id: 0xa5,
                 target: Some(id),
-                payload: Payload::DamageParameters(*params),
+                payload: Payload::Incapacitation { params:*params, non_counting:self.incapacitation_non_counting(live,id)? },
             });
         }
         //717950 checks the receiver type again before718110, independently
@@ -397,7 +418,7 @@ impl PhysicsScene {
             events.post(Event {
                 id: 0xa5,
                 target: Some(id),
-                payload: Payload::DamageParameters(*params),
+                payload: Payload::Incapacitation { params:*params, non_counting:self.incapacitation_non_counting(live,id)? },
             });
         }
         events.post(Event {

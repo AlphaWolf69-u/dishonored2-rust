@@ -22,9 +22,11 @@ pub(super) fn flush(world: &mut World) -> Result<(), String> {
             return Ok(());
         };
         world.resource_scope(|world, mut live: Mut<LiveEntities>| {
-            let mut events = world.resource_mut::<EntityEvents>();
-            flush_events(player, &mut live, &mut events, id)?;
-            Ok(())
+            world.resource_scope(|world,mut scene:Mut<super::physics_scene::PhysicsScene>| {
+                let mut events = world.resource_mut::<EntityEvents>();
+                flush_events(player, &mut live, &mut events, id,&mut scene)?;
+                Ok(())
+            })
         })
     })
 }
@@ -36,6 +38,7 @@ pub(in crate::app) fn flush_events(
     live: &mut LiveEntities,
     events: &mut EntityEvents,
     id: crate::gameplay::entity_lifetime::EntityId,
+    scene:&mut super::physics_scene::PhysicsScene,
 ) -> Result<(), String> {
     for event in player.drain_entity_events() {
         match event {
@@ -56,10 +59,11 @@ pub(in crate::app) fn flush_events(
                 }
                 if result.incapacitated {
                     live.set_requested_entity_context(id, 2)?;
+                    scene.mark_player_incapacitated(id)?;
                     events.post(Event {
                         id: 0xa5,
                         target: Some(id),
-                        payload: Payload::DamageParameters(params),
+                        payload: Payload::Incapacitation {params,non_counting:scene.incapacitation_non_counting(live,id)?},
                     });
                 }
                 // 876660 queues Damaged, then synchronously invokes

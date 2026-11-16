@@ -16,6 +16,44 @@ pub(in crate::app) struct Retirement {
     rollback_done: bool,
 }
 impl PhysicsScene {
+    pub(in crate::app) fn set_runtime_actor_visible(&mut self, world: &mut bevy::prelude::World,
+        live: &LiveEntities, id: EntityId, visible: bool) -> Result<(), String> {
+        live.get(id).ok_or("runtime visibility generation is stale")?;
+        let &index = self.shared_indices.get(&id).ok_or("runtime visibility header absent")?;
+        super::super::model_motion::set_entity_visible(world, live, id, visible)?;
+        if visible { self.entities[index].entity_flags &= !1; }
+        else { self.entities[index].entity_flags |= 1; }
+        Ok(())
+    }
+    pub(in crate::app) fn finish_runtime_birth(&mut self, world: &mut bevy::prelude::World,
+        live: &mut LiveEntities, events: &mut EntityEvents, id: EntityId) -> Result<(), String> {
+        live.get(id).ok_or("runtime birth generation is stale")?;
+        let &index = self.shared_indices.get(&id).ok_or("runtime birth header absent")?;
+        let context = live.entity_context(id)?.requested;
+        let handles = self.entities[index].components.entries.values().iter()
+            .map(|&packed| ComponentHandle::from_packed(packed)).collect::<Result<Vec<_>, _>>()?;
+        let mut registry = self.registry.take().ok_or("runtime birth registry borrowed")?;
+        self.entities[index].components.start_deferred = false;
+        let result = (|| {
+            for handle in handles {
+                let declaration = self.declarations.get(&handle.packed()).ok_or("runtime birth scheduling absent")?;
+                if declaration.scheduling.starts_on_spawn()
+                    && declaration.scheduling.start_phases >> (context & 31) & 1 != 0
+                    && self.owner(handle)?.flags & 3 != 3 {
+                    registry.request_start(self.owner_mut(handle)?, handle.packed() as usize, false, |_, _| Ok(()))?;
+                }
+            }
+            self.run_runtime_startup(world, live, events, &mut registry)
+        })();
+        self.registry = Some(registry);
+        result
+    }
+    pub(in crate::app) fn mark_movable_picked_up(&mut self, live: &LiveEntities, id: EntityId) -> Result<(), String> {
+        live.get(id).ok_or("movable pickedUp generation is stale")?;
+        let &index = self.shared_indices.get(&id).ok_or("movable pickedUp header is absent")?;
+        self.entity_flags_d4[index] |= 4;
+        Ok(())
+    }
     pub(in crate::app) fn runtime_actor_visible(&self, live: &LiveEntities, id: EntityId) -> Result<bool, String> {
         live.get(id).ok_or("runtime visibility entity generation is stale")?;
         let &index = self.shared_indices.get(&id).ok_or("runtime visibility header is absent")?;
@@ -358,11 +396,23 @@ impl PhysicsScene {
         live: &mut LiveEntities,
         definition: &Definition,
         options: SpawnOptions,
+        authored_name: Option<std::sync::Arc<str>>,
+        supplied_registry: bool,
     ) -> Result<EntityId, String> {
-        if self.registry.is_none() {
+        let scale = super::super::runtime_entities::entity_scale(definition, options.scale);
+        let flags = match definition.class.as_str() { "arkGrenade" => 0x20, "arkAIWorld" | "arkAICue" => 4, _ => 0 };
+        self.allocate_entity_header(live, &definition.entity, definition.class_index, flags,
+            options, scale, authored_name, supplied_registry, true)
+    }
+    ///The common874c50 header projection is shared by actual runtime and
+    ///component-less authored actors; each caller proves its concrete ctor.
+    pub(super) fn allocate_entity_header(&mut self, live: &mut LiveEntities, source: &str,
+        class: usize, flags: u8, options: SpawnOptions, scale: [f32;3],
+        authored_name: Option<std::sync::Arc<str>>, supplied_registry: bool,
+        removal_certified: bool) -> Result<EntityId, String> {
+        if self.registry.is_none() && !supplied_registry {
             return Err("runtime entity factory registry is borrowed".into());
         }
-        let scale = super::super::runtime_entities::entity_scale(definition, options.scale);
         if scale.iter().any(|value| !value.is_finite()) {
             return Err("runtime actor scale is nonfinite".into());
         }
@@ -389,8 +439,11 @@ impl PhysicsScene {
             .try_reserve(1)
             .map_err(|error| format!("runtime actor identities: {error}"))?;
         let tag = self.types.intern_name(Some(b"MAIN"))?;
-        let id =
-            live.allocate_managed_auto_name(&definition.entity, definition.class_index, 0, tag)?;
+        let id = if let Some(name) = authored_name {
+            live.allocate_managed(name, class, None, flags, tag)?
+        } else {
+            live.allocate_managed_auto_name(source, class, flags, tag)?
+        };
         let name = live
             .get(id)
             .ok_or("new managed actor disappeared")?
@@ -407,7 +460,7 @@ impl PhysicsScene {
             name,
             shared: id,
             components,
-            class: definition.class_index,
+            class,
             environment: None,
             flags: 0,
             entity_flags: 0x001e8008 | if options.hidden_disabled { 0x101 } else { 0 },
@@ -424,13 +477,13 @@ impl PhysicsScene {
         };
         if index == self.entities.len() {
             self.entities.push(entity);
-            self.entity_flags_d4.push(0);
+            self.entity_flags_d4.push(flags);
         } else {
             self.entities[index] = entity;
-            self.entity_flags_d4[index] = 0;
+            self.entity_flags_d4[index] = flags;
         }
         self.shared_indices.insert(id, index);
-        self.certify_runtime_removal_absence(index);
+        if removal_certified { self.certify_runtime_removal_absence(index); }
         Ok(id)
     }
     pub(in crate::app) fn admit_runtime_actor(
@@ -444,17 +497,37 @@ impl PhysicsScene {
         items: &HashMap<usize, Arc<crate::assets::inventory_item::PickableItem>>,
         chunks: &[(usize, usize, usize, EntityId)],
         projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
+        grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>,
         append: bool,
         model_changed: bool,
+    ) -> Result<(), String> {
+        let mut registry = self.registry.take().ok_or("runtime component registry is borrowed")?;
+        let result = self.admit_runtime_actor_with_registry(world, live, events, id, definition,
+            resources, items, chunks, projectile, grenade, append, model_changed, &mut registry, true);
+        self.registry = Some(registry);
+        result
+    }
+    ///Component Initialize may register children into its current source
+    ///registry. The outer initialization pass owns consuming their queues.
+    pub(in crate::app) fn admit_runtime_actor_with_registry(
+        &mut self, world: &mut bevy::prelude::World, live: &mut LiveEntities,
+        events: &mut EntityEvents, id: EntityId, definition: Arc<Definition>,
+        resources: &[BodyResources], items: &HashMap<usize, Arc<crate::assets::inventory_item::PickableItem>>,
+        chunks: &[(usize, usize, usize, EntityId)],
+        projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
+        grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>, append: bool,
+        model_changed: bool, mut registry: &mut ComponentRegistry, drain_startup: bool,
     ) -> Result<(), String> {
         let index = *self
             .shared_indices
             .get(&id)
             .ok_or("runtime managed actor is absent")?;
-        let mut registry = self
-            .registry
-            .take()
-            .ok_or("runtime component registry is borrowed")?;
+        if grenade.is_some() {
+            //Source63b5f0 only queues Start;632f70 transfers before that queue
+            //is consumed. This fence prevents an unrelated admission drain
+            //from starting a backend-pending grenade before its transfer.
+            self.entities[index].components.start_deferred = true;
+        }
         let result = (|| {
             let components = if append {
                 &definition.stick_components
@@ -471,13 +544,9 @@ impl PhysicsScene {
             for (local_index, component) in components.iter().enumerate() {
                 let component_index = offset + local_index;
                 if let Kind::Unhosted { class } = &component.kind {
-                    static AI: std::sync::Once = std::sync::Once::new();
                     static AIM: std::sync::Once = std::sync::Once::new();
-                    static OBS: std::sync::Once = std::sync::Once::new();
                     let once = match *class {
-                        "arkCpntAIAttentionSource" => &AI,
                         "arkCpntAimAssist" => &AIM,
-                        "arkCpntObservable" => &OBS,
                         _ => {
                             return Err("runtime unhosted capability is not source admitted".into());
                         }
@@ -492,6 +561,26 @@ impl PhysicsScene {
                 )?;
                 let immediate = declaration.scheduling.starts_on_spawn();
                 let handle = match &component.kind {
+                    Kind::Observable(definition)=>self.create_observable(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::AttentionSource(definition)=>self.create_attention_source(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::AIStatistics => ComponentFactory { declaration:&declaration,pool:&mut self.statistics,registry:&mut registry,grow_one_at_a_time:false }.create(&mut self.entities[index].components,immediate,|_,_,_|Ok(crate::gameplay::ai_world::managers::Statistics::new()),|_,_,_|Ok(()))?,
+                    Kind::TimersManager => ComponentFactory { declaration:&declaration,pool:&mut self.timers,registry:&mut registry,grow_one_at_a_time:false }.create(&mut self.entities[index].components,immediate,|_,_,_|Ok(crate::gameplay::ai_world::managers::Timers::new()),|_,_,_|Ok(()))?,
+                    Kind::AIStartup(definition) => self.create_ai_startup(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::Crew(definition)=>self.create_crew(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::CrewCollector(definition)=>self.create_crew_collector(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::CrewModule(definition)=>self.create_crew_module(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::AIDangerZone(definition) => ComponentFactory {
+                        declaration: &declaration, pool: &mut self.ai_danger_zones, registry: &mut registry,
+                        grow_one_at_a_time: false,
+                    }.create(&mut self.entities[index].components, immediate,
+                        |_, _, _| Ok(crate::gameplay::ai_world::DangerComponent::new(definition.clone())),
+                        |_, _, _| Ok(()))?,
+                    Kind::Grenade(definition) => ComponentFactory {
+                        declaration: &declaration, pool: &mut self.grenades, registry: &mut registry,
+                        grow_one_at_a_time: false,
+                    }.create(&mut self.entities[index].components, immediate,
+                        |_, _, _| Ok(crate::gameplay::grenade::Component::new(definition.clone())),
+                        |_, _, _| Ok(()))?,
                     Kind::DamageZone(definition)=>ComponentFactory{
                         declaration:&declaration,pool:&mut self.damage_zones,registry:&mut registry,grow_one_at_a_time:false,
                     }.create(&mut self.entities[index].components,immediate,|_,_,_|{
@@ -758,6 +847,9 @@ impl PhysicsScene {
                 )?;
             }
             if !append {
+                if let Some((attacker, linear, angular, _, _)) = grenade {
+                    self.configure_grenade_birth(live, id, Some(attacker), linear, angular)?;
+                }
                 if let Some(request) = projectile {
                     live.set_owner(id, request.attacker)?;
                     self.configure_projectile(id, request)?;
@@ -776,7 +868,7 @@ impl PhysicsScene {
                     "runtime component append actor is not actual spawned generation".into(),
                 );
             }
-            self.run_runtime_startup(world, live, events, &mut registry)?;
+            if drain_startup { self.run_runtime_startup(world, live, events, &mut registry)?; }
             if created_rigid {
                 if let Some(mut navigation) =
                     world.get_resource_mut::<super::super::NavigationWorld>()
@@ -786,7 +878,6 @@ impl PhysicsScene {
             }
             Ok(())
         })();
-        self.registry = Some(registry);
         result
     }
     pub(in crate::app) fn entity_water_impact_pending(&self, id: EntityId) -> bool {
@@ -848,6 +939,16 @@ impl PhysicsScene {
             .ok_or("runtime rollback header absent")?;
         super::preparation::rollback_runtime_entity(world, self, live, events, index)?;
         state.rollback_done = true;
+        Ok(true)
+    }
+    pub(in crate::app) fn prepare_runtime_rollbacks(
+        &mut self, world: &mut bevy::prelude::World, live: &mut LiveEntities,
+        events: &mut EntityEvents, ids: &[EntityId],
+    ) -> Result<bool, String> {
+        if !self.runtime_admission_idle() { return Ok(false); }
+        let indices = ids.iter().map(|id| self.shared_indices.get(id).copied()
+            .ok_or("runtime rollback header absent")).collect::<Result<Vec<_>, _>>()?;
+        super::preparation::rollback_runtime_entities(world, self, live, events, &indices)?;
         Ok(true)
     }
     /// Component/attachment drain only. The caller's canonical removal batch

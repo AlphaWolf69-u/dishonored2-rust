@@ -371,6 +371,44 @@ impl PhysicsScene {
         Ok(())
     }
 
+    pub(super) fn start_usable_backend(&self, world: &mut bevy::prelude::World,
+        handle: ComponentHandle) -> Result<(), String> {
+        let component = self.usables.get(handle.slot).ok_or("Usable Start component absent")?;
+        let preserve_state = component.owner.flags & (1 << 30) != 0;
+        if !world.contains_resource::<super::super::interactions::Interactions>() {
+            return Err("Usable Start interaction owner absent".into());
+        }
+        world.resource_scope(|world, mut interactions: bevy::prelude::Mut<super::super::interactions::Interactions>| {
+            let mut navigation = world.get_resource_mut::<super::super::NavigationWorld>()
+                .ok_or("Usable Start collision owner absent")?;
+            interactions.start_actor(component.actor, preserve_state, &mut navigation.0)
+        })
+    }
+
+    ///3b8430 requests the Interactable base on the contacted actor, not
+    ///just its Pickable subclass. Resolve the actual started Usable generation.
+    pub(in crate::app) fn interaction_usable(
+        &self,
+        live: &LiveEntities,
+        id: crate::gameplay::entity_lifetime::EntityId,
+    ) -> Result<Option<usize>, String> {
+        if live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+            return Ok(None);
+        }
+        let Some(&index) = self.shared_indices.get(&id) else { return Ok(None); };
+        let entity = &self.entities[index];
+        if entity.retired || entity.entity_flags & 1 != 0 { return Ok(None); }
+        let handle = entity.components.find_component([self.classes[5]; 2], [0x28, 0], |handle| {
+            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                flags: self.owner(handle)?.flags,
+                start_phases: self.declarations.get(&handle.packed())
+                    .map(|declaration| declaration.scheduling.start_phases),
+            })
+        })?;
+        handle.map(|handle| self.usables.get(handle.slot).map(|component| component.actor)
+            .ok_or_else(|| "interaction Usable generation absent".to_owned())).transpose()
+    }
+
     pub(in crate::app) fn readable_identity(
         &self,
         entity: &str,
@@ -516,6 +554,7 @@ impl crate::gameplay::component_state::updates::ComponentUpdateWorld for Physics
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.classes[32]||handle.class_id==self.classes[38]{return Err("Crew update removal requires the canonical borrowed lifecycle/event host".into())}
         registry.base_update_remove(handle, self)
     }
     fn update_add(
@@ -523,6 +562,7 @@ impl crate::gameplay::component_state::updates::ComponentUpdateWorld for Physics
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.classes[32]{return Err("Crew update admission requires the canonical borrowed event host".into())}
         registry.base_update_add(handle, self)
     }
     fn set_update_scheduled(
@@ -572,7 +612,20 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if handle.class_id == self.scene.classes[18] {
+            if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
+                return self.scene.initialize_cue_component(self.live,handle);
+            }
+            if self.scene.is_crew_class(handle.class_id) {
+                self.scene.initialize_crew(handle)
+            } else if self.scene.is_crew_collector_class(handle.class_id) {
+                self.scene.initialize_crew_collector(handle)
+            } else if self.scene.is_crew_module_class(handle.class_id) {
+                self.scene.initialize_crew_module(handle)
+            } else if handle.class_id == self.scene.classes[20] {
+                self.scene.initialize_ai_danger(self.world.as_deref_mut().ok_or("AI danger Initialize requires published world")?,self.live,handle)
+            } else if handle.class_id == self.scene.classes[19] {
+                self.scene.initialize_grenade(handle,self.live)
+            } else if handle.class_id == self.scene.classes[18] {
                 self.scene.initialize_damage_zone(handle,self.live)
             } else if handle.class_id == self.scene.classes[17] {
                 self.scene.initialize_sound_volume(
@@ -617,7 +670,38 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
-            if handle.class_id == self.scene.classes[18] {
+            if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_cue_component(self.world.as_deref(),self.live,self.events,handle);
+            }
+            if self.scene.is_crew_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                self.scene.start_crew(self.events,handle)
+            } else if self.scene.is_crew_collector_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                self.scene.start_crew_collector(self.events,registry,handle)
+            } else if self.scene.is_crew_module_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                self.scene.start_crew_module(self.events,registry,handle)
+            } else if handle.class_id == self.scene.classes[20] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_ai_danger(handle,self.events)
+            } else if handle.class_id == self.scene.classes[19] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle)
+            } else if handle.class_id == self.scene.classes[5] {
+                self.scene.start(handle, registry)?;
+                //Preparation has not published Interactions yet. Its initial
+                //state/body queue already belongs to the prepared level.
+                if let Some(world) = self.world.as_deref_mut() {
+                    self.scene.start_usable_backend(world, handle)?;
+                }
+                Ok(())
+            } else if handle.class_id==self.scene.classes[6] {
+                self.scene.start(handle,registry)?;
+                if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_started(world,handle)?;}
+                Ok(())
+            } else if handle.class_id == self.scene.classes[18] {
                 self.scene.start(handle,registry)?;
                 self.scene.start_damage_zone(self.world.as_deref_mut().ok_or("DamageZone Start requires published world")?,self.live,handle)
             } else if handle.class_id == self.scene.classes[17] {
@@ -708,14 +792,17 @@ impl crate::gameplay::component_state::updates::ComponentUpdateWorld for Startup
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
-        registry.base_update_remove(handle, self)
+        if self.scene.is_crew_module_class(handle.class_id){self.scene.update_remove_crew_module(handle,registry,self.live,self.events)?;}
+        registry.base_update_remove(handle, self)?;
+        self.scene.crew_update_subscription(handle,self.events,false)
     }
     fn update_add(
         &mut self,
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
-        registry.base_update_add(handle, self)
+        registry.base_update_add(handle, self)?;
+        self.scene.crew_update_subscription(handle,self.events,true)
     }
     fn set_update_scheduled(
         &mut self,
@@ -774,6 +861,68 @@ impl PhysicsScene {
             membership!(self.health_doors)
         } else if handle.class_id == self.classes[17] {
             membership!(self.sound_volumes)
+        } else if handle.class_id == self.classes[19] {
+            membership!(self.grenades)
+        } else if handle.class_id == self.classes[20] {
+            membership!(self.ai_danger_zones)
+        } else if handle.class_id == self.classes[21] {
+            membership!(self.statistics)
+        } else if handle.class_id == self.classes[22] {
+            membership!(self.timers)
+        } else if handle.class_id == self.classes[23] {
+            membership!(self.ai_cues)
+        } else if handle.class_id == self.classes[24] {
+            membership!(self.ai_crews)
+        } else if handle.class_id == self.classes[25] {
+            membership!(self.ai_dsm)
+        } else if handle.class_id == self.classes[26] {
+            membership!(self.ai_flee)
+        } else if handle.class_id == self.classes[27] {
+            membership!(self.ai_coordination)
+        } else if handle.class_id == self.classes[28] {
+            membership!(self.ai_vision)
+        } else if handle.class_id==self.classes[29] {
+            membership!(self.crew_cores)
+        } else if handle.class_id==self.classes[30] {
+            membership!(self.crew_knowledge)
+        } else if handle.class_id==self.classes[31] {
+            membership!(self.crew_coordination)
+        } else if handle.class_id==self.classes[32] {
+            membership!(self.crew_decisions)
+        } else if handle.class_id==self.classes[33] {
+            membership!(self.ai_crew_area)
+        } else if handle.class_id==self.classes[34] {
+            membership!(self.ai_crew_combat)
+        } else if handle.class_id==self.classes[35] {
+            membership!(self.ai_crew_notification)
+        } else if handle.class_id==self.classes[36] {
+            membership!(self.ai_crew_search)
+        } else if handle.class_id==self.classes[37] {
+            membership!(self.ai_crew_herd)
+        } else if handle.class_id==self.classes[38] {
+            membership!(self.crew_chase)
+        } else if handle.class_id==self.classes[39] {
+            membership!(self.crew_melee)
+        } else if handle.class_id==self.classes[40] {
+            membership!(self.crew_search_module)
+        } else if handle.class_id==self.classes[41] {
+            membership!(self.crew_link)
+        } else if handle.class_id==self.classes[42] {
+            membership!(self.crew_ranged)
+        } else if handle.class_id==self.classes[43] {
+            membership!(self.crew_fake)
+        } else if handle.class_id==self.classes[44] {
+            membership!(self.crew_flank)
+        } else if handle.class_id==self.classes[45] {
+            membership!(self.crew_hideout)
+        } else if handle.class_id==self.classes[46] {
+            membership!(self.crew_tether)
+        } else if handle.class_id==self.classes[47] {
+            membership!(self.crew_alarm)
+        } else if handle.class_id==self.classes[48] {
+            membership!(self.observables)
+        } else if handle.class_id==self.classes[49] {
+            membership!(self.attention_sources)
         } else if handle.class_id == self.classes[18] {
             membership!(self.damage_zones)
         } else {

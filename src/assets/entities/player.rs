@@ -21,11 +21,13 @@ pub struct PlayerDeclarations {
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
     pub ranged_target_sensor: Vec<(String, Value)>,
+    pub rune_charms_sensor: Vec<(String, Value)>,
     pub blink_mantle_sensor: Vec<(String, Value)>,
     pub grapple_sensor: Vec<(String, Value)>,
     pub grapple_to_mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
+    pub chaos: Vec<(String, Value)>,
     /// Shared power-system and mark inputs, resolved with the player's other
     /// components; consumers project typed runtime data before source release.
     pub powers: Vec<(String, Value)>,
@@ -180,7 +182,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 21] = [
+const PLAYER_COMPONENTS: [&str; 22] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -192,11 +194,13 @@ const PLAYER_COMPONENTS: [&str; 21] = [
     "cpntplayerbody",
     "cpntplayersensormantle",
     "cpntplayersensorrangedtarget",
+    "cpntplayersensorrunecharms",
     "cpntplayersensorblinktomantle",
     "cpntplayersensorgrapple",
     "cpntplayersensorgrappletomantle",
     "cpnthealthevolved",
     "cpntmana",
+    "cpntplayerchaos",
     "cpntadrenaline",
     "cpntplayerbreath",
     "cpntplayerfxmanager",
@@ -304,8 +308,10 @@ fn player_declarations_with_listener(
     let lean_sensor = take("cpntplayersensorlean")?;
     let mantle_sensor = take("cpntplayersensormantle")?;
     let ranged_target_sensor = take("cpntplayersensorrangedtarget")?;
+    let rune_charms_sensor = take("cpntplayersensorrunecharms")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
+    let chaos = take("cpntplayerchaos")?;
     let powers = take("cpntplayerpowersystem")?;
     let outsider_mark = take("cpntplayeroutsidermark")?;
     let adrenaline = take("cpntadrenaline")?;
@@ -356,7 +362,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

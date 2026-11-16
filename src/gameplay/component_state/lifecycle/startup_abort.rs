@@ -15,6 +15,23 @@ impl ComponentRegistry {
                 return Err("startup abort target generation differs".into());
             }
         }
+        self.abort_components_startup(targets, world)
+    }
+
+    /// Host failure recovery may unwind one constructor and its actual
+    /// constructor-owned children together. Adjust the accepted queue cursor
+    /// once, without entering another callback between those withdrawals.
+    pub(crate) fn abort_components_startup(
+        &mut self,
+        targets: &[(ComponentHandle, u32)],
+        world: &impl ComponentLifecycleWorld,
+    ) -> Result<(), String> {
+        for &(handle, generation) in targets {
+            let owner = world.owner(handle)?;
+            if owner.entity.is_none() || owner.generation != generation {
+                return Err("startup abort target generation differs".into());
+            }
+        }
         let target = |value: u64| targets.iter().any(|(handle, _)| handle.packed() == value);
         let entered = self.interrupted_startup_component()?;
         if entered.is_some_and(|handle| !target(handle.packed())) {

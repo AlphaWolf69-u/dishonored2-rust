@@ -575,6 +575,8 @@ fn acquire(world: &mut World) {
             .and_then(|actions| actions.startup_error().map(str::to_owned));
         if let Some(error) = player_error
             .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
+            .or_else(|| super::power_wheel::startup_error(world))
+            .or_else(|| super::ai_world::creation::startup_error(world).map(str::to_owned))
             .or_else(|| super::carrying_resources::startup_error(world)) {
             fail_initial_images(world, &error);
             world.insert_resource(state);
@@ -585,6 +587,14 @@ fn acquire(world: &mut World) {
             world.insert_resource(state);
             return;
         }
+        let grenade_pending=match super::physics_scene::grenades::startup_pending(world) {
+            Ok(pending)=>pending,
+            Err(error)=>{
+                fail_initial_images(world,&error);
+                world.insert_resource(state);
+                return;
+            }
+        };
         let has_player = world.get_resource::<super::player::PlayerState>()
             .is_some_and(|state| state.player.is_some());
         let player_pending = has_player && (
@@ -593,8 +603,11 @@ fn acquire(world: &mut World) {
             || super::runtime_materials::equipment_admission::startup_pending(world));
         if !player_pending && !super::weapon_firing::startup_pending(world)
             && !super::runtime_entities::startup_pending(world)
+            && !super::ai_world::creation::startup_pending(world)
             && !super::fx_gameplay::startup_pending(world)
+            && !super::power_wheel::startup_pending(world)
             && !super::water_impacts::startup_pending(world)
+            && !grenade_pending
             && !super::carrying_resources::startup_pending(world) {
             crate::loading::complete("initial runtime resources");
         }

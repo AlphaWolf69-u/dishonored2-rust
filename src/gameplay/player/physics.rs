@@ -714,7 +714,7 @@ impl PlayerPhysics {
             self.ground_material_hit = if self.penetrating {
                 world
                     .cast_ray(material_filter, start, -Vec3::Z, ground_length)
-                    .map(|hit| WorldHit { material_id: hit.material_id,
+                    .map(|hit| WorldHit { user_data: hit.user_data, body_flags: hit.body_flags, material_id: hit.material_id,
                         position: hit.position,
                         normal: hit.normal,
                         value: hit.distance / ground_length,
@@ -989,7 +989,7 @@ mod tests {
                 if let Some((fraction, contact)) =
                     shape_cast::cast(&points, displacement, triangle, 0.001)
                 {
-                    cast.push(WorldHit { material_id: None,
+                    cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: None,
                         position: contact.position,
                         normal: contact.normal,
                         value: fraction,
@@ -1000,7 +1000,7 @@ mod tests {
                 if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                     let contact = shape_cast::closest(&points, triangle);
                     if contact.distance <= tolerance {
-                        start.push(WorldHit { material_id: None,
+                        start.push(WorldHit { user_data: 0, body_flags: 1, material_id: None,
                             position: contact.position,
                             normal: contact.normal,
                             value: contact.distance,
@@ -1018,7 +1018,7 @@ mod tests {
             direction: Vec3,
             length: f32,
         ) -> Option<RayHit> {
-            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { material_id: None,
+            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { user_data: 0, body_flags: 1, material_id: None,
                 distance: from.z,
                 position: Vec3::new(from.x, from.y, 0.0),
                 normal: Vec3::Z,

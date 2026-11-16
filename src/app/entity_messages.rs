@@ -3,6 +3,27 @@
 use crate::gameplay::{entity_events::EntityEvents, entity_lifetime::LiveEntities};
 use bevy::prelude::*;
 
+///7ec5b0(stage,1) drains this same normal FIFO after each accepted source
+///stage. Callers already borrowing the Scene/Live/Event owners do not remove
+///or copy those large resources a second time merely to dispatch messages.
+pub(super) fn finish_borrowed(world:&mut World,scene:&mut super::physics_scene::PhysicsScene,
+    live:&LiveEntities,events:&mut EntityEvents)->Result<(),String>{
+    let mut ai_worlds=world.remove_resource::<crate::gameplay::ai_world::Worlds>();
+    let mut hearts=world.remove_resource::<super::heart::Hearts>();
+    let result=if world.contains_resource::<super::player::PlayerState>() {
+        world.resource_scope(|world,mut player:Mut<super::player::PlayerState>|{
+            scene.pump_entity_messages(live,events,world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),
+                player.player.as_mut(),ai_worlds.as_mut(),hearts.as_mut())
+        })
+    }else{
+        scene.pump_entity_messages(live,events,world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),
+            None,ai_worlds.as_mut(),hearts.as_mut())
+    };
+    if let Some(owner)=ai_worlds{world.insert_resource(owner);}
+    if let Some(owner)=hearts{world.insert_resource(owner);}
+    result
+}
+
 /// Preserve real callback failures at outgoing lifetime boundaries.
 pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
     let Some(mut events) = world.remove_resource::<EntityEvents>() else {
@@ -19,17 +40,23 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
                     .map(|_| ())
             })
     });
+    let mut ai_worlds = world.remove_resource::<crate::gameplay::ai_world::Worlds>();
+    let mut hearts=world.remove_resource::<super::heart::Hearts>();
     let result = inventory_result.and_then(|()| {
         if world.contains_resource::<super::physics_scene::PhysicsScene>()
             && world.contains_resource::<LiveEntities>()
         {
             world.resource_scope(
                 |world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
-                    scene.pump_entity_messages(
-                        world.resource::<LiveEntities>(),
-                        &mut events,
-                        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),
-                    )
+                    if world.contains_resource::<super::player::PlayerState>() {
+                        world.resource_scope(|world,mut player:Mut<super::player::PlayerState>| {
+                            scene.pump_entity_messages(world.resource::<LiveEntities>(),&mut events,
+                                world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),player.player.as_mut(), ai_worlds.as_mut(),hearts.as_mut())
+                        })
+                    } else {
+                        scene.pump_entity_messages(world.resource::<LiveEntities>(),&mut events,
+                            world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),None, ai_worlds.as_mut(),hearts.as_mut())
+                    }
                 },
             )
         } else {
@@ -48,6 +75,8 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
         }
     });
     world.insert_resource(events);
+    if let Some(owner) = ai_worlds { world.insert_resource(owner); }
+    if let Some(owner)=hearts {world.insert_resource(owner);}
     result
 }
 

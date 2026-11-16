@@ -133,6 +133,16 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
                 scene.rates.insert(emitter, (settings.rate(rate), rate == 0.0));
             }
         });
+        player.visit_animation_sound_emitters(|emitter| {
+            if let Some((position, axis)) = player.sound_transform(emitter) {
+                scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
+                if let Some(rate) = rate {
+                    if let Some(value) = player.sound_rate(emitter, rate) {
+                        scene.rates.insert(emitter, (value, rate == 0.0));
+                    }
+                }
+            }
+        });
     }
     // G is a host diagnostic camera; ordinary gameplay uses the component's
     // declared skeleton joints above, independently of the rendered camera.

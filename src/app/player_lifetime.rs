@@ -27,9 +27,14 @@ struct PlayerLifetime {
 /// borrows PlayerState out of the World. Admission required a real Player;
 /// only the explicit lifecycle retirement releases that generation.
 pub(super) fn id(world: &World) -> Option<EntityId> {
+    id_with_live(world, world.get_resource::<LiveEntities>()?)
+}
+
+/// The same identity certificate while a component callback borrows the
+/// canonical LiveEntities out of World. This does not construct another player.
+pub(super) fn id_with_live(world: &World, live: &LiveEntities) -> Option<EntityId> {
     let owner = world.get_resource::<PlayerLifetime>()?;
     let entity = owner.entity?;
-    let live = world.get_resource::<LiveEntities>()?;
     let classes = owner.types.classes();
     (classes
         .metadata(owner.class)
@@ -134,6 +139,12 @@ fn bind_power_owner(world: &mut World, entity: EntityId) -> Result<(), String> {
     {
         player.set_managed_entity(Some(entity));
     }
+    super::player_chaos::bind(world, entity)?;
+    let sensor=world.get_resource::<super::player::PlayerState>().and_then(|owner|owner.player.as_ref())
+        .ok_or("RuneCharms initialization actual Player absent")?.rune_charms.clone();
+    if super::heart::configure_sensor(world,sensor)? {
+        world.resource_scope(|world,scene:bevy::prelude::Mut<super::physics_scene::PhysicsScene>|scene.seed_heart_pickables(world))?;
+    }
     if let Some(mut powers) = world.get_resource_mut::<super::power_world::PowerWorld>() {
         powers.bind_player(entity);
     }
@@ -163,6 +174,7 @@ pub(super) fn retire(world: &mut World) -> Result<(), String> {
     // 140199df0/graph-owner retirement precedes removal of the identity used
     // by queued receiver callbacks; use the existing manager, not a copy.
     super::entity_graphs::retire(world, entity)?;
+    super::player_chaos::retire(world, entity)?;
     world
         .get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
         .ok_or("player retirement clock owner absent")?

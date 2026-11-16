@@ -148,6 +148,35 @@ impl SightQueries for SightWorld<'_> {
     }
 }
 
+///638ae0 is shared by every Ranged-derived weapon, including WeaponThrowable.
+///Reuse the canonical sight query scratch instead of a second ray/cast owner.
+pub(in crate::app) fn spawn_origin(
+    world: &mut World, eye: Vec3, camera_axis: Mat3, muzzle: Vec3,
+    weapon_axis: Mat3, bounds: [[f32; 3]; 2], max_deviation_degrees: f32, aim: Vec3,
+) -> Result<Vec3, String> {
+    if !world.contains_resource::<Firing>() { world.insert_resource(Firing::default()); }
+    let mut owner = world.remove_resource::<Firing>().ok_or("weapon sight owner is absent")?;
+    let result = sight_origin(world, &mut owner, eye, camera_axis, muzzle, weapon_axis, bounds,
+        max_deviation_degrees, aim);
+    world.insert_resource(owner);
+    result
+}
+fn sight_origin(
+    world: &World, owner: &mut Firing, eye: Vec3, camera_axis: Mat3, muzzle: Vec3,
+    weapon_axis: Mat3, bounds: [[f32; 3]; 2], max_deviation_degrees: f32, aim: Vec3,
+) -> Result<Vec3, String> {
+    let minimum = Vec3::from_array(bounds[0]);
+    let maximum = Vec3::from_array(bounds[1]);
+    let Some(shape) = shooting::sight_box(minimum, maximum) else { return Ok(muzzle); };
+    let queries = world.resource::<super::physics_scene::PhysicsScene>().point_queries()?;
+    let queries = queries.read().map_err(|_| "weapon sight physics owner is poisoned")?;
+    let mut cast = SightWorld { owner, world: &queries, shape, error: None };
+    let position = shooting::Sight { eye, camera_axis, muzzle, weapon_axis,
+        bounds_min: minimum, bounds_max: maximum, max_deviation_degrees }
+        .spawn_position(aim, false, false, &mut cast);
+    cast.error.map_or(Ok(position), Err)
+}
+
 /// Run before the player component stages. No archive work occurs here: a
 /// selected component is admitted only after its actual current ammo and
 /// muzzle dependencies have finished through their canonical owners.
@@ -181,13 +210,13 @@ pub(super) fn prepare(world: &mut World) {
             .map_err(|_| "weapon aim physics owner is poisoned")?;
         let target = player.ranged_target;
         //726280 has local crosshair +X when no actual autoaim target exists.
-        let target_hit = if target.enabled {
+        let target_hit = if target.enabled || player.heart_entity().is_some() {
             ray(
                 &mut owner,
                 &queries,
                 eye,
                 eye + camera_axis.x_axis * target.maximum_distance,
-                target.layers,
+                target.layers | if player.heart_entity().is_some() { 0x0200_0000 } else { 0 },
                 0x20000,
             )?
         } else {
@@ -196,6 +225,11 @@ pub(super) fn prepare(world: &mut World) {
         let hit =
             target_hit.map(|hit| Vec3::new(hit.position[0], hit.position[1], hit.position[2]));
         player.set_ranged_target_hit(hit);
+        let entity = target_hit.as_ref().map(|hit| {
+            world.resource::<super::physics_scene::PhysicsScene>().collision_entity(
+                world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(), &hit.target)
+        }).transpose()?.flatten();
+        player.set_ranged_target_entity(entity);
         drop(queries);
         let Some(identity) = player.ranged_identity() else {
             return Ok(());
@@ -445,38 +479,8 @@ fn fire(
                 source.aim,
                 source.world_from_clip.project_point3(ndc),
             );
-            let sight_min = Vec3::from_array(source.prepared.sight_bounds[0]);
-            let sight_max = Vec3::from_array(source.prepared.sight_bounds[1]);
-            let position = if let Some(shape) = shooting::sight_box(sight_min, sight_max) {
-                let queries = world
-                    .resource::<super::physics_scene::PhysicsScene>()
-                    .point_queries()?;
-                let queries = queries
-                    .read()
-                    .map_err(|_| "weapon sight physics owner is poisoned")?;
-                let mut cast = SightWorld {
-                    owner,
-                    world: &queries,
-                    shape,
-                    error: None,
-                };
-                let position = shooting::Sight {
-                    eye: source.eye,
-                    camera_axis: source.camera_axis,
-                    muzzle: frame.0,
-                    weapon_axis: source.weapon_axis,
-                    bounds_min: sight_min,
-                    bounds_max: sight_max,
-                    max_deviation_degrees: weapon.aim.max_deviation_angle,
-                }
-                .spawn_position(aim, false, false, &mut cast);
-                if let Some(error) = cast.error {
-                    return Err(error);
-                }
-                position
-            } else {
-                frame.0
-            };
+            let position = sight_origin(world, owner, source.eye, source.camera_axis, frame.0,
+                source.weapon_axis, source.prepared.sight_bounds, weapon.aim.max_deviation_angle, aim)?;
             let axis = crate::gameplay::reference_frame::direction_basis(aim - position);
             let charged = source.upgrade_flags & 4 == 0 || parameters.charged_shot;
             let flags = crate::gameplay::projectiles::Flags {
@@ -548,7 +552,19 @@ fn muzzle_effects(
         {
             let ticket = world
                 .resource_mut::<super::usable_effects::EffectRequests>()
-                .start_world_once(key.clone(), path, source.muzzle_frame);
+                //63b3c0/87cb90: detached muzzle FX retain439480 with
+                //callback mask8000 and the firing weapon as its payload.
+                //The temporary FX actor starts with zero motion; this is
+                //not the weapon's or attacker's inherited velocity.
+                .start_context_once(key.clone(), path, super::usable_effects::EntityPlacement {
+                    target: crate::gameplay::event_graph::EntityReference::Invalid,
+                    tag: String::new(), local: ReferenceFrame::default(), attached: false,
+                }, source.muzzle_frame, crate::rendering::bevy_backend::world_effects::EntityEffectContext {
+                    owner: Some(source.equipment), culprit: None,
+                    cannot_incapacitate_player_and_allies: false, player_impact: false,
+                    velocities: [[0.0; 3]; 2], contact_speed: 0.0, contact_mass: 0.0,
+                    contact_stimulus_enabled: Some(true),
+                });
             entry.effects.push(owned::Effect {
                 key,
                 ticket,

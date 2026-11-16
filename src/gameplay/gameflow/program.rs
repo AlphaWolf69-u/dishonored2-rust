@@ -37,8 +37,25 @@ struct Node {
     name: String,
     children: Vec<usize>,
 }
-pub(crate) type ProgramRegistry = crate::assets::resource_registry::Registry<Program>;
-pub struct Program {
+pub(crate) type ProgramRegistry = crate::assets::resource_registry::Registry<Projection>;
+///One declaration residency owner for gameflow and Crew arktree projections.
+pub(crate) enum Projection {
+    Gameflow(Arc<GameflowDefinition>),
+    Crew(Arc<crate::assets::ai_world::crew_tree::Data>),
+}
+impl Projection {
+    fn paths(&self) -> Vec<String> {
+        match self { Self::Gameflow(value) => value.paths.clone(), Self::Crew(value) => vec![value.path.to_string()] }
+    }
+}
+pub struct Program { _resource: Arc<Projection>, definition: Arc<GameflowDefinition> }
+impl std::ops::Deref for Program {
+    type Target = GameflowDefinition;
+    fn deref(&self) -> &Self::Target {
+        &self.definition
+    }
+}
+pub struct GameflowDefinition {
     nodes: Vec<Node>,
     identities: HashMap<u32, (Domain, usize)>,
     missions: HashMap<u32, Arc<Mission>>,
@@ -260,7 +277,7 @@ impl Program {
             "generated/decls/gameflowmanager/{}.decl",
             manager.to_ascii_lowercase()
         );
-        catalog
+        let resource = catalog
             .gameflow_programs
             .get_or_init(Default::default)
             .lock()
@@ -270,7 +287,7 @@ impl Program {
                 let fields = read_edit(&mut read, "gameflowmanager", manager)?;
                 let root =
                     atom(&fields, "m_gameFlowTree").ok_or("gameflow manager has no root tree")?;
-                let mut program = Self {
+                let mut program = GameflowDefinition {
                     nodes: Vec::new(),
                     identities: HashMap::new(),
                     missions: HashMap::new(),
@@ -278,9 +295,16 @@ impl Program {
                     manager: Arc::from(manager),
                 };
                 program.tree(catalog, root, None, &mut HashSet::new())?;
-                Ok(Arc::new(program))
-            })
+                Ok(Arc::new(Projection::Gameflow(Arc::new(program))))
+            })?;
+        let definition = match &*resource {
+            Projection::Gameflow(value) => value.clone(),
+            Projection::Crew(_) => return Err("gameflow resource projection differs".into()),
+        };
+        Ok(Arc::new(Self { _resource: resource, definition }))
     }
+}
+impl GameflowDefinition {
     fn tree(
         &mut self,
         catalog: &Catalog,
@@ -840,7 +864,7 @@ pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
         owner.release(catalog.identity(), "gameflowManager", marker);
         let sources = owner
             .live_values()
-            .flat_map(|program| program.paths.clone())
+            .flat_map(|program| program.paths())
             .collect::<HashSet<_>>();
         for kind in ["gameflowManager", "arkTree"] {
             crate::loading::retain_catalog_kind(catalog.identity(), kind, |path| {

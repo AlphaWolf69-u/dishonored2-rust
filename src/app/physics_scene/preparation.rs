@@ -300,16 +300,30 @@ pub(super) fn rollback_runtime_entity(
     events: &mut EntityEvents,
     entity: usize,
 ) -> Result<(), String> {
-    let index = scene
-        .entities
-        .get(entity)
-        .ok_or("runtime rollback actor absent")?;
-    let bodies = index
-        .components
-        .entries
-        .values()
-        .iter()
-        .filter_map(|&packed| ComponentHandle::from_packed(packed).ok())
+    rollback_runtime_entities(world, scene, live, events, &[entity])
+}
+
+/// A failed constructor can have registered real child actors into its outer
+/// initialization batch. Unwind that complete failed ownership set before
+/// exposing the adjusted unrelated queue cursor to any later admission.
+pub(super) fn rollback_runtime_entities(
+    world: &mut bevy::prelude::World,
+    scene: &mut PhysicsScene,
+    live: &mut LiveEntities,
+    events: &mut EntityEvents,
+    entities: &[usize],
+) -> Result<(), String> {
+    let mut handles = Vec::new();
+    for &entity in entities {
+        let actor = scene.entities.get(entity).ok_or("runtime rollback actor absent")?;
+        for &packed in actor.components.entries.values() {
+            let handle = ComponentHandle::from_packed(packed)?;
+            let owner = scene.owner(handle)?;
+            if owner.entity != Some(entity) { return Err("runtime rollback component owner differs".into()); }
+            handles.push((handle, owner.generation));
+        }
+    }
+    let bodies = handles.iter().map(|&(handle, _)|handle)
         .filter(|handle| scene.is_rigid_class(handle.class_id))
         .map(|handle| {
             scene
@@ -326,19 +340,6 @@ pub(super) fn rollback_runtime_entity(
         .take()
         .ok_or("runtime rollback registry borrowed")?;
     let result = (|| {
-        let handles = scene
-            .entities
-            .get(entity)
-            .ok_or("runtime rollback actor absent")?
-            .components
-            .entries
-            .values()
-            .iter()
-            .map(|&packed| {
-                let handle = ComponentHandle::from_packed(packed)?;
-                Ok((handle, scene.owner(handle)?.generation))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         if registry
             .interrupted_startup_component()?
             .is_some_and(|entered| !handles.iter().any(|(handle, _)| *handle == entered))
@@ -378,10 +379,13 @@ pub(super) fn rollback_runtime_entity(
         for handle in bodies {
             rollback_rigid(scene, &mut registry, events, handle)?;
         }
-        registry.abort_entity_startup(entity, &handles, &*scene)?;
-        // Resume the unrelated remainder at its adjusted original cursor.
-        // No failed actor component remains on initialization/start queues.
-        scene.run_runtime_startup(world, live, events, &mut registry)?;
+        if entities.len() == 1 {
+            registry.abort_entity_startup(entities[0], &handles, &*scene)?;
+        } else {
+            registry.abort_components_startup(&handles, &*scene)?;
+        }
+        // The remainder retains its adjusted cursor. Failure/exit recovery
+        // must not re-enter a related constructor while its owner is unwinding.
         Ok(())
     })();
     scene.registry = Some(registry);

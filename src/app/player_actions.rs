@@ -724,6 +724,12 @@ impl PlayerActions {
     pub fn accepted(&mut self, side: usize, descriptor: Arc<Descriptor>) {
         self.active[side] = Some(descriptor);
     }
+    ///7fb350/7f8d60: shortcuts and the wheel enter the same source request
+    ///queue; actual equipment states own the eventual selection callbacks.
+    pub fn request_selection(&mut self, player: &Player, selection: ShortcutSelection) {
+        self.source_flags.insert(selection.equipment.clone(), player.shortcut_equipment_flags());
+        self.selection_requests.push(selection);
+    }
     pub fn remove_active(&mut self, side: usize) -> Option<Arc<Descriptor>> {
         self.active.get_mut(side)?.take()
     }
@@ -942,6 +948,12 @@ impl PlayerActions {
     }
     pub(super) fn equipment_attachment_source(&self) -> (Arc<Catalog>, Arc<Mutex<Sources>>) {
         (self.catalog.clone(), self.sources.clone())
+    }
+
+    ///HUD and wheel borrow the actual admitted item's immutable component
+    ///metadata; presentation never reparses or acquires its declaration.
+    pub(super) fn equipment_metadata(&self, item: &str) -> Option<&crate::assets::equipment::Metadata> {
+        self.metadata.get(item).map(Arc::as_ref)
     }
 
     fn request_metadata(&mut self, item: &PickableItem, admit: bool) {
@@ -1250,7 +1262,7 @@ impl PlayerActions {
         let id = crate::assets::power_journal::power_id(&power.power_id)
             .ok_or("power has no registered ID")?;
         let mut settings = crate::gameplay::powers::Settings::read(id, &power.component)?;
-        let blink = if id == 2 {
+        let mut blink = if id == 2 {
             Some(super::blink::Prepared::with_power(
                 &power.component,
                 self.blink_player
@@ -1337,6 +1349,7 @@ impl PlayerActions {
         };
         let task = IoTaskPool::get().spawn(async move {
             // Retain the canonical metadata owner while acquiring its paths.
+            if let Some(blink) = blink.as_mut() { blink.acquire_damage(&catalog)?; }
             let power = definitions
                 .0
                 .get(index)
@@ -1655,6 +1668,7 @@ impl PlayerActions {
                 )?)
             };
             let mut paths: Vec<_> = descriptor.equipment.scenes.values().cloned().collect();
+            paths.extend(descriptor.equipment.slash_midnights.iter().flatten().cloned());
             if descriptor.equipment.archetype == 1 {
                 paths.extend(slash_scene_paths.iter().cloned());
             }
@@ -1881,6 +1895,7 @@ fn prepare_scenes(
             arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             sounds,
+            animation_sounds: Default::default(),
         };
         for index in scene_indices(&scene, models)? {
             for target in 0..5 {
@@ -1904,6 +1919,9 @@ fn prepare_scenes(
                         )
                     })
                     .collect::<Result<Vec<_>, String>>()?;
+                for (key, &clip) in keys.iter().zip(&indices) {
+                    scene.animation_sounds.prepare(target, clip, &snapshot.rig, &key.anim)?;
+                }
                 match target {
                     0 => scene.clips[index] = indices,
                     1 | 2 => scene.arm_clips[target - 1][index] = indices,
@@ -2007,5 +2025,5 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
 mod input;
 pub(super) use input::{
     advance_selection, dispatch_automatic_potion, dispatch_potions, dispatch_shortcuts,
-    install_ranged, player_frame, register_ranged,
+    install_ranged, player_frame, prepare_animation_frame, register_ranged,
 };

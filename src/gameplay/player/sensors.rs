@@ -751,7 +751,7 @@ impl MantleSensor {
                 let p = e.position - nxy * (nz * step + d.destination_depth);
                 let start = Vec3::new(p.x, p.y, e.position.z + step + 0.01);
                 if let Some(hit) = world.cast_ray(QueryFilter::layers(self.decl.collision_mask, PLAYER_FLAG), start, -Vec3::Z, 2.0 * step) {
-                    let surface = WorldHit { material_id: hit.material_id, position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
+                    let surface = WorldHit { user_data: hit.user_data, body_flags: hit.body_flags, material_id: hit.material_id, position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
                     if world.surface(&surface).allow_mantle {
                         // 1403bcb00 uses the hit owner's positive vertical
                         // displacement, not the player's. This host admits

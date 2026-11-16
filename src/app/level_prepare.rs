@@ -1027,6 +1027,10 @@ pub(super) fn prepare_level(
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
         let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref())
             .map_err(std::io::Error::other)?;
+        physics.admit_ai_section_owners(catalog, document, &mut live)
+            .map_err(std::io::Error::other)?;
+        app.insert_resource(super::ai_world::creation::CreationPlan::prepare(catalog, document, &level)
+            .map_err(std::io::Error::other)?);
         bound_models.exclude_canonical_bindings(physics.bound_render_entities());
         let marker_targets = std::mem::take(&mut marker_positions.targets);
         physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;

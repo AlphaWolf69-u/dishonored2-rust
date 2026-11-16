@@ -370,6 +370,14 @@ impl ClockRuntime {
         });
         Ok(())
     }
+    ///875cf0 is Enable's direct selector reset. It preserves the actual
+    ///entity+2a0 offset/countdown instead of synthesizing a time transition.
+    pub(crate) fn reset_entity_timespace(&mut self,entity:EntityId)->Result<(),String> {
+        let state=self.0.as_mut().map_err(|e|e.clone())?;
+        if state.player_entity==Some(entity){state.player_timespace=0;return Ok(());}
+        state.entity_clocks.get_mut(&entity).ok_or("enabled entity clock is not registered")?.timespace=0;
+        Ok(())
+    }
     pub fn unregister_entity_time(&mut self, entity: EntityId) {
         if let Ok(state) = &mut self.0 {
             if state.player_entity == Some(entity) {

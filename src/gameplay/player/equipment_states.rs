@@ -262,6 +262,17 @@ impl Player {
         self.equipment_changes.owned.contains_key(identity) || self.equipment_changes.slots.iter()
             .any(|slot| slot.current.as_ref().into_iter().chain(slot.incoming.as_ref()).any(|target| target.identity == identity))
     }
+    /// Borrow the actual owned entity for wheel presentation. No declaration
+    ///acquisition or playback copy is needed when opening the menu.
+    pub fn equipment_target_metadata(&self, identity: &str) -> Option<(&Equipment, Option<&super::weapons::Ranged>, Option<&str>)> {
+        let target = self.equipment_changes.owned.get(identity).or_else(||
+            self.equipment_changes.slots.iter().flat_map(|slot|
+                slot.current.iter().chain(slot.incoming.iter()))
+                .find(|target| target.identity == identity))?;
+        let ranged = self.registered_ranged(identity);
+        Some((&target.equipment, ranged.map(|runtime| &*runtime.settings),
+            ranged.map(|runtime| runtime.ammunition().item.as_str())))
+    }
     pub fn request_equipment_selection_by_identity(&mut self, identity: &str, flags: u32) -> Result<u32, String> {
         if let Some(target) = self.equipment_changes.owned.remove(identity) {
             return self.request_equipment_selection(target, flags);

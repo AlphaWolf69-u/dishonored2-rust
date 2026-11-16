@@ -43,6 +43,7 @@ pub(crate) fn weapon_variant(
                 .iter_mut()
                 .find(|component| match (&component.kind, family) {
                     (Kind::Projectile(_), 0) => true,
+                    (Kind::Grenade(_), 1) => true,
                     _ => false,
                 })
                 .ok_or_else(|| {
@@ -88,6 +89,9 @@ pub(crate) fn weapon_variant(
                     )?;
                     component.kind = Kind::Projectile(projectile.clone());
                     variant.projectile = Some(projectile);
+                }
+                1 => {
+                    component.kind = Kind::Grenade(Arc::new(super::super::grenades::Definition::read(&fields)?));
                 }
                 _ => unreachable!("actual missing component family was rejected above"),
             }

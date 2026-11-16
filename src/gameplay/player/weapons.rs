@@ -4,6 +4,8 @@
 use crate::entities::{scene_motion::{atom, child, items}, Value};
 use std::collections::HashMap;
 pub mod shooting;
+pub mod heart;
+pub mod throwable;
 
 /// Decl aimSettings (6376c0; reflection141700bc0). Retained once with the
 /// weapon, so firing and Think do not revisit the generic declaration tree.
@@ -43,6 +45,14 @@ fn boolean(fields: &Fields, key: &str, fallback: bool) -> Result<bool, String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrosshairInfo {
+    pub use_crosshair: bool,
+    pub use_dot: bool,
+    pub kind: i32,
+    pub minimum_size: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Equipment {
     pub slot: u8,
@@ -58,10 +68,14 @@ pub struct Equipment {
     pub can_lower: bool,
     pub force_attachment: bool,
     pub auto_equip: bool,
+    ///619ea0 constructor;1416f2eb0 reflects this nested record at+e8.
+    pub hud: CrosshairInfo,
     pub default_upgrades: Vec<String>,
     /// Exact component field name -> scene declaration. No guessed fallback
     /// between posture/fast variants is performed by this resource reader.
     pub scenes: HashMap<String, String>,
+    /// 6376c0/86c6a0: the left equipment's response to the real slash type.
+    pub slash_midnights: [Option<String>; 3],
 }
 impl Equipment {
     /// 836120/8362c0 select the exact request's fast/ordinary pointer, with
@@ -100,6 +114,15 @@ impl Equipment {
                 .or_else(|| super::decls::state_id(text)).or_else(|| text.parse().ok().map(super::states::StateId))
                 .ok_or_else(|| format!("unknown equipment quick-use state {text}")))?;
         if !(0..16).contains(&slot) || archetype <= 0 { return Err("equipment has no admissible inventory slot/archetype".into()); }
+        let hud = child(fields, "m_hudInformation");
+        let hud = CrosshairInfo {
+            use_crosshair: boolean(hud, "m_useCrosshair", false)?,
+            use_dot: boolean(hud, "m_useDot", true)?,
+            kind: atom(hud, "m_crosshairParm").map_or(Ok(-1), |value|
+                enumeration("arkUIElementUICrosshairType_t", value).or_else(|| value.parse().ok())
+                    .ok_or_else(|| format!("unknown equipment crosshair type {value}")))?,
+            minimum_size: crate::gameplay::damage::number(hud, "m_minimumCrosshairSize", 10.0)?,
+        };
         let mut scenes = HashMap::new();
         let mut default_upgrades: Vec<_> = child(fields, "m_defaultUpgrades").iter().filter_map(|(key, value)| {
             let index: usize = key.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?;
@@ -118,13 +141,15 @@ impl Equipment {
                 }
             }
         }
+        let slash_fields = child(fields, "m_slashMidnights");
+        let slash_midnights = std::array::from_fn(|index| text(slash_fields, &format!("m_slashMidnights[{index}]")));
         Ok(Self { slot: slot as u8, archetype: archetype as u32, action_state,
             equipped_bind_tag: text(fields,"m_equippedBindTag"), unequipped_bind_tag: text(fields,"m_unequippedBindTag"),
             default_input: text(fields,"m_defaultAnimInputName"), default_alias: text(fields,"m_defaultAnimAliasName"),
             loco_equip_state: text(fields,"m_locoEquipStateName"), usable_swimming: boolean(fields,"m_usableWhenSwimming",false)?,
             hide_unequipped: boolean(fields,"m_hideWhenNotEquipped",false)?,
             can_lower: boolean(fields,"m_canLower",false)?, force_attachment: boolean(fields,"m_forceAttachment",false)?,
-            auto_equip: boolean(fields,"m_autoEquip",false)?, default_upgrades: default_upgrades.into_iter().map(|(_, value)| value).collect(), scenes })
+            auto_equip: boolean(fields,"m_autoEquip",false)?, hud, default_upgrades: default_upgrades.into_iter().map(|(_, value)| value).collect(), scenes, slash_midnights })
     }
 }
 
@@ -140,6 +165,22 @@ pub struct Ammunition {
     pub gravity_multiplier_attribute: Option<String>,
     pub sleep_timer_multiplier_attribute: Option<String>,
     pub spread_damage: bool,
+}
+///Common ranged6376c0 ammunition list, also inherited by WeaponThrowable.
+///One typed source projection; no Gun/Crossbow substitute is needed.
+pub(super) fn read_ammunition(fields: &Fields) -> Result<Vec<Ammunition>, String> {
+    let mut ammunition = Vec::new();
+    for entry in items(child(fields, "m_ammoTypes")) {
+        let Some(item) = text(entry,"m_ammoItem") else { return Err("ranged ammunition has no inventory item".into()) };
+        ammunition.push(Ammunition { item, projectile: text(entry,"m_projectileDef"), attachment: text(entry,"m_attachmentDef"),
+            fits_magazine: boolean(entry,"m_fitInMagazine",false)?, muzzle_world_fx: text(entry,"m_muzzleWorldFx"),
+            damage_increment_attribute: text(entry,"m_damageIncrementAttribute"),
+            bypass_big_hit_immunity_attribute: text(entry,"m_bypassBigHitImmunityAttribute"),
+            gravity_multiplier_attribute: text(entry,"m_gravityMultiplierAttribute"),
+            sleep_timer_multiplier_attribute: text(entry,"m_sleepTimerMultiplierAttribute"),
+            spread_damage: boolean(entry,"m_spreadDamage",false)? });
+    }
+    Ok(ammunition)
 }
 #[derive(Clone, Debug)]
 pub struct Ranged {
@@ -176,17 +217,7 @@ impl Ranged {
         self.ammunition.iter().position(|ammunition| ammunition.item == item).map(|index| self.capacity(index, attributes))
     }
     pub fn read(fields: &Fields, equipment: Equipment, family: RangedFamily) -> Result<Self, String> {
-        let mut ammunition = Vec::new();
-        for entry in items(child(fields, "m_ammoTypes")) {
-            let Some(item) = text(entry,"m_ammoItem") else { return Err("ranged ammunition has no inventory item".into()) };
-            ammunition.push(Ammunition { item, projectile: text(entry,"m_projectileDef"), attachment: text(entry,"m_attachmentDef"),
-                fits_magazine: boolean(entry,"m_fitInMagazine",false)?, muzzle_world_fx: text(entry,"m_muzzleWorldFx"),
-                damage_increment_attribute: text(entry,"m_damageIncrementAttribute"),
-                bypass_big_hit_immunity_attribute: text(entry,"m_bypassBigHitImmunityAttribute"),
-                gravity_multiplier_attribute: text(entry,"m_gravityMultiplierAttribute"),
-                sleep_timer_multiplier_attribute: text(entry,"m_sleepTimerMultiplierAttribute"),
-                spread_damage: boolean(entry,"m_spreadDamage",false)? });
-        }
+        let ammunition = read_ammunition(fields)?;
         Ok(Self { family, equipment, ammunition, aim: AimSettings::read(child(fields,"m_aimSettings"))?, recoil_alias: text(fields,"m_recoilAnim"), recoil_weight_attribute: text(fields,"m_recoilWeightAttribute"),
             fire_playrate_attribute: text(fields,"m_firePlayrateAttribute"), reload_playrate_attribute: text(fields,"m_reloadPlayrateAttribute"),
             projectile_attachment_tag: text(fields, match family { RangedFamily::Gun => "m_bulletAttachmentTag", RangedFamily::Crossbow => "m_boltAttachmentTag" }),

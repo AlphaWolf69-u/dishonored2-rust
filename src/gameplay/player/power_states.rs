@@ -78,6 +78,27 @@ pub struct PowerInputs { pub held: bool, pub pressure: f32, pub analog: bool }
 #[derive(Clone, Copy, Debug)]
 pub enum PowerLifecycle { Began(i32), Finished { id: i32, committed: bool } }
 
+/// 8567a0/856b00/856b30 delegate action+d0/d8/e0 to the power's
+/// +138/+140/+148 virtuals, rather than the UsePower declaration defaults.
+/// Vtables: BendTime141b9b748, Blink141b9bb78, Grapple141b52818,
+/// Windblast141b53488. Their release/message and wait policies are distinct.
+fn action_policy(id: i32) -> Option<(ActionType, bool)> {
+    match id {
+        1 | 10 => Some((ActionType::Message, true)),
+        2 | 6 => Some((ActionType::Release, false)),
+        _ => None,
+    }
+}
+fn action_scene(action: &mut ActionRuntime, id: i32, handle: u32, decl: &ActionDecl) {
+    action.after_scene(handle, decl);
+    if let Some((_, wait)) = action_policy(id) {
+        action.set_wait_for_midnight(wait);
+        // All four implemented component classes return literal false at
+        // +148, independent of the base action's m_waitBeforeExecute member.
+        action.set_wait_for_execute(false);
+    }
+}
+
 struct PreparedScenes<'a, 'b> {
     scenes: &'a Scenes,
     fallback: &'a Scenes,
@@ -147,7 +168,7 @@ pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -
             if let Some(path) = &decl.action.midnight {
                 match scenes.start(path) { Ok(value) => handle = value, Err(error) => { scenes.midnight.last_start_error = Some(error); return false; } }
             }
-            runtime.action_state.after_scene(handle, &decl.action);
+            action_scene(&mut runtime.action_state, cast.settings.id, handle, &decl.action);
             runtime.wind_released = false;
             runtime.active = true; runtime.cancel = false; runtime.execution_requested = false;
             runtime.lifecycle.push(PowerLifecycle::Began(cast.settings.id)); true
@@ -167,15 +188,16 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
             check_recharge_target: false, cost_factor: runtime.cost_factor,
             health_overcast: runtime.health_overcast, health: frame.health }) != Admission::Allowed { return false; }
     let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, random: frame.random, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
-    let step = runtime.action_state.update(frame.dt, &decl.action, frame.controller.down(runtime.action_button),
-        scenes.finished(runtime.action_state.scene), false);
+    let kind = action_policy(cast.settings.id).map_or(decl.action.kind, |policy| policy.0);
+    let step = runtime.action_state.update_with_type(frame.dt, &decl.action, frame.controller.down(runtime.action_button),
+        scenes.finished(runtime.action_state.scene), false, kind);
     match step { ActionStep::Execute if cast.phase() == Phase::Aiming => runtime.execution_requested = true,
         ActionStep::Quit => return false, _ => {} }
     let previous_scene = runtime.action.scene_handle();
     match runtime.action.update(cast, sliding, &mut scenes) {
         Ok(()) => {
             let handle = runtime.action.scene_handle();
-            if handle != 0 && handle != previous_scene { runtime.action_state.after_scene(handle, &decl.action); }
+            if handle != 0 && handle != previous_scene { action_scene(&mut runtime.action_state, cast.settings.id, handle, &decl.action); }
             // 6924f0: actual released latch controls the authored loop.
             if decl.windblast && !runtime.wind_released
                 && attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")
@@ -301,6 +323,18 @@ impl Player {
         self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id) || self.powers.owned_casts.contains_key(&id)
     }
     pub fn selected_power(&self) -> Option<&Cast> { self.powers.selected.as_ref() }
+    /// HUD availability uses the same61bce0 result as casting. Ownership, magic
+    /// suppression, actual family availability and mana use one admission.
+    pub fn selected_power_hud_status(&self) -> Option<(i32, bool)> {
+        let cast = self.powers.selected.as_ref()?;
+        let available = cast.admission(self.powers.now, &self.mana, &self.attributes,
+            self.mana_replenishes, &AdmissionContext {
+                owned: self.powers.owned, family_available: self.powers.family_available,
+                check_recharge_target: false, cost_factor: self.powers.cost_factor,
+                health_overcast: self.powers.health_overcast, health: self.health.current(),
+            }) == Admission::Allowed;
+        Some((cast.settings.id, available))
+    }
     pub fn selected_power_mut(&mut self) -> Option<&mut Cast> { self.powers.selected.as_mut() }
     pub fn power_cast_active(&self, id: i32) -> bool {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id && cast.phase() != Phase::Idle)
@@ -340,6 +374,7 @@ impl Player {
     }
     pub fn take_power_mana_potion_request(&mut self) -> bool { std::mem::take(&mut self.powers.mana_potion_requested) }
     pub fn take_power_execution_request(&mut self) -> bool { std::mem::take(&mut self.powers.execution_requested) && self.power_release_ready() }
+    pub fn power_execution_pending(&self) -> bool { self.powers.execution_requested && self.power_release_ready() }
     /// 8566f0 calls8551c0 at the real family ExecuteFinished boundary.
     /// Finish immediately after the accepted callback; an automatic family
     /// hold cast still uses856c50's next-update committed-flag path.
@@ -353,9 +388,12 @@ impl Player {
         if quit { self.machine.quit(id); }
     }
     pub fn power_action_message(&mut self, handle: u32) {
+        if !self.powers.active { return; }
         if let Some(state) = self.machine.state(power_state(self.powers.selected.as_ref().map_or(-1, |cast| cast.settings.id))) {
             if let super::states::Kind::UsePower(decl) = &state.decl.kind {
-                self.powers.execution_requested |= self.powers.action_state.message(&decl.action, handle) == ActionStep::Execute;
+                let kind = self.powers.selected.as_ref().and_then(|cast| action_policy(cast.settings.id))
+                    .map_or(decl.action.kind, |policy| policy.0);
+                self.powers.execution_requested |= self.powers.action_state.message_with_type(kind, handle) == ActionStep::Execute;
             }
         }
     }

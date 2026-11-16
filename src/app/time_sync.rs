@@ -44,6 +44,17 @@ fn time_root(
     Ok(entity)
 }
 
+///490e70/490840 call80d8c0 on the same actual entity time-root owner.
+///The caller already holds Scene during its synchronous component update.
+pub(super) fn request_entity_unbent(world:&mut World, scene:&PhysicsScene,
+    live:&LiveEntities, entity:EntityId, duration:f32)->Result<(),String> {
+    let mut clock=world.get_resource_mut::<ClockRuntime>()
+        .ok_or("entity unbent clock owner absent")?;
+    if !clock.time_is_bent().map_err(str::to_owned)? {return Ok(());}
+    let root=time_root(scene,live,&mut clock,entity)?;
+    clock.set_entity_time_override(root,duration)
+}
+
 ///7ee0e0 calls this after the real child release and before7278e0 instigator
 ///publication. Only the existing time manager owns countdowns and root queue.
 pub(super) fn synchronize_entity_time(

@@ -107,6 +107,22 @@ impl LiveEntities {
         }
         Ok(snapshot)
     }
+    ///883d10 asks each receiver's virtual+20 before invoking virtual+10.
+    ///The sole currently admitted generic observer is7854d0's actual Trigger
+    ///touch observer:8dc740's Remove12c handler does not subscribe to the
+    ///PlayerEquipmentExploded notice7e. A future observer owner must provide
+    ///its actual filter here, rather than silently accepting unknown callbacks.
+    pub(crate) fn equipment_exploded_observer_matches(
+        &self,
+        observer: EntityId,
+    ) -> Result<bool, String> {
+        let receiver = self.receiver(observer)?;
+        if receiver.trigger_touching.is_some() {
+            Ok(false)
+        } else {
+            Err("playerEquipmentExploded has an unported generic notice receiver".into())
+        }
+    }
     ///785690: actual native Trigger entity list, independent of components.
     pub(crate) fn trigger_is_touching(
         &self,

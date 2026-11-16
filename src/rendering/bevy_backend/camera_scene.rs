@@ -51,6 +51,9 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
+        self.world_particles.story_boolean(worldspawn, qualified)
+    }
     pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> { self.world_particles.pending_gameplay() }
     pub(crate) fn acknowledge_gameplay(&mut self) -> Result<(),String> { self.world_particles.acknowledge_gameplay() }
     pub(crate) fn clear_gameplay(&mut self) { self.world_particles.clear_gameplay(); }

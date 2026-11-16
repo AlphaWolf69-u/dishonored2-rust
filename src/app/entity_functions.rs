@@ -166,6 +166,15 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         Ok(())
     })
 }
+/// Source883f60 deadlines use the same frozen group2 clock during shutdown.
+/// Stop/Deinit may have accepted delay0 work after this frame's normal pump;
+/// its real target/notice owners must survive until that work is executed.
+pub(super) fn due_pending(world:&World)->Result<bool,String>{
+    let Some(entry)=world.get_resource::<EntityFunctions>().and_then(|owner|owner.pending.first()) else{return Ok(false)};
+    let now=world.get_resource::<ClockRuntime>().ok_or("accepted entity function has no live clock owner")?
+        .clock()?.time(2).ok_or("entity-event clock group absent")?;
+    Ok(entry.due<=now)
+}
 pub(super) fn retire_entity(world: &mut World, target: EntityId) {
     if let Some(mut owner) = world.get_resource_mut::<EntityFunctions>() {
         owner.pending.retain(|entry| entry.target != target);

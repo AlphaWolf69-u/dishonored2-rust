@@ -37,6 +37,14 @@ pub(crate) struct ShortcutSelection {
 }
 
 impl DiscoveredDocuments {
+    pub(crate) fn wheel_shortcut_pair(&self,index:usize)->(Option<&str>,Option<&str>) {
+        self.shortcuts.get(index).map_or((None,None),|slot|(slot.equipment.as_deref(),slot.ammo.as_deref()))
+    }
+    ///4f6c20 ->4de400(slot,0): clear an unresolved UI pair without
+    ///marking it explicitly assigned/cleared by the player.
+    pub(crate) fn wheel_prune_shortcut(&mut self,index:usize){
+        if let Some(slot)=self.shortcuts.get_mut(index){*slot=ShortcutSlot::default();}
+    }
     pub fn configure_shortcuts(&mut self, settings: Arc<ShortcutSettings>) { self.shortcut_settings = Some(settings); }
 
     /// 619380 appends ranged declaration's actual equipment/ammo pairs.

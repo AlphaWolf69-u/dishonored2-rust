@@ -177,6 +177,21 @@ impl PlayerArms {
     pub(super) fn has_managed_model(&self,id:crate::gameplay::entity_lifetime::EntityId)->bool{
         self.arms.iter().any(|model|model.managed_entity==Some(id)) || self.attachments.has(id)
     }
+    ///87e040 must inherit the actual first-person owner state, not ordinary
+    ///world defaults. Keep the established body/arm depth-hack projection.
+    pub(super) fn managed_model_depth_state(&self,id:crate::gameplay::entity_lifetime::EntityId)->Option<(u8,f32)>{
+        self.arms.iter().any(|model|model.managed_entity==Some(id)).then(|| {
+            let state=body_model_depth_state(self.player_depth_hack);
+            (0x10 | (state.model_mask << 3),state.depth_hack)
+        }).or_else(||self.attachments.shadow_casting(id).map(|casts|((u8::from(casts)<<3),body_model_depth_state(self.player_depth_hack).depth_hack)))
+    }
+    pub(super) fn managed_model_local_depth_hack(&self,id:crate::gameplay::entity_lifetime::EntityId)->f32{
+        if self.body_models.checked_sub(1).and_then(|index|self.arms.get(index)).is_some_and(|model|model.managed_entity==Some(id)) {self.player_depth_hack}else{0.}
+    }
+    pub(super) fn managed_model_shadow_entities(&self,id:crate::gameplay::entity_lifetime::EntityId)->Vec<Entity>{
+        self.arms.iter().filter(|model|model.managed_entity==Some(id)).flat_map(|model|model.surfaces.iter().map(|surface|surface.entity))
+            .chain(self.attachments.shadow_entities(id)).collect()
+    }
     pub(super) fn publish_shader_clock(&self,id:crate::gameplay::entity_lifetime::EntityId,
         bank:&mut model_motion::ModelProbeLighting,patches:&mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,time:[f32;2]){
         for model in self.arms.iter().filter(|model|model.managed_entity==Some(id)){

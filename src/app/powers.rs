@@ -9,6 +9,7 @@ use super::{interaction_focus::DiscoveredDocuments, journal_movie::PowerData};
 #[derive(Resource)]
 pub(super) struct Powers {
     pub definitions: Arc<(Vec<Power>, String)>,
+    enhancements: Arc<Vec<Upgrade>>,
     starting: Vec<String>,
     character: Character,
     /// Saved game manager state; never guessed from a map name.
@@ -19,16 +20,17 @@ impl Powers {
     pub fn prepare<'a>(catalog: &Catalog, system: &[(String, Value)], mark: &[(String, Value)],
         character: Character, items: impl IntoIterator<Item = &'a str>) -> Result<Self, String> {
         let definitions = Arc::new(power_journal::definitions_from_system(catalog, system, items)?);
+        let enhancements = Arc::new(power_journal::enhancements_from_system(catalog, system)?);
         let starting = scope(mark, "m_startingPowers").map(list_items).unwrap_or_default().into_iter()
             .filter_map(|value| match value { Value::Atom(path) => Some(path.trim_matches('"').to_owned()), _ => None }).collect();
-        Ok(Self { definitions, starting, character, new_game_plus: false, selected: None })
+        Ok(Self { definitions, enhancements, starting, character, new_game_plus: false, selected: None })
     }
     /// 1404c1f20: ownership of any starting power is the mark's state.
     pub fn has_mark(&self, inventory: &DiscoveredDocuments) -> bool {
         self.starting.iter().any(|path| inventory.quantity(path) > 0)
     }
     pub fn snapshot(&self, inventory: &DiscoveredDocuments) -> PowerData {
-        PowerData { definitions: self.definitions.clone(), quantities: inventory.quantity_snapshot(),
+        PowerData { definitions: self.definitions.clone(), enhancements: self.enhancements.clone(), quantities: inventory.quantity_snapshot(),
             has_mark: self.has_mark(inventory), new_game_plus: self.new_game_plus, character: self.character }
     }
     fn permitted(&self, power: &Power, inventory: &DiscoveredDocuments) -> bool {
@@ -46,6 +48,17 @@ impl Powers {
     }
     pub fn selected(&self) -> Option<&Power> { self.selected.map(|index| &self.definitions.0[index]) }
     pub fn clear_selected(&mut self) { self.selected = None; }
+    ///51c5c0 ->455660: acquire the authored enhancement item and remove
+    ///its rune cost through the same inventory/modifier transaction.
+    pub fn purchase_enhancement(&self, inventory: &mut DiscoveredDocuments, id: i32) -> bool {
+        if !self.has_mark(inventory) { return false; }
+        let Some(node) = eligible_enhancement(&self.enhancements, id, inventory) else { return false };
+        let Some((path, info)) = node.item.as_deref().zip(node.info.as_ref()) else { return false };
+        if info.rune_cost < 0 || inventory.quantity(path) != 0 || inventory.quantity(&self.definitions.1) < info.rune_cost as u32 { return false; }
+        let Some(item) = inventory.declaration(path).cloned() else { return false };
+        let Some(rune) = inventory.declaration(&self.definitions.1).cloned() else { return false };
+        inventory.purchase(path, inventory.maximum(path), &item.modifiers, &self.definitions.1, info.rune_cost as u32, &rune.modifiers)
+    }
     /// Resolve a movie request against the same definitions it displayed.
     /// 140521580 dispatches to 140455850/140455ab0; inventory owns both
     /// admission and modifier notifications, then rune removal (140614750).
@@ -70,6 +83,15 @@ impl Powers {
         let Some(rune) = inventory.declaration(&self.definitions.1).cloned() else { return false };
         inventory.purchase(path, inventory.maximum(path), &item.modifiers, &self.definitions.1, cost as u32, &rune.modifiers)
     }
+}
+fn eligible_enhancement<'a>(nodes: &'a [Upgrade], id: i32, inventory: &DiscoveredDocuments) -> Option<&'a Upgrade> {
+    for node in nodes {
+        if power_journal::enhancement_id(&node.id) == Some(id) { return Some(node); }
+        if node.item.as_ref().is_some_and(|path| inventory.quantity(path) > 0) {
+            if let Some(found) = eligible_enhancement(&node.children, id, inventory) { return Some(found); }
+        }
+    }
+    None
 }
 fn eligible_upgrade<'a>(nodes: &'a [Upgrade], id: i32, inventory: &DiscoveredDocuments) -> Option<&'a Upgrade> {
     for node in nodes {

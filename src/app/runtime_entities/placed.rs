@@ -124,6 +124,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                         hidden_disabled: true,
                     },
                     None,
+                    None,
                 )?;
                 plan.created.push((child.step, child.chunk, entity));
             }

@@ -1,7 +1,7 @@
 //! Midnight scene decls (arkDeclMidnightScene) as the player body plays
 //! them: group infos, scenes with their EMTT_ANIM clip keys and EMTT_EVENT
-//! point keys, SFX keys, CONDMD6 graph nodes and the settings. Barks, motion and
-//! timed-event tracks are not read here.
+//! point keys, timed enter/exit keys, SFX keys, CONDMD6 graph nodes and settings.
+//! Barks and motion tracks have their own consumers.
 use super::scene_motion::{atom, child, items};
 use super::{field, float, parse_declaration, Value};
 
@@ -53,6 +53,9 @@ pub struct SceneMarker {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventKey {
     pub time_ms: i32,
+    /// EMTT_TIMEDEVENT uses enter/exit callbacks over the authored clip.
+    /// Point keys retain None and their original crossing semantics.
+    pub duration_ms: Option<i32>,
     pub event: String,
     pub class: String,
     pub properties: std::sync::Arc<[(String, super::Value)]>,
@@ -280,7 +283,7 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                 anim_keys: Vec::new(), events: Vec::new(), sounds: Vec::new(),
             };
             for track in items(child(g, "m_lTracks")).map(object) {
-                let track_type = atom(track, "m_trackType");
+                let track_type = atom(track, "m_trackType").or_else(|| atom(child(track, "m_handle"), "trackType"));
                 for key in items(child(track, "m_keys")) {
                     let prop = object(child(key, "m_keyProp"));
                     if atom(key, "m_playingDirection").is_some_and(|d| d != "EMPD_BOTH" && d != "EMPD_FORWARD") {
@@ -290,8 +293,11 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                         Some("EMTT_ANIM") => {
                             group.anim_keys.push(anim_key(key)?);
                         }
-                        Some("EMTT_EVENT") => group.events.push(EventKey {
+                        Some("EMTT_EVENT" | "EMTT_TIMEDEVENT") => group.events.push(EventKey {
                             time_ms: int(key, "m_startTime", 0)?,
+                            duration_ms: if track_type == Some("EMTT_TIMEDEVENT") {
+                                Some(int(key, "m_duration", 0)?)
+                            } else { None },
                             event: atom(prop, "m_event").unwrap_or("").to_owned(),
                             class: atom(child(key, "m_keyProp"), "m_class").unwrap_or("").to_owned(),
                             properties: prop.to_vec().into(),

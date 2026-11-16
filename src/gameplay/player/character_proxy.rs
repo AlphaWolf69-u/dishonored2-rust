@@ -15,6 +15,10 @@ const EPSILON: f32 = f32::EPSILON;
 /// One world query result (hknpCollisionResult as the proxy reads it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldHit {
+    /// Body flags captured by the query owner. Navigation hits are fixed;
+    /// canonical bodies retain their actual flags without an ID-space lookup.
+    pub body_flags: u8,
+    pub user_data: u64,
     /// Material ID retained from the actual native hit; legacy static triangle
     /// adapters resolve their own material metadata and leave this absent.
     pub material_id: Option<u16>,
@@ -29,6 +33,8 @@ pub struct WorldHit {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RayHit {
+    pub body_flags: u8,
+    pub user_data: u64,
     pub material_id: Option<u16>,
     pub distance: f32,
     pub position: Vec3,
@@ -210,6 +216,8 @@ pub struct SurfaceInfo {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ManifoldPoint {
+    body_flags: u8,
+    user_data: u64,
     material_id: Option<u16>,
     position: Vec3,
     normal: Vec3,
@@ -229,6 +237,8 @@ impl ManifoldPoint {
             body: hit.body,
             key: hit.key,
             material_id: hit.material_id,
+            body_flags: hit.body_flags,
+            user_data: hit.user_data,
         }
     }
 
@@ -241,6 +251,8 @@ impl ManifoldPoint {
             body: hit.body,
             key: hit.key,
             material_id: hit.material_id,
+            body_flags: hit.body_flags,
+            user_data: hit.user_data,
         }
     }
 }
@@ -302,7 +314,7 @@ impl CharacterProxy {
     /// Borrow actual proxy contacts for native component consumers. Body and
     /// shape identities remain those produced by the shared query owner.
     pub fn contact_hits(&self) -> impl Iterator<Item = WorldHit> + '_ {
-        self.manifold.iter().map(|point| WorldHit { material_id: point.material_id,
+        self.manifold.iter().map(|point| WorldHit { user_data: point.user_data, body_flags: point.body_flags, material_id: point.material_id,
             position: point.position,
             normal: point.normal,
             value: point.distance,
@@ -653,7 +665,7 @@ mod tests {
                 if let Some((fraction, contact)) =
                     shape_cast::cast(&points, displacement, triangle, 0.001)
                 {
-                    cast.push(WorldHit { material_id: None,
+                    cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: None,
                         position: contact.position,
                         normal: contact.normal,
                         value: fraction,
@@ -664,7 +676,7 @@ mod tests {
                 if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                     let contact = shape_cast::closest(&points, triangle);
                     if contact.distance <= tolerance {
-                        start.push(WorldHit { material_id: None,
+                        start.push(WorldHit { user_data: 0, body_flags: 1, material_id: None,
                             position: contact.position,
                             normal: contact.normal,
                             value: contact.distance,

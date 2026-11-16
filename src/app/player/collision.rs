@@ -24,7 +24,7 @@ pub(in crate::app) struct Scratch {
     rays: Vec<ShapeRayContact>,
     error: Option<String>,
 }
-pub(super) struct Collision<'a> {
+pub(in crate::app) struct Collision<'a> {
     navigation: GameCollision<'a>,
     classes: [i32; 2],
     world: &'a LevelPointQueries,
@@ -79,7 +79,7 @@ fn query_identity(filter: QueryFilter) -> ShapeHitInfo {
     }
 }
 impl<'a> Collision<'a> {
-    pub(super) fn new(
+    pub(in crate::app) fn new(
         navigation: &'a CollisionWorld,
         scene: &'a crate::app::physics_scene::PhysicsScene,
         world: &'a LevelPointQueries,
@@ -95,7 +95,7 @@ impl<'a> Collision<'a> {
             scratch,
         }
     }
-    pub(super) fn take_error(&self) -> Option<String> {
+    pub(in crate::app) fn take_error(&self) -> Option<String> {
         self.scratch.borrow_mut().error.take()
     }
     fn error(&self, error: String) {
@@ -254,8 +254,14 @@ impl PlayerWorld for Collision<'_> {
                 if !accepts_body(body, initial) {
                     continue;
                 }
+                let Some(record) = self.world.storage.bodies.get(body) else {
+                    error.get_or_insert_with(|| "player query returned a stale body generation".into());
+                    continue;
+                };
                 let value = if initial { hit.distance } else { hit.fraction };
                 let result = WorldHit {
+                    user_data: hit.target.user_data,
+                    body_flags: record.flags as u8,
                     material_id: Some(hit.target.material_id),
                     position: Vec3::from_array(hit.position[..3].try_into().unwrap()),
                     normal: Vec3::from_array(hit.normal[..3].try_into().unwrap()),
@@ -324,6 +330,8 @@ impl PlayerWorld for Collision<'_> {
             .and_then(|hit| {
                 let body = hit.target.body_id?;
                 Some(RayHit {
+                    user_data: hit.target.user_data,
+                    body_flags: self.world.storage.bodies.get(body)?.flags as u8,
                     material_id: Some(hit.target.material_id),
                     distance: hit.fraction * length,
                     position: Vec3::from_array(hit.position[..3].try_into().unwrap()),

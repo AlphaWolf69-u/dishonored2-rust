@@ -477,8 +477,17 @@ fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut Sound
 /// Retire one actual component object before its generation can be recycled.
 /// Decode jobs remain shared with their other admitted clients.
 pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Result<bool, String> {
+    // 708340/709f70 allocate joint objects below the same actual component.
+    // Their output acknowledgements must precede releasing its generation.
+    let mut joints = world.resource::<bevy_backend::Engine>().level_emitters();
+    joints.extend(world.resource::<PendingSounds>().0.iter().map(|queued| request_emitter(&queued.request)));
+    joints.extend(world.resource::<RetiringSounds>().0.keys().copied());
+    joints.retain(|joint| *joint != emitter && joint.player_owner() == emitter);
+    for joint in &joints { request_object_retirement(world, *joint)?; }
     request_object_retirement(world, emitter)?;
-    Ok(world.resource::<RetiringSounds>().0.get(&emitter) == Some(&ObjectRetirement::Complete))
+    let retiring = &world.resource::<RetiringSounds>().0;
+    Ok(retiring.get(&emitter) == Some(&ObjectRetirement::Complete)
+        && joints.iter().all(|joint| retiring.get(joint) == Some(&ObjectRetirement::Complete)))
 }
 
 /// Called after the component pool actually releases the acknowledged generation.
@@ -488,6 +497,11 @@ pub(super) fn forget_retired_component_object(world: &mut World, emitter: Emitte
         return Err("component sound object has not acknowledged retirement".into());
     }
     retiring.0.remove(&emitter);
+    retiring.0.retain(|joint, _| joint.player_owner() != emitter);
+    drop(retiring);
+    if let Some(mut state) = world.get_resource_mut::<super::player::PlayerState>() {
+        if let Some(player) = &mut state.player { player.forget_animation_sound_owner(emitter); }
+    }
     Ok(())
 }
 
@@ -548,7 +562,7 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
     // Actual component/equipment generations retain acknowledgement until
     // their owner releases them; a later request must not restart retirement.
     retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete
-        || matches!(emitter, Emitter::Component { .. } | Emitter::Equipment { .. }));
+        || matches!(emitter, Emitter::Component { .. } | Emitter::Equipment { .. } | Emitter::PlayerJoint { .. }));
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
@@ -1117,7 +1131,7 @@ fn play_events(
         let stale_component = matches!(emitter, Emitter::Component { handle, generation }
             if state != Some(ObjectRetirement::Queued)
                 && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
-        let stale_equipment = matches!(emitter, Emitter::Equipment { entity, .. }
+        let stale_equipment = matches!(emitter.player_owner(), Emitter::Equipment { entity, .. }
             if state != Some(ObjectRetirement::Queued)
                 && !live.as_ref().is_some_and(|live| live.stage(entity)
                     == Some(crate::gameplay::entity_lifetime::Stage::Spawned)));

@@ -375,6 +375,7 @@ impl LevelList {
             crate::assets::entities::physics_material::resources::promote_bootstrap(catalog)?;
             crate::assets::bmd6::cloth::promote_bootstrap(catalog)?;
             crate::assets::physworld::physics_system::promote_bootstrap(catalog)?;
+            crate::assets::physworld::navmesh::promote_bootstrap(catalog)?;
             crate::assets::entities::effects::declarations::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
@@ -428,7 +429,9 @@ impl LevelList {
             if !header.mask.iter().zip(&layers).any(|(mask, selected)| mask & selected != 0)
                 || header.flags & 0x20 != 0 { return Ok(()); }
             if [".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| resource.path.contains(suffix)) { return Ok(()); }
-            if resource.kind.eq_ignore_ascii_case("inventoryLoadout")
+            if resource.kind.eq_ignore_ascii_case("Navmesh") {
+                crate::assets::physworld::navmesh::register_preload(catalog, &resource.path, if section < 2 { 2 } else { 1 })?;
+            } else if resource.kind.eq_ignore_ascii_case("inventoryLoadout")
                 || resource.kind.eq_ignore_ascii_case("inventoryItemCollection") {
                 // Gate by the existing kind before normalizing a path: other
                 // resource families make no inventory allocation or lookup.
@@ -491,7 +494,7 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("ruleHandler") {
                 // Not in 0661e0's conditional heap-1 list at 142280ee0.
                 crate::assets::slash_rules::register_preload(catalog, &resource.path, context as u8, false)?;
-            } else if resource.kind.eq_ignore_ascii_case("gameflowManager") {
+            } else if resource.kind.eq_ignore_ascii_case("gameflowManager") || resource.kind.eq_ignore_ascii_case("arkTree") {
                 crate::gameplay::gameflow::program::register_preload(catalog, &resource.path, context as u8)?;
             } else if crate::assets::speech::is_kind(&resource.kind) {
                 crate::assets::speech::register_preload(catalog, &resource.kind, &resource.path, context as u8, promote_preload_kinds)?;

@@ -51,5 +51,8 @@ pub(crate) mod runtime_entity;
 pub(crate) mod throwable;
 
 pub(crate) mod breakable;
+pub(crate) mod grenades;
+pub(crate) mod ai_world;
+pub(crate) mod ai_cues;
 
 pub mod explosions;

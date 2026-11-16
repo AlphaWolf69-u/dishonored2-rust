@@ -11,6 +11,39 @@ use bevy::prelude::*;
 pub(super) struct Breakables {
     tails: Vec<Tail>,
 }
+//Host A/B controls are read once, never from the per-actor polling path.
+//Counters describe logical resource transfers, not compiler memcpy count or
+//the heap memory owned by the resource. ETW remains the CPU-time measurement.
+struct DebugBorrowing {
+    legacy_scene_scope: bool,
+    count_transfers: bool,
+    scene_scopes: std::sync::atomic::AtomicU64,
+    live_scopes: std::sync::atomic::AtomicU64,
+}
+fn debug_borrowing() -> &'static DebugBorrowing {
+    static CONTROL: std::sync::OnceLock<DebugBorrowing> = std::sync::OnceLock::new();
+    CONTROL.get_or_init(|| DebugBorrowing {
+        legacy_scene_scope: std::env::var("DH2_DEBUG_BREAKABLE_LEGACY_SCOPE").as_deref() == Ok("1"),
+        count_transfers: std::env::var("DH2_DEBUG_BREAKABLE_BORROW_COST").as_deref() == Ok("1"),
+        scene_scopes: std::sync::atomic::AtomicU64::new(0),
+        live_scopes: std::sync::atomic::AtomicU64::new(0),
+    })
+}
+impl Drop for Breakables {
+    fn drop(&mut self) {
+        let control = debug_borrowing();
+        if !control.count_transfers { return; }
+        use std::sync::atomic::Ordering;
+        let scene = control.scene_scopes.load(Ordering::Relaxed);
+        let live = control.live_scopes.load(Ordering::Relaxed);
+        let scene_size = std::mem::size_of::<super::physics_scene::PhysicsScene>() as u64;
+        let live_size = std::mem::size_of::<LiveEntities>() as u64;
+        eprintln!("BREAKABLE_BORROW_COST mode={} calls={} scene_scopes={} live_scopes={} scene_size={} live_size={} logical_scene_transfer_bytes={} logical_live_transfer_bytes={}",
+            if control.legacy_scene_scope { "scene" } else { "live" }, scene + live,
+            scene, live, scene_size, live_size, scene.saturating_mul(scene_size).saturating_mul(2),
+            live.saturating_mul(live_size).saturating_mul(2));
+    }
+}
 struct Tail {
     owner: EntityId,
     ticket: super::usable_effects::EffectTicket,
@@ -126,7 +159,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                         contact_speed:0.,contact_mass:0.,contact_stimulus_enabled:None,
                     };
                     let key = std::sync::Arc::<str>::from(format!("breakable:{component:?}:{generation}:{step}:{chunk:?}"));
-                    let ticket = world.resource_mut::<super::usable_effects::EffectRequests>().start_breakable_once(key, path,
+                    let ticket = world.resource_mut::<super::usable_effects::EffectRequests>().start_context_once(key, path,
                         super::usable_effects::EntityPlacement { target: crate::gameplay::event_graph::EntityReference::Named(target_name),
                             tag: String::new(), local: fx.local, attached: fx.attached },
                         crate::gameplay::reference_frame::compose(frame.pose, fx.local), context);
@@ -210,11 +243,26 @@ pub(super) fn begin_entity_retirement(world: &mut World, id: EntityId) -> Result
     Ok(())
 }
 pub(super) fn entity_retired(world: &mut World, id: EntityId) -> Result<bool, String> {
-    world.resource_scope(
-        |world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
-            scene.breakable_retirement_complete(world.resource::<LiveEntities>(), id)
-        },
-    )
+    let control = debug_borrowing();
+    if control.legacy_scene_scope {
+        if control.count_transfers {
+            control.scene_scopes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        return world.resource_scope(
+            |world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                scene.breakable_retirement_complete(world.resource::<LiveEntities>(), id)
+            },
+        );
+    }
+    if control.count_transfers {
+        control.live_scopes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    //7ed9a0/7ecc90 borrows its manager; it does not copy the world. Scope the
+    //small identity owner so Scene stays in its canonical ECS resource slot.
+    world.resource_scope(|world, live: Mut<LiveEntities>| {
+        world.resource_mut::<super::physics_scene::PhysicsScene>()
+            .breakable_retirement_complete(&live, id)
+    })
 }
 
 ///The shared FX shutdown owns all actual particle/sound tails. This producer

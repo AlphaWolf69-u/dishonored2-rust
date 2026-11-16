@@ -391,7 +391,7 @@ impl PhysicsScene {
                             return Err("DamageZone Player damage target differs".into());
                         }
                         player.receive_damage(&params);
-                        super::super::player_damage::flush_events(player, live, events, target)?;
+                        super::super::player_damage::flush_events(player, live, events, target,self)?;
                     } else {
                         self.damage_entity(live, events, target, &params)?;
                     }

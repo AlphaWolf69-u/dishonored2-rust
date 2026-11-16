@@ -85,10 +85,16 @@ impl PhysicsScene {
         live: &LiveEntities,
         contact: &ConvexContact,
     ) -> Result<Option<EntityId>, String> {
-        if contact.target.user_data == 0 {
+        self.collision_entity(live, &contact.target)
+    }
+    ///The shared source userdata bridge preserves the managed generation for
+    ///ranged sensor9 as well as the interaction cast's convex witnesses.
+    pub(in crate::app) fn collision_entity(&self, live: &LiveEntities,
+        target: &crate::gameplay::collision_hit::ShapeHitInfo) -> Result<Option<EntityId>, String> {
+        if target.user_data == 0 {
             return Ok(None);
         }
-        let index = CollisionUserData::decode(contact.target.user_data)?
+        let index = CollisionUserData::decode(target.user_data)?
             .entity(|handle| self.owner(handle).ok())?;
         let entity = self
             .entities
@@ -140,7 +146,9 @@ impl PhysicsScene {
                 let Some(entity) = self.interaction_hit_entity(live, contact)? else {
                     continue;
                 };
-                if self.interaction_pickable(live, entity)?.is_none() {
+                if self.interaction_pickable(live, entity)?.is_none()
+                    && self.interaction_usable(live, entity)?.is_none()
+                {
                     continue;
                 }
                 //61e1a0: transparent collision material AND a real Breakable

@@ -31,6 +31,12 @@ pub struct Metadata {
     pub component_kind: String,
     pub equipment: Equipment,
     pub ranged: Option<Ranged>,
+    pub melee: Option<Arc<crate::gameplay::player::melee::Declaration>>,
+    pub heart: Option<Arc<crate::gameplay::player::weapons::heart::Definition>>,
+    pub heart_barks: Option<Arc<crate::gameplay::player::weapons::heart::barks::Definition>>,
+    pub throwable: Option<Arc<crate::gameplay::player::weapons::throwable::Definition>>,
+    pub grenade: Option<Arc<crate::assets::grenades::Definition>>,
+    pub grenade_scheduling: Option<Arc<crate::gameplay::component_state::declaration::DeclarationScheduling>>,
 }
 
 pub struct Descriptor {
@@ -303,6 +309,8 @@ impl Sources {
             }
         };
         let equipment = Equipment::read(fields, archetype, slot, &mut enumeration)?;
+        let melee = (kind == "cpntweaponmeleeplayer")
+            .then(|| crate::gameplay::player::melee::Declaration::acquire(catalog, fields)).transpose()?;
         let ranged = is_ranged
             .then(|| {
                 Ranged::read(
@@ -322,6 +330,27 @@ impl Sources {
             entities::player::entity_component(&key, "cpntaudio", |path| sources.read(path))?
                 .map(|fields| crate::gameplay::sound::component::Settings::read(&fields))
                 .transpose()?;
+        let heart = (kind == "cpntheart").then(||
+            crate::gameplay::player::weapons::heart::Definition::read(fields).map(Arc::new))
+            .transpose()?;
+        let heart_barks = if heart.is_some() {
+            entities::player::entity_component(&key, "cpntaibarksdevice", |path| sources.read(path))?
+                .map(|fields| {
+                    let speech = entities::player::entity_component(&key, "cpntspeech", |path| sources.read(path))?
+                        .ok_or_else(|| format!("{key}: AIBarks_Device requires its actual Speech component"))?;
+                    crate::gameplay::player::weapons::heart::barks::Definition::read(catalog, &fields, &speech).map(Arc::new)
+                }).transpose()?
+        } else { None };
+        let throwable = (kind == "cpntweaponthrowable").then(||
+            crate::gameplay::player::weapons::throwable::Definition::read(fields).map(Arc::new))
+            .transpose()?;
+        let grenade_fields = entities::player::entity_component(&key, "cpntgrenade", |path| sources.read(path))?;
+        let grenade = grenade_fields.as_ref()
+            .map(|fields| crate::assets::grenades::Definition::read(fields).map(Arc::new)).transpose()?;
+        let grenade_scheduling = grenade_fields.as_ref().map(|fields| {
+            entities::components::scheduling(fields,
+                crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0)).map(Arc::new)
+        }).transpose()?;
         let metadata = Arc::new(Metadata {
             entity: key.clone(),
             class_name,
@@ -329,7 +358,13 @@ impl Sources {
             sound_settings,
             component_kind: kind.clone(),
             equipment,
+            melee,
             ranged,
+            heart,
+            heart_barks,
+            throwable,
+            grenade,
+            grenade_scheduling,
         });
         if !catalog.has_overlays() {
             self.metadata.insert(key, Arc::downgrade(&metadata));
@@ -448,6 +483,17 @@ impl Sources {
 /// Enum constants registered by1419fb190/1419fb470. Callers use this same
 /// table for numeric/declaration metadata instead of inferring a hand/type.
 pub fn enumeration(kind: &str, value: &str) -> Option<i32> {
+    //141a1b2e0's explicit -1 sentinel precedes the eight Flash types.
+    if kind == "arkUIElementUICrosshairType_t" {
+        const TYPES: [&str; 9] = [
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_NULL", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_POWER",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GUN", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_CROSSBOW",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_MINE", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GRENADE",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_STICKY_GRENADE", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GRENADE_LOB",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_STICKY_GRENADE_LOB",
+        ];
+        return value.parse().ok().or_else(|| TYPES.iter().position(|name| *name == value).map(|index| index as i32 - 1));
+    }
     if kind == "arkPlayerStateId_t" {
         // The existing complete registration table141a13470 is shared with
         // interaction rules; equipment quick-use states keep the same enum.
@@ -517,7 +563,18 @@ struct SourceRead<'a> {
 impl SourceRead<'_> {
     fn read(&mut self, path: &str) -> Result<Option<String>, String> {
         check_active(self.cancelled)?;
-        let key = path.replace('\\', "/").to_ascii_lowercase();
+        let mut key = path.replace('\\', "/").to_ascii_lowercase();
+        //Component source suffixes and serialized declaration-manager names
+        //differ (for example AIBarks_Device). Resolve through the same catalog
+        //type metadata as the runtime factory, never a directory alias.
+        if let Some((kind, source)) = key.strip_prefix("generated/decls/").and_then(|value| value.split_once('/')) {
+            if kind.starts_with("cpnt") {
+                let suffix = source.strip_suffix(".decl").and_then(|value| value.rsplit_once('.')).map(|(_, suffix)| suffix)
+                    .ok_or_else(|| format!("equipment component source has no declaration suffix: {key}"))?;
+                let actual = self.catalog.component_declaration_kind(suffix)?;
+                key = format!("generated/decls/{}/{source}", actual.to_ascii_lowercase());
+            }
+        }
         if let Some(text) = self.texts.get(&key) {
             return Ok(text.clone());
         }

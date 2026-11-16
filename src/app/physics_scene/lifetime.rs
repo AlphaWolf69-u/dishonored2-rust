@@ -427,6 +427,13 @@ pub(super) fn poll_owned(
         // Stop callbacks may enqueue update membership changes. The slots must
         // remain allocated until those exact references have been drained.
         registry.drain_update_changes(&mut host)?;
+        if host.events.normal_pending(){host.pump_events(&mut registry)?;}
+        // Deinit still runs reflected Remove through the canonical deadline
+        // owner. Yield to LevelLifetime's real pump before graph/ID metadata
+        // disappears; do not copy its queue or advance its frozen clock.
+        if let Some(world)=host.world.as_deref(){
+            if super::super::entity_functions::due_pending(world)?{return Ok(false);}
+        }
         if host
             .scene
             .entities
@@ -846,6 +853,17 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
+            return self.scene.initialize_cue_component(self.live,handle);
+        }
+        if self.scene.is_ai_startup_class(handle.class_id){return self.scene.initialize_ai_startup(self.world.as_deref_mut().ok_or("AI manager Initialize requires published world")?,self.live,self.events,registry,handle);}
+        if self.scene.is_crew_class(handle.class_id){return self.scene.initialize_crew(handle);}
+        if self.scene.is_crew_collector_class(handle.class_id){return self.scene.initialize_crew_collector(handle);}
+        if self.scene.is_crew_module_class(handle.class_id){return self.scene.initialize_crew_module(handle);}
+        if handle.class_id==self.scene.classes[21]{return self.scene.initialize_statistics(handle);}
+        if handle.class_id==self.scene.classes[22]{return self.scene.initialize_timers(self.world.as_deref_mut(),self.live,handle);}
+        if handle.class_id==self.scene.classes[20]{return self.scene.initialize_ai_danger(self.world.as_deref_mut().ok_or("AI danger Initialize requires published world")?,self.live,handle);}
+        if handle.class_id==self.scene.classes[19]{return self.scene.initialize_grenade(handle,self.live);}
         if handle.class_id==self.scene.classes[18]{return self.scene.initialize_damage_zone(handle,self.live);}
         if handle.class_id==self.scene.classes[7]{return self.scene.initialize_loot(handle);}
         if handle.class_id==self.scene.classes[17]{
@@ -861,6 +879,33 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
+            self.scene.start(handle,registry)?;
+            return self.scene.start_cue_component(self.world.as_deref(),self.live,self.events,handle);
+        }
+        if self.scene.is_ai_startup_class(handle.class_id){self.scene.start(handle,registry)?;return self.scene.start_ai_startup(self.world.as_deref_mut().ok_or("AI manager Start requires published world")?,self.events,registry,handle);}
+        if self.scene.is_crew_class(handle.class_id){self.scene.start(handle,registry)?;return self.scene.start_crew(self.events,handle);}
+        if self.scene.is_crew_collector_class(handle.class_id){self.scene.start(handle,registry)?;return self.scene.start_crew_collector(self.events,registry,handle);}
+        if self.scene.is_crew_module_class(handle.class_id){self.scene.start(handle,registry)?;return self.scene.start_crew_module(self.events,registry,handle);}
+        if handle.class_id==self.scene.classes[21]{
+            self.scene.start(handle,registry)?;return self.scene.start_statistics(self.events,handle);
+        }
+        if handle.class_id==self.scene.classes[22]{
+            self.scene.start(handle,registry)?;return self.scene.start_timers(self.live,handle);
+        }
+        if handle.class_id==self.scene.classes[20]{
+            self.scene.start(handle,registry)?;
+            return self.scene.start_ai_danger(handle,self.events);
+        }
+        if handle.class_id==self.scene.classes[19]{
+            self.scene.start(handle,registry)?;
+            return self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle);
+        }
+        if handle.class_id==self.scene.classes[5]{
+            self.scene.start(handle,registry)?;
+            if let Some(world)=self.world.as_deref_mut(){self.scene.start_usable_backend(world,handle)?;}
+            return Ok(());
+        }
         if handle.class_id==self.scene.classes[18]{
             self.scene.start(handle,registry)?;
             return self.scene.start_damage_zone(self.world.as_deref_mut().ok_or("DamageZone Start requires published world")?,self.live,handle);
@@ -898,14 +943,17 @@ impl ComponentUpdateWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
-        registry.base_update_remove(handle, self)
+        if self.scene.is_crew_module_class(handle.class_id){self.scene.update_remove_crew_module(handle,registry,self.live,self.events)?;}
+        registry.base_update_remove(handle, self)?;
+        self.scene.crew_update_subscription(handle,self.events,false)
     }
     fn update_add(
         &mut self,
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
-        registry.base_update_add(handle, self)
+        registry.base_update_add(handle, self)?;
+        self.scene.crew_update_subscription(handle,self.events,true)
     }
     fn set_update_scheduled(
         &mut self,
@@ -920,9 +968,26 @@ impl ComponentReleaseWorld for Host<'_> {
     fn pump_events(&mut self, registry: &mut ComponentRegistry) -> Result<(), String> {
         // Retirement drains the same numeric registry and actual callback
         // owner as normal gameplay, before retiring those component leases.
-        self.scene
-            .pump_entity_messages_with_registry(self.live, self.events, registry,
-                self.world.as_deref().and_then(|world|world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()))
+        let scene=&mut *self.scene;
+        let live=&mut *self.live;
+        let events=&mut *self.events;
+        if let Some(world)=self.world.as_deref_mut() {
+            let mut ai_worlds = world.remove_resource::<crate::gameplay::ai_world::Worlds>();
+            let mut hearts=world.remove_resource::<super::super::heart::Hearts>();
+            let result = if world.contains_resource::<super::super::player::PlayerState>() {
+                world.resource_scope(|world,mut player:bevy::prelude::Mut<super::super::player::PlayerState>| {
+                    scene.pump_entity_messages_with_registry(live,events,registry,
+                        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),player.player.as_mut(), ai_worlds.as_mut(),hearts.as_mut())
+                })
+            } else {
+                scene.pump_entity_messages_with_registry(live,events,registry,
+                    world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),None, ai_worlds.as_mut(),hearts.as_mut())
+            };
+            if let Some(owner) = ai_worlds { world.insert_resource(owner); }
+            if let Some(owner)=hearts {world.insert_resource(owner);}
+            return result;
+        }
+        scene.pump_entity_messages_with_registry(live,events,registry,None,None,None,None)
     }
 
     fn stop(
@@ -931,6 +996,9 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, false)?;
+        if handle.class_id==self.scene.classes[6] {
+            if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_stopped(world,handle)?;}
+        }
         let published = self.world.is_some();
         let scene = &mut self.scene;
         if scene.is_rigid_class(handle.class_id) {
@@ -1043,6 +1111,24 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_animation(handle)?;
         } else if handle.class_id == scene.classes[17] {
             scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Stop payload absent")?.started = false;
+        } else if handle.class_id == scene.classes[19] {
+            scene.stop_grenade(self.world.as_deref_mut(),self.live,self.events,handle)?;
+        } else if handle.class_id == scene.classes[21] {
+            scene.stop_statistics(self.events,handle)?;
+        } else if handle.class_id == scene.classes[22] {
+            scene.stop_timers(handle)?;
+        } else if handle.class_id == scene.classes[20] {
+            scene.stop_ai_danger(handle,self.events)?;
+        } else if handle.class_id==scene.classes[48]||handle.class_id==scene.classes[49] {
+            scene.stop_cue_component(self.world.as_deref(),self.live,self.events,handle)?;
+        } else if scene.is_ai_startup_class(handle.class_id) {
+            scene.stop_ai_startup(self.events,handle)?;
+        } else if scene.is_crew_class(handle.class_id) {
+            scene.stop_crew(self.events,handle)?;
+        } else if scene.is_crew_collector_class(handle.class_id) {
+            scene.stop_crew_collector(self.events,handle)?;
+        } else if scene.is_crew_module_class(handle.class_id) {
+            scene.stop_crew_module(self.events,handle)?;
         } else if handle.class_id == scene.classes[18] {
             scene.stop_damage_zone(self.world.as_deref_mut(),handle)?;
         } else if scene.is_health_class(handle.class_id) {
@@ -1086,6 +1172,12 @@ impl ComponentReleaseWorld for Host<'_> {
                 return Ok(ReleaseStatus::Pending);
             }
         }
+        if handle.class_id==self.scene.classes[19]&&!self.scene.grenade_stop_complete(self.world.as_deref(),handle)?{
+            return Ok(ReleaseStatus::Pending);
+        }
+        if handle.class_id==self.scene.classes[48]&&!self.scene.cue_component_stop_complete(handle)? {
+            return Ok(ReleaseStatus::Pending);
+        }
         if handle.class_id==self.scene.classes[18]&&!self.scene.damage_zone_stop_complete(self.world.as_deref(),handle)?{
             return Ok(ReleaseStatus::Pending);
         }
@@ -1098,6 +1190,17 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, true)?;
+        if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
+            self.scene.deinitialize_cue_component(handle)?;
+        }
+        if self.scene.is_ai_startup_class(handle.class_id){self.scene.deinitialize_ai_startup(self.world.as_deref_mut().ok_or("AI manager Deinitialize requires published world")?,self.live,self.events,handle)?;}
+        if self.scene.is_crew_class(handle.class_id){self.scene.deinitialize_crew(handle)?;}
+        if self.scene.is_crew_collector_class(handle.class_id){self.scene.deinitialize_crew_collector(handle)?;}
+        if self.scene.is_crew_module_class(handle.class_id){self.scene.deinitialize_crew_module(handle)?;}
+        if handle.class_id==self.scene.classes[21]{self.scene.deinitialize_statistics(handle)?;}
+        if handle.class_id==self.scene.classes[22]{self.scene.deinitialize_timers(self.world.as_deref_mut(),self.live,handle)?;}
+        if handle.class_id==self.scene.classes[20]{self.scene.deinitialize_ai_danger(self.world.as_deref_mut().ok_or("AI danger Deinitialize requires published world")?,handle)?;}
+        if handle.class_id==self.scene.classes[19]{self.scene.deinitialize_grenade(self.world.as_deref_mut(),handle)?;}
         if handle.class_id==self.scene.classes[18]{self.scene.deinitialize_damage_zone(handle)?;}
         if handle.class_id == self.scene.classes[17] {
             let component = self.scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Deinitialize payload absent")?;
@@ -1218,6 +1321,10 @@ impl ComponentReleaseWorld for Host<'_> {
             .owner(handle)?
             .entity
             .ok_or("retiring component entity absent")?;
+        if self.scene.is_ai_startup_class(handle.class_id){return self.scene.release_ai_startup_binding(index,handle);}
+        if self.scene.is_crew_class(handle.class_id){return self.scene.release_crew_binding(index,handle);}
+        if self.scene.is_crew_collector_class(handle.class_id){return self.scene.release_crew_collector_binding(index,handle);}
+        if self.scene.is_crew_module_class(handle.class_id){return self.scene.release_crew_module(index,handle);}
         let scene = &mut self.scene;
         let entity = scene
             .entities
@@ -1359,6 +1466,18 @@ impl ComponentReleaseWorld for Host<'_> {
                 handle,
                 scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume absent")?,
             )
+        } else if handle.class_id == scene.classes[19] {
+            entity.components.release(handle,scene.grenades.get_mut(handle.slot).ok_or("Grenade absent")?)
+        } else if handle.class_id == scene.classes[21] {
+            entity.components.release(handle,scene.statistics.get_mut(handle.slot).ok_or("AIStatistics absent")?)
+        } else if handle.class_id == scene.classes[22] {
+            entity.components.release(handle,scene.timers.get_mut(handle.slot).ok_or("Timers absent")?)
+        } else if handle.class_id == scene.classes[20] {
+            entity.components.release(handle,scene.ai_danger_zones.get_mut(handle.slot).ok_or("AI danger absent")?)
+        } else if handle.class_id==scene.classes[48] {
+            entity.components.release(handle,scene.observables.get_mut(handle.slot).ok_or("Observable absent")?)
+        } else if handle.class_id==scene.classes[49] {
+            entity.components.release(handle,scene.attention_sources.get_mut(handle.slot).ok_or("AttentionSource absent")?)
         } else if handle.class_id == scene.classes[18] {
             entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
@@ -1374,6 +1493,9 @@ impl ComponentReleaseWorld for Host<'_> {
         registry.ensure_no_update_references(handle)?;
         if handle.class_id==self.scene.classes[18]&&!self.scene.damage_zone_stop_complete(self.world.as_deref(),handle)?{
             return Err("DamageZone pool release precedes actual query/FX acknowledgement".into());
+        }
+        if handle.class_id==self.scene.classes[19]&&!self.scene.grenade_stop_complete(self.world.as_deref(),handle)?{
+            return Err("Grenade pool release precedes actual FX acknowledgement".into());
         }
         if self.owner(handle)?.entity.is_some() {
             return Err("component remains linked at pool release".into());
@@ -1396,7 +1518,15 @@ impl ComponentReleaseWorld for Host<'_> {
             None
         };
         let scene = &mut self.scene;
-        if handle.class_id == scene.classes[0] {
+        if scene.is_ai_startup_class(handle.class_id) {
+            scene.reclaim_ai_startup(handle)?;
+        } else if scene.is_crew_class(handle.class_id) {
+            scene.reclaim_crew(handle)?;
+        } else if scene.is_crew_collector_class(handle.class_id) {
+            scene.reclaim_crew_collector(handle)?;
+        } else if scene.is_crew_module_class(handle.class_id) {
+            scene.reclaim_crew_module(handle)?;
+        } else if handle.class_id == scene.classes[0] {
             scene.triggers.release(handle.slot)?;
         } else if handle.class_id == scene.classes[1] {
             scene.waters.release(handle.slot)?;
@@ -1486,6 +1616,18 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.health_doors.release(handle.slot)?;
         } else if handle.class_id == scene.classes[17] {
             scene.sound_volumes.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[19] {
+            scene.grenades.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[21] {
+            scene.statistics.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[22] {
+            scene.timers.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[20] {
+            scene.ai_danger_zones.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[48] {
+            scene.observables.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[49] {
+            scene.attention_sources.release(handle.slot)?;
         } else if handle.class_id == scene.classes[18] {
             scene.damage_zones.release(handle.slot)?;
         } else {

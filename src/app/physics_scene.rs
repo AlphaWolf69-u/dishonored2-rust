@@ -50,10 +50,23 @@ pub(super) mod damage_zone;
 mod occluded_sensor;
 pub(super) mod damage;
 mod loot;
+pub(super) mod grenades;
+mod ai_world;
+pub(super) mod ai_sections;
+pub(super) mod ai_managers;
+mod ai_startup;
+mod ai_cue_components;
+mod ai_cue_events;
+mod entity_activation;
+mod crew;
+mod crew_collectors;
+mod crew_modules;
 pub(super) mod document_hierarchy;
 mod document_pickup;
 mod document_rigid;
 mod entity_messages;
+mod heart_context;
+mod heart_sensor;
 mod entity_removal;
 pub(super) mod explosions;
 pub(super) mod explosion_effects;
@@ -62,6 +75,7 @@ pub(super) mod interaction_queries;
 pub(super) mod level_bodies;
 pub(super) mod player_reference;
 mod equipment_reference;
+pub(super) mod melee;
 pub(super) mod preparation;
 pub(super) mod projectiles;
 pub(super) mod rigid_actor;
@@ -120,8 +134,8 @@ pub(super) struct PhysicsScene {
         crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 19],
-    classes: [i32; 19],
+    factories: [u32; 50],
+    classes: [i32; 50],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -146,6 +160,44 @@ pub(super) struct PhysicsScene {
     prepared_sound_volumes: Vec<super::runtime_entities::PreparedSoundVolume>,
     sound_volumes: ComponentPool<crate::gameplay::sound::volume_control::Component>,
     damage_zones: ComponentPool<crate::gameplay::damage_zone::Component>,
+    grenades: ComponentPool<crate::gameplay::grenade::Component>,
+    ai_danger_zones: ComponentPool<crate::gameplay::ai_world::DangerComponent>,
+    statistics: ComponentPool<crate::gameplay::ai_world::managers::Statistics>,
+    timers: ComponentPool<crate::gameplay::ai_world::managers::Timers>,
+    ai_cues: ComponentPool<crate::gameplay::ai_world::startup_managers::Cues>,
+    ai_crews: ComponentPool<crate::gameplay::ai_world::startup_managers::CrewDispatch>,
+    ai_dsm: ComponentPool<crate::gameplay::ai_world::startup_managers::Dsm>,
+    ai_flee: ComponentPool<crate::gameplay::ai_world::startup_managers::Flee>,
+    ai_coordination: ComponentPool<crate::gameplay::ai_world::startup_managers::Coordination>,
+    ai_vision: ComponentPool<crate::gameplay::ai_world::startup_managers::Vision>,
+    crew_cores: ComponentPool<crate::gameplay::ai_world::crew::Core>,
+    crew_knowledge: ComponentPool<crate::gameplay::ai_world::crew::Knowledge>,
+    crew_coordination: ComponentPool<crate::gameplay::ai_world::crew::Coordination>,
+    crew_decisions: ComponentPool<crate::gameplay::ai_world::crew::Decision>,
+    ai_crew_area: ComponentPool<crate::gameplay::ai_world::crew_collectors::Component>,
+    ai_crew_combat: ComponentPool<crate::gameplay::ai_world::crew_collectors::Component>,
+    ai_crew_notification: ComponentPool<crate::gameplay::ai_world::crew_collectors::Component>,
+    ai_crew_search: ComponentPool<crate::gameplay::ai_world::crew_collectors::Component>,
+    ai_crew_herd: ComponentPool<crate::gameplay::ai_world::crew_collectors::Component>,
+    crew_chase: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_melee: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_search_module: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_link: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_ranged: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_fake: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_flank: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_hideout: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_tether: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    crew_alarm: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
+    observables: ComponentPool<crate::gameplay::ai_cues::Observable>,
+    attention_sources: ComponentPool<crate::gameplay::ai_cues::AttentionSource>,
+    cue_actions:VecDeque<ai_cue_events::Action>,
+    cue_update_marker:Option<i32>,
+    ///Host callback retry position in the actual clock's1/2/3 stage frame.
+    ai_stage_frame:Option<(i32,u8)>,
+    grenade_resources: HashMap<(u64, u32), grenades::Resources>,
+    grenade_actions: std::collections::VecDeque<grenades::Action>,
+    grenades_prepared: bool,
     damage_zone_effects: HashMap<(u64, u32), damage_zone::FxState>,
     projectiles: ComponentPool<super::projectiles::Component>,
     level_bodies: ComponentPool<level_bodies::PhysicsWorldComponent>,
@@ -430,6 +482,37 @@ impl PhysicsScene {
             factory(b"arkCpntHealthDoor")?,
             factory(b"arkCpntSoundVolumeControl")?,
             factory(b"arkCpntDamageZone")?,
+            factory(b"arkCpntGrenade")?,
+            factory(b"arkCpntAIDangerZone")?,
+            factory(b"arkCpntAIStatistics")?,
+            factory(b"arkCpntTimersManager")?,
+            factory(b"arkCpntAIManager_Cues")?,
+            factory(b"arkCpntAICrewDispatch")?,
+            factory(b"arkCpntDSM")?,
+            factory(b"arkCpntFleeManager")?,
+            factory(b"arkCpntAIWorldCoordinationBB")?,
+            factory(b"arkCpntAIVisionManager")?,
+            factory(b"arkCpntAICrewCore")?,
+            factory(b"arkCpntAICrewKnowledgeBB")?,
+            factory(b"arkCpntAICrewCoordinationBB")?,
+            factory(b"arkCpntAICrewDecision")?,
+            factory(b"arkCpntAICrewCollector_Area")?,
+            factory(b"arkCpntAICrewCollector_Combat")?,
+            factory(b"arkCpntAICrewCollector_Notification")?,
+            factory(b"arkCpntAICrewCollector_Search")?,
+            factory(b"arkCpntAICrewCollector_Herd")?,
+            factory(b"arkCpntAICrewModule_CombatChase")?,
+            factory(b"arkCpntAICrewModule_CombatMelee")?,
+            factory(b"arkCpntAICrewModule_Search")?,
+            factory(b"arkCpntAICrewModule_Spot_Link")?,
+            factory(b"arkCpntAICrewModule_CombatRanged")?,
+            factory(b"arkCpntAICrewModule_CombatFake")?,
+            factory(b"arkCpntAICrewModule_CombatFlank")?,
+            factory(b"arkCpntAICrewModule_Spot_Hideout")?,
+            factory(b"arkCpntAICrewModule_CombatTether")?,
+            factory(b"arkCpntAICrewModule_CombatAlarm")?,
+            factory(b"arkCpntObservable")?,
+            factory(b"arkCpntAIAttentionSource")?,
         ];
         let names = types
             .classes()
@@ -454,8 +537,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 19];
-        for i in 0..19 {
+        let mut classes = [0; 50];
+        for i in 0..50 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -572,6 +655,43 @@ impl PhysicsScene {
             prepared_sound_volumes: Vec::new(),
             sound_volumes: types.create_pool(factories[17], &cvars.cvars)?,
             damage_zones: types.create_pool(factories[18], &cvars.cvars)?,
+            grenades: types.create_pool(factories[19], &cvars.cvars)?,
+            ai_danger_zones: types.create_pool(factories[20], &cvars.cvars)?,
+            statistics: types.create_pool(factories[21], &cvars.cvars)?,
+            timers: types.create_pool(factories[22], &cvars.cvars)?,
+            ai_cues: types.create_pool(factories[23], &cvars.cvars)?,
+            ai_crews: types.create_pool(factories[24], &cvars.cvars)?,
+            ai_dsm: types.create_pool(factories[25], &cvars.cvars)?,
+            ai_flee: types.create_pool(factories[26], &cvars.cvars)?,
+            ai_coordination: types.create_pool(factories[27], &cvars.cvars)?,
+            ai_vision: types.create_pool(factories[28], &cvars.cvars)?,
+            crew_cores: types.create_pool(factories[29], &cvars.cvars)?,
+            crew_knowledge: types.create_pool(factories[30], &cvars.cvars)?,
+            crew_coordination: types.create_pool(factories[31], &cvars.cvars)?,
+            crew_decisions: types.create_pool(factories[32], &cvars.cvars)?,
+            ai_crew_area: types.create_pool(factories[33], &cvars.cvars)?,
+            ai_crew_combat: types.create_pool(factories[34], &cvars.cvars)?,
+            ai_crew_notification: types.create_pool(factories[35], &cvars.cvars)?,
+            ai_crew_search: types.create_pool(factories[36], &cvars.cvars)?,
+            ai_crew_herd: types.create_pool(factories[37], &cvars.cvars)?,
+            crew_chase: types.create_pool(factories[38], &cvars.cvars)?,
+            crew_melee: types.create_pool(factories[39], &cvars.cvars)?,
+            crew_search_module: types.create_pool(factories[40], &cvars.cvars)?,
+            crew_link: types.create_pool(factories[41], &cvars.cvars)?,
+            crew_ranged: types.create_pool(factories[42], &cvars.cvars)?,
+            crew_fake: types.create_pool(factories[43], &cvars.cvars)?,
+            crew_flank: types.create_pool(factories[44], &cvars.cvars)?,
+            crew_hideout: types.create_pool(factories[45], &cvars.cvars)?,
+            crew_tether: types.create_pool(factories[46], &cvars.cvars)?,
+            crew_alarm: types.create_pool(factories[47], &cvars.cvars)?,
+            observables: types.create_pool(factories[48], &cvars.cvars)?,
+            attention_sources: types.create_pool(factories[49], &cvars.cvars)?,
+            cue_actions:Default::default(),
+            cue_update_marker:None,
+            ai_stage_frame:None,
+            grenade_resources: Default::default(),
+            grenade_actions: Default::default(),
+            grenades_prepared: false,
             damage_zone_effects: HashMap::new(),
             throwables: types.create_pool(factories[12], &cvars.cvars)?,
             projectiles: types.create_pool(factories[13], &cvars.cvars)?,
@@ -1302,6 +1422,26 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.health_doors.get(handle.slot).map(|v| &v.base.owner)
         } else if handle.class_id == self.classes[17] {
             self.sound_volumes.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[19] {
+            self.grenades.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[20] {
+            self.ai_danger_zones.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[21] {
+            self.statistics.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[22] {
+            self.timers.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id==self.classes[48] {
+            self.observables.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[49] {
+            self.attention_sources.get(handle.slot).map(|v|&v.owner)
+        } else if self.is_ai_startup_class(handle.class_id) {
+            self.ai_startup_owner(handle)
+        } else if self.is_crew_class(handle.class_id) {
+            self.crew_owner(handle)
+        } else if self.is_crew_collector_class(handle.class_id) {
+            self.collector_owner(handle)
+        } else if self.is_crew_module_class(handle.class_id) {
+            self.module_owner(handle)
         } else if handle.class_id == self.classes[18] {
             self.damage_zones.get(handle.slot).map(|v| &v.owner)
         } else {
@@ -1349,6 +1489,26 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.health_doors.get_mut(handle.slot).map(|v| &mut v.base.owner)
         } else if handle.class_id == self.classes[17] {
             self.sound_volumes.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[19] {
+            self.grenades.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[20] {
+            self.ai_danger_zones.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[21] {
+            self.statistics.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[22] {
+            self.timers.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id==self.classes[48] {
+            self.observables.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[49] {
+            self.attention_sources.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if self.is_ai_startup_class(handle.class_id) {
+            self.ai_startup_owner_mut(handle)
+        } else if self.is_crew_class(handle.class_id) {
+            self.crew_owner_mut(handle)
+        } else if self.is_crew_collector_class(handle.class_id) {
+            self.collector_owner_mut(handle)
+        } else if self.is_crew_module_class(handle.class_id) {
+            self.module_owner_mut(handle)
         } else if handle.class_id == self.classes[18] {
             self.damage_zones.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
@@ -1451,6 +1611,11 @@ impl ComponentLifecycleWorld for PhysicsScene {
             .ok_or("physics component scheduling absent")?
             .scheduling
             .clone();
+        if handle.class_id == self.classes[19] {
+            //4911b0 sets the actual initial pause request before7e7670.
+            let component=self.grenades.get_mut(handle.slot).ok_or("Grenade Start payload absent")?;
+            component.owner.request_update(u32::from(!component.armed()));
+        }
         if self.is_health_class(handle.class_id) {
             self.entities[entity_index].entity_flags_d7 |= 2;
             let dead = self.entities[entity_index].entity_flags & 0x800 != 0;
@@ -1610,6 +1775,26 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.health_doors.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[17] {
                     self.sound_volumes.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[19] {
+                    self.grenades.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[20] {
+                    self.ai_danger_zones.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[21] {
+                    self.statistics.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[22] {
+                    self.timers.schedule(handle.slot)?;
+                } else if self.is_ai_startup_class(handle.class_id) {
+                    self.schedule_ai_startup(handle)?;
+                } else if self.is_crew_class(handle.class_id) {
+                    self.schedule_crew(handle)?;
+                } else if self.is_crew_collector_class(handle.class_id) {
+                    self.schedule_crew_collector(handle)?;
+                } else if self.is_crew_module_class(handle.class_id) {
+                    self.schedule_crew_module(handle)?;
+                } else if handle.class_id==self.classes[48] {
+                    self.observables.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[49] {
+                    self.attention_sources.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[18] {
                     self.damage_zones.schedule(handle.slot)?;
                 } else {

@@ -893,6 +893,17 @@ impl WorldStorage {
         )
     }
 
+    pub fn ray_closest_hit<'a>(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<ShapeRayContact>, String> {
+        executor.closest_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, resolve)
+    }
+
     /// 0966e0's any-hit collector over this canonical world's published trees.
     pub fn ray_any_hit<'a>(
         &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
@@ -918,6 +929,19 @@ impl WorldStorage {
                 offset: self.quantization.offset[..3].try_into().unwrap(),
                 scale: self.quantization.scale[..3].try_into().unwrap(),
             }, request, resolve, hits, start_hits)
+    }
+
+    pub fn convex_query_each<'a>(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        submit: &mut dyn FnMut(crate::gameplay::shape_convex_query::ConvexContact, bool),
+    ) -> Result<(), String> {
+        executor.for_each_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, resolve, submit)
     }
 
     /// Resolve a broadphase-admitted body pair against its retained geometry.

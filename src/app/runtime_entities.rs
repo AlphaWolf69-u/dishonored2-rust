@@ -12,7 +12,7 @@ use bevy::{
     tasks::{IoTaskPool, Task, block_on, futures_lite::future::poll_once},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
@@ -20,7 +20,7 @@ use std::{
 };
 
 mod placed;
-mod actor_class;
+pub(super) mod actor_class;
 pub(in crate::app) use placed::SoundVolume as PreparedSoundVolume;
 pub(in crate::app) use placed::{Child as PreparedBreakableChild, Prepared as PreparedBreakable};
 
@@ -106,7 +106,14 @@ struct Actor {
     stick: Option<Box<StickAdmission>>,
     dynamic: Option<actor_class::Dynamic>,
     breakable_class: Option<actor_class::Breakable>,
+    movable: Option<actor_class::Movable>,
+    grenade_birth: Option<GrenadeBirth>,
+    cue: Option<actor_class::Cue>,
+    ///Host destruction edge for actors created by actual manager Initialize;
+    ///their typed source manager array remains the lifetime owner.
+    startup_parent: Option<EntityId>,
 }
+struct GrenadeBirth { held: EntityId, target_flags: u32, transferred: bool, targeted: bool }
 #[derive(Default)]
 struct StickAdmission {
     chunks: Vec<(usize, usize, usize, EntityId)>,
@@ -189,11 +196,36 @@ pub(super) fn picked_up_builtin_absent(world: &World, id: EntityId) -> Result<bo
     }
     match actual {
         b"idEntity" | b"arkProjectile" | b"idDynamicEntity" | b"arkBreakable" => Ok(true),
+        b"arkGrenade" => Ok(false),
         _ => Err(format!(
             "pickedUp builtin dispatch is not verified for {}",
             String::from_utf8_lossy(actual)
         )),
     }
+}
+///8e7870 case12d calls the actual arkMovable783980 builtin before the
+///normal named-event graph receiver. A failed pickup has no class side effect.
+pub(super) fn picked_up_builtin(world: &mut World, id: EntityId, successful: bool) -> Result<(), String> {
+    if picked_up_builtin_absent(world, id)? || !successful { return Ok(()); }
+    let dynamic = world.get_resource_mut::<RuntimeEntities>().and_then(|mut owner| {
+        owner.actors.get_mut(&id).and_then(|actor| actor.movable.as_mut())
+            .map(|state| state.picked_up(true))
+    });
+    if dynamic.is_none() && !super::equipment_identity::mark_movable_picked_up(world, id)? {
+        //Placed actual arkGrenade headers use the same ordinary retirement
+        //journal. Project its ctor members only when this class consumes them.
+        let mut owner = world.resource_mut::<RuntimeEntities>();
+        let actor = owner.actors.entry(id).or_insert(Actor {
+            definition: None, prototype: None, removing: false, rollback: false,
+            rollback_queued: false, children: Vec::new(), release: None, stick: None,
+            dynamic: None, breakable_class: None, movable: Some(actor_class::Movable::new()), grenade_birth: None, cue: None, startup_parent: None,
+        });
+        actor.movable.as_mut().ok_or("arkGrenade constructor state is absent")?.picked_up(true);
+    }
+    with_scene(world, |world, scene, live, _| {
+        scene.mark_movable_picked_up(live, id)?;
+        super::model_motion::set_entity_shadow_casting(world, live, id, false)
+    })
 }
 pub(super) fn bounds(world: &World, id: EntityId) -> Result<Option<[[f32; 3]; 2]>, String> {
     if let Some(bounds) = super::world_models::bounds(world, id) {
@@ -266,6 +298,7 @@ fn effect_paths(definition: &Definition) -> Vec<String> {
             Kind::Projectile(value) => paths.extend(value.effect_paths().map(str::to_owned)),
             Kind::Breakable(value) => paths.extend(value.fx_paths().map(str::to_owned)),
             Kind::DamageZone(value)=>paths.extend(value.effect_paths().map(str::to_owned)),
+            Kind::Grenade(value)=>paths.extend(value.fx_paths().map(str::to_owned)),
             _ => {}
         }
     }
@@ -319,7 +352,7 @@ fn request_inner(
     override_scale: Option<[f32; 3]>,
     admitted: &mut Vec<(PrototypeKey, Arc<str>)>,
 ) -> Result<(), String> {
-    if !matches!(definition.class.as_str(), "idEntity" | "arkProjectile" | "idDynamicEntity" | "arkBreakable") {
+    if !matches!(definition.class.as_str(), "idEntity" | "arkProjectile" | "idDynamicEntity" | "arkBreakable" | "arkGrenade" | "arkAIWorld" | "arkAICue") {
         return Err(format!(
             "runtime actor {} class {} has no actual constructor adapter",
             definition.entity, definition.class
@@ -350,6 +383,9 @@ fn request_inner(
                     Some(scale),
                     admitted,
                 )?;
+            }
+            for child in &definition.startup_children {
+                request_inner(world, scope.clone(), child.clone(), None, admitted)?;
             }
             return Ok(());
         }
@@ -416,6 +452,9 @@ fn request_inner(
             admitted,
         )?;
     }
+    for child in &definition.startup_children {
+        request_inner(world, scope.clone(), child.clone(), None, admitted)?;
+    }
     Ok(())
 }
 pub(super) fn ready(world: &World, definition: &Definition) -> Result<bool, String> {
@@ -472,6 +511,9 @@ fn ready_inner(
         if !ready_inner(world, &chunk.definition, Some(scale))? {
             return Ok(false);
         }
+    }
+    for child in &definition.startup_children {
+        if !ready_inner(world, child, None)? { return Ok(false); }
     }
     Ok(true)
 }
@@ -540,6 +582,7 @@ pub(super) fn release_for(
     for chunk in definition.chunks.iter().chain(&definition.stick_chunks) {
         release_for(world, scope, &chunk.definition)?;
     }
+    for child in &definition.startup_children { release_for(world, scope, child)?; }
     Ok(())
 }
 /// Complete canonical dependency workers during loading and play. Requests
@@ -776,38 +819,26 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
         world.resource_mut::<RuntimeEntities>().source_error = Some(error.clone());
         return Err(error);
     }
-    let mut failed = world
+    let failed = world
         .resource::<RuntimeEntities>()
         .actors
         .iter()
         .filter_map(|(&id, actor)| (actor.rollback && !actor.rollback_queued).then_some(id))
         .collect::<Vec<_>>();
-    if let Some(entered) = world
-        .resource::<super::physics_scene::PhysicsScene>()
-        .runtime_startup_owner()?
-    {
-        if let Some(index) = failed.iter().position(|id| *id == entered) {
-            failed.swap(0, index);
+    let abort = failed.iter().copied().filter(|id|world.resource::<RuntimeEntities>().actors[id]
+        .release.as_ref().is_none_or(|release|!release.rollback_done)).collect::<Vec<_>>();
+    if !abort.is_empty() {
+        //Keep source parent/child state available to callbacks while the one
+        //registry withdraws this failed constructor closure in one cursor edit.
+        if !with_scene(world, |world,scene,live,events|
+            scene.prepare_runtime_rollbacks(world,live,events,&abort))? { return Ok(()); }
+        let mut owner = world.resource_mut::<RuntimeEntities>();
+        for id in abort {
+            owner.actors.get_mut(&id).ok_or("runtime rollback journal absent")?
+                .release.get_or_insert_with(Default::default).rollback_done = true;
         }
     }
     for id in failed {
-        let mut owner = world
-            .remove_resource::<RuntimeEntities>()
-            .ok_or("runtime rollback owner absent")?;
-        let result = (|| {
-            let actor = owner
-                .actors
-                .get_mut(&id)
-                .ok_or("runtime rollback journal absent")?;
-            let release = actor.release.get_or_insert_with(Default::default);
-            with_scene(world, |world, scene, live, events| {
-                scene.prepare_runtime_rollback(world, live, events, id, release)
-            })
-        })();
-        world.insert_resource(owner);
-        if !result? {
-            break;
-        }
         // An accepted managed identity retires through the one ordinary FIFO.
         // Do not cancel another removal request or bypass save-name preparation.
         world
@@ -858,7 +889,7 @@ pub(super) fn spawn(
     definition: Arc<Definition>,
     options: SpawnOptions,
 ) -> Result<EntityId, String> {
-    spawn_inner(world, definition, options, None)
+    spawn_inner(world, definition, options, None, None)
 }
 pub(super) fn spawn_projectile(
     world: &mut World,
@@ -866,14 +897,156 @@ pub(super) fn spawn_projectile(
     options: SpawnOptions,
     request: crate::gameplay::projectiles::SpawnRequest,
 ) -> Result<EntityId, String> {
-    spawn_inner(world, definition, options, Some(request))
+    spawn_inner(world, definition, options, Some(request), None)
+}
+///639970 configures accepted throw momentum before component Initialize.
+pub(super) fn spawn_grenade(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
+    attacker: EntityId, linear: bevy::math::Vec3, angular: bevy::math::Vec3,
+    held: EntityId, target_flags: u32) -> Result<EntityId, String> {
+    spawn_inner(world, definition, options, None, Some((attacker, linear.to_array(), angular.to_array(), held, target_flags)))
+}
+///632f70 transfers the same armed component before GameLocal consumes Start.
+///Keep that source boundary across the backend's real FX readiness wait.
+pub(super) fn finish_grenade_birth(world: &mut World, id: EntityId) -> Result<bool, String> {
+    let (held, flags, transferred, targeted) = {
+        let actor = world.resource::<RuntimeEntities>().actors.get(&id).ok_or("grenade birth generation absent")?;
+        let Some(birth) = &actor.grenade_birth else { return Ok(true); };
+        (birth.held, birth.target_flags, birth.transferred, birth.targeted)
+    };
+    let ready = with_scene(world, |world, scene, live, events| {
+        if !transferred {
+            let component = scene.grenade_component(live, id)?.ok_or("grenade birth component absent")?;
+            scene.prepare_grenade_resources(world, component.handle)?;
+            if !scene.grenade_resources_ready(world, component.handle)? { return Ok(false); }
+            scene.grenade_transfer(world, live, events, id, held)?;
+            world.resource_mut::<RuntimeEntities>().actors.get_mut(&id).unwrap().grenade_birth.as_mut().unwrap().transferred = true;
+        }
+        if !targeted {
+            scene.grenade_set_targeted(live, id, flags & 4 != 0)?;
+            world.resource_mut::<RuntimeEntities>().actors.get_mut(&id).unwrap().grenade_birth.as_mut().unwrap().targeted = true;
+        }
+        scene.finish_runtime_birth(world, live, events, id)?;
+        Ok(true)
+    })?;
+    if !ready { return Ok(false); }
+    world.resource_mut::<RuntimeEntities>().actors.get_mut(&id).ok_or("grenade birth journal absent")?.grenade_birth = None;
+    Ok(true)
 }
 fn spawn_inner(
     world: &mut World,
     definition: Arc<Definition>,
     options: SpawnOptions,
     projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
+    grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>,
 ) -> Result<EntityId, String> {
+    spawn_named_inner(world, definition, options, projectile, grenade, None, None)
+}
+pub(super) fn spawn_named(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
+    name: Arc<str>) -> Result<EntityId, String> {
+    spawn_named_inner(world, definition, options, None, None, Some(name), None)
+}
+pub(super) struct AIWorldBirth {
+    pub area: usize,
+    pub section: Option<(EntityId, [[f32; 3]; 2])>,
+}
+pub(super) fn spawn_ai_world(world: &mut World, definition: Arc<Definition>, name: Arc<str>,
+    birth: AIWorldBirth) -> Result<EntityId, String> {
+    if definition.class != "arkAIWorld" { return Err("AIWorld source definition has a different actual class".into()); }
+    spawn_named_inner(world, definition, SpawnOptions { frame: ReferenceFrame::default(), scale: None,
+        hidden_disabled: false }, None, None, Some(name), Some(birth))
+}
+fn spawn_named_inner(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
+    projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
+    grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>, authored_name: Option<Arc<str>>,
+    ai_world: Option<AIWorldBirth>) -> Result<EntityId, String> {
+    spawn_constructed(world, definition, options, projectile, grenade, authored_name, ai_world, None, &mut Construction::World)
+}
+enum Construction<'a> {
+    World,
+    Callback {
+        scene: &'a mut super::physics_scene::PhysicsScene,
+        live: &'a mut crate::gameplay::entity_lifetime::LiveEntities,
+        events: &'a mut crate::gameplay::entity_events::EntityEvents,
+        registry: &'a mut crate::gameplay::component_state::lifecycle::ComponentRegistry,
+    },
+}
+impl Construction<'_> {
+    fn visit<R>(&mut self, world: &mut World, callback: impl FnOnce(&mut World,
+        &mut super::physics_scene::PhysicsScene, &mut crate::gameplay::entity_lifetime::LiveEntities,
+        &mut crate::gameplay::entity_events::EntityEvents,
+        Option<&mut crate::gameplay::component_state::lifecycle::ComponentRegistry>) -> Result<R, String>) -> Result<R, String> {
+        match self {
+            Self::World => with_scene(world, |world, scene, live, events| callback(world, scene, live, events, None)),
+            Self::Callback { scene, live, events, registry } => callback(world, scene, live, events, Some(registry)),
+        }
+    }
+}
+///The same source factory may append child construction during Initialize.
+///Its caller supplies the actual borrowed registry; no second queue is made.
+pub(super) fn spawn_in_registry(world: &mut World, scene: &mut super::physics_scene::PhysicsScene,
+    live: &mut crate::gameplay::entity_lifetime::LiveEntities, events: &mut crate::gameplay::entity_events::EntityEvents,
+    registry: &mut crate::gameplay::component_state::lifecycle::ComponentRegistry,
+    definition: Arc<Definition>, options: SpawnOptions, name: Option<Arc<str>>, parent: EntityId) -> Result<EntityId, String> {
+    let expected = prepared_child(world, parent, &definition.entity)?;
+    if !Arc::ptr_eq(&expected, &definition) { return Err("startup child belongs to another prepared source generation".into()); }
+    spawn_constructed(world, definition, options, None, None, name, None, Some(parent),
+        &mut Construction::Callback { scene, live, events, registry })
+}
+pub(super) fn prepared_child(world: &World, parent: EntityId, source: &str) -> Result<Arc<Definition>, String> {
+    let definition = world.get_resource::<RuntimeEntities>().and_then(|owner| owner.actors.get(&parent))
+        .and_then(|actor| actor.definition.as_ref()).ok_or("startup child has no retained parent definition")?;
+    definition.startup_children.iter().find(|child| child.entity.eq_ignore_ascii_case(source)).cloned()
+        .ok_or_else(|| format!("{}: startup child {source} was not prepared by its source owner", definition.entity))
+}
+pub(super) fn set_ai_cue_category(world: &mut World, live: &crate::gameplay::entity_lifetime::LiveEntities,
+    id: EntityId, category: i32) -> Result<(), String> {
+    let (_, class) = live.get(id).ok_or("Cue category generation is stale")?;
+    let mut owner = world.get_resource_mut::<RuntimeEntities>().ok_or("Cue constructor owner absent")?;
+    let actor = owner.actors.get_mut(&id).ok_or("Cue constructor generation absent")?;
+    let definition = actor.definition.as_ref().ok_or("Cue source definition absent")?;
+    if definition.class != "arkAICue" || definition.class_index != class {
+        return Err("Cue category source and actual class differ".into());
+    }
+    actor.cue.as_mut().ok_or("Cue constructor payload absent")?.category = category;
+    Ok(())
+}
+pub(super) fn with_ai_cue<R>(world: &World, live: &crate::gameplay::entity_lifetime::LiveEntities,
+    id: EntityId, callback: impl FnOnce(&actor_class::Cue) -> Result<R, String>) -> Result<R, String> {
+    let (_, class) = live.get(id).ok_or("Cue generation is stale")?;
+    let actor = world.get_resource::<RuntimeEntities>().and_then(|owner| owner.actors.get(&id))
+        .ok_or("Cue constructor generation absent")?;
+    if actor.definition.as_ref().is_none_or(|definition| definition.class != "arkAICue" || definition.class_index != class) {
+        return Err("Cue source and actual class differ".into());
+    }
+    callback(actor.cue.as_ref().ok_or("Cue constructor payload absent")?)
+}
+///None means a placed/externally hosted source, whose existing model owner
+///must answer. Some(false) is the actual runtime declaration's null model.
+pub(super) fn runtime_model_declared(world: &World, live: &crate::gameplay::entity_lifetime::LiveEntities,
+    id: EntityId) -> Result<Option<bool>, String> {
+    let (_, class) = live.get(id).ok_or("runtime model query generation is stale")?;
+    let Some(definition) = world.get_resource::<RuntimeEntities>().and_then(|owner|owner.actors.get(&id))
+        .and_then(|actor|actor.definition.as_ref()) else { return Ok(None); };
+    if definition.class_index != class { return Err("runtime model source and actual class differ".into()); }
+    Ok(Some(definition.model.is_some()))
+}
+pub(super) fn with_ai_cue_mut<R>(world: &mut World, live: &crate::gameplay::entity_lifetime::LiveEntities,
+    id: EntityId, callback: impl FnOnce(&mut actor_class::Cue) -> Result<R, String>) -> Result<R, String> {
+    let (_, class) = live.get(id).ok_or("Cue generation is stale")?;
+    let mut owner = world.get_resource_mut::<RuntimeEntities>().ok_or("Cue constructor owner absent")?;
+    let actor = owner.actors.get_mut(&id).ok_or("Cue constructor generation absent")?;
+    if actor.definition.as_ref().is_none_or(|definition| definition.class != "arkAICue" || definition.class_index != class) {
+        return Err("Cue source and actual class differ".into());
+    }
+    callback(actor.cue.as_mut().ok_or("Cue constructor payload absent")?)
+}
+fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
+    projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
+    grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>, authored_name: Option<Arc<str>>,
+    ai_world: Option<AIWorldBirth>, startup_parent: Option<EntityId>, construction: &mut Construction<'_>) -> Result<EntityId, String> {
+    if (definition.class == "arkAIWorld") != ai_world.is_some() {
+        return Err("actual AIWorld construction requires its source world-list admission".into());
+    }
     let scale = entity_scale(&definition, options.scale);
     let prototype_key = scaled_key(&definition, Some(scale));
     if !ready_inner(world, &definition, Some(scale))? {
@@ -890,8 +1063,8 @@ fn spawn_inner(
         .get(&prototype_key)
         .cloned()
         .ok_or("runtime item source preparation is absent")?;
-    let id = with_scene(world, |_, scene, live, _| {
-        scene.allocate_runtime_actor(live, &definition, options)
+    let id = construction.visit(world, |_, scene, live, _, registry| {
+        scene.allocate_runtime_actor(live, &definition, options, authored_name, registry.is_some())
     })?;
     // Journal before any fallible backend/constructor callback. Failure retains
     // the actual identity, source leases and entered bodies until rollback ack.
@@ -910,16 +1083,38 @@ fn spawn_inner(
                 .then(|| actor_class::Dynamic::new(definition.hide_on_spawn)),
             breakable_class: (definition.class == "arkBreakable")
                 .then(|| actor_class::Breakable::new(definition.navmesh_static_cutting)),
+            movable: (definition.class == "arkGrenade").then(actor_class::Movable::new),
+            grenade_birth: grenade.map(|(_, _, _, held, target_flags)| GrenadeBirth { held, target_flags, transferred: false, targeted: false }),
+            cue: (definition.class == "arkAICue").then(actor_class::Cue::new),
+            startup_parent,
         },
     );
     let result: Result<(), String> = (|| {
+        if let Some(birth) = ai_world {
+            use crate::gameplay::ai_world::Worlds;
+            if birth.area == 0 {
+                if birth.section.is_some() || world.contains_resource::<Worlds>() {
+                    return Err("default AIWorld constructor list is already owned or has section bounds".into());
+                }
+                world.insert_resource(Worlds::new(id));
+            } else {
+                let (owner, bounds) = birth.section.ok_or("section AIWorld has no actual bounds owner")?;
+                let area = world.get_resource_mut::<Worlds>().ok_or("section AIWorld has no constructed default world")?
+                    .add_section(id, owner, bounds);
+                if area != birth.area { return Err("section AIWorld constructor order differs from source area index".into()); }
+            }
+            world.resource_mut::<crate::gameplay::entity_lifetime::LiveEntities>().set_ai_world_index(id,
+                u32::try_from(birth.area).map_err(|_| "AIWorld area index overflows")?)?;
+        }
         if let Some(mut clock) =
             world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
         {
             clock.register_entity_time(id, 0)?;
         }
         if let Some(model) = &model {
-            super::world_models::request(world, id, model.clone(), options.frame)?;
+            construction.visit(world, |world, _, live, _, _| {
+                super::world_models::request_with_live(world, live, id, model.clone(), options.frame)
+            })?;
             super::world_models::set_scale(world, id, scale)?;
             super::world_models::update(world, id, options.frame, false)?;
         }
@@ -928,7 +1123,7 @@ fn spawn_inner(
             .try_reserve_exact(definition.chunks.len())
             .map_err(|error| format!("runtime chunk instances: {error}"))?;
         for chunk in &definition.chunks {
-            let child = spawn_inner(
+            let child = spawn_constructed(
                 world,
                 chunk.definition.clone(),
                 SpawnOptions {
@@ -937,6 +1132,11 @@ fn spawn_inner(
                     ..options
                 },
                 None,
+                None,
+                None,
+                None,
+                startup_parent.map(|_| id),
+                construction,
             )?;
             world
                 .resource_mut::<RuntimeEntities>()
@@ -947,18 +1147,28 @@ fn spawn_inner(
                 .push(child);
             chunks.push((chunk.component, chunk.step, chunk.chunk, child));
         }
-        with_scene(world, |world, scene, live, events| {
-            scene.admit_runtime_actor(
-                world, live, events, id, definition.clone(), &resources, &items, &chunks, projectile,
-                false, false,
-            )
+        construction.visit(world, |world, scene, live, events, registry| {
+            if let Some(registry) = registry {
+                scene.admit_runtime_actor_with_registry(world, live, events, id, definition.clone(),
+                    &resources, &items, &chunks, projectile, grenade, false, false, registry, false)
+            } else {
+                scene.admit_runtime_actor(world, live, events, id, definition.clone(), &resources,
+                    &items, &chunks, projectile, grenade, false, false)
+            }
         })?;
         Ok(())
     })();
     if let Err(error) = result {
         let mut owner = world.resource_mut::<RuntimeEntities>();
         let mut pending = vec![id];
+        let mut visited = HashSet::new();
         while let Some(failed) = pending.pop() {
+            if !visited.insert(failed) { continue; }
+            //Constructor callbacks register child actors directly into the
+            //outer Init queue. Their typed manager owns the IDs even though
+            //their own spawn call returned before outer initialization failed.
+            pending.extend(owner.actors.iter().filter_map(|(&child,actor)|
+                (actor.startup_parent == Some(failed)).then_some(child)));
             if let Some(actor) = owner.actors.get_mut(&failed) {
                 actor.rollback = true;
                 pending.extend(actor.children.iter().copied());
@@ -968,7 +1178,7 @@ fn spawn_inner(
             definition.entity, definition.class));
     }
     if model.is_some() {
-        let visible = with_scene(world, |_, scene, live, _| scene.runtime_actor_visible(live, id))?;
+        let visible = construction.visit(world, |_, scene, live, _, _| scene.runtime_actor_visible(live, id))?;
         super::world_models::update(world, id, options.frame, visible)?;
     }
     let mut owner = world.resource_mut::<RuntimeEntities>();
@@ -1070,6 +1280,7 @@ pub(super) fn append_projectile_stick(
                 hidden_disabled: true,
             },
             None,
+            None,
         ) {
             Ok(child) => child,
             Err(error) => {
@@ -1122,6 +1333,7 @@ pub(super) fn append_projectile_stick(
             &items,
             &chunks,
             None,
+            None,
             true,
             model_changed,
         )
@@ -1165,15 +1377,8 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
     if !super::breakables::entity_retired(world, id)? {
         return Ok(false);
     }
-    let Some(mut owner) = world.remove_resource::<RuntimeEntities>() else {
-        return Err("runtime entity lifetime owner is absent".into());
-    };
-    if owner.active_retirement.is_some_and(|active| active != id) {
-        world.insert_resource(owner);
-        return Ok(false);
-    }
-    owner.active_retirement = Some(id);
-    let result = (|| {
+    let removing = {
+        let mut owner = world.get_resource_mut::<RuntimeEntities>().ok_or("runtime entity lifetime owner is absent")?;
         // Placed actors share the exact same component destructor; absence
         // from the dynamic allocation journal is not proof of retirement.
         let actor = owner.actors.entry(id).or_insert(Actor {
@@ -1187,8 +1392,14 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
             stick: None,
             dynamic: None,
             breakable_class: None,
+            movable: None,
+            grenade_birth: None,
+            cue: None,
+            startup_parent: None,
         });
-        if !actor.removing {
+        actor.removing
+    };
+    if !removing {
             super::projectiles::begin_retirement(world, id);
             let live = world
                 .remove_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
@@ -1197,26 +1408,44 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
             world.insert_resource(live);
             removed?;
             super::entity_graphs::retire(world, id)?;
-            actor.removing = true;
-        }
+            world.resource_mut::<RuntimeEntities>().actors.get_mut(&id).ok_or("runtime retirement actor vanished")?.removing = true;
+    }
         if !super::projectiles::retired(world, id)
             || !super::world_models::retired_entity(world, id)
         {
             return Ok(false);
         }
-        let rollback = actor.rollback;
-        let release = actor.release.get_or_insert_with(Default::default);
-        with_scene(world, |world, scene, live, events| {
-            scene.retire_runtime_actor(world, live, events, id, release, rollback)
-        })
-    })();
-    world.insert_resource(owner);
+        //The shared component registry owns one resumable entity destructor.
+        //Independent renderer withdrawals precede that lease: claiming it
+        //before GPU acknowledgement serializes world exit by one frame/actor.
+    let (rollback, mut release) = {
+        let mut owner = world.resource_mut::<RuntimeEntities>();
+        if owner.active_retirement.is_some_and(|active| active != id) {
+            return Ok(false);
+        }
+        let resumed = owner.active_retirement == Some(id);
+        owner.active_retirement = Some(id);
+        let actor = owner.actors.get_mut(&id).ok_or("runtime retirement actor vanished")?;
+        if resumed && actor.release.is_none() { return Err("runtime retirement cursor is already borrowed by its callback".into()); }
+        (actor.rollback, actor.release.take().unwrap_or_default())
+    };
+    //Only the active release cursor is borrowed. Actual parent/child class
+    //state remains in its canonical owner for Stop/Deinit callbacks.
+    let result = with_scene(world, |world, scene, live, events| {
+        scene.retire_runtime_actor(world, live, events, id, &mut release, rollback)
+    });
+    world.resource_mut::<RuntimeEntities>().actors.get_mut(&id)
+        .ok_or("runtime retirement callback removed its actual actor journal")?.release = Some(release);
     result
 }
 fn finish_retirement(world: &mut World, id: EntityId, mode: RetireMode) -> Result<bool, String> {
-    if !retire_components(world, id)? {
+    //The whole-world component drain may already have returned this identity
+    //while preserving its GameLocal source journal for the late owner phase.
+    let alive = world.resource::<crate::gameplay::entity_lifetime::LiveEntities>().get(id).is_some();
+    if alive && !retire_components(world, id)? {
         return Ok(false);
     }
+    if !alive && (!super::world_models::retired_entity(world,id) || !super::projectiles::retired(world,id)) { return Ok(false); }
     if let Some(mut clock) =
         world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
     {
@@ -1265,7 +1494,18 @@ pub(super) fn begin_retirement(world: &mut World) -> Result<bool, String> {
     };
     owner.cancelled.store(true, Ordering::Release);
     owner.queue.clear();
-    let mut ids = owner.actors.keys().copied().collect::<Vec<_>>();
+    drop(owner);
+    //A failed AIWorld constructor can own the current Init cursor even though
+    //its actual actor/children intentionally retire after the global drain.
+    //Withdraw that failed cursor before any independent component teardown.
+    advance(world)?;
+    let owner = world.resource::<RuntimeEntities>();
+    if owner.actors.values().any(|actor|actor.rollback && !actor.rollback_queued) {
+        return Ok(false);
+    }
+    let mut ids = owner.actors.iter().filter_map(|(&id, actor)|
+        (actor.startup_parent.is_none() && actor.definition.as_ref().is_none_or(|definition|definition.class != "arkAIWorld"))
+            .then_some(id)).collect::<Vec<_>>();
     drop(owner);
     if let Some(entered) = world
         .resource::<super::physics_scene::PhysicsScene>()
@@ -1282,9 +1522,24 @@ pub(super) fn begin_retirement(world: &mut World) -> Result<bool, String> {
     if !complete {
         return Ok(false);
     }
+    if world.resource::<RuntimeEntities>().pending.is_some() { return Ok(false); }
+    if !world.resource::<RuntimeEntities>().actors.is_empty() { return Ok(true); }
+    finish_preparation_retirement(world)
+}
+///After the shared whole-world component/attachment drain, release the actual
+///GameLocal manager identities and their constructor-owned descendants.
+pub(super) fn retire_ai_worlds(world: &mut World) -> Result<bool, String> {
+    let ids = world.get_resource::<RuntimeEntities>().map(|owner|owner.actors.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
+    let mut complete = true;
+    for id in ids { complete &= finish_retirement(world,id,RetireMode::World)?; }
+    if !complete { return Ok(false); }
+    finish_preparation_retirement(world)
+}
+fn finish_preparation_retirement(world: &mut World) -> Result<bool, String> {
+    if !world.contains_resource::<RuntimeEntities>() { return Ok(true); }
     placed::shutdown(world)?;
     advance(world)?;
-    let mut owner = world.resource_mut::<RuntimeEntities>();
+    let owner = world.resource::<RuntimeEntities>();
     if owner.pending.is_some() {
         return Ok(false);
     }

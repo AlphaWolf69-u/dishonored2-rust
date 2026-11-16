@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::gameplay::player::consumables::{PotionInventory, PotionKind};
 #[path = "inventory_shortcuts.rs"]
 mod shortcuts;
+#[path = "inventory_wheel.rs"]
+mod wheel;
 pub(crate) use shortcuts::{ShortcutSettings, ShortcutSlot, ShortcutSelection};
 
 impl PotionInventory for DiscoveredDocuments {
@@ -29,6 +31,10 @@ pub(crate) struct InventoryRecord {
     pub maximum: u32,
     /// Native record +28 is set only by a zero-to-positive addition.
     pub is_new: bool,
+    /// 63c630 initializes +34=false,+35=true; 6170b0 retains acquisition
+    /// history after quantity reaches zero. The wheel edits visibility only.
+    pub ever_owned: bool,
+    pub wheel_visible: bool,
 }
 
 /// Payloads for the equipment/gameplay owners. These preserve the native
@@ -239,7 +245,7 @@ impl DiscoveredDocuments {
         let path = key(&declaration.path);
         if self.records.contains_key(&path) { return; }
         self.record_order.push(path.clone());
-        self.records.insert(path, InventoryRecord { declaration, maximum, is_new: false });
+        self.records.insert(path, InventoryRecord { declaration, maximum, is_new: false, ever_owned: false, wheel_visible: true });
     }
 
     pub fn record(&self, path: &str) -> Option<&InventoryRecord> { self.records.get(&key(path)) }

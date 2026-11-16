@@ -10,12 +10,43 @@ use bevy::prelude::*;
 struct State {
     clock: Option<(u8, f32)>,
     flags: u32,
+    ///873340's instance wrapper bit, distinct from immutable model resources.
+    local_cast_shadows: Option<bool>,
+    ///87e0a0's resolved render-model+18b8 value.
+    depth_hack: Option<f32>,
+    cast_shadows: Option<bool>,
 }
 #[derive(Resource, Default)]
 pub(in crate::app) struct ModelShaderData {
     models: HashMap<ModelKey, State>,
 }
 impl ModelShaderData {
+    ///873350 replaces render resources/time while retaining depth/cast fields.
+    pub(in crate::app) fn replace_model(&mut self,key:ModelKey){
+        if let Some(state)=self.models.get_mut(&key){state.clock=None;state.flags=0;}
+    }
+    pub(in crate::app) fn local_cast_shadows(&self, key: ModelKey) -> Option<bool> {
+        self.models.get(&key).and_then(|state| state.local_cast_shadows)
+    }
+    pub(in crate::app) fn set_local_cast_shadows(&mut self, key: ModelKey, value: bool) {
+        self.models.entry(key).or_default().local_cast_shadows = Some(value);
+    }
+    pub(in crate::app) fn depth_hack(&self, key: ModelKey) -> Option<f32> {
+        self.models.get(&key).and_then(|state| state.depth_hack)
+    }
+    pub(in crate::app) fn cast_shadows(&self, key: ModelKey) -> Option<bool> {
+        self.models.get(&key).and_then(|state| state.cast_shadows)
+    }
+    pub(in crate::app) fn publish_cast_shadows(&mut self, key: ModelKey, value: bool) {
+        self.models.entry(key).or_default().cast_shadows = Some(value);
+    }
+    pub(in crate::app) fn publish_depth_hack(&mut self, key: ModelKey, value: f32) {
+        //Default ordinary models already own source constructor zero. Avoid
+        //allocating a map row for every unchanged zero-depth descendant.
+        if value != 0. || self.models.contains_key(&key) {
+            self.models.entry(key).or_default().depth_hack = Some(value);
+        }
+    }
     pub(in crate::app) fn remove(&mut self, key: ModelKey) {
         self.models.remove(&key);
     }
@@ -29,7 +60,7 @@ impl ModelShaderData {
             .unwrap_or((0, 0.))
     }
 }
-fn keys(world: &World, live: &LiveEntities, id: EntityId) -> Result<Vec<ModelKey>, String> {
+pub(super) fn keys(world: &World, live: &LiveEntities, id: EntityId) -> Result<Vec<ModelKey>, String> {
     let (name, _) = live
         .get(id)
         .ok_or("shader fields targeted a stale entity generation")?;
@@ -74,14 +105,23 @@ pub(in crate::app) fn set_shader_clock(
             .ok_or("model shader live owner absent")?,
         id,
     )?;
-    // The source skips actors without a render-model pointer.
-    if !keys.is_empty() {
-        let mut data = world.resource_mut::<ModelShaderData>();
-        for key in keys {
-            data.models.entry(key).or_default().clock = Some((group, offset));
-        }
-    }
+    write_shader_clock(world,keys,group,offset);
     Ok(())
+}
+///Same875cf0 model write when the caller already borrows the canonical live
+///table during an exclusive component callback. Never reacquire another table.
+pub(in crate::app) fn set_shader_clock_with_live(world:&mut World,live:&LiveEntities,
+    id:EntityId,group:u8,offset:f32)->Result<(),String> {
+    if group>=5||!offset.is_finite(){return Err("invalid source model shader clock".into());}
+    let keys=keys(world,live,id)?;
+    write_shader_clock(world,keys,group,offset);
+    Ok(())
+}
+fn write_shader_clock(world:&mut World,keys:Vec<ModelKey>,group:u8,offset:f32) {
+    //The source skips actors without a render-model pointer.
+    if keys.is_empty(){return;}
+    let mut data=world.resource_mut::<ModelShaderData>();
+    for key in keys{data.models.entry(key).or_default().clock=Some((group,offset));}
 }
 pub(in crate::app) fn set_in_water(
     world: &mut World,

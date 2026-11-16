@@ -34,6 +34,16 @@ pub(crate) enum Kind {
     Health(Arc<super::entities::damage::HealthBinding>),
     SoundVolume(Arc<crate::gameplay::sound::volume_control::Definition>),
     DamageZone(Arc<crate::gameplay::damage_zone::Definition>),
+    Grenade(Arc<super::grenades::Definition>),
+    AIDangerZone(Arc<super::ai_world::DangerDefinition>),
+    AIStartup(Arc<super::ai_world::startup_managers::Definition>),
+    Crew(Arc<super::ai_world::crew::Definition>),
+    CrewCollector(Arc<super::ai_world::crew_collectors::Definition>),
+    CrewModule(Arc<super::ai_world::crew_modules::Definition>),
+    AIStatistics,
+    TimersManager,
+    Observable(Arc<super::ai_cues::ObservableDefinition>),
+    AttentionSource(Arc<super::ai_cues::AttentionDefinition>),
     Audio(Arc<super::entities::audio::AudioBinding>),
     Pickable(Arc<crate::gameplay::pickable_component::PickableDefinition>),
     /// Payload-free reference-frame actor is the real factory32 component.
@@ -71,6 +81,8 @@ pub(crate) struct Definition {
     pub throwable: Option<Arc<super::throwable::Definition>>,
     pub breakable: Option<Arc<super::breakable::Definition>>,
     pub chunks: Vec<Chunk>,
+    ///Actual Cues/Crew child prototypes, constructed by their real Init.
+    pub startup_children: Vec<Arc<Definition>>,
     pub stick_components: Vec<Component>,
     pub stick_model: Option<Arc<super::equipment::attachment::Descriptor>>,
     pub stick_chunks: Vec<Chunk>,
@@ -305,7 +317,16 @@ impl Definition {
             drop(read);
             let mut source_paths: Vec<_> = texts.into_keys().collect();
             let mut chunks = Vec::new();
+            let mut startup_children: Vec<Arc<Definition>> = Vec::new();
             for (component, descriptor) in components.iter().enumerate() {
+                if let Kind::AIStartup(manager) = &descriptor.kind {
+                    for source in manager.child_sources() {
+                        let source = name(source);
+                        if !startup_children.iter().any(|child| child.entity == source) {
+                            startup_children.push(Self::acquire_inner(catalog, &source, cancelled, stack)?);
+                        }
+                    }
+                }
                 if let Kind::Breakable(definition) = &descriptor.kind {
                     for (step, chunk, entity) in definition.chunks() {
                         chunks.push(Chunk {
@@ -348,6 +369,7 @@ impl Definition {
                 throwable,
                 breakable,
                 chunks,
+                startup_children,
                 stick_components: stick.components,
                 stick_model: stick.model,
                 stick_chunks: stick.chunks,

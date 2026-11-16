@@ -106,6 +106,10 @@ impl PhysicsScene {
                 motion_properties_id: property,
                 position: [frame.position[0], frame.position[1], frame.position[2], 0.0],
                 orientation: crate::physworld::rotation_quaternion(basis),
+                //639970's spawn configuration precedes808ea0. Use the same
+                //published entity velocity for the real initial MotionCinfo.
+                linear_velocity: [entity.frame.velocities[0][0], entity.frame.velocities[0][1], entity.frame.velocities[0][2], 0.],
+                angular_velocity: [entity.frame.velocities[1][0], entity.frame.velocities[1][1], entity.frame.velocities[1][2], 0.],
                 ..Default::default()
             };
             let component = rigid_pool_mut!(self, handle.class_id)?

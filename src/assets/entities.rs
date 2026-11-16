@@ -2691,7 +2691,7 @@ fn placed_models_using(
     blueprints: bool,
 ) -> Vec<PlacedModel> {
     document.definitions.iter().filter(|definition| definition.kind == "entity" && !entity_hidden(definition))
-        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints))
+        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints, false))
         .collect()
 }
 
@@ -2723,14 +2723,14 @@ pub(crate) fn model_descriptor(
         || (explicit.is_none() && inherited.as_deref().is_some_and(|path| path.is_empty() || path.eq_ignore_ascii_case("NULL"))) {
         return Ok(None);
     }
-    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true);
+    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true, true);
     if descriptor.is_none() && (explicit.is_some() || inherited.is_some()) {
         return Err(format!("{}: authored RenderModel descriptor is unsupported or incomplete: model={explicit:?}, inherited={inherited:?}", definition.id));
     }
     Ok(descriptor)
 }
 
-fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool) -> Option<PlacedModel> {
+fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool, map_models: bool) -> Option<PlacedModel> {
     if definition.kind != "entity" { return None; }
     let edit = scope(field(&definition.fields, "edit")).unwrap_or(&[]);
     let render_info = scope(field(edit, "renderModelInfo"));
@@ -2757,6 +2757,11 @@ fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blu
             "generated/basemodel/{}.bmd6model",
             model_path.trim_end_matches(".md6")
         )
+    } else if map_models && model_path.starts_with("maps/")
+        && !model_path.rsplit('/').next()?.contains('.') {
+        //Map-local volume models use their indexed BML name directly;
+        //ordinary world draws already belong to the BWM projection.
+        format!("{model_path}.bmodel")
     } else {
         return None;
     };

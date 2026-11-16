@@ -36,6 +36,9 @@ pub(super) struct RenderState {
 }
 struct Entry {
     descriptor: Arc<Descriptor>,
+    ///Actual render-model+18bc, independent of the shared declaration bit.
+    flags_18bc: u8,
+    local_cast_shadows: bool,
     frame: ReferenceFrame,
     scale: [f32; 3],
     visible: bool,
@@ -108,7 +111,7 @@ impl WorldModels {
         }
     }
     pub(super) fn shadow_bounds(&self) -> impl Iterator<Item = [[f32; 3]; 2]> + '_ {
-        self.entries.values().filter(|entry| entry.visible && entry.descriptor.cast_shadows).map(|entry|
+        self.entries.values().filter(|entry| entry.visible && entry.flags_18bc&8!=0).map(|entry|
             crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(), entry.frame.position, entry.frame.basis, entry.scale))
     }
     pub(super) fn collect_shadow_casters(&self, materials: &super::ShadowMaterials, shader_data:&super::model_motion::ModelShaderData,
@@ -116,7 +119,7 @@ impl WorldModels {
         output: &mut Vec<super::shadow_updates::RuntimeSurfaceCaster>) -> Result<(), String> {
         for (&id, entry) in &self.entries {
             // Actual hidden state, independent of the main camera's visibility.
-            if !entry.visible { continue; }
+            if !entry.visible || entry.flags_18bc&8==0 { continue; }
             let Some((bounds, mut surfaces)) = self.models.shadow_surfaces(id, materials)? else { continue };
             let clock=shader_data.clock(super::model_motion::ModelKey::Actor(id));
             for surface in &mut surfaces{surface.clock=Some(clock);}
@@ -124,7 +127,7 @@ impl WorldModels {
                 [bounds[0][0], bounds[0][1], bounds[0][2], 0.],
                 [bounds[1][0], bounds[1][1], bounds[1][2], 0.]);
             let info = crate::render_model::prepare_model_caster_info(bounds, flags,
-                crate::render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC, 0,
+                entry.flags_18bc, 0,
                 surfaces.iter().any(|surface| surface.skin.is_some()),
                 surfaces.iter().map(|_| (1, 1)));
             let Some(sphere) = info.sphere else { continue };
@@ -284,6 +287,30 @@ pub(super) fn request(
     {
         return Err("world model request has no live managed generation".into());
     }
+    request_validated(world, id, descriptor, frame)
+}
+
+/// The normal entity constructor can already hold the canonical live owner.
+/// Validate that generation directly instead of moving it back into World.
+pub(super) fn request_with_live(
+    world: &mut World,
+    live: &LiveEntities,
+    id: EntityId,
+    descriptor: Arc<Descriptor>,
+    frame: ReferenceFrame,
+) -> Result<(), String> {
+    if live.get(id).is_none() {
+        return Err("world model request has no live managed generation".into());
+    }
+    request_validated(world, id, descriptor, frame)
+}
+
+fn request_validated(
+    world: &mut World,
+    id: EntityId,
+    descriptor: Arc<Descriptor>,
+    frame: ReferenceFrame,
+) -> Result<(), String> {
     prewarm(world, descriptor.clone())?;
     let mut owner = world.resource_mut::<WorldModels>();
     if let Some(entry) = owner.entries.get(&id) {
@@ -293,10 +320,14 @@ pub(super) fn request(
         return Err("world generation owns another model descriptor".into());
     }
     let scale = descriptor.placement.scale;
+    let local_cast_shadows=descriptor.cast_shadows;
+    let flags_18bc=(crate::render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC&!8)|(u8::from(descriptor.cast_shadows)<<3);
     owner.entries.insert(
         id,
         Entry {
             descriptor,
+            flags_18bc,
+            local_cast_shadows,
             frame,
             scale,
             visible: true,
@@ -323,13 +354,19 @@ pub(super) fn replace(world:&mut World,id:EntityId,descriptor:Arc<Descriptor>,fr
             owner.models.set_world_frame(id,frame)?;
             return Ok(true)
         }
-        let visible=entry.visible;let scale=entry.scale;
+        let visible=entry.visible;let scale=entry.scale;let casts=entry.flags_18bc&8!=0;
         let template=owner.prototypes.get(&key(&descriptor)).and_then(|prototype|prototype.model.clone()).ok_or("ready replacement template absent")?;
         let mut prepared=template.instantiate(&mut commands)?;
         prepared.assign_probe_slots(None,world,&mut commands)?;
         let old=owner.models.remove(id,&mut commands).ok_or("replacement old draw generation absent")?;
         owner.retiring_resources.push(old);
         owner.models.publish_world(id,prepared,frame,visible)?;
+        owner.models.set_shadow_casting(id,casts)?;
+        for entity in owner.models.shadow_entities(id){commands.queue(move|world:&mut World|{
+            if let Ok(mut entity)=world.get_entity_mut(entity){
+                if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+            }
+        });}
         owner.models.set_world_scale(id,scale)?;
         let entry=owner.entries.get_mut(&id).unwrap();
         entry.descriptor=descriptor;entry.frame=frame;entry.area=None;
@@ -339,7 +376,7 @@ pub(super) fn replace(world:&mut World,id:EntityId,descriptor:Arc<Descriptor>,fr
         if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){
             contexts.remove(super::model_motion::ModelKey::Actor(id));contexts.dirty(super::model_motion::ModelKey::Actor(id));
         }
-        if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){data.remove(super::model_motion::ModelKey::Actor(id));}
+        if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){data.replace_model(super::model_motion::ModelKey::Actor(id));}
         Ok(true)
     })();
     if result.is_ok(){commands.publish(world);}
@@ -383,6 +420,35 @@ pub(super) fn set_visible(world: &mut World, id: EntityId, visible: bool) -> Res
     let Some(frame) = self::frame(world, id) else { return Ok(false) };
     update(world, id, frame, visible)?;
     Ok(true)
+}
+///873340's wrapper and87e0a0's actual model flags remain per generation;
+///the immutable descriptor supplies only the constructor's local default.
+pub(super) fn shadow_state(world:&World,id:EntityId)->Option<(bool,u8)>{
+    let entry=world.get_resource::<WorldModels>()?.entries.get(&id)?;
+    Some((entry.local_cast_shadows,entry.flags_18bc))
+}
+pub(super) fn set_local_shadow_casting(world:&mut World,id:EntityId,value:bool)->bool{
+    let Some(mut owner)=world.get_resource_mut::<WorldModels>()else{return false};
+    let Some(entry)=owner.entries.get_mut(&id)else{return false};
+    entry.local_cast_shadows=value;true
+}
+pub(super) fn publish_shadow_state(world:&mut World,id:EntityId,resolved:crate::render_model::InheritedModelDepthState)->Result<Option<bool>,String>{
+    let Some(mut owner)=world.get_resource_mut::<WorldModels>()else{return Ok(None)};
+    let Some(entry)=owner.entries.get_mut(&id)else{return Ok(None)};
+    let before=entry.flags_18bc;
+    let mut depth=0.;
+    crate::render_model::publish_model_depth_state(&mut entry.flags_18bc,&mut depth,resolved);
+    let casts=entry.flags_18bc&8!=0;
+    let changed=(before^entry.flags_18bc)&8!=0;
+    let entities=if owner.models.has(id){
+        owner.models.set_shadow_casting(id,casts)?;
+        if changed{owner.models.shadow_entities(id)}else{Vec::new()}
+    }else{Vec::new()};
+    drop(owner);
+    for entity in entities{if let Ok(mut entity)=world.get_entity_mut(entity){
+        if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+    }}
+    Ok(Some(changed))
 }
 pub(super) fn set_scale(world: &mut World, id: EntityId, scale: [f32; 3]) -> Result<(), String> {
     if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.dirty(super::projected_decals::ModelKey::Actor(id));}
@@ -588,6 +654,13 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
             let mut prepared = template.instantiate(&mut commands)?;
             prepared.assign_probe_slots(None, world, &mut commands)?;
             models.publish_world(id, prepared, entry.frame, entry.visible)?;
+            let casts=entry.flags_18bc&8!=0;
+            models.set_shadow_casting(id,casts)?;
+            for entity in models.shadow_entities(id){commands.queue(move|world:&mut World|{
+                if let Ok(mut entity)=world.get_entity_mut(entity){
+                    if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+                }
+            });}
             models.set_world_scale(id, entry.scale)?;
         }
         Ok(())

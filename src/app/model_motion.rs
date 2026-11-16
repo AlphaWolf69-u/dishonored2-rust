@@ -10,7 +10,7 @@ use crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches;
 
 #[path = "model_shader_data.rs"]
 mod shader_data;
-pub(super) use shader_data::{ModelShaderData, publish_shader_clocks, set_shader_clock, set_in_water};
+pub(super) use shader_data::{ModelShaderData, publish_shader_clocks, set_shader_clock, set_shader_clock_with_live, set_in_water};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ModelKey { Placed(usize), Actor(crate::gameplay::entity_lifetime::EntityId) }
 
@@ -46,6 +46,127 @@ pub(super) fn set_entity_visible(world: &mut World,
     }
     // Source masks, shadow bounds and Tome/color publication all consume the
     // existing placed-hidden set; Show restores the next real query result.
+    Ok(())
+}
+
+///87b6b0→873340→87e040/87e0a0. The wrapper's local cast bit is
+///instance state, not a change to shared mesh/material declarations. Pending
+///world models retain the same request until their real upload is admitted.
+pub(super) fn set_entity_shadow_casting(
+    world:&mut World, live:&crate::gameplay::entity_lifetime::LiveEntities,
+    root:crate::gameplay::entity_lifetime::EntityId, value:bool,
+)->Result<(),String>{
+    let keys=shader_data::keys(world,live,root)?.into_iter().filter(|&key|shadow_depth_input(world,key).is_some()).collect::<Vec<_>>();
+    if keys.is_empty(){return Ok(())} //No actual render-owner wrapper.
+    let first=shadow_depth_input(world,keys[0]).ok_or("shadow property lost its actual model owner")?;
+    let local=world.get_resource::<ModelShaderData>().and_then(|data|data.local_cast_shadows(keys[0])).unwrap_or(first.0);
+    if local==value{return Ok(())} //87b6b0 refreshes only on local-bit change.
+    for key in keys{
+        if let ModelKey::Actor(id)=key{
+            if super::world_models::set_local_shadow_casting(world,id,value){continue}
+        }
+        world.resource_mut::<ModelShaderData>().set_local_cast_shadows(key,value);
+    }
+    let parent=live.parent(root)?;
+    let parent_model=parent.map(|parent|->Result<_,String>{
+        let keys=shader_data::keys(world,live,parent)?;
+        let model=keys.first().and_then(|&key|shadow_depth_input(world,key)).map(|(_,flags,depth,_)|(flags,depth));
+        Ok((0,model))
+    }).transpose()?;
+    let inherited=render_model::parent_model_depth_state(parent_model);
+    let mut stack=vec![(root,inherited)];
+    let mut visited=std::collections::HashSet::new();
+    while let Some((id,inherited))=stack.pop(){
+        if !visited.insert(id){return Err("cyclic live model-depth hierarchy".into())}
+        let keys=shader_data::keys(world,live,id)?.into_iter().filter(|&key|shadow_depth_input(world,key).is_some()).collect::<Vec<_>>();
+        let input=keys.first().and_then(|&key|shadow_depth_input(world,key));
+        let local=keys.first().and_then(|&key|world.get_resource::<ModelShaderData>().and_then(|data|data.local_cast_shadows(key)))
+            .unwrap_or_else(||input.map_or(true,|input|input.0));
+        let local_depth=input.map_or(0.,|input|input.3);
+        let resolved=render_model::resolve_inherited_model_depth_state(inherited,local_depth,0,u8::from(local));
+        for key in keys{publish_shadow_depth(world,key,resolved)?;}
+        //Source ordered recursion propagates through model-less children too.
+        for &child in live.children(id)?.iter().rev(){stack.push((child,resolved));}
+    }
+    Ok(())
+}
+
+///(constructor local bit, actual flags18bc, resolved depth, local depth).
+fn shadow_depth_input(world:&World,key:ModelKey)->Option<(bool,u8,f32,f32)>{
+    let (local,mut flags,mut depth,local_depth)=match key{
+        ModelKey::Placed(placement)=>{
+            let source=world.get_resource::<ModelShadowSources>()?.0.iter().find(|source|source.placement==placement)?;
+            //874c50's local depth starts at zero; these placed source models
+            //are constructed with INITIAL_MODEL_CONTEXT_FLAGS_18BC.
+            (true,source.flags_18bc,0.,0.)
+        }
+        ModelKey::Actor(id)=>{
+            if let Some((local,flags))=super::world_models::shadow_state(world,id){(local,flags,0.,0.)}
+            else{
+                let arms=world.get_resource::<super::player_arms::PlayerArms>()?;
+                let(flags,depth)=arms.managed_model_depth_state(id)?;
+                (false,flags,depth,arms.managed_model_local_depth_hack(id))
+            }
+        }
+    };
+    if let Some(data)=world.get_resource::<ModelShaderData>(){
+        if let Some(casts)=data.cast_shadows(key){flags=(flags&!8)|(u8::from(casts)<<3);}
+        if let Some(value)=data.depth_hack(key){depth=value;}
+    }
+    Some((local,flags,depth,local_depth))
+}
+
+fn publish_shadow_depth(world:&mut World,key:ModelKey,resolved:render_model::InheritedModelDepthState)->Result<(),String>{
+    let Some((_,before,mut depth,_))=shadow_depth_input(world,key)else{return Ok(())};
+    let previous_depth=depth;
+    let mut flags=before;
+    render_model::publish_model_depth_state(&mut flags,&mut depth,resolved);
+    let casts=flags&8!=0;
+    let changed=(before^flags)&8!=0;
+    let dynamic=match key{
+        ModelKey::Placed(placement)=>{
+            if let Some(mut sources)=world.get_resource_mut::<ModelShadowSources>(){
+                for source in sources.0.iter_mut().filter(|source|source.placement==placement){
+                    render_model::publish_model_depth_state(&mut source.flags_18bc,&mut depth,resolved);
+                }
+            }
+            if changed{
+                let entities=world.get_resource::<SceneRenderQueue>().map(|queue|queue.instances.iter().filter_map(|instance|{
+                    let matches=instance.source.is_some_and(|source|match source.surface{
+                        super::RenderModelSurface::Bmodel{placement:actual,..}|super::RenderModelSurface::Bmd6{placement:actual,..}=>actual==placement,
+                        _=>false,
+                    });
+                    matches.then_some(instance.entity).flatten()
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                for entity in entities{if let Ok(mut entity)=world.get_entity_mut(entity){
+                    if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+                }}
+            }
+            render_model::model_is_dynamic_caster(flags)
+        }
+        ModelKey::Actor(id)=>{
+            if super::world_models::publish_shadow_state(world,id,resolved)?.is_none(){
+                let entities=world.get_resource::<super::player_arms::PlayerArms>().map(|arms|arms.managed_model_shadow_entities(id)).unwrap_or_default();
+                if let Some(mut arms)=world.get_resource_mut::<super::player_arms::PlayerArms>(){
+                    if arms.attachments.has(id){arms.attachments.set_shadow_casting(id,casts)?;}
+                }
+                if changed{for entity in entities{if let Ok(mut entity)=world.get_entity_mut(entity){
+                    if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+                }}}
+            }
+            //WorldModels already gathers runtime instances in its dynamic
+            //bucket, including rigid actors; preserve that host contract.
+            true
+        }
+    };
+    if changed||depth!=previous_depth{
+        let mut data=world.resource_mut::<ModelShaderData>();
+        data.publish_cast_shadows(key,casts);
+        data.publish_depth_hack(key,depth);
+    }
+    if let Some(mut controls)=world.get_resource_mut::<super::local_shadow_updates::LocalShadowViewControls>(){
+        controls.0.actor_caster_changed(changed,dynamic);
+    }
     Ok(())
 }
 

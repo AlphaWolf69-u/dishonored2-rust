@@ -251,6 +251,27 @@ pub fn recording(catalog: &Catalog, card: &str, corvo: bool) -> Result<Recording
     })
 }
 
+///The same speechBarks resource generation referenced by an actual Bark
+///outcome and CoordinationBB record. No media is decoded by this acquisition.
+pub fn acquire_barks(catalog:&Catalog,path:&str)->Result<Arc<Definition>,String> {
+    let language=crate::assets::lang::read_audio_language(catalog.base())?;
+    acquire(catalog,"speechbarks",path,language,0)
+}
+pub fn acquire_voice(catalog:&Catalog,path:&str)->Result<Arc<Definition>,String>{
+    let language=crate::assets::lang::read_audio_language(catalog.base())?;
+    acquire(catalog,"speechvoice",path,language,0)
+}
+///75c... Speech owns both declarations through the actual Wwise End receipt.
+///The Device prepares its voice header once; selecting a line does no I/O.
+pub fn selected_line_with_voice(set:Arc<Definition>,line:u32,voice:Arc<Definition>,corvo:bool)->Result<Recording,String>{
+    let Kind::Barks {hash,name,lines,..}=&set.kind else {return Err("Bark line resource has a different actual speech class".into())};
+    let &(_,_,has_corvo)=lines.iter().find(|entry|entry.0==line).ok_or_else(||format!("speech line {line} absent in {name}"))?;
+    let Kind::Voice(voice_name)=&voice.kind else {return Err("Bark component voice resource class differs".into())};
+    let hash=hash.get(2..9).ok_or("speech hash must contain its seven-character event prefix")?;
+    let event=crate::assets::wwise::event_id(&format!("{hash}_{voice_name}_{name}_{line}{}",if corvo&&has_corvo {"_c"} else {""}));
+    Ok(Recording {events:vec![event],_definitions:vec![set,voice]})
+}
+
 pub(crate) fn register_preload(
     catalog: &Catalog,
     kind: &str,

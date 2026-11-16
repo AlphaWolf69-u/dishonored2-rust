@@ -24,6 +24,7 @@ pub(super) struct Prepared {
     mantle: MantleDecl,
     helpers: [Option<String>;3],
     screen: Option<String>,
+    damage: Option<Arc<crate::assets::damage::Declaration>>,
 }
 #[derive(Clone)]
 pub(super) struct PlayerSettings {
@@ -46,7 +47,14 @@ impl Prepared {
         let mask = crate::gameplay::player::decls::layer_mask(power, "m_collisionMask", 0x20b)?;
         let path = |key| crate::gameplay::options::decl::atom(power,key).filter(|path| !path.is_empty() && !path.eq_ignore_ascii_case("NULL")).map(str::to_owned);
         Ok(Self { settings: BlinkSettings::read(power, mask)?, motion: player.motion.clone(), mantle: player.mantle,
-            helpers: [path("m_blinkTopTargetFx"),path("m_blinkBottomTargetFx"),path("m_blinkMantleFx")], screen: path("m_blinkScreenFx") })
+            helpers: [path("m_blinkTopTargetFx"),path("m_blinkBottomTargetFx"),path("m_blinkMantleFx")], screen: path("m_blinkScreenFx"), damage: None })
+    }
+    /// Acquire with the selected equipment's existing dependency worker. The
+    /// declaration follows the same canonical registry/selection lease.
+    pub fn acquire_damage(&mut self, catalog: &crate::archive::Catalog) -> Result<(), String> {
+        self.damage = self.motion.breakable_damage.as_deref()
+            .map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?;
+        Ok(())
     }
     /// Called by the selected equipment acquisition worker. Sensor2's
     /// 1403a52a0 ctor derives the ordinary MantleDecl and sets sensorID2.
@@ -70,13 +78,14 @@ pub(super) struct Runtime {
     pending: bool,
     was_active: bool,
     time: Option<TimeLease>,
+    damage: Option<Arc<crate::assets::damage::Declaration>>,
 }
 impl Runtime {
     pub fn new(prepared: Prepared, physics: &PlayerPhysics) -> Self {
         Self { blink: Blink::new(prepared.settings), motion: prepared.motion,
             mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new(), contacts: Vec::new(),
             helpers: prepared.helpers, helper_keys: [Arc::from("blink:top"),Arc::from("blink:bottom"),Arc::from("blink:mantle")],
-            helper_started:[false;3], screen:prepared.screen,screen_started:false,screen_key:"blink:screen".into(),pending:false,was_active:false,time:None }
+            helper_started:[false;3], screen:prepared.screen,screen_started:false,screen_key:"blink:screen".into(),pending:false,was_active:false,time:None,damage:prepared.damage }
     }
     /// The actual owned-component admission generation identifies its FX
     /// producer. Set once before publication; equipment reselection reuses it.
@@ -92,14 +101,16 @@ impl Runtime {
     /// The returned target is consumed by the established FX owner; it does
     /// not allocate a target actor or mutate player position.
     pub fn aim(&mut self, player: &mut Player, view: &View, queries: &dyn PlayerWorld,
-        _collision: &CollisionWorld, _live: &LiveEntities, _interactions: Option<&Interactions>, _scene: Option<&PhysicsScene>) -> bool {
+        _collision: &CollisionWorld, live: &LiveEntities, _interactions: Option<&Interactions>, scene: Option<&PhysicsScene>) -> Result<bool, String> {
         if self.mantle.is_none() { self.mantle = player.take_blink_mantle(); }
-        let Some(mantle) = self.mantle.as_mut() else { return false };
+        let Some(mantle) = self.mantle.as_mut() else { return Ok(false) };
         let shapes = shape_info(&player.physics);
         let input = input(player, view, &shapes);
-        let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits };
+        let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits,
+            live, scene, error: std::cell::RefCell::new(None) };
         self.blink.aim(&mut world, &input);
-        true
+        if let Some(error) = world.error.into_inner() { return Err(error); }
+        Ok(true)
     }
     /// Execute the actual release callback. State12 owns motion and all
     /// proxy restoration; the central dispatcher charges mana only when
@@ -121,11 +132,10 @@ impl Runtime {
     pub fn has_activity(&self) -> bool { self.pending || self.was_active || self.time.is_some() }
     pub fn has_motion(&self) -> bool { self.pending || self.was_active }
     pub fn breakable_damage_path(&self) -> Option<&str> { self.motion.breakable_damage.as_deref() }
-    /// The real state owns its previous proxy contacts. Body0 is the
-    /// canonical GameCollision level-static body; placed bodies resolve their
-    /// actual admitted rigid generation, so dynamic bodies retain their flags.
+    /// The real state owns its previous proxy contacts. Preserve the body
+    /// flags captured by that query; body IDs are not navigation owner indexes.
     pub fn service(&mut self, player: &mut Player, clock: &mut ClockRuntime, effects: &mut EffectRequests,
-        collision: &CollisionWorld, scene: Option<&PhysicsScene>, live: &LiveEntities) -> Result<bool,String> {
+        _collision: &CollisionWorld, _scene: Option<&PhysicsScene>, _live: &LiveEntities) -> Result<bool,String> {
         let active = player.machine.is_active(StateId::BLINKING);
         if active {
             self.pending=false; self.was_active=true;
@@ -136,17 +146,8 @@ impl Runtime {
             }
             self.stop_helpers(effects);
             self.contacts.clear();
-            let has_placed_contacts = player.physics.proxy.contact_hits().any(|contact| contact.body != 0);
-            let shared = if has_placed_contacts { scene.map(PhysicsScene::point_queries).transpose()? } else { None };
-            let storage = shared.as_ref().map(|world| world.read().map_err(|_| "Blink contact world is poisoned".to_owned())).transpose()?;
             for contact in player.physics.proxy.contact_hits() {
-                let flags = if contact.body==0 {1} else {
-                    let owner=collision.owner_name(contact.body-1).ok_or("Blink contact has no collision owner")?;
-                    let scene=scene.ok_or("Blink contact has no actual physics component owner")?;
-                    let body=scene.blink_collision_body(live,owner)?.ok_or_else(||format!("Blink contact {owner} has no admitted collision body"))?;
-                    storage.as_ref().and_then(|world|world.storage.bodies.get(body)).ok_or("Blink contact body generation is stale")?.flags as u8
-                };
-                self.contacts.push(BlinkContact {body_flags:flags,normal:contact.normal});
+                self.contacts.push(BlinkContact {body_flags:contact.body_flags,normal:contact.normal});
             }
             player.set_blink_contacts(&self.contacts);
         }
@@ -198,6 +199,28 @@ impl Runtime {
             if projected.length_squared()<reach*reach*reach*reach{visit(hit.entity,hit.hit_position,path);}
         }
     }
+    ///8584c0 runs before the state's motion step. It constructs damage from
+    ///the authored declaration, sets780ae0's INSTANTKILL bit and dispatches
+    ///only still-started Breakables in the source anticipation bound. The
+    ///source leaves attacker, inflictor and hit-location fields at defaults.
+    pub fn damage_breakables(&self, player: &Player, dt: f32, scene: &mut PhysicsScene,
+        live: &mut LiveEntities, events: &mut crate::gameplay::entity_events::EntityEvents) -> Result<(), String> {
+        if !player.machine.is_active(StateId::BLINKING) { return Ok(()); }
+        let Some(declaration) = self.damage.as_ref() else { return Ok(()); };
+        let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
+        parameters.damage_type.0 |= crate::gameplay::damage::DamageType::INSTANT_KILL.0;
+        let mut result = Ok(());
+        self.visit_breakable_hits(player, dt, |entity, _, _| {
+            if result.is_err() || live.get(entity).is_none() { return; }
+            result = (|| {
+                if scene.breakable_component(live, entity)?.is_some() {
+                    scene.damage_entity(live, events, entity, &parameters)?;
+                }
+                Ok(())
+            })();
+        });
+        result
+    }
 }
 
 fn shape_info(physics: &PlayerPhysics) -> [ShapeInfo; 20] {
@@ -222,6 +245,9 @@ struct World<'a> {
     physics: &'a PlayerPhysics,
     mantle: &'a mut MantleSensor,
     hits: &'a mut Vec<WorldHit>,
+    live: &'a LiveEntities,
+    scene: Option<&'a PhysicsScene>,
+    error: std::cell::RefCell<Option<String>>,
 }
 impl BlinkWorld for World<'_> {
     fn sweep(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
@@ -236,12 +262,25 @@ impl BlinkWorld for World<'_> {
             Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
         out.extend(self.hits.iter().map(hit));
     }
-    fn blink_breakable(&self, _hit: &Hit) -> Option<EntityId> {
-        // 14061e1a0 requires material bit0x04 AND an actual started
-        // arkCpntBreakable from 140877720. PhysicsScene has no Breakable
-        // pool/lifecycle yet. Authored metadata and a Health receiver do
-        // not admit this component, so its geometry remains blocking.
-        None
+    fn blink_breakable(&self, hit: &Hit) -> Option<EntityId> {
+        // 61e1a0: the actual hit material permits Blink, then the collider's
+        // userData resolves a started Breakable (877720 mode2). Neither a
+        // navigation owner number nor a Health receiver admits a Breakable.
+        let witness = self.hits.iter().find(|value| value.body == hit.body && value.key == hit.key)?;
+        if !self.queries.physics_material(witness)?.can_blink_through() { return None; }
+        let scene = self.scene?;
+        let result = (|| {
+            let target = crate::gameplay::collision_hit::ShapeHitInfo {
+                body_id: Some(witness.body), material_id: witness.material_id.unwrap_or(u16::MAX),
+                shape_key: witness.key, filter_info: 0, user_data: witness.user_data,
+            };
+            let Some(entity) = scene.collision_entity(self.live, &target)? else { return Ok(None); };
+            Ok(scene.breakable_component(self.live, entity)?.map(|_| entity))
+        })();
+        match result {
+            Ok(entity) => entity,
+            Err(error) => { self.error.borrow_mut().get_or_insert(error); None }
+        }
     }
     fn mantle(&mut self, origin: Vec3, axis: Mat3) -> Option<MantleTarget> {
         self.mantle.update_at(self.queries, self.physics, origin, axis);

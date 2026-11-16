@@ -111,11 +111,13 @@ impl PauseScreenFx {
     }
 }
 
-pub(super) fn update_pause_screen_fx(mut fx: ResMut<PauseScreenFx>, paused: Res<GamePaused>, clock: Res<ClockRuntime>) {
+pub(super) fn update_pause_screen_fx(mut fx: ResMut<PauseScreenFx>, paused: Res<GamePaused>, clock: Res<ClockRuntime>, wheel:Option<Res<super::power_wheel::State>>) {
     let fx = &mut *fx;
     let entered = paused.0 && !fx.was_paused;
     fx.was_paused = paused.0;
-    if !paused.0 {
+    //State8 uses this same authored pause.fx while m_pause remains false.
+    //Its explicit791240/791370 request owns activation/removal.
+    if !paused.0 && !wheel.as_ref().is_some_and(|wheel|wheel.screen_fx_active()) {
         fx.remove();
         fx.requested = None;
         return;

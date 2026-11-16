@@ -14,6 +14,7 @@ pub(in crate::app) struct ExitState {
     emitted: bool,
     render_owner: bool,
     phase: &'static str,
+    reported_phase: &'static str,
     window_close: bevy::ecs::message::MessageCursor<WindowCloseRequested>,
 }
 impl ExitState {
@@ -124,6 +125,7 @@ fn advance(world: &mut World, exit: &mut ExitState) -> Result<bool, String> {
     exit.phase = "component, FX and sound retirement";
     let mut state = world.remove_resource::<Acquisition>().ok_or("exit lost its acquisition lifetime owner")?;
     let cleared = state.lifetime.clear(world);
+    exit.phase = state.lifetime.retirement_phase();
     world.insert_resource(state);
     cleared
 }
@@ -138,7 +140,12 @@ fn drain(world: &mut World) {
         }
         if exit.request.is_none() { return; }
         if !exit.started { begin(world, &mut exit); }
-        match advance(world, &mut exit) {
+        let result = advance(world, &mut exit);
+        if exit.reported_phase != exit.phase {
+            crate::platform::client_diagnostics::record(&format!("Session exit waiting: {}", exit.phase));
+            exit.reported_phase = exit.phase;
+        }
+        match result {
             Ok(false) => {},
             Ok(true) => {
                 crate::platform::client_diagnostics::record("Session exit: level retirement completed");

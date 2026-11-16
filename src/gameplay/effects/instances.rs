@@ -69,6 +69,35 @@ impl IndexMut<usize> for FxGraphInstances {
     }
 }
 impl FxGraphInstances {
+    ///5134e0 locates the current bool in a named story declaration instance;
+    ///6cbf20 uses the engine's zero-initialized bool only for a null lookup.
+    ///Borrow the same variable owner that receives graph writes, not a second
+    ///snapshot of declaration defaults. Missing graph/variable remains None.
+    pub(crate) fn story_boolean(&self, root: u64, qualified: &str) -> Result<Option<bool>, String> {
+        let root = self.instance_index(root).ok_or("story worldspawn graph generation stale")?;
+        let (path, name) = qualified.rsplit_once('/').ok_or("story bool lacks declaration/name")?;
+        //Follow the same already-owned authored child order as7bc1d0. Do
+        //not scan unrelated actors' graph instances on every rule condition.
+        fn find(owner: &FxGraphInstances, index: usize, path: &str) -> Result<Option<usize>, String> {
+            if !owner.live[index] { return Ok(None); }
+            let runtime = owner.runtimes[index].as_ref().ok_or("story graph is executing")?;
+            if runtime.definition().owner.eq_ignore_ascii_case(path) { return Ok(Some(index)); }
+            for node in &runtime.definition().nodes {
+                if let Some(&child) = owner.children.get(&(index,node.id)) {
+                    if let Some(found) = find(owner,child,path)? { return Ok(Some(found)); }
+                }
+            }
+            Ok(None)
+        }
+        let Some(index) = find(self, root, path)? else { return Ok(None) };
+        let runtime = self.runtimes[index].as_ref().ok_or("story graph is executing")?;
+        let value = runtime.variables.read().map_err(|_| "story variable owner poisoned")?.get(name)?;
+        match value {
+            None => Ok(None),
+            Some(super::variables::GraphValue::Bool(value)) => Ok(Some(value)),
+            Some(_) => Err(format!("story variable {qualified} is not bool")),
+        }
+    }
     pub fn poll_gameflow(&mut self)->Vec<String>{
         let mut errors=Vec::new();
         let Some(mailbox)=self.gameflow.as_ref() else{return errors};

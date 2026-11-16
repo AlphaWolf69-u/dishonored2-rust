@@ -137,6 +137,9 @@ impl Animation {
 }
 pub(crate) struct Upgrade {
     pub declaration: String,
+    /// DeclEquipmentUpgrade+64/+70, used by6396f0's actual ammo override.
+    pub name: String,
+    pub description: String,
     /// Native upgrade record +10/+18: static-model entity and entitydef
     /// entity are separate optional children, not mutually exclusive.
     pub attachments: [Option<Arc<Descriptor>>; 2],
@@ -478,6 +481,8 @@ impl Sources {
         check_active(cancelled)?;
         let value = Arc::new(Upgrade {
             declaration: key.clone(),
+            name: entities::scene_motion::atom(&fields, "m_name").unwrap_or("").to_owned(),
+            description: entities::scene_motion::atom(&fields, "m_description").unwrap_or("").to_owned(),
             attachments: [attachment, entity],
             tag,
             animation,

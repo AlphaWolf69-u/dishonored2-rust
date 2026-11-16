@@ -206,6 +206,7 @@ fn local_side_models(
         .iter()
         .copied()
         .filter(|&(source, _)| source < sources.0.len())
+        .filter(|&(source, _)| sources.0[source].flags_18bc&8!=0)
         .filter(|&(source, _)| {
             let bounds = sources.0[source].bounds;
             !render_model::transformed_aabb_clip_cull(&clip, bounds[0], bounds[1]).culled

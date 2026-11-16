@@ -5,6 +5,9 @@
 //! kept alive for the in-game state, unlike the per-open journal movie.
 mod objectives;
 mod markers;
+mod equipment;
+pub(in crate::app) mod notifications;
+pub(super) use equipment::{Snapshot as Equipment, snapshot as equipment_snapshot};
 use crate::assets::archive::Catalog;
 use crate::flash::{Player, bitmap_resources::MovieBitmaps, render};
 use crate::gameplay::pause_state;
@@ -29,6 +32,7 @@ pub(super) struct HudMovie {
     oxygen_input: Option<Oxygen>,
     oxygen_displayed: Option<f32>,
     mana_low_level: Option<f32>,
+    equipment_input: Option<Equipment>,
     starting_powers: Option<Vec<String>>,
     inactivity_delay: Option<f64>,
     inactivity_elapsed: f64,
@@ -241,6 +245,7 @@ impl HudMovie {
             oxygen_input: None,
             oxygen_displayed: None,
             mana_low_level,
+            equipment_input: None,
             starting_powers,
             inactivity_delay,
             inactivity_elapsed: 0.0,
@@ -408,6 +413,7 @@ impl HudMovie {
         let settings_generation = crate::platform::console::shared().generation();
         if self.settings_generation != settings_generation {
             Self::settings(&mut self.player)?;
+            if let Some(input) = self.equipment_input { self.apply_equipment(input)?; }
             self.settings_generation = settings_generation;
             self.master_visible = None;
             self.interaction(self.current_interaction.clone())?;

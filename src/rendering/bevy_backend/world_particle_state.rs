@@ -502,6 +502,11 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
+        if self.source.is_none() || self.closed { return Err("story Kiscule manager is not initialized".into()); }
+        let Some(&root) = self.entity_graphs.get(&worldspawn) else { return Ok(None) };
+        self.graphs.story_boolean(root, qualified)
+    }
     pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> {
         self.gameplay.front()
     }

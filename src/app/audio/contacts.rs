@@ -198,7 +198,9 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
         let update = active.sound.update(active.age, active.origin, active.axis);
         if let Some(event) = update.event {
             output.write(SoundEvent(Request::PostAt { event, emitter: active.emitter, position: update.position,
-                front: None, parameter: Some(active.parameter) }));
+                // 230310 -> 22fe30 publishes the effect frame's first axis
+                // as well as its transformed sound position.
+                front: Some(active.axis.x_axis), parameter: Some(active.parameter) }));
         }
     }
 }

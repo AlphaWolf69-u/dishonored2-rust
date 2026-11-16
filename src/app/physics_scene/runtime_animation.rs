@@ -136,6 +136,9 @@ impl PhysicsScene {
         Ok(())
     }
     fn animation_handle(&self, id: EntityId) -> Result<Option<ComponentHandle>, String> {
+        self.animation_handle_with_flags(id,[0x28,0])
+    }
+    fn animation_handle_with_flags(&self, id:EntityId, flags:[u32;2])->Result<Option<ComponentHandle>,String> {
         let Some(&index) = self.shared_indices.get(&id) else {
             return Ok(None);
         };
@@ -144,7 +147,7 @@ impl PhysicsScene {
         }
         self.entities[index]
             .components
-            .find_component([self.classes[15]; 2], [0x28, 0], |handle| {
+            .find_component([self.classes[15]; 2], flags, |handle| {
                 let component = self
                     .animations
                     .get(handle.slot)
@@ -193,6 +196,14 @@ impl PhysicsScene {
             .map(|_| animation.matrices.as_slice()))
     }
     ///53eef0's actual input0 command producer; last posted input wins as in6e1fe0.
+    ///4911b0 requests mode1 (initialized), before all sibling Starts complete.
+    pub(in crate::app) fn post_initialized_runtime_animation(&mut self,id:EntityId,
+        command:AnimBasicCommand)->Result<bool,String> {
+        let Some(handle)=self.animation_handle_with_flags(id,[0x20,0])? else{return Ok(false);};
+        let animation=self.animations.get_mut(handle.slot).ok_or("AnimBase component absent")?;
+        if animation.node.is_none(){return Ok(false);}
+        animation.pending=Some(command);animation.dirty=true;Ok(true)
+    }
     pub(in crate::app) fn post_runtime_animation(
         &mut self,
         id: EntityId,

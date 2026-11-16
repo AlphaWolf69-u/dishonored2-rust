@@ -808,6 +808,10 @@ impl PhysicsScene {
             let initial = self.entities[child].frame.pose;
             let parent_frame = self.entities[parent].frame.pose;
             live.link_child(self.entities[parent].shared, self.entities[child].shared)?;
+            //878fd0 inherits the actual parent's2e0 through875fc0. Ordinary
+            //post-physics poses never substitute a position-based area query.
+            let area=live.ai_world_index(self.entities[parent].shared)?;
+            live.change_ai_world_index(self.entities[child].shared,area,events)?;
             self.actors.actors[pa].children.push(ca);
             let actor = &mut self.actors.actors[ca];
             actor.parent = Some(pa);

@@ -28,6 +28,7 @@ struct Entry {
     identity_retired: bool,
     graph_retired: bool,
     reference_retirement: Option<Box<super::physics_scene::lifetime::Retirement>>,
+    movable: Option<super::runtime_entities::actor_class::Movable>,
 }
 struct PendingRetirement {
     id: EntityId,
@@ -220,7 +221,9 @@ fn admit(
     if tag != main {
         return Err("equipment player spawn tag has no admitted spelling".into());
     }
-    let runtime_flags = if ammo { 0 } else { 8 };
+    //4e65a0's arkGrenade constructor precedes619380 equipment admission.
+    let constructor_flags = if class == "arkGrenade" { 0x20 } else { 0 };
+    let runtime_flags = constructor_flags | if ammo { 0 } else { 8 };
     let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
         .initialized(id)
@@ -242,7 +245,7 @@ fn admit(
         Entry {
             key,
             linked: false,
-            runtime_flags: if ammo { 0x10 } else { runtime_flags },
+            runtime_flags: if ammo { constructor_flags | 0x10 } else { runtime_flags },
             frame: Some(birth_frame),
             time_scale: 1.0,
             audio: None,
@@ -251,11 +254,12 @@ fn admit(
             identity_retired: false,
             graph_retired: false,
             reference_retirement: None,
+            movable: (class == "arkGrenade").then(super::runtime_entities::actor_class::Movable::new),
         },
     );
     let admitted = super::runtime_entities::with_scene(world, |_, scene, live, events| {
         scene.admit_equipment_reference(live, events, id, birth_frame, timespace)?;
-        scene.publish_equipment_runtime_flags(live, id, if ammo { 0x10 } else { runtime_flags })?;
+        scene.publish_equipment_runtime_flags(live, id, if ammo { constructor_flags | 0x10 } else { runtime_flags })?;
         scene.bind_equipment_reference(live, events, id, parent)
     });
     if let Err(error) = admitted {
@@ -280,6 +284,14 @@ pub(super) fn runtime_flags(world: &World, id: EntityId) -> Option<u8> {
         .entries
         .get(&id)
         .map(|entry| entry.runtime_flags)
+}
+pub(super) fn mark_movable_picked_up(world: &mut World, id: EntityId) -> Result<bool, String> {
+    let Some(mut owner) = world.get_resource_mut::<Identities>() else { return Ok(false); };
+    let Some(entry) = owner.entries.get_mut(&id) else { return Ok(false); };
+    let Some(state) = entry.movable.as_mut() else { return Ok(false); };
+    state.picked_up(true);
+    entry.runtime_flags |= 4;
+    Ok(true)
 }
 
 pub(super) fn equipment(world: &World, identity: &str) -> Option<EntityId> {

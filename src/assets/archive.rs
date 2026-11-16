@@ -102,6 +102,7 @@ pub struct Catalog {
     pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::resources::Definition>>>,
     pub(crate) cloth_headers: std::sync::OnceLock<crate::assets::bmd6::cloth::Owner>,
     pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
+    pub(crate) navmesh_resources: std::sync::OnceLock<crate::assets::physworld::navmesh::Resources>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
     pub(crate) shape_sources: std::sync::OnceLock<crate::assets::physworld::source::Owner>,
     pub(crate) common_models: std::sync::OnceLock<std::result::Result<crate::assets::bmodel::CommonModels, String>>,
@@ -181,6 +182,8 @@ impl Drop for Catalog {
         self.cloth_headers.take();
         crate::assets::physworld::physics_system::report_retirement(self);
         self.physics_system_resources.take();
+        crate::assets::physworld::navmesh::report_retirement(self);
+        self.navmesh_resources.take();
         crate::assets::physworld::mass::resources::report_retirement(self);
         crate::assets::wwise::event_resources::report_retirement(self);
         crate::assets::wwise::game_properties::report_retirement(self);
@@ -301,6 +304,7 @@ impl Catalog {
         crate::assets::entities::physics_material::resources::release_marker(self, 0);
         crate::assets::bmd6::cloth::release_marker(self, 0);
         crate::assets::physworld::physics_system::release_marker(self, 0);
+        crate::assets::physworld::navmesh::release_marker(self, 0);
         self.release_pickable_level();
     }
 
@@ -326,6 +330,7 @@ impl Catalog {
         crate::assets::entities::physics_material::resources::release_marker(self, 1);
         crate::assets::bmd6::cloth::release_marker(self, 1);
         crate::assets::physworld::physics_system::release_marker(self, 1);
+        crate::assets::physworld::navmesh::release_marker(self, 1);
         crate::assets::entities::effects::declarations::release_marker(self, 1);
         crate::assets::inventory_item::configuration::release_persistent(self);
         crate::edge_animation::release_marker(self, crate::edge_animation::PurgeMarker::PersistentHeap);
@@ -577,6 +582,7 @@ impl Catalog {
             decal_resources: Default::default(),
             cloth_headers: Default::default(),
             physics_system_resources: Default::default(),
+            navmesh_resources: Default::default(),
             common_models: Default::default(),
             beam_noise: Default::default(),
             difficulty_definitions: Default::default(),

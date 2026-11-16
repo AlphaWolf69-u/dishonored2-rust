@@ -2,6 +2,7 @@
 pub mod mix;
 pub mod music_clip;
 pub mod music;
+pub mod bark_history;
 pub mod containers;
 pub mod states;
 pub mod switches;
@@ -57,6 +58,9 @@ pub enum Emitter {
     /// Host audio object for an actual managed equipment generation. The
     /// authored casting bit is retained for scene cancellation/retirement.
     Equipment { entity: crate::gameplay::entity_lifetime::EntityId, part: u8 },
+    /// 708340 owns one sound object per actual animation joint. Equipment
+    /// identity includes the full managed generation, never just its slot.
+    PlayerJoint { entity: Option<crate::gameplay::entity_lifetime::EntityId>, part: u8, joint: u16 },
     Effect(u64),
     Component { handle: u64, generation: u32 },
 }
@@ -72,6 +76,19 @@ impl Emitter {
             Self::PlayerLeftEquipment => 8,
             Self::PlayerRightEquipment => 16,
             Self::Equipment { part, .. } => part,
+            Self::PlayerJoint { part, .. } => part,
+        }
+    }
+
+    pub fn player_owner(self) -> Self {
+        match self {
+            Self::PlayerJoint { entity: Some(entity), part, .. } => Self::Equipment { entity, part },
+            Self::PlayerJoint { part: 1, .. } => Self::PlayerBody,
+            Self::PlayerJoint { part: 2, .. } => Self::PlayerLeftArm,
+            Self::PlayerJoint { part: 4, .. } => Self::PlayerRightArm,
+            Self::PlayerJoint { part: 8, .. } => Self::PlayerLeftEquipment,
+            Self::PlayerJoint { part: 16, .. } => Self::PlayerRightEquipment,
+            _ => self,
         }
     }
 }

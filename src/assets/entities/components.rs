@@ -3,6 +3,12 @@ use super::{field, parse_declaration, scope, Definition, Value};
 use std::collections::HashMap;
 pub(crate) type Fields = Vec<(String, Value)>;
 
+///Canonical serialized uint identifier, also retained by arkAreaTag's4-byte
+///value. Keep one six-digit codec for declaration IDs and typed tag fields.
+pub(crate) fn decode_identifier(value: &str) -> Result<u32, String> {
+    super::processed_decl::decode_edit_id(value)
+}
+
 /// Common scheduling for a component class, using its resolved declaration and
 /// inline overlays. Payload readers and lifecycle composition share this path.
 pub fn scheduling_bindings(
@@ -215,3 +221,4 @@ pub(super) fn component_fields(
 
 //Shared processed edit-list projection used by runtime and metadata owners.
 pub(crate) use super::processed_decl::ComponentList;
+pub(crate) use super::processed_decl::normalize_edit_fields;

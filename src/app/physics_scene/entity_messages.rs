@@ -12,12 +12,15 @@ impl PhysicsScene {
         live: &LiveEntities,
         events: &mut EntityEvents,
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
+        player: Option<&mut crate::gameplay::player::Player>,
+        ai_worlds: Option<&mut crate::gameplay::ai_world::Worlds>,
+        hearts:Option<&mut crate::app::heart::Hearts>,
     ) -> Result<(), String> {
         let mut registry = self
             .registry
             .take()
             .ok_or("entity messages have no component registry")?;
-        let result = self.pump_entity_messages_with_registry(live, events, &mut registry, clock);
+        let result = self.pump_entity_messages_with_registry(live, events, &mut registry, clock, player, ai_worlds,hearts);
         self.registry = Some(registry);
         result
     }
@@ -28,9 +31,28 @@ impl PhysicsScene {
         events: &mut EntityEvents,
         registry: &mut ComponentRegistry,
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
+        mut player: Option<&mut crate::gameplay::player::Player>,
+        mut ai_worlds: Option<&mut crate::gameplay::ai_world::Worlds>,
+        mut hearts:Option<&mut crate::app::heart::Hearts>,
     ) -> Result<(), String> {
         let errors = events.pump(|listener, event, _commands| {
-            self.entity_message(live, registry, listener, event, clock)
+            if let Listener::HeartComponent{entity}=listener {
+                let owner=hearts.as_deref_mut().ok_or("Heart DE callback owner absent")?;
+                owner.speech_finished(live,entity,event)?;
+                if let Some(player)=player.as_deref_mut(){player.heart_bark_status(owner.speaking());}
+                return Ok(());
+            }
+            if matches!(listener, Listener::AIWorldStartup { .. }) {
+                return self.dispatch_ai_startup(live,registry,listener,event,_commands,clock,ai_worlds.as_deref());
+            }
+            if matches!(listener,Listener::Component{handle,..} if self.classes.get(48)==Some(&handle.class_id)) {
+                return self.dispatch_observable_event(live,ai_worlds.as_deref().ok_or("Observable callback has no canonical AIWorld list")?,listener,event,_commands);
+            }
+            if matches!(listener, Listener::AIWorldDanger { .. }) {
+                let owner = ai_worlds.as_deref_mut().ok_or("AI danger listener has no canonical world owner")?;
+                return crate::app::ai_world::dispatch_owner(self, live, owner, registry, &listener, event).map(|_| ());
+            }
+            self.entity_message(live, registry, listener, event, clock, player.as_deref_mut())
         });
         if errors.is_empty() {
             Ok(())
@@ -46,7 +68,36 @@ impl PhysicsScene {
         listener: Listener,
         event: &Event,
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
+        player: Option<&mut crate::gameplay::player::Player>,
     ) -> Result<(), String> {
+        if let Listener::PlayerChaos {player:identity}=listener {
+            if event.id!=0xa5{return Err("PlayerChaos listener received a different message".into())}
+            if live.get(identity).is_none(){return Err("PlayerChaos callback generation is stale".into())}
+            let Payload::Incapacitation{params,non_counting}=&event.payload else{return Err("PlayerChaos A5 packet is not the retained incapacitation source".into())};
+            let player=player.ok_or("PlayerChaos callback owner is absent")?;
+            if player.managed_entity()!=Some(identity){return Err("PlayerChaos callback owner generation differs".into())}
+            //4c14b0 requires the real AICharacterDescription payload after
+            //excluding both actual Doppelganger classes. Current admitted
+            //non-NPC actors take that genuine null-component branch.
+            let target=event.target.filter(|&target|live.get(target).is_some());
+            if let Some(target)=target.filter(|_|!*non_counting&&params.damage_type.0&1==0) {
+                let excluded=self.heart_context_component_present(target,b"arkCpntDoppelganger")?
+                    ||self.heart_context_component_present(target,b"arkCpntDoppelgangerNpc")?;
+                if !excluded&&self.heart_context_component_present(target,b"arkCpntAICharacterDescription")? {
+                    return Err("PlayerChaos requires actual AICharacterDescription morality/armed fields and7806e0/71b690 responsibility providers".into());
+                }
+            }
+            return player.chaos.incapacitated(params,*non_counting,None);
+        }
+        if let Listener::HeartState {player:identity}=listener {
+            if live.get(identity).is_none() || event.target!=Some(identity) {return Err("UseHeart message identity differs from live subscription".into())}
+            if event.id!=0x11d {return Err("UseHeart listener received a different message".into())}
+            let Payload::Bytes(bytes)=&event.payload else {return Err("UseHeart rate payload is not bytes".into())};
+            let bytes:[u8;4]=bytes.as_slice().try_into().map_err(|_|"UseHeart rate packet size differs")?;
+            let player=player.ok_or("UseHeart registered Player owner absent")?;
+            if player.managed_entity()!=Some(identity) {return Err("UseHeart registered Player generation differs".into())}
+            return player.heart_playrate(f32::from_le_bytes(bytes));
+        }
         let Listener::Component {
             owner,
             handle,
@@ -63,8 +114,20 @@ impl PhysicsScene {
         if handle.class_id == self.classes[11] {
             return self.breakable_message(live, listener, event);
         }
+        if handle.class_id == self.classes[19] {
+            return self.grenade_message(live,listener,event);
+        }
         if handle.class_id == self.classes[13] {
             return self.projectile_message(live, registry, listener, event, clock);
+        }
+        if self.is_crew_collector_class(handle.class_id) {
+            return self.crew_collector_message(live, registry, listener, event);
+        }
+        if self.is_crew_module_class(handle.class_id) {
+            return self.crew_module_message(live, registry, listener, event);
+        }
+        if self.is_crew_class(handle.class_id) {
+            return self.crew_message(listener,event);
         }
         if owner != self.owner_id || !self.is_rigid_class(handle.class_id) {
             return Err(format!(

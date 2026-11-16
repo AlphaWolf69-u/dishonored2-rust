@@ -32,6 +32,19 @@ impl WorldConvexQuery {
     ) -> Result<(), String> {
         hits.clear();
         start_hits.clear();
+        self.for_each_hit(bodies, trees, quantization, request, resolve, &mut |contact, start| {
+            if start { start_hits.push(contact); } else { hits.push(contact); }
+        })
+    }
+
+    /// 096ac0 may connect both collectors to the same result owner. Preserve
+    /// callback/FIFO order instead of concatenating two separated hit lists.
+    pub fn for_each_hit<'a>(
+        &mut self, bodies: &dyn PointQueryBodies, trees: &[PointQueryTree<'_>],
+        quantization: RayQuantization, request: &WorldConvexRequest<'_>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        submit: &mut dyn FnMut(ConvexContact, bool),
+    ) -> Result<(), String> {
         let mut bounds = super::convex_support::convex_bounds(
             request.cast.geometry.vertices,
             request.cast.transform,
@@ -51,8 +64,7 @@ impl WorldConvexQuery {
             shapes: &mut self.shapes,
             request,
             resolve,
-            hits,
-            start_hits,
+            submit,
             error: None,
         };
         self.broadphase.query_swept_bounds(
@@ -65,7 +77,11 @@ impl WorldConvexQuery {
             request.cast.displacement,
             request.maximum_fraction,
             &mut RayQueryControl {
-                fraction: f32::from_bits(0x5f7f_fff0),
+                // cad6c0 narrows the actual collector to query direction.W
+                // before leaf dispatch, independently of tree admission.
+                fraction: if f32::from_bits(0x5f7f_fff0) < request.maximum_fraction {
+                    f32::from_bits(0x5f7f_fff0)
+                } else { request.maximum_fraction },
                 early_out: false,
             },
             &mut visitor,
@@ -78,8 +94,7 @@ struct Bodies<'a, 'r, F> {
     shapes: &'a mut ShapeConvexQuery,
     request: &'a WorldConvexRequest<'r>,
     resolve: F,
-    hits: &'a mut Vec<ConvexContact>,
-    start_hits: &'a mut Vec<ConvexContact>,
+    submit: &'a mut dyn FnMut(ConvexContact, bool),
     error: Option<String>,
 }
 impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
@@ -126,11 +141,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> RayQueryVisitor
                 &self.request.cast,
                 control,
                 &mut |contact, start, _| {
-                    if start {
-                        self.start_hits.push(contact);
-                    } else {
-                        self.hits.push(contact);
-                    }
+                    (self.submit)(contact, start);
                 },
             )
         })();

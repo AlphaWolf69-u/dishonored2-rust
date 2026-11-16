@@ -175,7 +175,10 @@ pub(in crate::app) fn prepare(
 
 pub(in crate::app) fn prepare_world(descriptor:Arc<Descriptor>,resolver:&mut MaterialResolver,meshes:&mut dyn AssetWrite<Mesh>,commands:&mut super::super::setup_commands::SetupCommands)->Result<PreparedModel,String>{
     let model=prepare(descriptor,0.0,resolver,meshes,commands)?;
-    if model.descriptor.cast_shadows {
+    //873340 can enable any actual model instance later. Retain the source
+    //shadow vertex ABI once in its shared mesh, irrespective of the initial
+    //instance bit; toggling never rebuilds/clones geometry or templates.
+    {
         for part in model.surfaces() {
             let mesh = meshes.get_mut(&part._mesh).ok_or("world shadow mesh preparation missing")?;
             match &model.descriptor.geometry {
@@ -196,6 +199,8 @@ pub(in crate::app) fn prepare_world(descriptor:Arc<Descriptor>,resolver:&mut Mat
 
 struct Model {
     prepared: PreparedModel,
+    ///Mutable actual instance state; the shared descriptor is not modified.
+    cast_shadows: bool,
     // Source weapon rig is the actual tag owner, retained while bound.
     weapon: Option<Arc<Weapon>>,
     parent: Option<EntityId>,
@@ -225,7 +230,8 @@ impl Models {
         if self.live.contains_key(&id) { return Err("world model generation already published".into()); }
         // Runtime AnimBase belongs to its real component pool, not rendering.
         let node = None;
-        self.live.insert(id, Model { prepared, weapon:None,parent:None,binding:None,world:Some(frame),world_scale:None,node,command:None,
+        let cast_shadows=prepared.descriptor.cast_shadows;
+        self.live.insert(id, Model { prepared, cast_shadows, weapon:None,parent:None,binding:None,world:Some(frame),world_scale:None,node,command:None,
             visible,shown:false,frame:Some(frame),bounds:None,lighting:Default::default(),shadow_skin:None });
         Ok(())
     }
@@ -261,7 +267,7 @@ impl Models {
     pub(in crate::app) fn shadow_surfaces(&self, id: EntityId,
         materials: &super::super::ShadowMaterials) -> Result<Option<([[f32; 3]; 2], Vec<super::super::shadow_updates::RuntimeShadowSurface>)>, String> {
         let Some(model) = self.live.get(&id) else { return Ok(None) };
-        if !model.prepared.descriptor.cast_shadows { return Ok(None) }
+        if !model.cast_shadows { return Ok(None) }
         let (Some(frame), Some(bounds)) = (model.frame, model.bounds) else { return Ok(None) };
         let placement = &model.prepared.descriptor.placement;
         let affine = render_model::affine_rows(frame.position, frame.basis, model.world_scale.unwrap_or(placement.scale));
@@ -290,6 +296,15 @@ impl Models {
             });
         }
         Ok(Some((bounds, surfaces)))
+    }
+    pub(in crate::app) fn set_shadow_casting(&mut self,id:EntityId,value:bool)->Result<(),String>{
+        self.live.get_mut(&id).ok_or("model shadow property targeted absent generation")?.cast_shadows=value;Ok(())
+    }
+    pub(in crate::app) fn shadow_entities(&self,id:EntityId)->Vec<Entity>{
+        self.live.get(&id).into_iter().flat_map(|model|model.prepared.surfaces().iter().map(|surface|surface.entity)).collect()
+    }
+    pub(in crate::app) fn shadow_casting(&self,id:EntityId)->Option<bool>{
+        self.live.get(&id).map(|model|model.cast_shadows)
     }
     pub(in crate::app) fn draw_entities(&self)->impl Iterator<Item=Entity>+'_ {
         self.live.values().flat_map(|model|model.prepared.surfaces().iter().map(|surface|surface.entity))
@@ -320,10 +335,12 @@ impl Models {
             Geometry::Animated { rig, .. } => Some(rig.template.clone()),
             Geometry::Rigid(_) => None,
         };
+        let cast_shadows=prepared.descriptor.cast_shadows;
         self.live.insert(
             id,
             Model {
                 prepared,
+                cast_shadows,
                 weapon: Some(weapon),
                 parent: Some(parent),
                 binding: Some(binding),
@@ -573,7 +590,7 @@ impl Models {
                             inverse_bindposes,
                             joint_transforms,
                         )?;
-                        if model.prepared.descriptor.cast_shadows {
+                        if model.cast_shadows {
                             if let Some((handle, previous)) = &mut model.shadow_skin {
                                 if *previous != palette {
                                     let bytes = palette.iter().flat_map(|matrix| matrix.iter().flatten())

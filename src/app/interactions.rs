@@ -56,6 +56,7 @@ enum SelectionKind {
     Readable,
     Usable,
     Carry,
+    CarryLive(crate::gameplay::entity_lifetime::EntityId),
     Pickup(crate::gameplay::entity_lifetime::EntityId),
 }
 
@@ -315,6 +316,30 @@ impl Interactions {
         }
     }
 
+    ///77b3b0 reapplies the same state's animation/FX and readmits77af40's
+    ///fake collision body on an actual component restart, without a level scan.
+    pub(super) fn start_actor(&mut self, index: usize, preserve_state: bool,
+        world: &mut navigation::CollisionWorld) -> Result<(), String> {
+        let actor = self.actors.get_mut(index).ok_or("Usable Start actor absent")?;
+        if actor.started { return Ok(()); }
+        let change = actor.state.as_mut().map(|state| {
+            let changes = state.start(preserve_state);
+            let animation = changes.animation;
+            let stop_effect = changes.stop_effect;
+            let effect = changes.start_effect.map(str::to_owned);
+            PendingChange { actor: index, animation, stop_effect,
+                start_effect: effect.as_deref().map(|path| effect_spawn(state, path)) }
+        });
+        actor.started = true;
+        if actor.definition.fake_collision && actor.fake_box.is_none() {
+            let corners = entities::usable::fake_box_corners(&actor.frame, &actor.definition)
+                .map(super::game_to_view);
+            actor.fake_box = Some(world.add_interaction_box(&actor.entity, corners));
+        }
+        if let Some(change) = change { self.pending.push(change); }
+        Ok(())
+    }
+
     pub fn stop_box(&mut self, actor: usize, world: &mut navigation::CollisionWorld) {
         if let Some(handle) = self
             .actors
@@ -419,17 +444,19 @@ pub(super) fn focus_and_interact(
     placements: Res<super::RenderSourcePlacements>,
     live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     camera: Query<&Transform, With<Camera3d>>,
-    input: Res<super::player::PlayerInput>,
+    clock: Res<crate::gameplay::game_clock_runtime::ClockRuntime>,
     mut player: Option<ResMut<super::player::PlayerState>>,
     mut requests: Option<ResMut<super::readable_movie::ReadableRequests>>,
     mut inventory: ResMut<super::interaction_focus::DiscoveredDocuments>,
     mut focused: ResMut<super::interaction_focus::FocusedInteraction>,
-    mut was_held: Local<bool>,
     mut occlusion: Local<crate::gameplay::interaction_sensor::OcclusionScratch>,
 ) {
-    let held = input.held.contains(&22);
-    let pressed = held && !*was_held;
-    *was_held = held;
+    //7f9ea0 retains a press independently from a later release in the
+    //same event batch.7f8040 reads that enabled press, not final held state.
+    let pressed = clock.advanced()
+        && player.as_deref().filter(|state| !state.debug_free_fly)
+            .and_then(|state| state.player.as_ref())
+            .is_some_and(|player| player.controller.pressed(22));
     if pressed {
         super::pause_menu::trace_readable_ui(|| {
             format!(
@@ -828,11 +855,8 @@ pub(super) fn focus_and_interact(
                 let Ok(Some((reference, pickable))) = scene.interaction_pickable(live, id) else {
                     continue;
                 };
-                let Some(item) = pickable.item.as_ref() else {
-                    continue;
-                };
-                if item.type_number != 4
-                    || pickable.definition.hold.is_some()
+                let carrying = pickable.definition.hold.is_some();
+                if (!carrying && pickable.item.as_ref().is_none_or(|item| item.type_number != 4))
                     || !models.interaction_visible(id)
                 {
                     continue;
@@ -855,7 +879,8 @@ pub(super) fn focus_and_interact(
                     target_max_z: bounds[1][2],
                 };
                 match admits_candidate(definition, &context, |mode, state, _| {
-                    Ok(player.loot_interaction_allowed(mode, state) == Some(true))
+                    Ok(if carrying { player.carry_interaction_allowed(mode, state) }
+                        else { player.loot_interaction_allowed(mode, state) } == Some(true))
                 }) {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -868,7 +893,7 @@ pub(super) fn focus_and_interact(
                     continue;
                 };
                 (
-                    SelectionKind::Pickup(id),
+                    if carrying { SelectionKind::CarryLive(id) } else { SelectionKind::Pickup(id) },
                     usize::from(reference.handle.slot),
                     0,
                     definition.maximum_distance,
@@ -977,21 +1002,19 @@ pub(super) fn focus_and_interact(
     if selected != interactions.selected {
         let prompt = selected
             .map(|(kind, index, step)| {
-                if let SelectionKind::Pickup(id) = kind {
+                if let SelectionKind::Pickup(id) | SelectionKind::CarryLive(id) = kind {
                     let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
                         return None;
                     };
                     let Ok(Some((_, pickable))) = scene.interaction_pickable(live, id) else {
                         return None;
                     };
-                    let item = pickable.item.as_ref()?;
+                    let name = pickable.item.as_ref().map(|item| &item.name)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(&pickable.definition.interaction_labels[0]);
                     return Some(super::interaction_focus::InteractionPrompt {
                         entity: live.get(id)?.0.to_owned(),
-                        name: if item.name.is_empty() {
-                            pickable.definition.interaction_labels[0].clone()
-                        } else {
-                            item.name.clone()
-                        },
+                        name: name.clone(),
                         usage_text: pickable.definition.interaction_labels[1].clone(),
                         interaction_type: pickable.definition.pickup_interaction.icon,
                         binding: "<GBA_INTERACT>".to_owned(),
@@ -1099,6 +1122,7 @@ pub(super) fn focus_and_interact(
                                 maximum: interactions.limits.maximum(&item.path),
                                 phase: 0,
                                 admitted: 0,
+                                hud_notified: false,
                                 from_grapple: false,
                                 notice: Default::default(),
                                 rejected_notice: false,
@@ -1107,6 +1131,19 @@ pub(super) fn focus_and_interact(
                         }
                     }
                 }
+            }
+        }
+    } else if let SelectionKind::CarryLive(id) = kind {
+        if let (Some(scene), Some(live), Some(player)) = (
+            physics.as_deref(), live.as_deref(),
+            player.as_deref_mut().and_then(|state| state.player.as_mut()),
+        ) {
+            match scene.interaction_pickable(live, id) {
+                Ok(Some((_, component))) => {
+                    super::carrying::request(player, id, component.definition.clone());
+                }
+                Ok(None) => {}
+                Err(error) => warn!("Live carry action identity: {error}"),
             }
         }
     } else if kind == SelectionKind::Carry {

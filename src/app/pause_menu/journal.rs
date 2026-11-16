@@ -301,6 +301,12 @@ impl Session {
                             let runes = inventory.quantity(&powers.definitions.1);
                             self.send(epoch, Operation::PurchaseResult { success, runes }, commands);
                         },
+                        journal_movie::Action::PurchaseEnhancement { id } => {
+                            let powers = data.powers.as_deref().ok_or("Journal power-system owner is absent")?;
+                            let success = powers.purchase_enhancement(inventory, id);
+                            let runes = inventory.quantity(&powers.definitions.1);
+                            self.send(epoch, Operation::PurchaseResult { success, runes }, commands);
+                        },
                     }
                 }
             },
