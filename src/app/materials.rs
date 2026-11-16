@@ -421,6 +421,10 @@ pub(super) fn depth_prepass_material_keys(
             !key.extension.depth_needs_material()
         });
     }
+    // arkHair keeps its zPrePass slot (finalize_material_programs clears
+    // nothing for hairType) and draws in the opaque depth prepass at
+    // r_hairAlphaTestOpaque (original menu capture events 691-763).
+    keys.register_blended_prepass::<super::ProbeMaterial>(|key| key.extension.0[6] == 12);
     keys
 }
 

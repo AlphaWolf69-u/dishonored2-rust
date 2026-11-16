@@ -99,8 +99,12 @@ Open, in order:
   pass, and Bevy's transparent pass writes no depth. Hair OIT tests
   GREATER_EQUAL against that lit-pass depth, so it keeps only the front
   hair layer; it needs the lit pass's depth first.
-- The opaque depth prepass at 0.8 with motion vectors: Bevy's prepass
-  skips blended materials (vendor prepass/mod.rs queue).
+- The opaque depth prepass at 0.8 is connected through
+  DepthPrepassMaterialKeys::register_blended_prepass (hair keys queue
+  like alpha-masked materials; clip_surface applies 0.8).
+- Unverified: Corvo's beard in the prologue view is darker than the lit
+  pass alone; the original's grey beard is only seen in the menu under
+  different lighting. Needs a matched original view of a hair surface.
 - Hair OIT is connected: AlphaGpu draws the hair lit pass (depth writes)
   and the OIT pass into RGBA16F/R8 targets, then resolves the hair term
   before render_particles; the particle resolve after it composes to the
