@@ -565,7 +565,7 @@ impl PhysicsScene {
                     //57aa06..57aa16 tail-jumps to166830 after restoring the
                     //stack. Returning from that diagnostic leaves the current
                     //Decision tree untouched; it does not dereference NULL.
-                    tracing::warn!("arkCpntAICrewCore::EvaluateSituationTree - Evaluation failed");
+                    bevy::log::warn!("arkCpntAICrewCore::EvaluateSituationTree - Evaluation failed");
                     return Ok(());
                 }
                 Err("Crew situation evaluation requires its admitted objective/action owner".into())

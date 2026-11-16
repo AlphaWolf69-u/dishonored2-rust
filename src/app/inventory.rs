@@ -11,6 +11,13 @@ mod shortcuts;
 mod wheel;
 pub(crate) use shortcuts::{ShortcutSettings, ShortcutSlot, ShortcutSelection};
 
+//Ranged and throwable callbacks share the actual inventory transaction,
+//including nested ammo-consume locks, modifiers and removal notifications.
+impl crate::gameplay::player::weapons::AmmunitionInventory for DiscoveredDocuments {
+    fn quantity(&self,item:&str)->u32{DiscoveredDocuments::quantity(self,item)}
+    fn consume(&mut self,item:&str,count:u32)->u32{DiscoveredDocuments::consume(self,item,count)}
+}
+
 impl PotionInventory for DiscoveredDocuments {
     fn potion_item(&self, kind: PotionKind) -> Result<Option<Arc<PickableItem>>, String> {
         let mut candidates = self.record_order.iter().filter_map(|path| self.records.get(path)).filter(|record| {

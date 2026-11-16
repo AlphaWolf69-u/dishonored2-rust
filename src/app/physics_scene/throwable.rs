@@ -321,7 +321,7 @@ impl PhysicsScene {
         }
         Ok(())
     }
-    fn throwable_class_is(&self, mut class: usize, name: &[u8]) -> Result<bool, String> {
+    pub(super) fn throwable_class_is(&self, mut class: usize, name: &[u8]) -> Result<bool, String> {
         loop {
             let classes = self.types.classes();
             let metadata = classes

@@ -367,6 +367,24 @@ every projectile variant. Ammunition and upgrade children share those resource
 owners and use their actual entity clocks and bindings. They do not create a
 second model/material cache.
 
+`app/player_animation_events` is the single consumer of accepted Midnight
+callbacks. It captures real equipment recipients before state changes and
+keeps them until melee and throwing acknowledge the event. `app/melee`,
+`weapon_throwing` and `heart` compose existing collision, damage, FX and audio
+owners; their gameplay state remains in `gameplay/player`. Heart speech shares
+the canonical RuleHandler and Speech resources and the AIWorld Coordination
+blackboard. The weapon wheel shares the existing Iggy worker and waits for its
+actual clear acknowledgement at level retirement.
+
+`app/ai_world/creation` prepares the authored default and section-world demand.
+The runtime entity factory constructs their real component sets and children
+through the same registry as placed objects. `gameplay/ai_world` holds their
+identity/area and manager state; `physics_scene` supplies concrete lifecycle
+callbacks. Navigation metadata is acquired once by its resource owner and
+shared with those managers. Constructor-owned child identities remain valid
+through parent Stop/Deinit, then ordinary level retirement releases their
+resources. These startup dependencies do not implement NPC behavior.
+
 `gameplay/damage` supplies typed damage parameters and receiver rules;
 `player_damage` publishes real player health/death notifications. The existing
 `EntityEvents` registry delivers ordinary messages through `app/entity_messages`

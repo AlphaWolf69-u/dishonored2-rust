@@ -191,7 +191,7 @@ pub(super) struct PhysicsScene {
     crew_alarm: ComponentPool<crate::gameplay::ai_world::crew_modules::Component>,
     observables: ComponentPool<crate::gameplay::ai_cues::Observable>,
     attention_sources: ComponentPool<crate::gameplay::ai_cues::AttentionSource>,
-    cue_actions:VecDeque<ai_cue_events::Action>,
+    cue_actions:std::collections::VecDeque<ai_cue_events::Action>,
     cue_update_marker:Option<i32>,
     ///Host callback retry position in the actual clock's1/2/3 stage frame.
     ai_stage_frame:Option<(i32,u8)>,

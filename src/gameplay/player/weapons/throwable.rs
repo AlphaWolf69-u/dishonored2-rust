@@ -41,7 +41,7 @@ impl Definition {
         let stages = items(child(fields, "m_cookingStages"));
         //632bf0 starts the source list with two inline elements; declaration
         //list loading owns its real authored count, not a two-stage limit.
-        let mut cooking_stages = Vec::with_capacity(stages.len());
+        let mut cooking_stages = Vec::new();
         for stage in stages {
             cooking_stages.push(CookingStage {
                 delay: number(stage, "m_delay", 0.)?,

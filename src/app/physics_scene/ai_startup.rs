@@ -123,7 +123,7 @@ impl PhysicsScene {
             .ok_or("DSM Start precedes graph Initialize")?;
         let mut areas = std::mem::take(&mut self.ai_dsm.get_mut(handle.slot).unwrap().areas);
         let mut hits = Vec::new();
-        let result = (|| {
+        let result: Result<(), String> = (|| {
             for (index, cell) in graph.cells.iter().enumerate() {
                 let position = [
                     cell.key[0] as f32 + graph.grid_origin[0] + 0.5,

@@ -1405,6 +1405,12 @@ impl StateMachine {
         self.state(StateId::SLASH).is_some_and(|state| state.active && state.slash.focused)
     }
 
+    ///81fda0 reads the actual active Slash+d1 (focus hold), distinct from
+    ///62f160's already-released focused attack+d2. No mutable state escapes.
+    pub(super) fn melee_focus_active(&self) -> bool {
+        self.state(StateId::SLASH).is_some_and(|state| state.active && state.slash.focus_active)
+    }
+
     ///630810/6302e0 set the retained Recoil outcome, stop Slash, and request40.
     pub fn request_melee_recoil(&mut self, kind: usize) {
         let selection=self.state(StateId::SLASH).and_then(|state|state.slash.selected.clone());
@@ -1596,10 +1602,10 @@ impl StateMachine {
             Kind::ReleaseObject(decl) => frame.carrying.has_held() && frame.carrying.release.can_activate(frame.action_time,decl),
             Kind::EquipChange(ref decl) => decl.side().is_some_and(|side| frame.equipment_changes.has_request(side)),
             Kind::DrawEquipment(left) => {
-                let side = usize::from(!left);
+                let side = usize::from(!*left);
                 !frame.equipment_changes.equipped(side)
                     && frame.equipment_changes.preferred(side).is_some()
-                    && self.state(if left { StateId(64) } else { StateId(53) }).is_some()
+                    && self.state(if *left { StateId(64) } else { StateId(53) }).is_some()
             },
             Kind::Undraw(_) => !self.is_active(StateId::DEAD),
             Kind::Recoil(decl) => state.recoil.action.can_activate(frame.action_time,decl)

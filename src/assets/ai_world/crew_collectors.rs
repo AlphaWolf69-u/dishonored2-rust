@@ -1,6 +1,6 @@
 //! Crew collector declarations (57ca40/57ce00/57fe10). They own no images,
 //! models or sounds; their runtime references belong to the containing crew.
-use crate::gameplay::options::decl::{atom, float, scope, Fields};
+use crate::gameplay::options::decl::{atom, float, scope};
 
 #[derive(Debug)]
 pub enum Evidence {
@@ -25,7 +25,7 @@ pub enum Definition {
     Herd,
 }
 impl Definition {
-    pub fn read(kind: &str, fields: &Fields) -> Result<Self, String> {
+    pub fn read(kind: &str, fields: &[(String, crate::entities::Value)]) -> Result<Self, String> {
         Ok(match kind {
             "cpntaicrewcollectorarea" | "arkCpntAICrewCollector_Area" => Self::Area,
             "cpntaicrewcollectorcombat" | "arkCpntAICrewCollector_Combat" => {

@@ -967,14 +967,14 @@ enum Construction<'a> {
         scene: &'a mut super::physics_scene::PhysicsScene,
         live: &'a mut crate::gameplay::entity_lifetime::LiveEntities,
         events: &'a mut crate::gameplay::entity_events::EntityEvents,
-        registry: &'a mut crate::gameplay::component_state::lifecycle::ComponentRegistry,
+        registry: &'a mut crate::gameplay::component_state::ComponentRegistry,
     },
 }
 impl Construction<'_> {
     fn visit<R>(&mut self, world: &mut World, callback: impl FnOnce(&mut World,
         &mut super::physics_scene::PhysicsScene, &mut crate::gameplay::entity_lifetime::LiveEntities,
         &mut crate::gameplay::entity_events::EntityEvents,
-        Option<&mut crate::gameplay::component_state::lifecycle::ComponentRegistry>) -> Result<R, String>) -> Result<R, String> {
+        Option<&mut crate::gameplay::component_state::ComponentRegistry>) -> Result<R, String>) -> Result<R, String> {
         match self {
             Self::World => with_scene(world, |world, scene, live, events| callback(world, scene, live, events, None)),
             Self::Callback { scene, live, events, registry } => callback(world, scene, live, events, Some(registry)),
@@ -985,7 +985,7 @@ impl Construction<'_> {
 ///Its caller supplies the actual borrowed registry; no second queue is made.
 pub(super) fn spawn_in_registry(world: &mut World, scene: &mut super::physics_scene::PhysicsScene,
     live: &mut crate::gameplay::entity_lifetime::LiveEntities, events: &mut crate::gameplay::entity_events::EntityEvents,
-    registry: &mut crate::gameplay::component_state::lifecycle::ComponentRegistry,
+    registry: &mut crate::gameplay::component_state::ComponentRegistry,
     definition: Arc<Definition>, options: SpawnOptions, name: Option<Arc<str>>, parent: EntityId) -> Result<EntityId, String> {
     let expected = prepared_child(world, parent, &definition.entity)?;
     if !Arc::ptr_eq(&expected, &definition) { return Err("startup child belongs to another prepared source generation".into()); }

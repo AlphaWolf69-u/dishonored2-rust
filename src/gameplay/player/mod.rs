@@ -1031,8 +1031,7 @@ impl Player {
         self.health.update_with_healing(dt, &self.attributes, self.health_regen_factor, self.health_heal_factor);
         if let Some(effect) = &mut self.combat_fx {
             //81fda0 reads actual Slash+d1, suppressed by state4c.
-            let focused = !self.machine.is_active(StateId(0x4c)) && self.machine.state(StateId::SLASH)
-                .is_some_and(|state| state.active && state.slash.focus_active);
+            let focused = !self.machine.is_active(StateId(0x4c)) && self.machine.melee_focus_active();
             if let Err(error) = effect.advance(focused, dt) { eprintln!("Player combat screen effect: {error}"); }
         }
         // 1404c0cf0 spends the mana-first share before dispatching the

@@ -4,7 +4,7 @@
 use super::super::usable_effects::{EffectRequests, EffectTicket, EntityPlacement};
 use super::*;
 use crate::gameplay::{
-    component_state::{ComponentInstance, entity_lookup::ComponentLookupState},
+    component_state::entity_lookup::ComponentLookupState,
     entity_events::{EntityEvents, Event, Listener, Payload},
     entity_lifetime::{EntityId, LiveEntities, Stage},
     grenade::{self, Component},
@@ -702,7 +702,9 @@ impl PhysicsScene {
                     .generation,
             };
             self.declarations.insert(handle.packed(), declaration);
-            self.run_runtime_startup_with_registry(world, live, events, &mut registry)?;
+            //This is published equipment admission: its actual component
+            //callbacks need the existing FX/resource owners in World.
+            self.run_runtime_startup(world, live, events, &mut registry)?;
             self.prepare_grenade_resources(world, checked.handle)?;
             let key = self.grenade_key(checked.handle)?;
             self.grenade_resources.get_mut(&key).unwrap().held_weapon =
@@ -836,7 +838,7 @@ impl PhysicsScene {
         }
         self.grenades.get_mut(handle.slot).unwrap().started = false;
         self.grenades.get_mut(handle.slot).unwrap().start_phase = 0;
-        let mut world = world;
+        let world = world;
         if self.grenades.get(handle.slot).unwrap().flags & grenade::DANGER_REGISTERED != 0 {
             let id = self.entities[index].shared;
             super::super::ai_world::remove_grenade_danger(
@@ -1098,7 +1100,7 @@ impl PhysicsScene {
                         let ticket = world
                             .get_resource_mut::<EffectRequests>()
                             .ok_or("Grenade explosion FX owner absent")?
-                            .start_breakable_once(
+                            .start_context_once(
                                 Arc::from(format!("{}:explosion", resources.scope)),
                                 path,
                                 EntityPlacement {

@@ -81,7 +81,9 @@ impl CreationPlan{
         }
         let navmesh=crate::assets::physworld::navmesh::Metadata::acquire_optional(catalog,
             &crate::assets::physworld::navmesh::companion(level)?)?;
-        let navigation=navmesh.as_ref().map_or(0,|metadata|metadata.count(0));
+        let mut admission=crate::assets::physworld::navmesh::Admission::default();
+        if let Some(metadata)=&navmesh{admission.admit(metadata)?;}
+        let navigation=admission.count(0);
         Ok(Self{source,sections,movers,navigation,navmesh})
     }
 }

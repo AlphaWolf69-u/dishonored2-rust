@@ -75,11 +75,12 @@ impl StateMachine {
             .iter()
             .find(|m| m.state == self.states[index].decl.id)
             .map_or(0, |m| m.action);
+        let scene_finished = frame.midnight.finished(self.states[index].midnight);
         let step = self.states[index].heart_bark.update(
             frame.dt,
             &decl.action,
             frame.controller.down(action),
-            frame.midnight.finished(self.states[index].midnight),
+            scene_finished,
             false,
         );
         match step {

@@ -249,7 +249,10 @@ impl PhysicsScene {
             .ok_or("pooled Cue reference actor stale")?;
         actor.set_transform(frame, false);
         let generation = actor.owner.generation;
-        self.request_post_physics_actor(handle.slot as usize, generation)
+        //Both a newly queued phase and an already retained phase acknowledge
+        //this actual frame publication; false never means a lost update.
+        self.request_post_physics_actor(handle.slot as usize, generation)?;
+        Ok(())
     }
     fn drain_ai_cue_actions(
         &mut self,

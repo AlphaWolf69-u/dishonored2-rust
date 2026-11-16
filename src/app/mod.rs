@@ -207,7 +207,6 @@ mod player_animation_events;
 mod ai_world;
 mod heart;
 mod heart_context;
-mod inventory_wheel;
 mod melee;
 mod power_wheel;
 mod power_wheel_movie;

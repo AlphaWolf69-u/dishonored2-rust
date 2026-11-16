@@ -1,7 +1,10 @@
 //! Borrow the canonical inventory/owned equipment for4f5360's wheel rows.
-use super::*;
+use crate::app::interaction_focus::DiscoveredDocuments;
 use crate::gameplay::{
-    player::{Player, consumables::PotionKind},
+    player::{
+        Player,
+        consumables::{PotionInventory, PotionKind},
+    },
     power_wheel::{Item, Potions, Snapshot},
 };
 

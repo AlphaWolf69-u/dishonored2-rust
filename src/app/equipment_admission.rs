@@ -471,7 +471,7 @@ pub(in crate::app) fn startup_error(world: &World) -> Option<String> {
         })
         .cloned()
         .or_else(|| super::super::equipment_attachment_admission::startup_error(world))
-        .or_else(|| super::super::weapon_throwing::startup_error(world))
+        .or_else(|| super::super::weapon_throwing::startup_error(world).map(str::to_owned))
         .or_else(|| super::super::melee::startup_error(world).map(str::to_owned))
         .or_else(|| super::super::heart::startup_error(world))
 }

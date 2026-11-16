@@ -13,7 +13,7 @@ use crate::{
 #[derive(Default)]
 pub(in crate::app) struct Retirement {
     components: super::lifetime::Retirement,
-    rollback_done: bool,
+    pub(in crate::app) rollback_done: bool,
 }
 impl PhysicsScene {
     pub(in crate::app) fn set_runtime_actor_visible(&mut self, world: &mut bevy::prelude::World,

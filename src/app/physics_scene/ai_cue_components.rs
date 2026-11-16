@@ -180,7 +180,7 @@ impl PhysicsScene {
         if dependency.is_some() && attachment.is_none() {
             //Installed166830 returns: the source logs its missing attachment
             //then stores the actual null reference and continues initialization.
-            tracing::warn!(entity=%self.entities[index].name,"Observable missing authored attachment component");
+            bevy::log::warn!("Observable {} missing authored attachment component",self.entities[index].name);
         }
         let rigid = self.document_rigid(index)?;
         let body = rigid
