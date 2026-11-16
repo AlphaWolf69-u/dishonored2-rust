@@ -1220,8 +1220,8 @@ impl Spawner<'_> {
 
     fn sphere_hit(&self, p: [f32; 3], radius: f32) -> Result<bool, String> {
         let (map, owners, filter) = self.world()?;
-        let centre = bevy::math::Vec3::new(p[0], p[2], -p[1]);
-        let reach = bevy::math::Vec3::splat(radius);
+        let centre = bevy_math::Vec3::new(p[0], p[2], -p[1]);
+        let reach = bevy_math::Vec3::splat(radius);
         let (mut found, mut triangles) = (Vec::new(), Vec::new());
         map.triangles_in(centre - reach, centre + reach, crate::gameplay::collision_filter::QueryFilter::World(filter), owners, &mut found, &mut triangles);
         Ok(triangles.iter().any(|(_, vertices, _)| {
@@ -1232,8 +1232,8 @@ impl Spawner<'_> {
 
     fn ray_hit(&self, start: [f32; 3], ray: [f32; 3]) -> Result<bool, String> {
         let (map, owners, filter) = self.world()?;
-        let origin = bevy::math::Vec3::new(start[0], start[2], -start[1]);
-        let direction = bevy::math::Vec3::new(ray[0], ray[2], -ray[1]);
+        let origin = bevy_math::Vec3::new(start[0], start[2], -start[1]);
+        let direction = bevy_math::Vec3::new(ray[0], ray[2], -ray[1]);
         let end = origin + direction;
         let (mut found, mut triangles) = (Vec::new(), Vec::new());
         map.triangles_in(origin.min(end), origin.max(end), crate::gameplay::collision_filter::QueryFilter::World(filter), owners, &mut found, &mut triangles);

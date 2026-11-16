@@ -90,10 +90,10 @@ pub(super) fn from_resolved(
         }
         "cpntaistatistics" => ("arkCpntAIStatistics", Kind::AIStatistics),
         "cpnttimersmanager" => ("arkCpntTimersManager", Kind::TimersManager),
-        "cpntaimanager_cues" | "cpntaicrewdispatch" | "cpntdsm" | "cpntfleemanager"
+        "cpntaimanagercues" | "cpntaicrewdispatch" | "cpntdsm" | "cpntfleemanager"
         | "cpntaiworldcoordinationbb" | "cpntaivisionmanager" => {
             let class = match kind {
-                "cpntaimanager_cues" => "arkCpntAIManager_Cues",
+                "cpntaimanagercues" => "arkCpntAIManager_Cues",
                 "cpntaicrewdispatch" => "arkCpntAICrewDispatch",
                 "cpntdsm" => "arkCpntDSM",
                 "cpntfleemanager" => "arkCpntFleeManager",
