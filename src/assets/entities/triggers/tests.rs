@@ -25,8 +25,10 @@ item_add["second"]={inheritedDecl="default.cpnttrigger";inlineDecl={m_triggeredB
     assert_eq!(result[0].slot, "item_add[\"trigger\"]");
     let first = &result[0];
     assert!(first.collision.debris && first.collision.npc_ragdolls && first.collision.keyframed);
+    // 14000c710 drops a mapComponentDecl entry's sibling inlineDecl, so its
+    // m_triggeredByNpcCapsules=false does not apply (ctor default true).
     assert!(
-        !first.collision.rigid_bodies && !first.collision.npc_capsules && !first.water_component
+        !first.collision.rigid_bodies && first.collision.npc_capsules && !first.water_component
     );
     assert!(first.wind_component);
     assert_eq!(result[1].entity_id, "pool");
@@ -113,12 +115,14 @@ fn installed_trigger_shape_requests_resolve_every_body_resource() {
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         assert_eq!(assets.placements.len(), assets.shape_resources.len());
         for (placement, index) in assets.placements.iter().zip(&assets.shape_resources) {
-            let asset = &assets.shapes[*index];
+            // A freshly loaded level has no freed slots.
+            let placement = placement.as_ref().expect("loaded trigger slot");
+            let asset = assets.shapes[index.expect("loaded trigger shape")].as_ref().expect("loaded shape slot");
             assert_eq!(placement.shape.asset_path(), asset.path);
             let root = &asset.physics.types[asset.physics.items[1].type_index].name;
             *roots.entry(root.clone()).or_default() += 1;
         }
-        for asset in &assets.shapes {
+        for asset in assets.shapes.iter().map(|asset| asset.as_ref().expect("loaded shape slot")) {
             let _compound = asset
                 .physics
                 .compound_shape(&asset.bytes, 1)

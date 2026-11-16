@@ -1,4 +1,12 @@
 use super::*;
+
+/// A freshly loaded level's trigger slots are all occupied.
+fn loaded_placement(geometry: &crate::assets::entities::triggers::TriggerAssets, index: usize) -> &crate::assets::entities::triggers::TriggerPlacement {
+    geometry.placements[index].as_ref().expect("loaded trigger slot")
+}
+fn loaded_shape(geometry: &crate::assets::entities::triggers::TriggerAssets, index: usize) -> &crate::assets::entities::triggers::TriggerShapeAsset {
+    geometry.shapes[index].as_ref().expect("loaded shape slot")
+}
 use crate::{
     assets::{
         archive::Catalog,
@@ -49,8 +57,8 @@ impl<F> TriggerLevelInitialization<TriggerAssets, F> for InstalledTriggerLevel<'
     ) -> Result<Option<LoadedTriggerShape>, String> {
         assert_eq!(entity, self.entity.identity);
         Ok(Some(LoadedTriggerShape {
-            shape: geometry.shape_resources[self.placement],
-            basis: geometry.placements[self.placement].shape.basis,
+            shape: geometry.shape_resources[self.placement].expect("loaded trigger shape"),
+            basis: loaded_placement(geometry, self.placement).shape.basis,
         }))
     }
     fn dependency(
@@ -283,6 +291,8 @@ fn run_installed_trigger_world(level_name: &str) {
     let placement_classes: Vec<_> = geometry
         .placements
         .iter()
+        // A freshly loaded level has no freed slots.
+        .map(|p| p.as_ref().expect("loaded trigger slot"))
         .map(|p| {
             let definition = documents[p.binding.entity_id.as_str()];
             let class = definition
@@ -390,7 +400,7 @@ fn run_installed_trigger_world(level_name: &str) {
         let water_binding = water_bindings
             .iter()
             .enumerate()
-            .find(|(_, b)| b.entity_id == geometry.placements[i].binding.entity_id);
+            .find(|(_, b)| b.entity_id == loaded_placement(&geometry, i).binding.entity_id);
         let water_reference = water_binding.map(|(index, binding)| {
             let declaration = types
                 .declaration(water_index, index, binding.scheduling.clone())
@@ -437,7 +447,7 @@ fn run_installed_trigger_world(level_name: &str) {
         .unwrap();
         // Use the constructor scheduling fields as an explicit composition
         // input. This test does not claim to decode all authored scheduling.
-        let placement = &geometry.placements[i];
+        let placement = loaded_placement(&geometry, i);
         let keyframed = placement.binding.collision.keyframed;
         let position = placement.position;
         let collision = placement.binding.collision;
@@ -657,7 +667,7 @@ fn run_installed_trigger_world(level_name: &str) {
             &mut queries,
             |shape| {
                 Ok(WorldQueryShape {
-                    shapes: &geometry.shapes[shape].query_shapes,
+                    shapes: &loaded_shape(&geometry, shape).query_shapes,
                     materials: None,
                 })
             },
@@ -708,7 +718,7 @@ fn run_installed_trigger_world(level_name: &str) {
                 &mut executor,
                 &mut queries,
                 |shape| Ok(WorldQueryShape {
-                    shapes: &geometry.shapes[shape].query_shapes,
+                    shapes: &loaded_shape(&geometry, shape).query_shapes,
                     materials: None
                 }),
                 |handle| (handle.class_id == trigger_class)
@@ -717,7 +727,7 @@ fn run_installed_trigger_world(level_name: &str) {
                     let class = hierarchy.type_id(placement_classes[entity])?;
                     let environment = if (area_range[0]..=area_range[1]).contains(&class) {
                         volume_indices
-                            .get(geometry.placements[entity].binding.entity_id.as_str())
+                            .get(loaded_placement(&geometry, entity).binding.entity_id.as_str())
                             .map(|&index| (index, volumes[index].is_water_volume))
                     } else {
                         None

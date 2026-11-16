@@ -94,7 +94,7 @@ fn replay(fixture: &str, expected_count: usize) {
                 assert!(store.0.insert(shape, ShapeSignals::default()).is_none());
             }
             4 => {
-                if let Some(registry) = registries[owner - 1].take() {
+                if let Some(mut registry) = registries[owner - 1].take() {
                     registry.release(&mut store).unwrap();
                 }
             }

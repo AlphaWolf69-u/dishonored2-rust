@@ -34,6 +34,17 @@ impl<A: Asset> AssetWrite<A> for ResMut<'_, Assets<A>> {
         Assets::get_mut(self, handle).map(AssetMut::into_inner)
     }
 }
+impl<A: Asset> AssetWrite<A> for Mut<'_, Assets<A>> {
+    fn add(&mut self, value: A) -> Handle<A> {
+        Assets::add(self, value)
+    }
+    fn get(&self, handle: &Handle<A>) -> Option<&A> {
+        Assets::get(self, handle)
+    }
+    fn get_mut(&mut self, handle: &Handle<A>) -> Option<&mut A> {
+        Assets::get_mut(self, handle).map(AssetMut::into_inner)
+    }
+}
 pub(crate) struct AssetBatch<A: Asset> {
     provider: AssetHandleProvider,
     values: HashMap<AssetId<A>, (Handle<A>, A)>,

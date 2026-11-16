@@ -26,7 +26,7 @@ fn installed_trigger_query_geometry_is_retained() {
         let assets = TriggerAssets::load(&document, &map, &catalog).unwrap();
         counts[0] += 1;
         counts[1] += assets.shapes.len();
-        for asset in &assets.shapes {
+        for asset in assets.shapes.iter().map(|asset| asset.as_ref().expect("loaded shape slot")) {
             assert_eq!(asset.query_shapes.root(), 1);
             for (_, shape) in asset.query_shapes.iter() {
                 counts[2] += 1;

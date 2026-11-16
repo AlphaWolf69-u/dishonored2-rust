@@ -34,6 +34,7 @@ fn installed_cube_upload_preserves_faces_mips_and_hdr() {
                 Some(&probes),
                 &mut images,
                 &mut buffers,
+                &|| Ok(()),
             )
             .unwrap()
         });

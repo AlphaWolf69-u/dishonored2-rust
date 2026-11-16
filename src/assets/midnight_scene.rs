@@ -25,6 +25,13 @@ impl<T> Deref for SceneView<T> { type Target = T; fn deref(&self) -> &T { &self.
 impl<T: fmt::Debug> fmt::Debug for SceneView<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Debug::fmt(self.data.as_ref(), f) }
 }
+#[cfg(test)]
+impl<T> SceneView<T> {
+    /// A view of an in-memory scene with no installed declaration behind it.
+    pub(crate) fn detached(data: T) -> Arc<Self> {
+        Arc::new(Self { data: Arc::new(data), definition: Arc::new(Definition::new("")) })
+    }
+}
 impl<T: Clone> SceneView<T> {
     pub(crate) fn duplicate(&self) -> Arc<Self> {
         Arc::new(Self { data: Arc::new((*self.data).clone()), definition: Arc::clone(&self.definition) })

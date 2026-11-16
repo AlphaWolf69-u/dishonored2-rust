@@ -842,8 +842,9 @@ mod tests {
         assert_eq!(
             binding,
             SkeletonBinding {
-                name: "models/body.md6skl".into(),
+                name: Some("models/body.md6skl".into()),
                 offset: Some([1.0, -2.0, 3.0]),
+                calc_ref_bounds_from_joints: None,
                 ragdoll: None,
             }
         );

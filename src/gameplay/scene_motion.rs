@@ -735,7 +735,7 @@ mod tests {
                 position: w[..3].try_into().unwrap(),
                 basis: std::array::from_fn(|c| std::array::from_fn(|r| w[3 + c * 3 + r])),
                 group: 0,
-                clip: Arc::new(MotionClip {
+                clip: crate::assets::midnight_scene::SceneView::detached(MotionClip {
                     length_ms: 12000,
                     groups: vec![MotionGroup {
                         uid: 1,
