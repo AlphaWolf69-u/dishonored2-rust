@@ -23728,6 +23728,12 @@ Runtime acceptance update (2026-11-17): main release1f6d3cda completed actual ga
 
 The first coordinated-feature runtime observation correctly rejected a quoted AIWorld resource path. AIWorld source references now use the existing declaration string reader for quoted, inherited and nullable references. Its failure cleanup also exposed UI image servicing while the acquisition controller was already borrowed by its caller. Wheel retirement now passes the same outgoing catalog lease to an additional frontend of the existing UiImageService; it does not fabricate an acquisition resource, skip pending image replies or create another image owner. These repairs are awaiting the next production runtime observation.
 
+### Named SoundEvent defaults and finalization (2026-11-17)
+
+`ported:` canonical `assets::wwise::event_resources` follows0607f0/05ede0 when a named production declaration is absent: constructor0b3750 and reset05f2f0 retain the named resource, default parser011fc0 reads022c70's empty declaration, then finalizer0b3880 derives `game_defined` from the resource name. The actual engine ID remains constructor zero, with no invented bank, media or game-properties descriptor. Present source is read once and handed to ordinary inheritance resolution; I/O and malformed-source errors remain explicit. The same header registry, bootstrap promotion, marker release and retirement own both present and defaulted declarations.
+
+The installed CueDisappeared reference to `sound_events/game_defined/bsp_ai_properties_05.soundevent` is stale in every mounted archive index. An audit of89 references across the26-definition/58-component AIWorld closure found no other missing direct resource. This is a resource-class default path, not an object-name exception. Existing game-defined declarations also receive the original name-derived finalizer instead of relying on an authored boolean. Source verification is complete; production acceptance is pending in the coordinated build/runtime observation.
+
 
 ### Cue Investigate/SearchDynamic startup closure (2026-11-17)
 
