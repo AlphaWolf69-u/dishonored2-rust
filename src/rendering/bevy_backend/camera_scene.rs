@@ -402,6 +402,7 @@ pub(super) fn register(app: &mut App) {
             render_particles
                 .in_set(Core3dSystems::MainPass)
                 .after(super::fog_scene::AtmospherePass)
+                .after(super::alpha_depth_scene::HairPass)
                 .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
         );
         // FX simulation and publication precede every pass that draws their

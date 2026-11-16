@@ -1085,6 +1085,16 @@ impl MaterialResolver<'_> {
                     uniform.hair[4].w = opaque;
                     // The lit pass clips at hairAlphaTest = r_hairAlphaTestLit.
                     uniform.alpha.x = lit;
+                    // NEW_writePixel's OIT/Weights; OIT/Params is (1, 0, 1, 1)
+                    // for non-particle surfaces (325130; menu capture 10536).
+                    match (value("r_oitColorResistance"), value("r_oitDepthRange"),
+                        value("r_oitOrderingStrength"), value("r_oitWeightFactor")) {
+                        (Some(a), Some(b), Some(c), Some(d)) => uniform.hair[5] = Vec4::new(a, b, c, d),
+                        _ => {
+                            eprintln!("OIT cvars are not registered: {path}");
+                            return None;
+                        }
+                    }
                 }
                 _ => {
                     eprintln!("Hair cvars are not registered: {path}");

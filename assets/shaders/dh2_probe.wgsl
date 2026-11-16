@@ -39,6 +39,13 @@
 // arkSSSRender writes hdrBuffer and sssBuffer; the third target carries the
 // host's per-pixel arkSSSBlur inputs (albedo, kernel width) so the blur runs
 // as one screen pass instead of redrawing the sssSurf list (bevy_backend).
+#ifdef DH2_HAIR_OIT
+// arkHair's OIT pass: hair accumulation and hair revealage.
+struct ProbeOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) opacity: vec4<f32>,
+}
+#else
 #ifdef DH2_SSS_TARGETS
 struct ProbeOutput {
     @location(0) color: vec4<f32>,
@@ -49,6 +56,7 @@ struct ProbeOutput {
 struct ProbeOutput {
     @location(0) color: vec4<f32>,
 }
+#endif
 #endif
 
 fn surface_tag(vertex_output: VertexOutput) -> u32 {
@@ -150,6 +158,7 @@ fn fragment(
     var skin_ambient_normal=vec3<f32>(0.0);
     var skin_kernel=0.0;
     var hair_ibl_tangent=vec3<f32>(0.0);
+    var hair_albedo=vec4<f32>(0.0);
     if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u || compiled_misc.z == 11u || compiled_misc.z == 12u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
@@ -330,6 +339,7 @@ fn fragment(
                 vec3(1.55),specular_reflectance,fresnel_strength),roughness);
             pbr_input.diffuse_occlusion=vec3(1.0);
             hair_ibl_tangent=hair_shift(kajiya,pbr_input.N,surface.hair[0].z);
+            hair_albedo=albedo;
             // Lit pass output alpha: opaque above hairAlphaTestOpaque.
             pbr_input.material.base_color=vec4(albedo.rgb,select(albedo.a,1.0,albedo.a>=surface.hair[4].w));
         }
@@ -518,6 +528,24 @@ fn fragment(
     }
 #endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+#ifdef DH2_HAIR_OIT
+    {
+        // oit NEW_writePixel (RETAIL) with OIT/Params (1, 0, 1, 1): the
+        // additive opacity is 1 and both particle strengths are neutral.
+        // The weight reads the colour in game lighting units.
+        let alpha=hair_albedo.a;
+        let game=vec4(out.color.rgb/(139.26*view.exposure),alpha);
+        let colour_length=length(game);
+        var colour_normal=1.0;
+        if colour_length>0.0 {colour_normal=1.0-dot(game/colour_length,vec4(0.25));}
+        let weights=surface.hair[5];
+        let a=pow(1e-2+colour_normal,weights.x);
+        let b=pow(min(0.02245,vertex_output.position.z)*weights.y,weights.z);
+        let weight=clamp(a*b,1e-2,3e3)*weights.w;
+        out.color=vec4(out.color.rgb,1.0)*(weight*alpha);
+        out.opacity=vec4(alpha,0.0,0.0,0.0);
+    }
+#endif
 #ifdef DH2_SSS_TARGETS
     // sv_target1: (accumDiffuse + accumAmbient) * SSS/SkinFresnelLookup, in
     // the same units as the hdrBuffer output above.

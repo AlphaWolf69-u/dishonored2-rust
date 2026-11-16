@@ -69,8 +69,9 @@ pub struct SurfaceUniform {
     /// specularFlowAngle; secondary power/intensity/shift and
     /// specularNoiseMaskScale; translucencyCoef; translucency/intensity,
     /// distortion, power, min; hairIBL, r_hairLuminanceHack,
-    /// r_hairAlphaTestLit, r_hairAlphaTestOpaque.
-    pub hair: [Vec4; 5],
+    /// r_hairAlphaTestLit, r_hairAlphaTestOpaque; OIT/Weights (r_oitColorResistance,
+    /// r_oitDepthRange, r_oitOrderingStrength, r_oitWeightFactor).
+    pub hair: [Vec4; 6],
     /// Resolved arkHair options: .x bit 0 useFlowMap, bit 1 useSpecularMask,
     /// bit 2 useSpecularNoiseMask, bit 3 hairTranslucencyType, bit 4
     /// translucency/enable, bit 5 twoSidedLighting; .y fresnelStrength bits;
@@ -260,6 +261,7 @@ impl From<&Surface> for SurfaceUniform {
                 Vec4::from_array(s.hair.translucency),
                 // The cvar thresholds are written at material load.
                 Vec4::new(s.hair.ibl, 1.0, 0.0, 0.0),
+                Vec4::ZERO,
             ],
             hair_flags: UVec4::new(0, s.hair.fresnel_strength.to_bits(), 0, 0),
         }

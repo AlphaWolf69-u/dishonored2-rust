@@ -214,6 +214,7 @@ impl MaterialResolver<'_> {
                     flags49: u8::from(refraction) | (u8::from(effects) << 6),
                     full,
                     reduced,
+                    hair: main.eq_ignore_ascii_case("arkhair"),
                 };
                 Ok(std::array::from_fn(|bank| -> Result<_, String> {
                     let present =

@@ -101,8 +101,16 @@ Open, in order:
   hair layer; it needs the lit pass's depth first.
 - The opaque depth prepass at 0.8 with motion vectors: Bevy's prepass
   skips blended materials (vendor prepass/mod.rs queue).
-- The hair OIT targets (RGBA16F ONE ONE, R8 ZERO INV_SRC_COLOR) and the
-  full composite.
+- Hair OIT is connected: AlphaGpu draws the hair lit pass (depth writes)
+  and the OIT pass into RGBA16F/R8 targets, then resolves the hair term
+  before render_particles; the particle resolve after it composes to the
+  original's single composite. Open: pixel history of the menu capture
+  shows the original clears the scene target after the main alpha list
+  (10329-10330) and recomposes it, so the lit pass's own colour does not
+  survive under the OIT resolve there. At opaque hair the OIT colour
+  equals the lit colour (3.365 vs 3.372 at 580,70), but thin strands
+  (beard) differ from the rewrite's lit-then-resolve until that frame
+  structure is traced.
 - One-sided translucency (shadow-map depth).
 
 ## Particle declaration census (2026-11-10)
