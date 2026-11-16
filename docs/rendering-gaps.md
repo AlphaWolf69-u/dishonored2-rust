@@ -137,7 +137,17 @@ Open, in order:
   of other targets; its passes run on deferred command lists, which
   makes RenderDoc pixel history unreliable there). At opaque hair the
   OIT colour equals the lit colour (3.365 vs 3.372 at 580,70).
-- One-sided translucency (shadow-map depth).
+- Resolved from code and data:
+  - Shadows: arkHair's isShadow branch (B8 Bayer threshold against
+    smoothstep(0, 3, alpha)) is the cached `skin_dither` pixel shader the
+    shader-cache classifier already maps to the dithered skinned shadow
+    program (dh2_shadow_skin.wgsl).
+  - arkHairLightPrePass / arkHairSSS (hairPass 2 and 3): no installed
+    material or engine string selects them; the engine's hairPrepass /
+    hairOpacity bindings are the OIT hair targets. Unused.
+  - One-sided translucency: all 84 translucency-enabled hair materials
+    author translucency/intensity 0 and min 0, so the term is zero for
+    every installed hair.
 
 ## Particle declaration census (2026-11-10)
 
