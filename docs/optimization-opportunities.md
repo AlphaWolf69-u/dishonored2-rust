@@ -7,7 +7,8 @@ Remove an entry when it is implemented and measured.
 
 GPU regression audit, 2026-11-17 (read-only renderer review):
 
-- Current normal release walking sample: `analysis/gameplay-repair-20261116/gpu-passes.log`,
+- Current release walking sample with GPU timeline enabled:
+  `analysis/gameplay-repair-20261116/gpu-passes.log`,
   317 measured frames at 1920x1080. GPU timeline reports 16.976 ms busy and
   6.942 ms between measured systems (23.918 ms total). Broad system costs are
   `render_atmosphere` 4.380 ms, `prepare_scene_depth` 1.882 ms,
@@ -18,6 +19,22 @@ GPU regression audit, 2026-11-17 (read-only renderer review):
   includes water depth, ocean work, boat masks and alpha-depth copies. The gap
   is not identified as CPU work or diagnostic overhead by this measurement.
   The saved original 5.19 ms fixture is not a matched walking comparison.
+- Profiling overhead is uncontrolled in this sample. In
+  `vendor/bevy_render-0.19.1/src/renderer/gpu_timeline.rs`, each `mark` creates
+  and finishes its own command encoder containing a timestamp. The
+  `render_context.rs` system flush adds two such command buffers around every
+  system that emitted commands. Frame start additionally submits a standalone
+  timestamp buffer directly; frame end adds query resolve, readback copy and
+  asynchronous mapping through a four-buffer ring. This changes command-list
+  count, submission shape, CPU work and potentially driver/GPU synchronization.
+  The implementation does not explicitly wait for GPU completion, but absence
+  of an explicit wait does not establish negligible overhead. These system
+  intervals and gaps describe the instrumented submission stream; neither its
+  observed FPS nor its busy/gap split proves a normal-game GPU bottleneck or
+  reproduces the user's FPS loss without an otherwise identical
+  timeline-disabled control. That control remains pending. `RUNTIME_VIEW`
+  counters advance three times per image frame in the observed run and must
+  not be used as FPS counters.
 - No excessive fog sample count or resolution was established: the active
   downsample default is 1 (half-size world fog), projected shadow sampling is
   eight taps, local scattering traverses actual tile lists capped at 32 lights
