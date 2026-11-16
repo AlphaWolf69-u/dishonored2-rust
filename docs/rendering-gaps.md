@@ -21,6 +21,30 @@ Its 8 materials are the health and mana potion liquids, the institute
 serum, Karnaca oil and the incendiary, sleep and venom crossbow-bolt
 liquids.
 
+## Character eyes (`arkeyeball`), scoped
+
+Installed `renderprog/arkeyeball` with `BRDF_eye`, sortCoverage,
+useSelfShadowedBumpMap 1.
+- VS: `@eye_EyeDir` = first column of the vertex's skinned `_localSpace`
+  (the eye joint's X axis); texcoords scaled about 0.5 by
+  `eye/Refraction.w`.
+- PS: iris plane tangent frame from the eye direction and the vertex
+  tangent; cornea normal from `Layer1_bumpMap`; refraction through the
+  cornea (`eye/Refraction.x`), iris/hemisphere distances and transition
+  (`eye/UvSettings`), pupil dilation (`eye/Refraction.y`), vein boost
+  (`eye/Refraction.z`); gloss/specular factor from `eye/glossParm` by the
+  iris mask; IOR 1.38; SSBump from `bumpmap` at the iris UV with an HL2
+  basis for directional occlusion; output alpha = albedo alpha.
+- BRDF_eye: sclera diffuse through `eye/sssLut` (vertex N.L), iris
+  diffuse = N.L * directional occlusion (+ `eye/causticMap` 3D when
+  `eye/internalCaustic`), Ward specular times the specular factor,
+  FresnelAccurate; indirect: SH ambient, IBL, and two camera-relative fake
+  specular lights (`eye/FakeLight_1/2`) tinted by the IBL chrominance.
+Defaults: eye/UvSettings (0.23, 0.465, 2.0, 0.05), eye/Refraction
+(0.746, 0, 0, 0), eye/glossParm (1, 1, 1, 1).
+Needs: the eye-direction vertex output for skinned meshes, the HL2
+directional-occlusion helper and the three eye textures.
+
 ## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
 
 `outsider_shrine_01.kiscule` node 116 spawns
