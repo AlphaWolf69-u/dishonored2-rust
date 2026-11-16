@@ -4521,13 +4521,18 @@ fn clipped_query_aabb(
         .chain(planes.iter().flatten())
         .chain(rows.iter().flatten())
         .any(|value| !value.is_finite())
-        || (0..4).any(|axis| expanded[0][axis] > expanded[1][axis])
     {
         return Err("invalid Tome projected query box input".into());
     }
+    // An empty owner box (1c3890's 1e30/-1e30 sentinel: no authored bounds
+    // and no live particles yet) fails the query-bounds overlap test of
+    // FUN_140a71b90 like any box outside the query, so it is not visible.
     let all_planes = (0..planes.len()).collect::<Vec<_>>();
     if !query_bounds_accepts_aabb(query_bounds, expanded, planes, &all_planes)? {
         return Ok(None);
+    }
+    if (0..4).any(|axis| expanded[0][axis] > expanded[1][axis]) {
+        return Err("inverted Tome projected query box overlaps the query bounds".into());
     }
     let active = active_query_planes(planes, expanded);
     let clipped = if active.is_empty() {

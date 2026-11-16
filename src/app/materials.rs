@@ -322,6 +322,13 @@ pub(super) fn specialize_surface(
 /// main colour pass carries both targets plus the host's sssSurface target.
 /// Only skin programs unmask them; other opaque programs leave them as is.
 fn specialize_skin(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::SurfaceKey) {
+    if key.0[6] == 12 {
+        // arkHair: BRDF_hair in the light loop and its program textures.
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("DH2_HAIR".into());
+        }
+        return;
+    }
     if key.0[6] != 11 {
         return;
     }
@@ -414,6 +421,10 @@ pub(super) fn depth_prepass_material_keys(
             !key.extension.depth_needs_material()
         });
     }
+    // arkHair keeps its zPrePass slot (finalize_material_programs clears
+    // nothing for hairType) and draws in the opaque depth prepass at
+    // r_hairAlphaTestOpaque (original menu capture events 691-763).
+    keys.register_blended_prepass::<super::ProbeMaterial>(|key| key.extension.0[6] == 12);
     keys
 }
 

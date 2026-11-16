@@ -14,7 +14,11 @@ pub enum EquipmentInput {
     /// The authored animleaf with WRAP_REPEAT, not the animBasic executor's
     /// loop (which subtracts its separate end margin).
     DefaultAnimation {
-        clip: usize,
+        /// None when the authored default alias names no clip of the
+        /// model's animsets (gun.cpntweapongun's "gun_idle" exists in no
+        /// installed animset, yet the original equips the gun): the leaf then
+        /// yields the rest pose, as an empty animBasic input does.
+        clip: Option<usize>,
         time: f32,
     },
     Basic(AnimBasicNode),
@@ -85,7 +89,8 @@ impl EquipmentTree {
     pub fn update(&mut self, dt: f32, command: Option<AnimBasicCommand>) {
         match &mut self.input {
             EquipmentInput::Basic(input) => input.update(dt, command, &self.animations),
-            EquipmentInput::DefaultAnimation { clip, time } => {
+            EquipmentInput::DefaultAnimation { clip: None, time } => *time = 0.0,
+            EquipmentInput::DefaultAnimation { clip: Some(clip), time } => {
                 let duration = self.animations[*clip].duration();
                 *time = if duration > 0.0 {
                     (*time + dt).rem_euclid(duration)
@@ -117,9 +122,13 @@ impl EquipmentTree {
     fn input_pose(&self) -> Result<Pose, String> {
         let skeleton = &self.rig.skeleton;
         Ok(match &self.input {
-            EquipmentInput::DefaultAnimation { clip, time } => {
+            EquipmentInput::DefaultAnimation { clip: Some(clip), time } => {
                 super::animation::sample(&self.animations[*clip], &skeleton.rest, *time)?
             }
+            EquipmentInput::DefaultAnimation { clip: None, .. } => Pose {
+                joints: skeleton.rest.clone(),
+                weights: vec![255; skeleton.rest.len()],
+            },
             EquipmentInput::Basic(input) => input
                 .evaluate(&self.animations, &skeleton.rest)?
                 .unwrap_or_else(|| Pose {

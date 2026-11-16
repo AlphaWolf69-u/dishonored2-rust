@@ -1533,7 +1533,7 @@ impl StateMachine {
             frame.midnight.last_start_error = Some(format!("{path}: scene not loaded"));
             return 0;
         };
-        match frame.midnight.start_with_parts(scene, frame.md6, rate, frame.animations, parts) {
+        match frame.midnight.start_with_parts(scene, frame.md6, rate, frame.animations, parts, frame.random) {
             Ok(handle) => handle,
             Err(error) => {
                 eprintln!("Midnight scene {path}: {error}");
@@ -1649,7 +1649,7 @@ impl StateMachine {
             frame.midnight.last_start_error = Some(format!("{path}: scene not loaded"));
             return 0;
         };
-        match frame.midnight.start_with_parts_at_seconds(scene, frame.md6, rate, frame.animations, parts, seconds) {
+        match frame.midnight.start_with_parts_at_seconds(scene, frame.md6, rate, frame.animations, parts, seconds, frame.random) {
             Ok(handle) => handle,
             Err(error) => { frame.midnight.last_start_error = Some(format!("{path}: {error}")); 0 }
         }

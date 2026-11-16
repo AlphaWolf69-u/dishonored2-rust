@@ -25,6 +25,13 @@ impl<T> Deref for SceneView<T> { type Target = T; fn deref(&self) -> &T { &self.
 impl<T: fmt::Debug> fmt::Debug for SceneView<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Debug::fmt(self.data.as_ref(), f) }
 }
+#[cfg(test)]
+impl<T> SceneView<T> {
+    /// A view of an in-memory scene with no installed declaration behind it.
+    pub(crate) fn detached(data: T) -> Arc<Self> {
+        Arc::new(Self { data: Arc::new(data), definition: Arc::new(Definition::new("")) })
+    }
+}
 impl<T: Clone> SceneView<T> {
     pub(crate) fn duplicate(&self) -> Arc<Self> {
         Arc::new(Self { data: Arc::new((*self.data).clone()), definition: Arc::clone(&self.definition) })
@@ -239,6 +246,7 @@ fn player_bytes(scene: &MidnightScene) -> usize {
         + vector_bytes(&scene.nodes) + scene.nodes.iter().map(|node| node.group.capacity() + vector_bytes(&node.next)
             + node.next.iter().map(|(name, _)| name.capacity()).sum::<usize>()).sum::<usize>()
         + vector_bytes(&scene.bool_nodes) + scene.bool_nodes.iter().map(|node| node.name.capacity()).sum::<usize>()
+        + vector_bytes(&scene.int_nodes) + scene.int_nodes.iter().map(|node| node.name.capacity() + vector_bytes(&node.outputs)).sum::<usize>()
         + vector_bytes(&scene.loops) + scene.loops.iter().map(|node| node.name.capacity()).sum::<usize>()
         + vector_bytes(&scene.scenes) + scene.scenes.iter().map(|scene| vector_bytes(&scene.groups) + scene.groups.iter().map(|group|
             vector_bytes(&group.specific_models) + group.specific_models.iter().map(String::capacity).sum::<usize>()

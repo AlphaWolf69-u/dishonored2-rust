@@ -375,8 +375,8 @@ impl Models {
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
     ) -> Result<(), String> {
         for (&id, model) in &mut self.live {
-            let render = model.weapon.as_ref().and_then(|weapon| renders.iter().find(|render| {
-                render.managed_entity == model.parent && render.model == weapon.model
+            let render = model.weapon.as_ref().and_then(|weapon| weapon.visual.as_ref()).and_then(|visual| renders.iter().find(|render| {
+                render.managed_entity == model.parent && render.model == visual.model
             }));
             let parent = identities
                 .and_then(|identities| model.parent.and_then(|parent|identities.published_frame(parent)))

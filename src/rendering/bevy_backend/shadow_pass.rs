@@ -3095,8 +3095,11 @@ mod tests {
         }
     }
 
+    /// World programs read the shared mesh's own view-space positions and
+    /// undo game_to_view in the shader (ae34f510); rigid programs read the
+    /// retained game-local VEGETATION_POSITION and reject baked positions.
     #[test]
-    fn world_programs_reject_forward_baked_positions() {
+    fn rigid_programs_reject_forward_baked_positions() {
         let mut mesh = Mesh::new(
             bevy::mesh::PrimitiveTopology::TriangleList,
             bevy::asset::RenderAssetUsages::default(),
@@ -3105,13 +3108,10 @@ mod tests {
         let mut layouts = bevy::mesh::MeshVertexBufferLayouts::default();
         let baked = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         let programs = [
-            ShadowProgram::WorldOpaque,
-            ShadowProgram::WorldAlphaTested,
-            ShadowProgram::WorldVistaAlpha,
-            ShadowProgram::WorldVegetation,
-            ShadowProgram::WorldVegetationFixed,
             ShadowProgram::RigidOpaque,
             ShadowProgram::RigidAlphaTested,
+            ShadowProgram::RigidVistaAlpha,
+            ShadowProgram::Vegetation,
         ];
         for program in programs {
             let attribute = caster_position(program).at_shader_location(0);

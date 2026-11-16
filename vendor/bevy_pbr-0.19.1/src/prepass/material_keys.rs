@@ -19,6 +19,7 @@ type MaterialFree = Box<dyn Fn(&ErasedMaterialKey) -> bool + Send + Sync>;
 pub struct DepthPrepassMaterialKeys {
     normalizers: HashMap<TypeId, Normalize>,
     material_free: HashMap<TypeId, MaterialFree>,
+    blended_prepass: HashMap<TypeId, MaterialFree>,
     normalized: AtomicU64,
     omitted: AtomicU64,
 }
@@ -44,6 +45,24 @@ impl DepthPrepassMaterialKeys {
             TypeId::of::<M>(),
             Box::new(move |key| predicate(&key.to_key::<M::Data>())),
         );
+    }
+
+    /// A blended material whose program still draws in the depth prepass,
+    /// with its own discard (queued like an alpha-masked material).
+    pub fn register_blended_prepass<M: crate::Material>(&mut self, predicate: fn(&M::Data) -> bool)
+    where
+        M::Data: Clone,
+    {
+        self.blended_prepass.insert(
+            TypeId::of::<M>(),
+            Box::new(move |key| predicate(&key.to_key::<M::Data>())),
+        );
+    }
+
+    pub(crate) fn blended_draws_prepass(&self, material: TypeId, key: &ErasedMaterialKey) -> bool {
+        self.blended_prepass
+            .get(&material)
+            .is_some_and(|predicate| predicate(key))
     }
 
     pub fn normalized_keys(&self) -> u64 {

@@ -494,7 +494,10 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             super::projected_decals::publish_runtime,
             super::usable_effects::publish).chain()
             .after(super::usable_animation::advance)
-            .run_if(super::loading_screen::is_playing))
+            // The loading gate's "initial player resources" waits for owned
+            // equipment admission, which this coordinator publishes: it runs
+            // once the scene is published, not only after loading ends.
+            .run_if(super::loading_screen::scene_published))
         .add_systems(
             PostUpdate,
             publish_initial_whole_view_depth

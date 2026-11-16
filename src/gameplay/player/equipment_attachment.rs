@@ -19,12 +19,15 @@ pub struct Binding {
 }
 
 impl Selection {
-    pub fn read(rig: &Rig, tag: &str) -> Result<Self, String> {
+    /// 879890 reads the tag from the parent md6 property group named by
+    /// the bound child's model (entity +0x1bb0); 25bfe0 falls back to _info
+    /// when that group is absent.
+    pub fn read(rig: &Rig, child_model: &str, tag: &str) -> Result<Self, String> {
         if tag.is_empty() {
             return Ok(Self::Entity);
         }
         if let Some((joint, offset, rotation)) =
-            rig.optional_tag_quaternion_in_group("_info", tag)?
+            rig.optional_tag_quaternion_in_group(child_model, tag)?
         {
             return Ok(Self::Tag {
                 joint,

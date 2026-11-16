@@ -273,7 +273,7 @@ impl ReadyPower {
 pub(super) struct ReadyEquipment {
     pub item: Arc<PickableItem>,
     pub descriptor: Arc<Descriptor>,
-    pub tree: EquipmentTree,
+    pub tree: Option<EquipmentTree>,
     side: usize,
     arm: Option<PreparedEquipment>,
     banks: Vec<Option<Bank>>,
@@ -297,7 +297,7 @@ impl ReadyEquipment {
                 1 | 2 => player.body.arms.get(target - 1).is_some_and(|arm| {
                     arm.model == bank.model && arm.animations.len() == bank.base
                 }),
-                3 | 4 if target == self.side + 3 => self.tree.animations.len() == bank.base,
+                3 | 4 if target == self.side + 3 => self.tree.as_ref().is_some_and(|tree| tree.animations.len() == bank.base),
                 3 | 4 => player.body.equipment[target - 3]
                     .as_ref()
                     .is_some_and(|tree| {
@@ -340,7 +340,7 @@ impl ReadyEquipment {
                 }
                 3 | 4 => {
                     let tree = if target == self.side + 3 {
-                        &mut self.tree
+                        self.tree.as_mut().expect("validated equipment tree")
                     } else {
                         player.body.equipment[target - 3]
                             .as_mut()
@@ -361,7 +361,7 @@ impl ReadyEquipment {
             identity: self.item.path.to_string(),
             entity: self.descriptor.entity.clone(),
             equipment: Arc::new(self.descriptor.equipment.clone()),
-            tree: Some(self.tree),
+            tree: self.tree,
         })
     }
 }
@@ -601,6 +601,15 @@ impl PlayerActions {
         for pending in self.owned_loading.values() {
             pending.cancelled.store(true, Ordering::Release);
         }
+    }
+
+    /// The startup conditions still pending (load-timing diagnostics).
+    pub fn debug_startup_pending(&self) -> String {
+        format!("rehydrated={} loading={:?} power_loading={} metadata_loading={:?} ready={} power_ready={} selections={} owned_loading={:?} prepared_owned={} prepared_metadata={} owned_targets={}",
+            self.rehydrated, self.loading.keys().collect::<Vec<_>>(), self.power_loading.len(),
+            self.metadata_loading.keys().collect::<Vec<_>>(), self.ready.len(), self.power_ready.len(),
+            self.selection_requests.len(), self.owned_loading.keys().collect::<Vec<_>>(),
+            self.prepared_owned_equipment.len(), self.prepared_owned_metadata.len(), self.owned_targets.len())
     }
 
     pub fn startup_pending(&self) -> bool {
@@ -1261,7 +1270,8 @@ impl PlayerActions {
         snapshots[0] = Some(Snapshot {
             managed_entity: None,
             rig: self.body.clone(),
-            model: self.body.path.clone(),
+            // The cast's body md6, which CONDMD6 choices name (1407ccdc0).
+            model: player.md6().to_owned(),
             aliases: player.body.animation_aliases.clone(),
             base: player.body.animations.len(),
         });
@@ -1517,7 +1527,8 @@ impl PlayerActions {
         snapshots[0] = Some(Snapshot {
             managed_entity: None,
             rig: self.body.clone(),
-            model: self.body.path.clone(),
+            // The cast's body md6, which CONDMD6 choices name (1407ccdc0).
+            model: player.md6().to_owned(),
             aliases: player.body.animation_aliases.clone(),
             base: player.body.animations.len(),
         });
@@ -1591,7 +1602,8 @@ impl PlayerActions {
                 .ok_or_else(|| format!("arm {side} has no equipment locomotion state {name}"))?;
             let body = snapshots[0].as_ref().expect("body snapshot").rig.clone();
             let tree = descriptor.instantiate(&body, &arm_rigs, true)?;
-            snapshots[side + 3] = Some(Snapshot {
+            // Equipment without an animated entity is not cast (8542b0).
+            snapshots[side + 3] = tree.as_ref().map(|tree| Snapshot {
                 managed_entity: tree.managed_entity,
                 rig: tree.rig.clone(),
                 model: tree.model.clone(),
@@ -1787,6 +1799,9 @@ pub(super) fn scene_indices(
                 } else if let Some(node) = scene.decl.loops.iter().find(|node| node.uid == uid) {
                     pending.push_back(node.looping);
                     pending.push_back(node.end);
+                } else if let Some(node) = scene.decl.int_nodes.iter().find(|node| node.uid == uid) {
+                    pending.extend(node.outputs.iter().copied());
+                    pending.push_back(node.default);
                 } else {
                     let node = scene
                         .decl

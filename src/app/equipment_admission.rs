@@ -148,6 +148,10 @@ pub(in crate::app) fn request(
     entity: EntityId,
     descriptor: Arc<Descriptor>,
 ) -> Result<(), String> {
+    // Equipment without a render model has no surfaces to admit.
+    if descriptor.visual.is_none() {
+        return Ok(());
+    }
     let mut coordinator = world
         .get_resource_mut::<RuntimeMaterialCoordinator>()
         .ok_or("runtime material coordinator is absent")?;
@@ -770,7 +774,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                 withdraw(world, &ready.item.path);
                 continue;
             }
-            if !admitted(world, entity) {
+            if ready.descriptor.visual.is_some() && !admitted(world, entity) {
                 match request(world, entity, ready.descriptor.clone()) {
                     Ok(()) => actions.requeue(ready),
                     Err(error) => {

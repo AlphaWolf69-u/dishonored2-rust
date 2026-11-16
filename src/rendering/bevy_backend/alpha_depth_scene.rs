@@ -23,14 +23,28 @@ pub struct AlphaDepthMaterial {
     pub flags49: u8,
     pub full: bool,
     pub reduced: bool,
+    /// arkHair: drawn by the hair pass (lit with depth writes, then OIT)
+    /// instead of the ordinary transparent phase.
+    pub hair: bool,
 }
 #[derive(Resource, Default)]
 pub struct AlphaDepthSources(pub HashMap<MainEntity, Result<AlphaDepthMaterial, String>>);
 /// Forward-list partitioning must finish before alpha-depth clones its batches.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AlphaDepthPreparation;
+/// The hair lit pass, hair OIT pass and hair resolve, before the particle
+/// list's accumulation and resolve.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HairPass;
+const HAIR_RESOLVE: &str = include_str!("../../../assets/shaders/dh2_hair_resolve.wgsl");
 #[derive(Resource, Default)]
 pub(super) struct AlphaGpu {
+    /// [lit with depth writes, OIT] per view.
+    hair_phases: HashMap<RetainedViewEntity, [SortedRenderPhase<Transparent3d>; 2]>,
+    hair_pipelines: HashMap<(CachedRenderPipelineId, u8), CachedRenderPipelineId>,
+    /// RGBA16F hair accumulation, R8 hair revealage.
+    hair_targets: Option<(FogAttachment, FogAttachment)>,
+    hair_resolve: Option<(TextureFormat, BindGroupLayout, RenderPipeline)>,
     opacity: Option<FogAttachment>,
     phases: HashMap<RetainedViewEntity, [SortedRenderPhase<Transparent3d>; 3]>,
     pipelines:
@@ -56,6 +70,8 @@ impl AlphaGpu {
             }
         }
         gpu.phases.clear();
+        gpu.hair_phases.clear();
+        gpu.hair_targets = None;
         *gpu.completed.get_mut().unwrap_or_else(|error| error.into_inner()) = None;
     }
 
@@ -92,6 +108,16 @@ pub fn register(app: &mut App) {
                 draw.in_set(Core3dSystems::MainPass)
                     .after(super::fog_scene::SceneDepthPass)
                     .before(super::fog_scene::SceneLightsPass),
+            )
+            .add_systems(
+                Core3d,
+                // Original menu capture: hair lit pass 10249, hair OIT
+                // 10536, particle OIT 10626, composite 10659.
+                draw_hair
+                    .in_set(Core3dSystems::MainPass)
+                    .in_set(HairPass)
+                    .after(super::fog_scene::AtmospherePass)
+                    .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
             );
     }
 }
@@ -113,13 +139,14 @@ fn prepare(
     cache: Res<PipelineCache>,
     device: Res<RenderDevice>,
     display: Res<super::display_scene::DisplaySceneFrame>,
-    phases: Res<ViewSortedRenderPhases<Transparent3d>>,
+    mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<(&ExtractedView, &ViewTarget, &ViewDepthTexture)>,
     mut last_error: Local<Option<String>>,
     mut unsupported: Local<HashSet<String>>,
 ) {
     *gpu.completed.get_mut().unwrap() = None;
     gpu.phases.clear();
+    gpu.hair_phases.clear();
     // Alpha depth is also a fog input, independently of the DoF switch.
     if display.0.is_none() {
         return;
@@ -183,6 +210,9 @@ fn prepare(
                                         .ok_or("alpha depth MAIN has no fragment")?;
                                     fragment.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
                                     fragment.shader = SHADER;
+                                    // Programs whose alpha test differs in the
+                                    // alpha-depth passes (arkHair: r_hairAlphaTestAlpha).
+                                    fragment.shader_defs.push("DH2_ALPHA_DEPTH".into());
                                     if material.flags49 & 1 != 0 {
                                         fragment.shader_defs.push("DH2_REFRACTION".into());
                                     }
@@ -231,6 +261,88 @@ fn prepare(
                     }
                 }
                 index += count;
+            }
+            // arkHair leaves the ordinary transparent phase for the hair pass.
+            let mut hair: [SortedRenderPhase<Transparent3d>; 2] = std::array::from_fn(|_| Default::default());
+            let mut hair_members = HashSet::new();
+            let mut index = 0;
+            while index < source.items.len() {
+                let item = &source.items[index];
+                let count = item.batch_range.len().max(1);
+                let is_hair = sources.0.get(&item.entity.1)
+                    .is_some_and(|material| material.as_ref().is_ok_and(|material| material.hair));
+                if is_hair {
+                    for kind in 0..2u8 {
+                        let key = (item.pipeline, kind);
+                        let pipeline = if let Some(id) = gpu.hair_pipelines.get(&key) {
+                            *id
+                        } else {
+                            let Some(_) = cache.get_render_pipeline(item.pipeline) else {
+                                pending = true;
+                                break;
+                            };
+                            let mut descriptor = cache.get_render_pipeline_descriptor(item.pipeline).clone();
+                            let depth = descriptor.depth_stencil.as_mut().ok_or("hair pipeline has no depth state")?;
+                            // The lit pass writes depth (capture 10249); OIT only tests it.
+                            depth.depth_write_enabled = Some(kind == 0);
+                            if kind == 1 {
+                                descriptor.label = Some("hair oit mesh".into());
+                                let fragment = descriptor.fragment.as_mut().ok_or("hair MAIN has no fragment")?;
+                                fragment.shader_defs.push("DH2_HAIR_OIT".into());
+                                let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One,
+                                    operation: BlendOperation::Add };
+                                let reveal = BlendComponent { src_factor: BlendFactor::Zero,
+                                    dst_factor: BlendFactor::OneMinusSrc, operation: BlendOperation::Add };
+                                fragment.targets = vec![
+                                    Some(ColorTargetState { format: TextureFormat::Rgba16Float,
+                                        blend: Some(BlendState { color: add, alpha: add }), write_mask: ColorWrites::ALL }),
+                                    Some(ColorTargetState { format: TextureFormat::R8Unorm,
+                                        blend: Some(BlendState { color: reveal, alpha: reveal }), write_mask: ColorWrites::RED }),
+                                ];
+                            } else {
+                                descriptor.label = Some("hair lit mesh".into());
+                            }
+                            let id = cache.queue_render_pipeline(descriptor);
+                            gpu.hair_pipelines.insert(key, id);
+                            id
+                        };
+                        if cache.get_render_pipeline(pipeline).is_none() {
+                            pending = true;
+                            continue;
+                        }
+                        for member in index..(index + count).min(source.items.len()) {
+                            hair[kind as usize].add_retained(copy_item(&source.items[member], pipeline));
+                        }
+                    }
+                    for member in index..(index + count).min(source.items.len()) {
+                        hair_members.insert(member);
+                    }
+                }
+                index += count;
+            }
+            if !hair_members.is_empty() && !pending {
+                let extent = UVec2::new(target.main_texture().width(), target.main_texture().height());
+                if gpu.hair_targets.as_ref().is_none_or(|(accumulation, _)|
+                    accumulation.texture.width() != extent.x || accumulation.texture.height() != extent.y) {
+                    gpu.hair_targets = Some((
+                        FogAttachment::new(&device, "hair accumulation", extent, TextureFormat::Rgba16Float),
+                        FogAttachment::new(&device, "hair revealage", extent, TextureFormat::R8Unorm),
+                    ));
+                }
+                gpu.hair_phases.insert(view.retained_view_entity, hair);
+                ensure_hair_resolve(&mut gpu, &device, target.main_texture_format());
+            }
+            if !hair_members.is_empty() {
+                // Pending hair pipelines keep the surfaces out of both paths
+                // for that frame, as the ordinary pipelines do while compiling.
+                if let Some(phase) = phases.get_mut(&view.retained_view_entity) {
+                    let mut position = 0;
+                    phase.items.retain(|_, _| {
+                        let keep = !hair_members.contains(&position);
+                        position += 1;
+                        keep
+                    });
+                }
             }
             if !pending && selected.iter().any(|p| !p.items.is_empty()) {
                 let extent = UVec2::new(
@@ -356,4 +468,144 @@ fn draw(
     }
     *gpu.completed.lock().unwrap() =
         Some((main.id(), water.matrices.frame, !phases[2].items.is_empty()));
+}
+
+/// arkHair's lit pass (blend SRC_ALPHA, depth writes), its OIT pass into the
+/// hair accumulation and revealage, and the hair resolve into the view.
+fn draw_hair(
+    world: &World,
+    view: ViewQuery<(&ExtractedView, &ViewTarget, &ViewDepthTexture)>,
+    gpu: Res<AlphaGpu>,
+    device: Res<RenderDevice>,
+    mut context: RenderContext,
+) {
+    let entity = view.entity();
+    let (extracted, target, main_depth) = view.into_inner();
+    let Some(phases) = gpu.hair_phases.get(&extracted.retained_view_entity) else {
+        return;
+    };
+    if phases[0].items.is_empty() {
+        return;
+    }
+    let Some((accumulation, revealage)) = gpu.hair_targets.as_ref() else {
+        return;
+    };
+    {
+        let mut pass = context.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("hair lit"),
+            color_attachments: &[Some(target.get_color_attachment())],
+            depth_stencil_attachment: Some(main_depth.get_attachment(StoreOp::Store)),
+            ..Default::default()
+        });
+        if let Err(error) = phases[0].render(&mut pass, world, entity) {
+            error!("Hair lit submission failed: {error:?}");
+            return;
+        }
+    }
+    {
+        let colors = [
+            Some(RenderPassColorAttachment {
+                view: &accumulation.view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: Operations { load: LoadOp::Clear(Default::default()), store: StoreOp::Store },
+            }),
+            Some(RenderPassColorAttachment {
+                view: &revealage.view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: Operations {
+                    load: LoadOp::Clear(bevy::color::LinearRgba::new(1., 0., 0., 1.).into()),
+                    store: StoreOp::Store,
+                },
+            }),
+        ];
+        let mut pass = context.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("hair oit"),
+            color_attachments: &colors,
+            depth_stencil_attachment: Some(main_depth.get_attachment(StoreOp::Store)),
+            ..Default::default()
+        });
+        if let Err(error) = phases[1].render(&mut pass, world, entity) {
+            error!("Hair OIT submission failed: {error:?}");
+            return;
+        }
+    }
+    let Some((format, layout, pipeline)) = gpu.hair_resolve.as_ref() else {
+        return;
+    };
+    if *format != target.main_texture_format() {
+        return;
+    }
+    let binding = device.create_bind_group(Some("hair resolve"), layout, &[
+        BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&accumulation.view) },
+        BindGroupEntry { binding: 1, resource: BindingResource::TextureView(&revealage.view) },
+    ]);
+    let encoder = context.command_encoder();
+    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+        label: Some("hair resolve"),
+        color_attachments: &[Some(RenderPassColorAttachment {
+            view: target.main_texture_view(),
+            depth_slice: None,
+            resolve_target: None,
+            ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+        })],
+        ..Default::default()
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, &binding, &[]);
+    pass.draw(0..3, 0..1);
+}
+
+fn ensure_hair_resolve(gpu: &mut AlphaGpu, device: &RenderDevice, format: TextureFormat) {
+    if gpu.hair_resolve.as_ref().is_none_or(|(old, _, _)| *old != format) {
+        let texture = |binding| BindGroupLayoutEntry {
+            binding,
+            visibility: ShaderStages::FRAGMENT,
+            ty: BindingType::Texture {
+                sample_type: TextureSampleType::Float { filterable: false },
+                view_dimension: TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(Some("hair resolve"), &[texture(0), texture(1)]);
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("hair resolve"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("hair resolve"),
+            source: ShaderSource::Wgsl(HAIR_RESOLVE.into()),
+        });
+        // PostFX_CompositeWeightedBlendedOIT: blend ONE SRC_ALPHA, no depth.
+        let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
+            label: Some("hair resolve"),
+            layout: Some(&pipeline_layout),
+            vertex: RawVertexState { module: &shader, entry_point: Some("resolve_vertex"),
+                compilation_options: default(), buffers: &[] },
+            fragment: Some(RawFragmentState {
+                module: &shader,
+                entry_point: Some("resolve_fragment"),
+                compilation_options: default(),
+                targets: &[Some(ColorTargetState {
+                    format,
+                    blend: Some(BlendState {
+                        color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::SrcAlpha,
+                            operation: BlendOperation::Add },
+                        alpha: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::SrcAlpha,
+                            operation: BlendOperation::Add },
+                    }),
+                    write_mask: ColorWrites::COLOR,
+                })],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        gpu.hair_resolve = Some((format, layout, pipeline));
+    }
 }

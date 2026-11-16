@@ -35,15 +35,23 @@ pub struct Metadata {
 
 pub struct Descriptor {
     pub metadata: Arc<Metadata>,
+    /// The rendered, animated entity. Equipment declared without a render
+    /// model (Emily's spyglass is a bare idEntity with its item component)
+    /// has none: 8542b0 casts an equipment entity only when it has an
+    /// animation component, so it never gets a tree.
+    pub visual: Option<Visual>,
+    pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
+}
+
+pub struct Visual {
     pub model: String,
     pub rig: Arc<Rig>,
     pub geometry: Arc<bmd6::ModelInfo>,
     pub animation_tree: String,
     pub animations: Vec<crate::edge_animation::EdgeAnimation>,
     pub animation_aliases: HashMap<String, usize>,
-    pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
-    default_clip: usize,
-    ///62ba10's cached model-local bolt socket sampled at the Fire scene key.
+    default_clip: Option<usize>,
+    ///62ba10 cached model-local bolt socket sampled at the Fire scene key.
     pub projectile_offset: Option<bevy_math::Vec3>,
 }
 
@@ -89,8 +97,11 @@ impl Descriptor {
                 if equipped { "equipped" } else { "unequipped" }
             )
         })?;
-        let (joint, translation, rotation) = owner.tag(tag)?;
-        Ok((binding, joint, (translation, rotation)))
+        // 875e80 -> 879890: the parent md6 property group named by the bound
+        // entity's model (+0x1bb0), falling back to _info (25bfe0).
+        let model = &self.visual.as_ref().ok_or("equipment without a render model has no binding")?.model;
+        let (joint, translation, rotation) = owner.tag_quaternion_in_group(model, tag)?;
+        Ok((binding, joint, (translation, bevy_math::Mat3::from_quat(rotation))))
     }
 
     pub fn instantiate(
@@ -98,7 +109,8 @@ impl Descriptor {
         body: &Rig,
         arms: &[Arc<Rig>; 2],
         equipped: bool,
-    ) -> Result<EquipmentTree, String> {
+    ) -> Result<Option<EquipmentTree>, String> {
+        let Some(visual) = self.visual.as_ref() else { return Ok(None) };
         let (binding, bind_joint, bind) = self.binding(body, arms, equipped)?;
         let (owner, joint, offset) = self.binding(body, arms, true)?;
         let equipped_attachment = AttachmentBinding {
@@ -112,15 +124,15 @@ impl Descriptor {
             joint,
             offset,
         };
-        Ok(EquipmentTree {
+        Ok(Some(EquipmentTree {
             managed_entity: None,
             sound_settings: self.sound_settings,
-            rig: self.rig.clone(),
-            model: self.model.clone(),
-            animations: self.animations.clone(),
-            animation_aliases: self.animation_aliases.clone(),
+            rig: visual.rig.clone(),
+            model: visual.model.clone(),
+            animations: visual.animations.clone(),
+            animation_aliases: visual.animation_aliases.clone(),
             input: EquipmentInput::DefaultAnimation {
-                clip: self.default_clip,
+                clip: visual.default_clip,
                 time: 0.0,
             },
             binding,
@@ -129,7 +141,7 @@ impl Descriptor {
             bind_joint,
             bind,
             visible: equipped || !self.equipment.hide_unequipped,
-        })
+        }))
     }
 
     /// Change only the real entity attachment/visibility at the state's
@@ -249,7 +261,7 @@ impl Sources {
             "cpntpower",
             |path| sources.read(path),
         )?);
-        for kind in ["cpntheart", "cpnttimeshiftdevice"] {
+        for kind in ["cpntheart", "cpnttimeshiftdevice", "cpntitemspyglass", "cpntarmor"] {
             if let Some(fields) =
                 entities::player::entity_component(&key, kind, |path| sources.read(path))?
             {
@@ -270,6 +282,8 @@ impl Sources {
             "cpntweaponthrowable" => (4, 1, false),   //632bf0 ->6376c0
             "cpntheart" => (7, 1, false),             //611800 ->619ea0
             "cpnttimeshiftdevice" => (9, 1, false),   //44bbe0 ->619ea0
+            "cpntitemspyglass" => (6, 4, false),      //61b970 ->619ea0
+            "cpntarmor" => (8, 4, false),             // arkDeclCpntArmor ->619ea0
             // Each concrete power constructor calls61ba50 ->619ea0(5,1).
             "cpntpowerbendtime"
             | "cpntpowerblink"
@@ -358,7 +372,15 @@ impl Sources {
                 model = Some(value.to_owned());
             }
         }
-        let model = model.ok_or_else(|| format!("{entity}: equipment has no render model"))?;
+        let sound_settings = metadata.sound_settings;
+        let Some(model) = model else {
+            check_active(cancelled)?;
+            let descriptor = Arc::new(Descriptor { metadata, visual: None, sound_settings });
+            if !catalog.has_overlays() {
+                self.entities.insert(key, Arc::downgrade(&descriptor));
+            }
+            return Ok(descriptor);
+        };
         let anim =
             entities::player::entity_component(&key, "cpntanimevolved", |path| sources.read(path))?
                 .ok_or_else(|| format!("{entity}: equipment has no animation component"))?;
@@ -382,7 +404,6 @@ impl Sources {
             .default_alias
             .as_deref()
             .ok_or_else(|| format!("{entity}: equipment has no default animation alias"))?;
-        let sound_settings = metadata.sound_settings;
         check_active(cancelled)?;
         let rig = Rig::acquire(catalog, &model)?;
         check_active(cancelled)?;
@@ -394,7 +415,11 @@ impl Sources {
                 animations: Vec::new(),
                 loaded: HashMap::new(),
             };
-            let default_clip = clips.clip(default_alias)?;
+            let default_clip = if rig.alias(default_alias).is_some() {
+                Some(clips.clip_cancellable(default_alias, cancelled)?)
+            } else {
+                None
+            };
             let projectile_offset = if let Some(settings) = metadata.ranged.as_ref().filter(|settings| settings.family == RangedFamily::Crossbow) {
                 if let Some(alias) = settings.fired_animation.as_deref() { clips.clip_cancellable(alias, cancelled)?; }
                 Some(firing::crossbow_offset(&mut sources, settings, &rig, &mut clips, cancelled)?)
@@ -410,15 +435,8 @@ impl Sources {
         check_active(cancelled)?;
         let descriptor = Arc::new(Descriptor {
             metadata,
-            model,
-            rig,
-            geometry,
-            animation_tree,
-            animations,
-            animation_aliases,
+            visual: Some(Visual { model, rig, geometry, animation_tree, animations, animation_aliases, default_clip, projectile_offset }),
             sound_settings,
-            default_clip,
-            projectile_offset,
         });
         if !catalog.has_overlays() {
             self.entities.insert(key, Arc::downgrade(&descriptor));

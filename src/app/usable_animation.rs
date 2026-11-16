@@ -86,13 +86,13 @@ impl UsableAnimations {
     /// The same asset, node and sample become the live animation owner.
     pub(super) fn prepare_dependencies(catalog: &crate::archive::Catalog,
         interactions: Option<&super::interactions::Interactions>, models: &[crate::entities::PlacedModel],
-        requests: &[(usize, String)], machinery: &super::machinery::AmbientMachinery,
+        requests: &[(usize, String, Option<String>)], machinery: &super::machinery::AmbientMachinery,
         cancelled: impl Fn() -> bool) -> Result<Self, String> {
         let mut owner = Self::default();
         if requests.is_empty() { return Ok(owner); }
         let Some(interactions) = interactions else { return Ok(owner); };
         let physics = machinery.physics_placements();
-        for &(index, _) in requests {
+        for &(index, _, _) in requests {
             if owner.placements.contains_key(&index) { continue; }
             if cancelled() { return Err("bound animation preparation cancelled".into()); }
             let placed = models.get(index).ok_or("bound animation parent placement is absent")?;

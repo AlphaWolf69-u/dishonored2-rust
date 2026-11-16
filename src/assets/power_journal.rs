@@ -183,6 +183,7 @@ pub fn definitions_from_system<'a>(catalog: &Catalog, system: &[(String, Value)]
     let rune = atom(&system, "m_rune").unwrap_or("").to_owned();
     let mut result = Vec::new();
     for item in items {
+        if result.iter().any(|power: &Power| power.item.eq_ignore_ascii_case(item)) { continue; }
         let fields = crate::assets::inventory_item::item_fields(catalog, item)?;
         if atom(&fields, "m_type") != Some("TYPE_POWER") { continue; }
         let Some(entity) = atom(&fields, "m_equipment") else { continue };

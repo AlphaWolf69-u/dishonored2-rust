@@ -7,7 +7,9 @@ pub struct Map {
     pub title: String,
     pub item_name: String,
     pub can_be_picked_up: bool,
-    pub image: String,
+    /// m_journalImageLarge; the base map template authors none, and
+    /// 1408450b0 presents the map with whatever image the item resolves.
+    pub image: Option<String>,
     pub thumbnail: Option<String>,
     pub description: String,
     pub legends: Vec<String>,
@@ -34,8 +36,7 @@ pub fn resolve_fields(catalog: &Catalog, item: &str, fields: &[(String, Value)])
     let description = atom(&fields, "m_description").unwrap_or("").to_owned();
     // 1408450b0 falls through to the note presentation when map metadata is absent.
     let Some(info) = atom(&fields, "m_levelMapInfo").filter(|info| !info.is_empty() && *info != "NULL") else { return Ok(None) };
-    let image = atom(&fields, "m_journalImageLarge").filter(|name| !name.is_empty() && *name != "NULL")
-        .ok_or_else(|| format!("map item {item} has no large image"))?.to_owned();
+    let image = atom(&fields, "m_journalImageLarge").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned);
     let fields = entities::player::resolved_decl("cpntinteractivemap", info, read)?;
     let title = atom(&fields, "m_title").unwrap_or("").to_owned();
     let legends = scope(&fields, "m_legends").map(|list| list_items(list).into_iter().filter_map(|value| match value {

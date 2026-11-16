@@ -12,10 +12,132 @@ materials (potion and oil liquids), not by FX particles.
 
 | Gap | Installed content | Status |
 |---|---|---|
-| `arkhair` | 134 materials | none: character hair program; needed once characters render |
-| `arkeyeball` | 23 materials | none: character eye program |
-| `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
-| `particle/filing_container` | 8 model materials (potion and oil liquids) | none: opaque mesh program (`blend ONE ZERO`, sortCoverage); no FX particle uses it |
+| `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | in progress: see "Character hair" below |
+| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | none: program `renderprog/arkeyeball` with `BRDF_eye` |
+| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
+
+`particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
+Its 8 materials are the health and mana potion liquids, the institute
+serum, Karnaca oil and the incendiary, sleep and venom crossbow-bolt
+liquids.
+
+## Character eyes (`arkeyeball`), scoped
+
+Installed `renderprog/arkeyeball` with `BRDF_eye`, sortCoverage,
+useSelfShadowedBumpMap 1.
+- VS: `@eye_EyeDir` = first column of the vertex's skinned `_localSpace`
+  (the eye joint's X axis); texcoords scaled about 0.5 by
+  `eye/Refraction.w`.
+- PS: iris plane tangent frame from the eye direction and the vertex
+  tangent; cornea normal from `Layer1_bumpMap`; refraction through the
+  cornea (`eye/Refraction.x`), iris/hemisphere distances and transition
+  (`eye/UvSettings`), pupil dilation (`eye/Refraction.y`), vein boost
+  (`eye/Refraction.z`); gloss/specular factor from `eye/glossParm` by the
+  iris mask; IOR 1.38; SSBump from `bumpmap` at the iris UV with an HL2
+  basis for directional occlusion; output alpha = albedo alpha.
+- BRDF_eye: sclera diffuse through `eye/sssLut` (vertex N.L), iris
+  diffuse = N.L * directional occlusion (+ `eye/causticMap` 3D when
+  `eye/internalCaustic`), Ward specular times the specular factor,
+  FresnelAccurate; indirect: SH ambient, IBL, and two camera-relative fake
+  specular lights (`eye/FakeLight_1/2`) tinted by the IBL chrominance.
+Defaults: eye/UvSettings (0.23, 0.465, 2.0, 0.05), eye/Refraction
+(0.746, 0, 0, 0), eye/glossParm (1, 1, 1, 1).
+Needs: the eye-direction vertex output for skinned meshes, the HL2
+directional-occlusion helper and the three eye textures.
+
+## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
+
+`outsider_shrine_01.kiscule` node 116 spawns
+`models/interactive/pickups_entities/outsider_rune.def` (spawn tag
+SPAWN_TAG_MAIN) at the target from node 125. Its `Succeeded` output drives
+the shrine FX, so without the spawn neither the rune nor the FX appear.
+Original 14079dc40: once per node (+0x30); missing def or a zero location
+logs and takes `Failed`; the location and axis come from `m_target`
+(+0x300 origin, +0x30c axis) or else `m_location`/`m_orientation`; spawns
+through 1408ae9b0, sets entity +0xd4 bit 4, applies `m_spawnTag`
+(14087c360), writes the handle to `m_createdEntity`, and returns a task
+continuation. The rewrite has no script-driven entity spawning yet; the
+world-FX graph evaluator (gameplay/effects/graph.rs) refuses the node.
+
+## Character hair (`arkhair`), in progress
+
+Visible today on posed characters only (no AI characters spawn yet):
+the prologue's petrified Corvo and Emily (`dunwall_escape_tower_p`,
+`ld_posing_void01_*` at -42.55, -127.51, 60.95), 113 posed models in
+`dunwall_return_tower_p`, 141 in `end_p`, and the Void maps. The rewrite
+draws their hair through `Program::Unsupported`, so it shows flat and
+wrongly coloured. (Both posed characters also appear together, where the
+original keeps only the non-chosen one.)
+
+Original program (installed HLSL, `renderprog/arkhair` with `BRDF_hair`):
+- sortTrans, `blend SRC_ALPHA ONE_MINUS_SRC_ALPHA`, hairType 1,
+  `translucency_hq/enable 1`. Depth is written twice: the sort depth with
+  alpha test `$hairAlphaTest` (comment: 0.9) and the alpha depth with 0.5,
+  for lighting and DOF. Shadows dither the alpha with the B8 Bayer mask.
+- BRDF_hair: Oren-Nayar diffuse (or `$hairDiffuseLUT`) times
+  `$hairLuminanceHack`, sheen; two Kajiya-Kay lobes on the flow-map
+  tangent shifted along the normal (primary uses mask luminance, the
+  secondary the coloured mask and the noise mask), Fresnel Disney;
+  translucency through `translucencyCoef`; IBL via `$hairIBL` with the
+  primary lobe on the reflected view.
+- Two more passes exist: `arkHairLightPrePass` (hairPass 2, blend ONE
+  ZERO, alpha ONE ONE, Bayer threshold matrix) and `arkHairSSS`
+  (hairPass 3, 12-tap Poisson blur). The engine allocates
+  `_HAIR_PREPASS_BUFFER` (+0x2c8) and `_HAIR_OPACITY_BUFFER` (+0x2d0) in
+  chunk_000126 and binds `hairPrepass`/`hairOpacity` in 14031dce0.
+  Cvars: r_hairAlphaTestAlpha, r_hairAlphaTestLit, r_hairAlphaTestOpaque,
+  r_hairLuminanceHack.
+Measured in the original's main menu (capture
+`artifacts/renderdoc/original-menu-hair_frame12804.rdc`, 6 hair meshes; all
+in reverse-Z GREATER_EQUAL):
+1. Opaque depth prepass with motion vectors (RG16F), `hairAlphaTest` 0.8
+   (r_hairAlphaTestOpaque), depth write (events 691-763).
+2. Alpha depth, full resolution, 0.5 (r_hairAlphaTestAlpha), depth only
+   (1471-1543); then the half-resolution alpha depth, 0.5 (1593-1665).
+3. Main lit pass into the scene colour: `blend SRC_ALPHA
+   ONE_MINUS_SRC_ALPHA`, depth write, `hairAlphaTest` 0.05
+   (r_hairAlphaTestLit), output alpha 1 where albedo alpha >= 0.8
+   (`hairAlphaTestOpaque`) (10249-10321).
+4. Hair OIT pass (`writePixel` -> NEW_writePixel, RETAIL): RGBA16F hair
+   accumulation with ONE ONE and R8 hair revealage with ZERO
+   INV_SRC_COLOR, depth test without write, alpha test 0.05; OIT/Weights
+   (3, 50, 3, 0.5), OIT/Params (1, 0, 1, 1) (10536-10608).
+5. PostFX_CompositeWeightedBlendedOIT (10659) reads OIT/Opacity,
+   OIT/HairOpacity, OIT/Accumulation, OIT/HairAccumulation:
+   colour = hair.rgb/hair.a * alphaOpacity * (1 - hairOpacity)
+   + alpha.rgb/alpha.a * (1 - alphaOpacity), blend ONE SRC_ALPHA with
+   src alpha = alphaOpacity * hairOpacity.
+Menu-hair material values: sheen 0.5, sheenImportance 0.5, specular flow
+angle -45, primary power 70 / intensity 0.1 / shift 0, secondary 30 / 0.25
+/ -0.15, noise mask scale 40, hairIBL 1, luminance hack 0.7.
+The rewrite's particle OIT (dh2_particle_transparency_resolve.wgsl)
+covers only the alpha list; the hair list joins its composite.
+
+Connected (1cfe5d19, c39c266e): BRDF_hair shading in the lit pass with
+its lit/opaque alpha outputs, and the alpha-depth passes at 0.5.
+Open, in order:
+- Order: the original draws the main-pass alpha list (hair lit pass at
+  10249, writing depth for alpha >= 0.05) before the hair and particle
+  OIT draws and their resolve (10536-10659). The rewrite runs
+  render_particles (particle OIT and resolve) before Bevy's transparent
+  pass, and Bevy's transparent pass writes no depth. Hair OIT tests
+  GREATER_EQUAL against that lit-pass depth, so it keeps only the front
+  hair layer; it needs the lit pass's depth first.
+- The opaque depth prepass at 0.8 is connected through
+  DepthPrepassMaterialKeys::register_blended_prepass (hair keys queue
+  like alpha-masked materials; clip_surface applies 0.8).
+- Unverified: Corvo's beard in the prologue view is darker than the lit
+  pass alone; the original's grey beard is only seen in the menu under
+  different lighting. Needs a matched original view of a hair surface.
+- Hair OIT is connected: AlphaGpu draws the hair lit pass (depth writes)
+  and the OIT pass into RGBA16F/R8 targets, then resolves the hair term
+  before render_particles; the particle resolve after it composes to the
+  original's single composite. The original keeps the lit pass's colour
+  in the scene target under the resolve (the clears at 10329-10330 are
+  of other targets; its passes run on deferred command lists, which
+  makes RenderDoc pixel history unreliable there). At opaque hair the
+  OIT colour equals the lit colour (3.365 vs 3.372 at 580,70).
+- One-sided translucency (shadow-map depth).
 
 ## Particle declaration census (2026-11-10)
 
@@ -122,8 +244,14 @@ versus 4.2/16.0/13.9/2.0 without (DH2_DEBUG_PARTICLE_SHADOWS).
 Moving systems therefore keep a stale shadow in cached local faces, as in
 the original (see original-defects.md). With local faces cached, particle
 shadow draws at the fly cluster fell to 4.0/2.7/0.4 per frame. The
-vegetation particle shadow path (Dust District leaves) is wired but not yet
-exercised at runtime.
+vegetation particle shadow path runs on eotw's Havok leaf system
+(`strt_leaves_01.lwo` with `leaves_floor_01_vfx`): it publishes, is admitted
+and casts through the vegetation program, up to about 25 particle shadow
+draws per frame on the benchmark walk. Two defects kept it from drawing:
+Havok stages were left out of the system's lighting-need scan (1401e4930
+publishes them through the same root record), and Tome refused the empty
+1e30/-1e30 owner box of a system with no live particles as invalid where
+FUN_140a71b90's query-bounds overlap test simply rejects it.
 
 ## Not gaps
 

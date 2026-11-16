@@ -83,7 +83,7 @@ impl Runtime {
             frame.midnight.last_start_error = Some(format!("Grapple scene was not prepared: {path}"));
             self.aborted = true; return;
         };
-        match frame.midnight.start_with_parts(scene, frame.md6, 1.0, frame.animations, parts) {
+        match frame.midnight.start_with_parts(scene, frame.md6, 1.0, frame.animations, parts, frame.random) {
             Ok(handle) => self.scene = handle,
             Err(error) => { frame.midnight.last_start_error = Some(error); self.aborted = true; }
         }

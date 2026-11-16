@@ -1045,6 +1045,17 @@ pub(crate) fn specialize_prepass_material_meshes(
                         mesh_key |= alpha_mode_pipeline_key(alpha_mode, msaa);
                     }
                     AlphaMode::Blend
+                        if depth_material_keys.as_deref().is_some_and(|keys| {
+                            keys.blended_draws_prepass(
+                                material_instance.asset_id.type_id(),
+                                &material.properties.material_key,
+                            )
+                        }) =>
+                    {
+                        // The material's prepass shader applies its own discard.
+                        mesh_key |= alpha_mode_pipeline_key(AlphaMode::Mask(0.5), msaa);
+                    }
+                    AlphaMode::Blend
                     | AlphaMode::Premultiplied
                     | AlphaMode::Add
                     | AlphaMode::Multiply => {

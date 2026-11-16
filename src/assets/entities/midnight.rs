@@ -102,6 +102,32 @@ pub struct CondBool {
     pub when_false: Next,
 }
 
+/// m_conditionType of an int condition (enum order STATIC, KISCULE,
+/// KISCULE_PARAMETER, RANDOM; 1407cccd0 dispatches on it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IntCondition {
+    /// The instance's named int variable (1407cd3e0 initializes it to 0).
+    Static,
+    /// 1407cccd0 has no source for this kind: the value stays -1, which
+    /// selects the default output.
+    Kiscule,
+    /// 140652ed0 over the instance's random state (1407cd330), drawn from
+    /// the game LCG (1408ac150). The flags are m_autoDisable and m_looping.
+    Random { auto_disable: bool, looping: bool },
+}
+
+/// EMNT_CONDINT (arkMidnightGraphPathNodeCondInt, ctor 1401b94c0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CondInt {
+    pub uid: u32,
+    pub name: String,
+    pub condition: IntCondition,
+    /// m_next: output `value` (port 0x31 + value).
+    pub outputs: Vec<Next>,
+    /// m_nextDefault (port 0x30): a value of -1 or at least the output count.
+    pub default: Next,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loop {
     pub uid: u32,
@@ -123,6 +149,7 @@ pub struct MidnightScene {
     pub scenes: Vec<Scene>,
     pub nodes: Vec<CondMd6>,
     pub bool_nodes: Vec<CondBool>,
+    pub int_nodes: Vec<CondInt>,
     pub loops: Vec<Loop>,
     pub first: Next,
 }
@@ -291,6 +318,7 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
     }
     let mut nodes = Vec::new();
     let mut bool_nodes = Vec::new();
+    let mut int_nodes = Vec::new();
     let mut loops = Vec::new();
     for wrapper in items(child(edit, "m_nodes")) {
         let node = object(wrapper);
@@ -306,6 +334,27 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                 bool_nodes.push(CondBool { uid: id, name: atom(properties, "m_nodeName").unwrap_or("").to_owned(),
                     default: atom(properties, "m_defaultPath").map_or(true, |value| value == "true"),
                     when_true: next(child(node, "m_nextTrue"))?, when_false: next(child(node, "m_nextFalse"))? });
+                continue;
+            }
+            Some("EMNT_CONDINT") => {
+                let condition = match atom(properties, "m_conditionType").unwrap_or("EMNCT_STATIC") {
+                    "EMNCT_STATIC" => IntCondition::Static,
+                    "EMNCT_KISCULE" => IntCondition::Kiscule,
+                    "EMNCT_RANDOM" => IntCondition::Random {
+                        auto_disable: boolean(properties, "m_autoDisable"),
+                        looping: boolean(properties, "m_looping"),
+                    },
+                    // 1407cccd0 reads the owning script entity's parameter.
+                    "EMNCT_KISCULE_PARAMETER" => return Err("Midnight int script-parameter condition is not admitted".into()),
+                    other => return Err(format!("Midnight int condition {other} is not decoded")),
+                };
+                let outputs = items(child(node, "m_next")).map(next).collect::<Result<Vec<_>, _>>()?;
+                // 1401b9de0 sizes the output list by m_outputCount.
+                if outputs.len() != int(properties, "m_outputCount", 1)? as usize {
+                    return Err("Midnight int condition output count differs from its outputs".into());
+                }
+                int_nodes.push(CondInt { uid: id, name: atom(properties, "m_nodeName").unwrap_or("").to_owned(),
+                    condition, outputs, default: next(child(node, "m_nextDefault"))? });
                 continue;
             }
             Some("EMNT_LOOP") => {
@@ -338,6 +387,7 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
         scenes,
         nodes,
         bool_nodes,
+        int_nodes,
         loops,
         first: next(child(edit, "m_firstElement"))?,
     })

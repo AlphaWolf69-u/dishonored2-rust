@@ -217,11 +217,14 @@ impl ParticleSystem {
         // Particle root+1c40 defaults to zero in1fcaa0. Its virtual+88
         // (1fc4c0) then samples the emitter origin, not the live bounds centre.
         // 2b3dc0 ->385f20 ->385da0 uses the shared cached Voronoi query.
+        // The Havok stages publish their renderers after the ordinary ones
+        // (1401e4930), through the same draw path and the same root record.
         let needs_lighting = self
             .stages
             .iter()
-            .flat_map(|stage| {
-                let definition=&stage.declaration.stages[stage.index];
+            .map(|stage| &stage.declaration.stages[stage.index])
+            .chain(self.havok_stages.iter().map(|stage| &stage.definition().stage))
+            .flat_map(|definition| {
                 definition.sprites.iter().filter(|sprite|sprite.enabled).map(|sprite|&sprite.material)
                     .chain(definition.meshes.iter().filter(|mesh|mesh.enabled&&mesh.model.is_some()).map(|mesh|&mesh.material))
             })
