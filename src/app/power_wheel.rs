@@ -23,7 +23,7 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions},
 };
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     mpsc::{self, Receiver, Sender},
 };
 
