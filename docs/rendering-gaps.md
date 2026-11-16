@@ -12,10 +12,59 @@ materials (potion and oil liquids), not by FX particles.
 
 | Gap | Installed content | Status |
 |---|---|---|
-| `arkhair` | 134 materials | none: character hair program; needed once characters render |
-| `arkeyeball` | 23 materials | none: character eye program |
-| `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
-| `particle/filing_container` | 8 model materials (potion and oil liquids) | none: opaque mesh program (`blend ONE ZERO`, sortCoverage); no FX particle uses it |
+| `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | in progress: see "Character hair" below |
+| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | none: program `renderprog/arkeyeball` with `BRDF_eye` |
+| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
+
+`particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
+Its 8 materials are the health and mana potion liquids, the institute
+serum, Karnaca oil and the incendiary, sleep and venom crossbow-bolt
+liquids.
+
+## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
+
+`outsider_shrine_01.kiscule` node 116 spawns
+`models/interactive/pickups_entities/outsider_rune.def` (spawn tag
+SPAWN_TAG_MAIN) at the target from node 125. Its `Succeeded` output drives
+the shrine FX, so without the spawn neither the rune nor the FX appear.
+Original 14079dc40: once per node (+0x30); missing def or a zero location
+logs and takes `Failed`; the location and axis come from `m_target`
+(+0x300 origin, +0x30c axis) or else `m_location`/`m_orientation`; spawns
+through 1408ae9b0, sets entity +0xd4 bit 4, applies `m_spawnTag`
+(14087c360), writes the handle to `m_createdEntity`, and returns a task
+continuation. The rewrite has no script-driven entity spawning yet; the
+world-FX graph evaluator (gameplay/effects/graph.rs) refuses the node.
+
+## Character hair (`arkhair`), in progress
+
+Visible today on posed characters only (no AI characters spawn yet):
+the prologue's petrified Corvo and Emily (`dunwall_escape_tower_p`,
+`ld_posing_void01_*` at -42.55, -127.51, 60.95), 113 posed models in
+`dunwall_return_tower_p`, 141 in `end_p`, and the Void maps. The rewrite
+draws their hair through `Program::Unsupported`, so it shows flat and
+wrongly coloured. (Both posed characters also appear together, where the
+original keeps only the non-chosen one.)
+
+Original program (installed HLSL, `renderprog/arkhair` with `BRDF_hair`):
+- sortTrans, `blend SRC_ALPHA ONE_MINUS_SRC_ALPHA`, hairType 1,
+  `translucency_hq/enable 1`. Depth is written twice: the sort depth with
+  alpha test `$hairAlphaTest` (comment: 0.9) and the alpha depth with 0.5,
+  for lighting and DOF. Shadows dither the alpha with the B8 Bayer mask.
+- BRDF_hair: Oren-Nayar diffuse (or `$hairDiffuseLUT`) times
+  `$hairLuminanceHack`, sheen; two Kajiya-Kay lobes on the flow-map
+  tangent shifted along the normal (primary uses mask luminance, the
+  secondary the coloured mask and the noise mask), Fresnel Disney;
+  translucency through `translucencyCoef`; IBL via `$hairIBL` with the
+  primary lobe on the reflected view.
+- Two more passes exist: `arkHairLightPrePass` (hairPass 2, blend ONE
+  ZERO, alpha ONE ONE, Bayer threshold matrix) and `arkHairSSS`
+  (hairPass 3, 12-tap Poisson blur). The engine allocates
+  `_HAIR_PREPASS_BUFFER` (+0x2c8) and `_HAIR_OPACITY_BUFFER` (+0x2d0) in
+  chunk_000126 and binds `hairPrepass`/`hairOpacity` in 14031dce0.
+  Cvars: r_hairAlphaTestAlpha, r_hairAlphaTestLit, r_hairAlphaTestOpaque,
+  r_hairLuminanceHack.
+Next: the pass order and which passes run need a capture of the original
+with hair on screen (the prologue's petrified character).
 
 ## Particle declaration census (2026-11-10)
 
