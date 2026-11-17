@@ -605,9 +605,12 @@ impl Observation {
             Stage::WorldAim => {
                 if let Some(hit)=Self::world_fixture(world)?{
                     if let Some(fixture)=self.world_target{
-                        if hit.body_id!=fixture.body_id||hit.material_id!=fixture.material_id{
-                            return Err(format!("repeated WORLD fixture changed actual body/material: first={fixture:?} current={hit:?}"))
+                        let expected=crate::gameplay::collision_user_data::CollisionUserData::decode(fixture.user_data)?.component;
+                        let current=crate::gameplay::collision_user_data::CollisionUserData::decode(hit.user_data)?.component;
+                        if current!=expected{
+                            return Err(format!("repeated WORLD fixture changed actual collision owner: first={fixture:?} current={hit:?}"))
                         }
+                        eprintln!("ACTION_SMOKE_WORLD_AIM_OWNER component={current:?} initial_ray={fixture:?} current_ray={hit:?} body_material_equality_not_required=true");
                     }else{self.world_target=Some(hit);}
                     self.contact_serial=super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);
                     self.contact_windows=super::melee::active_windows(world);
@@ -629,12 +632,21 @@ impl Observation {
                     if serial>self.contact_serial&&super::melee::active_windows(world)>self.contact_windows
                         &&focused==self.world_poke&&(!self.world_poke||forward)&&ticket {
                         let fixture=self.world_target.ok_or("WORLD receipt fixture absent")?;
-                        if hit.body_id!=fixture.body_id{return Err(format!("WORLD callback hit a different real body: fixture={fixture:?} actual={hit:?}"))}
+                        //637160's sweep/blade ray and630890/636630's final
+                        //retarget are not this diagnostic's setup camera ray.
+                        //Require its actual WORLD owner, not a forced body.
+                        let expected=crate::gameplay::collision_user_data::CollisionUserData::decode(fixture.user_data)?.component;
+                        let actual=crate::gameplay::collision_user_data::CollisionUserData::decode(hit.user_data)?.component;
+                        if actual!=expected{return Err(format!("WORLD callback changed actual collision owner: aimed={fixture:?} actual={hit:?}"))}
                         let scene=world.resource::<super::physics_scene::PhysicsScene>();
                         let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"WORLD receipt query owner poisoned")?;
+                        let body_id=hit.body_id.ok_or("WORLD callback has no actual body identity")?;
+                        let body=queries.storage.bodies.get(body_id).ok_or("WORLD callback body generation is no longer current")?;
+                        if body.user_data!=hit.user_data{return Err("WORLD callback body no longer belongs to its reported collision owner".into())}
                         queries.storage.materials.material_for_id(hit.material_id)
                             .map_err(|error|format!("WORLD callback material={} serial={serial} hit={hit:?}: {error}",hit.material_id))?;
                         drop(queries);
+                        eprintln!("ACTION_SMOKE_WORLD_SELECTED_OWNER component={actual:?} aimed={fixture:?} selected={hit:?} actual_body_generation_valid=true actual_material_valid=true body_material_equality_not_required=true");
                         self.world_evidence(world,"accepted-callback")?;
                         let ticket=super::melee::world_effect_ticket(world).ok_or("WORLD callback lost actual weak FX ticket")?;
                         eprintln!("ACTION_SMOKE_WORLD_CALLBACK contact={} serial={serial} focused={focused} forward={forward} recoil_requested={recoil} actual_FX_ticket=true acceptance_is_not_activation=true",self.world_contacts+1);
@@ -651,7 +663,7 @@ impl Observation {
                     &&!p.machine.is_active(StateId::SLASH)&&!p.machine.is_active(StateId::RECOIL);
                 if retired&&animation_ready{
                     self.world_contacts+=1;self.world_effect=None;
-                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_real_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target);
+                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_WORLD_owner_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target);
                     if self.world_contacts==3{
                         if let Some(input)=self.world_crouch.take(){send(world,input,false)?}
                         self.stage(Stage::Done,world)?;

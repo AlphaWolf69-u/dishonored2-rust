@@ -1,5 +1,35 @@
 # Resource parity ledger
 
+Normal release measurement (2026-11-17, source `fb14e994`, SHA256
+`687E337AF8866B82B95B96D58FF32AE211F0C0F7DB3D1FB93D30EAD01591E5C2`):
+same-executable walking A/B measured `select_cell` at 24,527.73 → 13,085.13
+thread cycles/search (46.65% less); candidate visits were 3,312 → 142.86.
+Calls numbered 232,559 and 281,708 between the actual twelve-second walking
+boundaries. The measured ratio 0.5335 is modestly outside the predicted
+0.36–0.48 interval, within 30% of its upper bound; the gain is retained.
+This is scoped query cost, not an original-game or whole-frame FPS result.
+Both modes include identical opt-in timing hooks. Numeric output verification
+is recorded separately below. Local evidence: `analysis/performance-20261117/probe-ab/`.
+
+The same release's six-shot FX A/B preserved actual semantic stage order and
+both runs exited successfully. Resource-generation changes fell 17 → 2 and
+particle preparation calls 23 → 8; both created eight new GPU programs and
+requested the same 22 weak/two IO source acquisitions. This is a measured
+mixed firing workload, not an isolated zero-work warm cohort: cold impact
+effects overlap muzzle requests and no settled global ACK preceded the gun
+inputs. Combined source reconstruction counts and visible/audible latency
+were not measured. Local evidence: `fx-admission-ab/results/scoped-fx-comparison.json`.
+
+Normal-release firing, carrying, gun/ordinary-sword/charged-thrust prop damage,
+Blink and wheel checks passed, as did all three map retirements and paused
+exit. Its ordinary WORLD diagnostic stopped on an unjustified same-body
+assertion between different native query types; this is preserved as a
+diagnostic failure, not a successful release FX-tail check. Debug's three
+ordinary WORLD lifetimes and release's three charged WORLD lifetimes passed.
+The later diagnostic-only source correction validates the shared collision
+owner, current full body generation and material rather than forcing the
+camera ray's primitive. It does not alter the compiled release's gameplay.
+
 Production-path validation (2026-11-17, debug `b4e2a493`): compilation with
 and without the game feature passed. Actual firing/empty fire, Heart, wheel
 mouse handling, pickup/throw, gun damage, ordinary sword damage and charged
