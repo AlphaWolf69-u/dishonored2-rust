@@ -12,6 +12,8 @@ pub(super) struct Key {
     pub handle: ComponentHandle,
     pub generation: u32,
 }
+#[derive(Clone, Copy)]
+pub(super) enum CookingCommand { Initialize { value: f32, kind: i32 }, Update(f32) }
 impl std::hash::Hash for Key {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&self.entity, state);
@@ -49,12 +51,21 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         if world.resource::<LiveEntities>().get(key.entity).is_none() {
             return Err("world FlashSurface entity generation stale".into());
         }
+        //0310c0 releases playback on ordinary Stop, not only on eventual
+        //component destruction. Re-enable must await this exact real ACK.
+        if world.resource::<super::physics_scene::PhysicsScene>().flash_stopped_pending(key)? {
+            if super::flash_surface_movie::status(world,key)?.is_some_and(|status|status.retired) {
+                super::flash_surface_movie::forget(world,key)?;
+                world.resource_mut::<super::physics_scene::PhysicsScene>().flash_stopped_acknowledged(key)?;
+            }
+            continue;
+        }
         let request = world
             .resource::<super::physics_scene::PhysicsScene>()
             .flash_request(key)?;
         let Some(request) = request else { continue };
-        if let Some((definition, requires_map)) = request {
-            super::flash_surface_movie::request(world, key, definition, requires_map)?;
+        if let Some((definition, requires_configuration)) = request {
+            super::flash_surface_movie::request(world, key, definition, requires_configuration)?;
             world
                 .resource_mut::<super::physics_scene::PhysicsScene>()
                 .flash_requested(key)?;
@@ -92,6 +103,12 @@ pub(super) fn finish(world: &mut World) -> Result<(), String> {
             world
                 .resource_mut::<super::physics_scene::PhysicsScene>()
                 .flash_map_submitted(key)?;
+        }
+        let command = world.resource::<super::physics_scene::PhysicsScene>().flash_pending_cooking(key)?;
+        if let Some(command) = command {
+            if super::flash_surface_movie::cooking_command(world, key, command)? {
+                world.resource_mut::<super::physics_scene::PhysicsScene>().flash_cooking_submitted(key)?;
+            }
         }
     }
     //UI playback shares the existing real-time movie clock. Only the

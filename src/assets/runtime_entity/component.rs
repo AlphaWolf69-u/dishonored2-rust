@@ -42,9 +42,18 @@ pub(super) fn from_resolved(
         defaults.add_updates(4);
     }
     if kind=="cpntaisearchspotdynamic" { defaults.add_updates(1); }
+    //7553d0 requests phase2. The empty Retargeting roster still has a real
+    //component owner, optional checked dependencies and normal lifecycle.
+    if kind=="cpntretargeting" { defaults.add_updates(2); }
+    //4b1650 adds phase0x10 to the code-created FX declaration.
+    if kind=="cpntfx" { defaults.add_updates(0x10); }
     let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
     let (native, payload) = match kind {
+        "cpntfx" => ("arkCpntFX", Kind::Fx(Arc::new(assets::fx_component::Definition::read(fields)?))),
+        "cpntopenable" => ("arkCpntOpenable",Kind::Openable(Arc::new(assets::openable::Definition::read(catalog,fields)?))),
+        "cpntretargeting" => ("arkCpntRetargeting",Kind::Retargeting),
         "cpntflashsurface" => ("arkCpntFlashSurface",Kind::FlashSurface(Arc::new(assets::flash_surface::Definition::read(fields)?))),
+        "cpntgrenadecooking" => ("arkCpntGrenadeCooking",Kind::GrenadeCooking(Arc::new(assets::flash_surface::Definition::read(fields)?))),
         "cpntinteractivemap" => ("arkCpntInteractiveMap",Kind::InteractiveMap(Arc::new(assets::flash_surface::MapDefinition::read(fields)?))),
         "cpntrigidbody" => (
             "arkCpntRigidBody",

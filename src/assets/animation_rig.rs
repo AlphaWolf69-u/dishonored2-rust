@@ -6,6 +6,7 @@ use std::collections::HashMap;
 mod acquisition;
 pub(crate) mod animset;
 pub(crate) mod animset_sounds;
+pub mod animset_effects;
 pub(crate) mod declaration;
 
 pub struct Rig {
@@ -331,6 +332,11 @@ impl Rig {
             .ok_or_else(|| format!("no animset alias {alias}"))?;
         Ok(set.sounds(alias))
     }
+    pub(crate) fn animation_effect_events(&self,alias:&str)->Result<&[animset_effects::Effect],String> {
+        let set=self.animsets.iter().find(|set|set.alias(alias).is_some())
+            .ok_or_else(||format!("no animset alias {alias}"))?;
+        Ok(set.effects(alias))
+    }
 
     /// The marker events for an animation are stored in its model's animsets,
     /// rather than in the compressed animation. 14018e810 converts their
@@ -500,6 +506,14 @@ pub struct BasicRig {
     pub rig: std::sync::Arc<Rig>,
     pub animations: Vec<crate::edge_animation::EdgeAnimation>,
     pub template: crate::gameplay::player::animation::AnimBasicNode,
+    pub(crate) sounds: Box<[Box<[BasicSound]>]>,
+    pub(crate) sound_joints: Box<[(i16, [[f32;4];3], f32)]>,
+    pub(crate) has_sounds: bool,
+}
+pub(crate) struct BasicSound {
+    pub frame:i16,
+    pub joint:i16,
+    pub event:std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>,
 }
 
 impl std::ops::Deref for BasicRig {
@@ -530,7 +544,30 @@ impl BasicRig {
             (template, clips.animations)
         };
         check_active(cancelled)?;
-        Ok(Self { rig, animations, template })
+        let mut sounds=Vec::with_capacity(template.items.len());
+        let mut sound_joints:Vec<(i16,[[f32;4];3],f32)>=Vec::new();
+        let mut initial=None;
+        for item in template.items.iter() {
+            check_active(cancelled)?;
+            let mut bindings=Vec::new();
+            for sound in rig.animation_sound_events(&item.alias)? {
+                let joint=if sound.joint.is_empty(){-1}else{rig.skeleton.joint_names.iter()
+                    .position(|name|name==sound.joint.as_ref()).map(i16::try_from)
+                    .transpose().map_err(|_|"animation sound joint exceeds signed index")?.unwrap_or(-1)};
+                if joint>=0 {
+                    if let Some(existing)=sound_joints.iter_mut().find(|entry|entry.0==joint){existing.2=existing.2.max(sound.event.max_distance);}
+                    else {
+                        if initial.is_none(){initial=Some(crate::edge_skeleton::pose_matrices(&rig.skeleton.rest,&rig.skeleton.hierarchy,&rig.root)?);}
+                        let matrix=*initial.as_ref().unwrap().get(joint as usize).ok_or("animation sound initial joint absent")?;
+                        sound_joints.push((joint,matrix,sound.event.max_distance.max(0.)));
+                    }
+                }
+                bindings.push(BasicSound{frame:sound.frame,joint,event:sound.event.clone()});
+            }
+            bindings.sort_by_key(|sound|sound.frame);sounds.push(bindings.into_boxed_slice());
+        }
+        let has_sounds=sounds.iter().any(|sounds|!sounds.is_empty());
+        Ok(Self { rig, animations, template,sounds:sounds.into_boxed_slice(),sound_joints:sound_joints.into_boxed_slice(),has_sounds })
     }
 }
 

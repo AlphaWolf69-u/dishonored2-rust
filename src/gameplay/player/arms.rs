@@ -32,7 +32,14 @@ impl std::ops::Deref for ArmSkeleton {
 }
 
 pub struct Arm {
+    pub managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub entity_declaration: String,
+    pub entity_class: String,
+    pub bind_tag: String,
+    pub ai_tampering_declared: bool,
+    pub rig: Option<std::sync::Arc<crate::assets::animation_rig::Rig>>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
+    pub animation_sounds: super::midnight::AnimationSoundBank,
     /// The arm entity's render model (md6 decl path).
     pub model: String,
     /// m_visible (decl arkBodyPart +0x10).
@@ -70,7 +77,7 @@ impl Arm {
         jump_items: [Option<usize>; 6],
     ) -> Self {
         let stances = loco.data.stances.keys().map(|stance| (stance.clone(), stance.clone())).collect();
-        Self { sound_settings: None, model, visible, bind_joint, bind, skeleton, animations, animation_aliases: Default::default(), loco, additives, grapple: Default::default(), jump_items, speed_interpolation: 0.0,
+        Self { managed_entity: None, entity_declaration: String::new(), entity_class: String::new(), bind_tag: String::new(), ai_tampering_declared: false, rig: None, sound_settings: None, animation_sounds: Default::default(), model, visible, bind_joint, bind, skeleton, animations, animation_aliases: Default::default(), loco, additives, grapple: Default::default(), jump_items, speed_interpolation: 0.0,
             equipment: "Empty".into(), equipment_stances: [("Empty".into(), stances)].into(),
             equipment_jump_items: [("Empty".into(), jump_items)].into() }
     }
@@ -90,6 +97,7 @@ impl Arm {
     /// Install only after preparation completes; cancelled preparations never
     /// change the live node. All indices belong to this arm's clip owner.
     pub fn install_equipment(&mut self, prepared: PreparedEquipment) {
+        self.animation_sounds.absorb(prepared.animation_sounds);
         self.loco.data.idle_blend = prepared.data.idle_blend;
         self.loco.data.stances.extend(prepared.data.stances);
         self.loco.data.transitions.extend(prepared.data.transitions);
@@ -171,10 +179,19 @@ impl Arm {
 /// The host supplies an immutable alias-index snapshot, prepares missing
 /// clips in a separate bank and appends it atomically at `base`; no model, skeleton, archive cache or second pose owner exists.
 pub struct PreparedEquipment {
+    pub(crate) animation_sounds: super::midnight::AnimationSoundBank,
     name: String,
     data: super::animation::LocoData,
     stances: std::collections::HashMap<String, String>,
     jump_items: [Option<usize>; 6],
+}
+impl PreparedEquipment {
+    pub fn visit_lower_animation_sounds(&self,mut visit:impl FnMut(&super::midnight::AnimationSound)) {
+        self.animation_sounds.visit(|_,sound|visit(sound));
+    }
+    pub fn visit_animation_effects(&self,mut visit:impl FnMut(&crate::assets::animation_rig::animset_effects::Effect)) {
+        self.animation_sounds.visit_effects(|_,effect|visit(effect));
+    }
 }
 
 fn equip_key(stance: &str, equipment: &str) -> String {
@@ -264,7 +281,9 @@ pub fn prepare_equipment(
         }
         let jump_items = definition.jump_aliases.each_ref().map(|alias| alias.as_ref().and_then(|alias| additive_items.iter().position(|item| &item.alias == alias)));
         check()?;
-        Ok(PreparedEquipment { name: definition.name.clone(), data, stances, jump_items })
+        let mut animation_sounds=super::midnight::AnimationSoundBank::default();
+        for (alias,&index) in &clips.loaded {animation_sounds.prepare(0,base+index,rig,alias)?;}
+        Ok(PreparedEquipment { name: definition.name.clone(), data, stances, jump_items, animation_sounds })
     })();
     if result.is_err() {
         clips.animations.truncate(first_new_clip);

@@ -101,7 +101,12 @@ impl RenderDoc {
 
 impl Default for RenderDoc {
     fn default() -> Self {
-        if !cfg!(debug_assertions) {
+        // Host diagnostic: allow an explicitly requested release GPU capture.
+        // Timings must use the normal optimized build. Only an already injected
+        // RenderDoc DLL is opened below; ordinary release startup stays disabled.
+        if !cfg!(debug_assertions)
+            && std::env::var_os("DH2_DEBUG_GPU_CAPTURE_SECONDS").is_none()
+        {
             return RenderDoc::NotAvailable {
                 reason: "RenderDoc support is only enabled with 'debug_assertions'".into(),
             };

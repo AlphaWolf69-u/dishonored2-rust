@@ -161,6 +161,13 @@ impl PreparedEquipmentModel {
 }
 
 impl PlayerArms {
+    pub(super) fn bind_arm_identity(&mut self, model: &str, id: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+        let arm=self.arms.iter_mut().take(self.body_models.saturating_sub(1)).find(|arm|arm.model==model)
+            .ok_or_else(||format!("actual arm render model {model} absent"))?;
+        if arm.managed_entity.is_some_and(|previous|previous!=id){return Err("arm render model rebound to another live generation".into());}
+        arm.managed_entity=Some(id);
+        Ok(())
+    }
     ///878230 reads the player's own render model even when leg materials are
     ///hidden.771a00 installs that model; its bounds share the same source
     ///geometry and root pose as the body draw, independent of arm visibility.
@@ -367,16 +374,25 @@ impl PlayerArms {
         model: crate::gameplay::entity_lifetime::EntityId,
         commands: &mut super::setup_commands::SetupCommands,
     ) -> Option<RetiredModel> {
+        self.remove_owned_model(model,commands,false)
+    }
+    pub(super) fn remove_arm_model(&mut self, model: crate::gameplay::entity_lifetime::EntityId,
+        commands:&mut super::setup_commands::SetupCommands)->Option<RetiredModel>{
+        self.remove_owned_model(model,commands,true)
+    }
+    fn remove_owned_model(&mut self,model:crate::gameplay::entity_lifetime::EntityId,
+        commands:&mut super::setup_commands::SetupCommands,arm:bool)->Option<RetiredModel>{
         let Some(index) = self
             .arms
             .iter()
             .enumerate()
-            .skip(self.body_models)
+            .filter(|(index,_)|if arm {*index<self.body_models.saturating_sub(1)}else{*index>=self.body_models})
             .find_map(|(index, entry)| (entry.managed_entity == Some(model)).then_some(index))
         else {
             return None;
         };
         let entry = self.arms.remove(index);
+        if arm {self.body_models-=1;}
         let entities: Vec<_> = entry
             .surfaces
             .iter()
@@ -814,7 +830,7 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
                 edge_skeleton::pose_matrices(&arm.skeleton.rest, &arm.skeleton.hierarchy, &root)
                     .ok()?;
             Some(ArmRender {
-                managed_entity: None,
+                managed_entity: arm.managed_entity,
                 model: arm.model.clone(),
                 joints,
                 visible: true,

@@ -75,7 +75,7 @@ impl HeadQueries {
                 snapshot.samples = Some(samples);
                 snapshot.points = self.points[self.cursor].take();
             }
-            if let Some(points) = frame.head_wave_points {
+            if let Some(points) = frame.head_wave_points.filter(|_| self.handles[self.cursor].is_invalid()) {
                 // Gameplay registration sees the preceding renderer ring.
                 // 3032b0 assigns that ring+1, the ring submitted below.
                 let handle = shared.queue.register((self.ring + 3) & 3, &points)?;
@@ -85,6 +85,10 @@ impl HeadQueries {
                     self.cursor = (self.cursor + 1) & 3;
                 }
             }
+        } else {
+            let mut shared = crate::rendering::ocean::ocean_query_manager().lock().map_err(|_| "ocean query manager poisoned")?;
+            for handle in &mut self.handles { shared.queue.release(handle)?; }
+            self.points.fill(None);
         }
         self.snapshot = Some(snapshot);
         Ok(())
@@ -117,7 +121,9 @@ impl HeadQueries {
         self.ring = (self.ring + 1) & 3;
         self.recorded = Some(frame.matrices.frame);
         // Publish only after the frame's CPU simulation has consumed its ring.
-        self.readbacks.read_current_mapped(device, self.ring, &shared.queue)?;
+        if self.readbacks.read_current_mapped(device, self.ring, &shared.queue)? {
+            shared.queue.mark_completed(self.ring)?;
+        }
         // The other clients read the same completed rings and register
         // into the ring the next submission records.
         shared.completed = self.readbacks.completed_rings().map(<[[f32; 4]]>::to_vec);
@@ -231,5 +237,16 @@ impl OceanScene {
             .snapshot
             .as_ref()
             .filter(|s| s.frame == frame)
+    }
+}
+
+impl Drop for OceanScene {
+    fn drop(&mut self) {
+        // Host counterpart of the real ocean owner's destruction: consumers
+        // observe withdrawal instead of waiting for a renderer that is gone.
+        // The single manager owns all handles/results, not the child clients.
+        let mut shared = crate::rendering::ocean::ocean_query_manager()
+            .lock().unwrap_or_else(|error| error.into_inner());
+        *shared = Default::default();
     }
 }

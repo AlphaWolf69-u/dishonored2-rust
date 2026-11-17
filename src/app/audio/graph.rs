@@ -11,6 +11,7 @@ use std::{io, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}, time::Duration}
 mod sequence;
 mod flow;
 mod music;
+mod observation;
 use sequence::Sequence;
 
 pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection>>>;
@@ -681,7 +682,7 @@ impl Definition {
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             source_ready: AtomicU32::new(0), threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
-            music_update: Mutex::new(None),
+            music_update: Mutex::new(None), observe_sources: observation::enabled(scene), source_observer:scene.source_observer(),
             music_cost: self.music.as_ref().and_then(|_| music::UpdateCosts::new(self.nodes[self.root].id, self.sounds.len())),
             routes: Mutex::new(Arc::new(Vec::new())), switch_count: AtomicU32::new(0), activity: mixer.activity.clone(),
             registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
@@ -699,6 +700,8 @@ struct MusicUpdate {
     threshold: u32,
 }
 struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, rays: Vec<[AtomicU32; 3]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+    observe_sources:bool,
+    source_observer:Option<super::observation::SourceSamples>,
     music_update: Mutex<Option<MusicUpdate>>,
     music_cost: Option<music::UpdateCosts>,
     transitions: Vec<AtomicU32>,
@@ -912,6 +915,7 @@ enum State {
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
         /// Below the volume threshold with the virtual behaviour: no decoding.
         virtualized: bool,
+        meter:Option<Box<observation::Meter>>,
         _activity: Option<crate::gameplay::sound::activity::Token> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, sequence: Sequence, next: Option<u64>, pending: Option<usize>, exhausted: bool },
@@ -954,6 +958,7 @@ impl Runtime {
                 resampler: None,
                 gain: GainRamp::default(), gain_tick: None,
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false, virtualized: false,
+                meter:control.observe_sources.then(||Box::new(observation::Meter::new(definition.nodes[node].id,control.source_observer.clone()))),
                 _activity: control.registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
@@ -1136,7 +1141,8 @@ impl Runtime {
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
             (State::Sound { frame, random, looping, silence, stream, resampler, gain: ramp, gain_tick, filters, output_filters,
-                routes, auxiliary, auxiliary_initialized, virtualized, _activity: _ }, Kind::Sound(index)) => {
+                routes, auxiliary, auxiliary_initialized, virtualized, meter, _activity: _ }, Kind::Sound(index)) => {
+                if let Some(meter)=meter {meter.identify(audio);}
                 let sound = &definition.sounds[*index];
                 if *gain_tick == Some(now / 1024) && stream.as_ref().is_some_and(|stream| stream.awaiting_read(now)) {
                     return true;
@@ -1283,6 +1289,7 @@ impl Runtime {
                     *sample = value;
                 }
                 let gains = ramp.next_frame();
+                if let Some(meter)=meter {meter.decoded(&samples[..channels]);}
                 let low_pass = f32::from_bits(audio.control.filters[*index][0].load(Ordering::Relaxed)) + random.low_pass;
                 let high_pass = f32::from_bits(audio.control.filters[*index][1].load(Ordering::Relaxed)) + random.high_pass;
                 let distance_low = f32::from_bits(audio.control.spatial[*index][4].load(Ordering::Relaxed));
@@ -1313,10 +1320,15 @@ impl Runtime {
                         *sample = filters[1].process(low) * context.gain;
                     }
                     context.add(route.routing.bus, dry);
+                    let mut aux_peak=0.0f32;
                     for connection in auxiliary.iter_mut() {
                         let wet = stereo_frame(&samples[..channels], connection.gain.next_frame()).map(|sample| sample * context.gain);
+                        if meter.is_some(){for sample in wet{aux_peak=aux_peak.max(sample.abs());}}
                         context.add(connection.bus, wet);
                     }
+                    if let Some(meter)=meter {meter.frame(&dry,aux_peak,&gains[..channels*2],source_gain,context.gain,
+                        Some((route.routing.bus,context.buses.output_gain(route.routing.bus),context.buses.master_next_block_gain())));}
+                    if meter.as_ref().is_some_and(|meter|meter.reported()){*meter=None;}
                     resampler.advance();
                     *frame += 1;
                     return (sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some()

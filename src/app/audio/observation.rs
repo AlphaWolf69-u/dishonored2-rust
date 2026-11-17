@@ -19,6 +19,15 @@ pub(in crate::app) struct Observation {
     admissions: Mutex<Vec<Admission>>,
     ended: Mutex<std::collections::HashSet<u32>>,
     ready: Mutex<std::collections::HashSet<u32>>,
+    source_samples: SourceSamples,
+}
+pub(in crate::app::audio) type SourceSamples=Arc<Mutex<Vec<SourceReceipt>>>;
+#[derive(Clone,Debug)]
+pub(in crate::app) struct SourceReceipt {
+    pub event:u32,pub playing_id:u32,pub object:Emitter,pub selected_source:u32,
+    pub decoded_peak:f32,pub dry_peak:f32,pub aux_peak:f32,pub gain_peak:f32,
+    pub route_next_block_gain:Option<f32>,pub master_next_block_gain:Option<f32>,
+    pub reason:&'static str,
 }
 #[derive(Default)]
 struct Consumed {
@@ -58,6 +67,8 @@ pub(super) fn attach(world: &mut World) {
     else {
         return;
     };
+    let source_samples=world.resource::<Observation>().source_samples.clone();
+    if let Some(mut scene)=world.get_resource_mut::<spatial::Scene>(){scene.observe_sources(source_samples);}
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         completions.playing.observe_notifications(observer.clone());
     }
@@ -275,6 +286,8 @@ impl Observation {
 }
 #[derive(Default, Debug)]
 pub(in crate::app) struct Snapshot {
+    pub source_samples: Vec<SourceReceipt>,
+    pub source_processed_ids: Vec<u32>,
     pub output: OutputSnapshot,
     pub samples: u64,
     pub nonzero_samples: u64,
@@ -380,6 +393,7 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
             .collect();
     }
     if let Some(observer) = world.get_resource::<Observation>() {
+        result.source_samples=observer.source_samples.lock().unwrap_or_else(|error|error.into_inner()).clone();
         result.admissions = observer
             .admissions
             .lock()
@@ -425,6 +439,7 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
                     .filter(|note| note.kind == "SourceReady")
                     .map(|note| note.playing_id),
             );
+        result.source_processed_ids=observer.ready.lock().unwrap_or_else(|error|error.into_inner()).iter().copied().collect();
     }
     result
 }

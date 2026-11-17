@@ -68,6 +68,8 @@ struct Instance {
     sound_head: u16,
     decal_head: u16,
     distortion_head: u16,
+    fov_head: u16,
+    quad_head: u16,
     rumble_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
@@ -89,6 +91,8 @@ pub(super) struct GroupContext<'a> {
     pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
     pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
+    pub(super) fovs: &'a mut super::world_fov::Systems,
+    pub(super) quads: &'a mut super::world_screen_quads::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
@@ -108,6 +112,8 @@ impl GroupContext<'_> {
             decals: self.decals,
             distortion: self.distortion,
             rumble: self.rumble,
+            fovs: self.fovs,
+            quads: self.quads,
             lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
@@ -131,6 +137,8 @@ fn admit(
     for group in &definition.groups {
         for distortion in &group.screen_distortions { distortion.as_ref().map_err(Clone::clone)?; }
         for rumble in &group.rumbles { rumble.as_ref().map_err(Clone::clone)?; }
+        for fov in &group.fovs { fov.as_ref().map_err(Clone::clone)?; }
+        for quad in &group.quads { quad.as_ref().map_err(Clone::clone)?; }
         for light in &group.lights {
             let light=light.as_ref().map_err(Clone::clone)?;
             if light.enabled && !matches!(light.kind,0|2) { return Err(format!("{name}: FX light type{} awaits a verified canonical render consumer",light.kind)); }
@@ -221,6 +229,8 @@ fn update_chains(
     sound_head: &mut u16,
     decal_head: &mut u16,
     distortion_head: &mut u16,
+    fov_head: &mut u16,
+    quad_head: &mut u16,
     rumble_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     frame: &UpdateFrame,
@@ -251,13 +261,12 @@ fn update_chains(
         |materials| Ok(materials.clone()),
         |_| {},
     )?;
-    let mut distortion_count = None;
+    let mut view_live = None;
     let mut gameplay_live = false;
     let mut index = 0;
     while index < gameplay_events.len() {
-        if distortion_count.is_none() && !gameplay_events[index].is_entity() {
-            distortion_count = Some(context.distortion.update(distortion_head, frame.age,
-                frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?);
+        if view_live.is_none() && !gameplay_events[index].is_entity() {
+            view_live = Some(update_view_chains(fov_head,distortion_head,quad_head,frame,context)?);
         }
         if gameplay_events[index].advance(
             frame.age,
@@ -272,15 +281,24 @@ fn update_chains(
             gameplay_events.remove(index);
         }
     }
-    let distortion_count = match distortion_count {
-        Some(count) => count,
-        None => context.distortion.update(distortion_head, frame.age,
-            frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?,
+    let view_live = match view_live {
+        Some(live) => live,
+        None => update_view_chains(fov_head,distortion_head,quad_head,frame,context)?,
     };
     let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
         frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),
         &mut context.systems.seed)?;
-    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || distortion_count != 0 || gameplay_live)
+    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || view_live || gameplay_live)
+}
+
+///222f80/223f60 preserve FOV, distortion and quad family RNG order.
+fn update_view_chains(fov:&mut u16,distortion:&mut u16,quads:&mut u16,
+    frame:&UpdateFrame,context:&mut GroupContext)->Result<bool,String>{
+    let fov=context.fovs.update(fov,frame.age,&mut context.systems.seed)?;
+    let distortion=context.distortion.update(distortion,frame.age,
+        frame.particle.view_mask&frame.particle.allowed_mask!=0,&mut context.systems.seed)?;
+    let quads=context.quads.update(quads,frame.age,&mut context.systems.seed)?;
+    Ok(fov!=0||distortion!=0||quads!=0)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -300,6 +318,8 @@ fn update_sub_effects(
             &mut sub.sound_head,
             &mut sub.decal_head,
             &mut sub.distortion_head,
+            &mut sub.fov_head,
+            &mut sub.quad_head,
             &mut sub.rumble_head,
             &mut sub.gameplay_events,
             frame,
@@ -327,6 +347,8 @@ pub(super) fn start_groups(
     sound_head: &mut u16,
     decal_head: &mut u16,
     distortion_head: &mut u16,
+    fov_head: &mut u16,
+    quad_head: &mut u16,
     rumble_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
@@ -418,9 +440,15 @@ pub(super) fn start_groups(
                 ),
             );
         }
+        for fov in &group.fovs {
+            context.fovs.start(fov_head,fov.as_ref().map_err(Clone::clone)?.clone(),offsets,&mut context.systems.seed)?;
+        }
         for distortion in &group.screen_distortions {
             context.distortion.start(distortion_head, distortion.as_ref().map_err(Clone::clone)?.clone(),
                 offsets, &mut context.systems.seed)?;
+        }
+        for quad in &group.quads {
+            context.quads.start(quad_head,quad.as_ref().map_err(Clone::clone)?.clone(),offsets,3,&mut context.systems.seed)?;
         }
         for source in &group.explosions {
             let first_explosion = gameplay_events
@@ -466,6 +494,8 @@ pub(crate) struct WorldParticleState {
     decals: super::decal_effects::DecalSystems,
     distortion: super::world_screen_distortion::Systems,
     rumble: super::world_rumble::Systems,
+    fovs: super::world_fov::Systems,
+    quads: super::world_screen_quads::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
@@ -509,6 +539,8 @@ impl Default for WorldParticleState {
             decals: super::decal_effects::new_systems(),
             distortion: Default::default(),
             rumble: Default::default(),
+            fovs: Default::default(),
+            quads: Default::default(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
@@ -557,6 +589,15 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn apply_fov(&self,base:f32)->f32 {
+        //21da80 does not call the view FOV reducer for an empty registered
+        //list. Preserve the user's base value without applying its clamp.
+        let mut samples=self.fovs.samples();
+        let Some(first)=samples.next() else{return base;};
+        let value=samples.fold(first.apply(base,base),|current,sample|sample.apply(base,current));
+        if value<1.{1.}else if value>150.{150.}else{value}
+    }
+    pub(crate) fn screen_quad_frame(&self)->crate::gameplay::effects::screen_quad::Frame{self.quads.frame(1)}
     pub(crate) fn rumble_frame(&self) -> Option<(u32,[f32;4])> { self.rumble.completed() }
     pub(crate) fn screen_distortion_frame(&self) -> crate::gameplay::effects::screen_distortion::Frame {
         self.distortion.frame()
@@ -567,6 +608,20 @@ impl WorldParticleState {
         if self.source.is_none() || self.closed { return Err("story Kiscule manager is not initialized".into()); }
         let Some(&root) = self.entity_graphs.get(&worldspawn) else { return Ok(None) };
         self.graphs.story_boolean(root, qualified)
+    }
+    pub(crate) fn bind_story_root(&mut self,worldspawn:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{
+        //5134e0 may genuinely find no program on a world's actual header.
+        //Keep that null lookup distinct from inventing a graph/default flag.
+        if let Some(&root)=self.entity_graphs.get(&worldspawn){self.graphs.bind_story_root(root)?;}
+        Ok(())
+    }
+    fn prepare_named_graph(&mut self,index:usize,live:Option<&crate::gameplay::entity_lifetime::LiveEntities>)->Result<(),String>{
+        let actors=&self.entity_graphs;
+        self.graphs.prepare_named_bindings(index,&mut |name|{
+            let live=live?;
+            let entity=live.find(name)?;
+            actors.get(&entity).copied()
+        })
     }
     pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> {
         self.gameplay.front()
@@ -622,6 +677,14 @@ impl WorldParticleState {
                 .admit_render_root(Arc::clone(graph), declarations)?;
             self.graphs.queue_loading_end(root)?;
         }
+        //DeclInstance entry refresh may read another actor's variable while
+        //draining LoadingEnd itself, before an ordinary node step is visited.
+        let actors=&self.entity_graphs;
+        self.graphs.prepare_named_all(|name|{
+            let live=live?;
+            let entity=live.find(name)?;
+            actors.get(&entity).copied()
+        })?;
         for error in self.graphs.startup() {
             self.report(error);
         }
@@ -1107,6 +1170,8 @@ impl WorldParticleState {
                 self.lights.stop(instance.light_head, instance.age, false)?;
                 self.distortion.stop(instance.distortion_head, instance.age, false)?;
                 self.rumble.stop(instance.rumble_head, instance.age, false)?;
+                self.fovs.stop(instance.fov_head,instance.age,false)?;
+                self.quads.stop(instance.quad_head,instance.age,false)?;
                 self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
@@ -1118,6 +1183,8 @@ impl WorldParticleState {
                         lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    fovs: &mut self.fovs,
+                    quads: &mut self.quads,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -1193,6 +1260,8 @@ impl WorldParticleState {
         self.lights.clear(&mut instance.light_head)?;
         self.distortion.clear(&mut instance.distortion_head)?;
         self.rumble.clear(&mut instance.rumble_head)?;
+        self.fovs.clear(&mut instance.fov_head)?;
+        self.quads.clear(&mut instance.quad_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
@@ -1202,6 +1271,8 @@ impl WorldParticleState {
                 lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    fovs: &mut self.fovs,
+                    quads: &mut self.quads,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -1362,6 +1433,8 @@ impl WorldParticleState {
         self.distortion.shutdown();
         if !self.rumble.drained() { return Err("FX rumble pool retains a live chain after shutdown".into()); }
         self.rumble.shutdown();
+        if !self.fovs.drained()||!self.quads.drained(){return Err("FX FOV/quad pool retains a live chain after shutdown".into());}
+        self.fovs.shutdown();self.quads.shutdown();
         if !self.lights.drained() { return Err("FX light pool retains a live chain after instance shutdown".into()); }
         self.pending_starts.clear();
         self.pending_actor_starts.clear();
@@ -1464,6 +1537,13 @@ impl WorldParticleState {
                     entity.parameters.location = location.clone();
                     entity.parameters.tag.clone_from(&entry.tag);
                     entity.parameters.update_position = entry.attached;
+                    if let Some(parameters)=&entry.component_parameters {
+                        entity.parameters.target=parameters.target.as_ref().map(|(target,_)|target.clone());
+                        entity.parameters.target_tag=parameters.target.as_ref().map_or_else(String::new,|(_,tag)|tag.clone());
+                        entity.parameters.dont_spawn_if_culled=parameters.dont_spawn_if_culled;
+                        entity.parameters.stop_on_target_removal=parameters.stop_on_target_removal;
+                        entity.parameters.stop_on_parent_removal=parameters.stop_on_parent_removal;
+                    }
                 }
                 for instance in self
                     .slots
@@ -1479,7 +1559,15 @@ impl WorldParticleState {
                     instance.parameters.location = location.clone();
                     instance.parameters.tag.clone_from(&entry.tag);
                     instance.parameters.update_position = entry.attached;
+                    if let Some(parameters)=&entry.component_parameters {
+                        instance.parameters.target=parameters.target.as_ref().map(|(target,_)|target.clone());
+                        instance.parameters.target_tag=parameters.target.as_ref().map_or_else(String::new,|(_,tag)|tag.clone());
+                        instance.parameters.dont_spawn_if_culled=parameters.dont_spawn_if_culled;
+                        instance.parameters.stop_on_target_removal=parameters.stop_on_target_removal;
+                        instance.parameters.stop_on_parent_removal=parameters.stop_on_parent_removal;
+                    }
                 }
+                self.dynamic_reference_event(id,entry,systems,frames)?;
                 continue;
             }
             let id = self.next_entity;
@@ -1497,7 +1585,11 @@ impl WorldParticleState {
                         location,
                         tag: entry.tag.clone(),
                         update_position: entry.attached,
-                        stop_on_parent_removal: false,
+                        target: entry.component_parameters.as_ref().and_then(|parameters|parameters.target.as_ref()).map(|(target,_)|target.clone()),
+                        target_tag: entry.component_parameters.as_ref().and_then(|parameters|parameters.target.as_ref()).map_or_else(String::new,|(_,tag)|tag.clone()),
+                        dont_spawn_if_culled: entry.component_parameters.as_ref().is_some_and(|parameters|parameters.dont_spawn_if_culled),
+                        stop_on_target_removal: entry.component_parameters.as_ref().is_some_and(|parameters|parameters.stop_on_target_removal),
+                        stop_on_parent_removal: entry.component_parameters.as_ref().is_some_and(|parameters|parameters.stop_on_parent_removal),
                         ..Default::default()
                     },
                     component: Default::default(),
@@ -1524,6 +1616,7 @@ impl WorldParticleState {
             self.pending_actor_starts.push(id);
             self.dynamic
                 .insert(entry.owner.clone(), (id, entry.revision));
+            self.dynamic_reference_event(id,entry,systems,frames)?;
             if started.is_some() {
                 eprintln!(
                     "FX_LIFECYCLE start owner={} effect={}",
@@ -1539,6 +1632,34 @@ impl WorldParticleState {
             );
         }
         Ok(())
+    }
+    ///4b22d0/4b1cc0, delivered through the same immutable FX publication.
+    ///The receipt lives with the existing component kernel and real lifetime.
+    fn dynamic_reference_event(&mut self,id:u32,entry:&super::world_effects::DynamicEffect,
+        systems:&mut ParticleSystems,frames:&WorldEffectFrames)->Result<(),String>{
+        let Some((revision,parent_present,stopping))=entry.reference_event else{return Ok(());};
+        let Some(mut entity)=self.entities.remove(&id)else{return Ok(());};
+        let mut component=std::mem::take(&mut entity.component);
+        let stop_on_parent_removal=stopping||entity.parameters.stop_on_parent_removal;
+        let result=component.reference_event_once(revision,parent_present,stop_on_parent_removal,
+            &mut InstanceHost{state:self,systems,frames,sources:&entry.sources,entity:&mut entity,id});
+        //Immediate native stop can retire while this source wrapper is
+        //borrowed out of the map. Publish that real handle loss here too.
+        if let FxEntityOwner::Actor{active,..}=&mut entity.owner{
+            if active.is_some_and(|handle|!self.handles.contains_key(&handle)){*active=None;}
+        }
+        if result.is_ok()&&stopping{
+            entity.suspended=true;
+            self.pending_actor_starts.retain(|&pending|pending!=id);
+            if component.handle().is_none(){
+                if let Some(lifetime)=&entity.dynamic_retirement{
+                    lifetime.completed.store(true,std::sync::atomic::Ordering::Release);
+                }
+            }
+        }
+        entity.component=component;
+        self.entities.insert(id,entity);
+        result
     }
     /// 14019d100 + 1401a2ff0 for one particle FX event: a detached FX
     /// entity at the event pose whose instance starts with the deferred
@@ -1618,6 +1739,8 @@ impl WorldParticleState {
             sound_head: u16::MAX,
             decal_head: u16::MAX,
             distortion_head: u16::MAX,
+            fov_head: u16::MAX,
+            quad_head: u16::MAX,
             rumble_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
@@ -1780,6 +1903,8 @@ impl WorldParticleState {
         // the manager's group2 delta multiplied by entity scale during update.
         let timers = std::mem::take(&mut self.timers);
         for (index, node) in timers {
+            self.prepare_named_graph(index,live)?;
+            self.graphs.prepare_story_bindings(index)?;
             let mut runtime = self.graphs[index].take().ok_or("FX graph busy")?;
             let result = runtime.update_timer(
                 node,
@@ -1807,6 +1932,7 @@ impl WorldParticleState {
         }
         self.graphs.events.begin_update();
         while let Some(event) = self.graphs.events.pop() {
+            self.prepare_named_graph(event.graph(),live)?;
             let (index, node, port) = match event {
                 GraphEvent::Action { graph, node, port } => (graph, node, port),
                 GraphEvent::LoadingEnd { graph, node } => {
@@ -1818,6 +1944,7 @@ impl WorldParticleState {
                     continue;
                 }
             };
+            self.graphs.prepare_story_bindings(index)?;
             let mut runtime = self.graphs[index].take().ok_or("FX graph busy")?;
             runtime.notify(node, port);
             let result = runtime.step(&mut GraphHost {
@@ -1877,7 +2004,7 @@ impl WorldParticleState {
             };
             if entity.suspended
                 || (matches!(entity.owner, FxEntityOwner::Actor { .. })
-                    && !entity.parameters.update_position)
+                    && !entity.parameters.update_position && entity.parameters.target.is_none())
             {
                 continue;
             }
@@ -1986,6 +2113,8 @@ impl WorldParticleState {
                 &mut instance.sound_head,
                 &mut instance.decal_head,
                 &mut instance.distortion_head,
+                &mut instance.fov_head,
+                &mut instance.quad_head,
                 &mut instance.rumble_head,
                 &mut instance.gameplay_events,
                 &mut instance.sub_effects,
@@ -1998,6 +2127,8 @@ impl WorldParticleState {
                     lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    fovs: &mut self.fovs,
+                    quads: &mut self.quads,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2078,6 +2209,8 @@ impl WorldParticleState {
                     lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    fovs: &mut self.fovs,
+                    quads: &mut self.quads,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2095,6 +2228,8 @@ impl WorldParticleState {
                     &mut instance.sound_head,
                     &mut instance.decal_head,
                 &mut instance.distortion_head,
+                &mut instance.fov_head,
+                &mut instance.quad_head,
                 &mut instance.rumble_head,
                     &mut instance.gameplay_events,
                     &update,
@@ -2479,6 +2614,8 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             sound_head: u16::MAX,
             decal_head: u16::MAX,
             distortion_head: u16::MAX,
+            fov_head: u16::MAX,
+            quad_head: u16::MAX,
             rumble_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
@@ -2534,7 +2671,13 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         Ok(())
     }
     fn detach(&mut self, handle: Option<u32>) -> Result<Option<u32>, String> {
-        Ok(handle.filter(|handle| self.state.handles.contains_key(handle)))
+        let handle=handle.filter(|handle| self.state.handles.contains_key(handle));
+        if handle.is_some(){
+            if let Some(detached)=self.entity.dynamic_retirement.as_ref().and_then(|lifetime|lifetime.detached.as_ref()){
+                detached.store(true,std::sync::atomic::Ordering::Release);
+            }
+        }
+        Ok(handle)
     }
     fn stop_immediately(&mut self, handle: u32) -> Result<(), String> {
         if let Some(&slot) = self.state.handles.get(&handle) {

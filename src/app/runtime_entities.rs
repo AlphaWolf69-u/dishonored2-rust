@@ -20,6 +20,7 @@ use std::{
 };
 
 mod placed;
+mod openables;
 pub(super) mod actor_class;
 pub(in crate::app) use placed::SoundVolume as PreparedSoundVolume;
 pub(in crate::app) use placed::{Child as PreparedBreakableChild, Prepared as PreparedBreakable};
@@ -114,6 +115,12 @@ struct Actor {
     startup_parent: Option<EntityId>,
 }
 struct GrenadeBirth { held: EntityId, target_flags: u32, transferred: bool, targeted: bool }
+impl Actor {
+    fn placed()->Self{
+        Self{definition:None,prototype:None,removing:false,rollback:false,rollback_queued:false,children:Vec::new(),
+            release:None,stick:None,dynamic:None,breakable_class:None,movable:None,grenade_birth:None,cue:None,startup_parent:None}
+    }
+}
 #[derive(Default)]
 struct StickAdmission {
     chunks: Vec<(usize, usize, usize, EntityId)>,
@@ -138,6 +145,7 @@ pub(super) struct RuntimeEntities {
     active_retirement: Option<EntityId>,
     placed_pending: VecDeque<PreparedBreakable>,
     placed_sound_volumes: VecDeque<PreparedSoundVolume>,
+    placed_openables: Vec<super::physics_scene::openable::Prepared>,
     placed_leases: HashMap<EntityId, Vec<placed::Lease>>,
     source_error: Option<String>,
 }
@@ -298,6 +306,7 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     let volumes = world
         .resource_mut::<super::physics_scene::PhysicsScene>()
         .take_prepared_sound_volumes();
+    let openables=world.resource_mut::<super::physics_scene::PhysicsScene>().take_prepared_openables();
     world.insert_resource(RuntimeEntities {
         catalog,
         source,
@@ -311,6 +320,7 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         active_retirement: None,
         placed_pending: placed.into(),
         placed_sound_volumes: volumes.into(),
+        placed_openables:openables,
         placed_leases: HashMap::new(),
         source_error: None,
     });
@@ -328,6 +338,7 @@ fn effect_paths(definition: &Definition) -> Vec<String> {
             Kind::Breakable(value) => paths.extend(value.fx_paths().map(str::to_owned)),
             Kind::DamageZone(value)=>paths.extend(value.effect_paths().map(str::to_owned)),
             Kind::Grenade(value)=>paths.extend(value.fx_paths().map(str::to_owned)),
+            Kind::Fx(value)=>paths.extend(value.effect.iter().map(|path|path.to_string())),
             _ => {}
         }
     }
@@ -581,7 +592,7 @@ fn startup_readiness(world: &World) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    Ok(owner.placed_pending.is_empty() && owner.placed_sound_volumes.is_empty())
+    Ok(owner.placed_pending.is_empty() && owner.placed_sound_volumes.is_empty() && owner.placed_openables.is_empty())
 }
 pub(super) fn startup_pending(world: &World) -> bool {
     !matches!(startup_readiness(world), Ok(true))
@@ -960,6 +971,48 @@ pub(super) fn spawn_projectile(
 ) -> Result<EntityId, String> {
     spawn_inner(world, definition, options, Some(request), None)
 }
+///64bc20's code-created idEntity/CpntFX transaction. All source parameters
+///and the actual source-actor binding precede the one shared Init/Start drain.
+pub(super) fn spawn_animation_effect(world:&mut World, definition:Arc<Definition>,
+    owner:EntityId,target:Option<EntityId>,culprit:Option<EntityId>,
+    binding:super::physics_scene::throwable::BindingPose)->Result<EntityId,String>{
+    if definition.class!="idEntity" || definition.components.len()!=1 || !matches!(&definition.components[0].kind,Kind::Fx(_)) {
+        return Err("animation FX requires its actual bare idEntity/CpntFX constructor recipe".into());
+    }
+    let joint_world=if binding.joint>=0 {
+        let player=world.get_resource::<super::player::PlayerState>().and_then(|state|state.player.as_ref())
+            .ok_or("animation FX actual Player pose owner absent")?;
+        if player.managed_entity()==Some(owner){
+            let local=player.reference_local_joint(binding.joint)?;
+            let root=ReferenceFrame{position:player.physics.position().to_array(),basis:player.physics.axis().to_cols_array_2d()};
+            Some(crate::gameplay::reference_frame::compose(root,local))
+        }else{
+            let (position,basis)=player.equipment_joint_world(owner,usize::try_from(binding.joint).map_err(|_|"animation FX joint index invalid")?)
+                .ok_or("animation FX actual arm/equipment source joint absent")?;
+            Some(ReferenceFrame{position:position.to_array(),basis:basis.to_cols_array_2d()})
+        }
+    }else{None};
+    with_scene(world,|world,scene,live,events|{
+        live.get(owner).ok_or("animation FX source owner generation is stale")?;
+        if let Some(target)=target {live.get(target).ok_or("animation FX target generation is stale")?;}
+        if let Some(culprit)=culprit {live.get(culprit).ok_or("animation FX culprit generation is stale")?;}
+        let mut born=None;
+        let result=scene.with_runtime_registry(|scene,registry|{
+            let id=spawn_constructed(world,definition,SpawnOptions{frame:ReferenceFrame::default(),scale:None,hidden_disabled:false},
+                None,None,None,None,None,&mut Construction::Callback{scene,live,events,registry})?;
+            born=Some(id);
+            scene.bind_animation_effect(live,events,id,owner,binding,joint_world,registry)?;
+            scene.configure_animation_fx(live,id,target,culprit,registry)?;
+            scene.run_runtime_startup(world,live,events,registry)?;
+            Ok(id)
+        });
+        if result.is_err(){if let Some(id)=born {
+            world.resource_mut::<RuntimeEntities>().actors.get_mut(&id)
+                .ok_or("animation FX failed birth journal absent")?.rollback=true;
+        }}
+        result
+    })
+}
 ///639970 configures accepted throw momentum before component Initialize.
 pub(super) fn spawn_grenade(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
     attacker: EntityId, linear: bevy::math::Vec3, angular: bevy::math::Vec3,
@@ -1050,6 +1103,17 @@ pub(super) fn spawn_in_registry(world: &mut World, scene: &mut super::physics_sc
     definition: Arc<Definition>, options: SpawnOptions, name: Option<Arc<str>>, parent: EntityId) -> Result<EntityId, String> {
     let expected = prepared_child(world, parent, &definition.entity)?;
     if !Arc::ptr_eq(&expected, &definition) { return Err("startup child belongs to another prepared source generation".into()); }
+    spawn_component_child_in_registry(world,scene,live,events,registry,definition,options,name,parent)
+}
+///74c1f0's child is retained by an actual Openable declaration/component,
+///including placed parents without a runtime entityDef journal. The caller
+///must have requested that same Arc through its component's demand scope.
+///The common constructor below still checks canonical prototype readiness.
+pub(super) fn spawn_component_child_in_registry(world:&mut World,scene:&mut super::physics_scene::PhysicsScene,
+    live:&mut crate::gameplay::entity_lifetime::LiveEntities,events:&mut crate::gameplay::entity_events::EntityEvents,
+    registry:&mut crate::gameplay::component_state::ComponentRegistry,definition:Arc<Definition>,options:SpawnOptions,
+    name:Option<Arc<str>>,parent:EntityId)->Result<EntityId,String>{
+    live.get(parent).ok_or("component child parent generation is stale")?;
     spawn_constructed(world, definition, options, None, None, name, None, Some(parent),
         &mut Construction::Callback { scene, live, events, registry })
 }
@@ -1421,7 +1485,8 @@ pub(super) fn append_projectile_stick(
 /// Drain real component, graph, audio and renderer owners. The canonical
 /// GameLocal removal batch owns save-name preparation and final Live ID retire.
 pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool, String> {
-    if super::pickups::blocks_retirement(world, id) {
+    if super::pickups::blocks_retirement(world, id)
+        || super::animation_effects::blocks_retirement(world, id) {
         return Ok(false);
     }
     let whole_world = world
@@ -1555,6 +1620,18 @@ enum RetireMode {
 }
 pub(super) fn retire(world: &mut World, id: EntityId) -> Result<bool, String> {
     finish_retirement(world, id, RetireMode::Ordinary)
+}
+///World teardown retires bound CpntFX actors after their real manager drain,
+///before their equipment/arm parents. This is not gameplay auto-collection:
+///the same generic component, attachment and header destructor is used.
+pub(super) fn retire_effect_actors(world:&mut World)->Result<bool,String>{
+    let ids=world.get_resource::<RuntimeEntities>().map(|owner|owner.actors.iter()
+        .filter_map(|(&id,actor)|actor.definition.as_ref().is_some_and(|definition|
+            definition.components.iter().any(|component|matches!(component.kind,Kind::Fx(_))))
+            .then_some(id)).collect::<Vec<_>>()).unwrap_or_default();
+    let mut complete=true;
+    for id in ids{complete &= finish_retirement(world,id,RetireMode::World)?;}
+    Ok(complete)
 }
 pub(super) fn begin_retirement(world: &mut World) -> Result<bool, String> {
     let Some(mut owner) = world.get_resource_mut::<RuntimeEntities>() else {

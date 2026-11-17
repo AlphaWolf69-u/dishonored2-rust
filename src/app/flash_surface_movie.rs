@@ -12,7 +12,7 @@ pub(super) use worker::Worker;
 pub(super) struct Command {pub key:Key,pub operation:Operation,pub errors:Sender<Event>}
 pub(super) enum Operation {
     Prepare {definition:Arc<Definition>,requires_configuration:bool,events:Sender<Event>},
-    ShowMap(Arc<MapDefinition>),Tick(f64),Stop {events:Sender<Event>},
+    ShowMap(Arc<MapDefinition>),Cooking(super::flash_surfaces::CookingCommand),Tick(f64,Option<f32>),Stop {events:Sender<Event>},
 }
 pub(super) enum Event {Ready(Key,(f64,f64),Option<FlashFrame>),Frame(Key,Option<FlashFrame>),Configured(Key,FlashFrame),Stopped(Key),Sound(Key,u32),Failed(Key,String)}
 #[derive(Clone,Copy,Default)]
@@ -26,6 +26,7 @@ struct Entry {
     published:bool,
     map_configuring:bool,
     pending_delta:f64,
+    cooking_value:Option<f32>,
     bindings:material::Bindings,
     in_flight:bool,
     stopping:bool,
@@ -35,7 +36,7 @@ struct Entry {
     withdrawn:bool,
 }
 impl Default for Entry {fn default()->Self{Self{status:Default::default(),error:None,target:None,ack:None,
-    serial:None,published:false,map_configuring:false,pending_delta:0.,bindings:Default::default(),in_flight:false,stopping:false,capture_stop:false,stopped:false,removing:false,withdrawn:false}}}
+    serial:None,published:false,map_configuring:false,pending_delta:0.,cooking_value:None,bindings:Default::default(),in_flight:false,stopping:false,capture_stop:false,stopped:false,removing:false,withdrawn:false}}}
 #[derive(Resource)]
 struct Movies {entries:HashMap<Key,Entry>,models:HashMap<crate::gameplay::entity_lifetime::EntityId,material::Bindings>,events:Mutex<Receiver<Event>>,sender:Sender<Event>}
 impl Default for Movies {fn default()->Self{let(sender,events)=mpsc::channel();Self{entries:HashMap::new(),models:HashMap::new(),events:Mutex::new(events),sender}}}
@@ -111,6 +112,23 @@ pub(super) fn stop(world:&mut World,key:Key)->Result<(),String>{
         }Ok(())
     })
 }
+pub(super) fn cooking_command(world:&mut World,key:Key,command:super::flash_surfaces::CookingCommand)->Result<bool,String>{
+    if let super::flash_surfaces::CookingCommand::Update(value)=command {
+        let entry=world.resource_mut::<Movies>().into_inner().entries.get_mut(&key).ok_or("GrenadeCooking movie generation lost")?;
+        if !entry.status.loaded||entry.stopping{return Ok(false)}
+        //The source setter runs before the ordinary movie tick/draw. Retain
+        //only the newest scalar across an in-flight frame, not another draw.
+        entry.cooking_value=Some(value);return Ok(true)
+    }
+    let entry=world.resource::<Movies>().entries.get(&key).ok_or("GrenadeCooking movie not requested")?;
+    if !entry.status.loaded||entry.stopping||entry.in_flight
+        ||entry.serial.is_some()&&!entry.status.captured{return Ok(false)}
+    send(world,key,Operation::Cooking(command),&world.resource::<Movies>().sender)?;
+    let entry=world.resource_mut::<Movies>().into_inner().entries.get_mut(&key).ok_or("GrenadeCooking movie generation lost")?;
+    entry.in_flight=true;
+    if matches!(command,super::flash_surfaces::CookingCommand::Initialize{..}){entry.status.configured=false;}
+    Ok(true)
+}
 pub(super) fn remove(world:&mut World,key:Key)->Result<(),String>{
     with_movies(world,|world,movies|{
         let entry=movies.entries.get_mut(&key).ok_or("world movie removal lost generation")?;
@@ -131,7 +149,7 @@ pub(super) fn tick(world:&mut World,dt:f32)->Result<(),String>{
         if !entry.stopping {entry.pending_delta+=f64::from(dt);}
         if entry.status.loaded&&!entry.stopping&&!entry.capture_stop&&!entry.in_flight
             &&entry.ack.as_ref().zip(entry.serial).is_some_and(|(ack,serial)|ack.rendered(serial)){
-            send(world,key,Operation::Tick(entry.pending_delta),&movies.sender)?;entry.pending_delta=0.;entry.in_flight=true;
+            send(world,key,Operation::Tick(entry.pending_delta,entry.cooking_value.take()),&movies.sender)?;entry.pending_delta=0.;entry.in_flight=true;
         }
     }Ok(())})
 }

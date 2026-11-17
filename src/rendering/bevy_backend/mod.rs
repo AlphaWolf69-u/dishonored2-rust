@@ -328,6 +328,11 @@ mod world_light_effects;
 #[cfg(feature = "game")]
 mod world_screen_distortion;
 #[cfg(feature = "game")]
+mod world_screen_quads;
+#[cfg(feature = "game")]
+mod screen_quads;
+mod world_fov;
+#[cfg(feature = "game")]
 mod world_rumble;
 #[cfg(feature = "game")]
 mod world_gameplay_effects;

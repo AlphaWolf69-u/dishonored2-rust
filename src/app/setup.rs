@@ -2133,6 +2133,14 @@ pub(super) fn prepare(
         let mut simulation = crate::rendering::bevy_backend::camera_scene::FxSimulation::default();
         simulation.prepare_entity_graphs(graphs, &sources, live_entities)?;
         commands.queue(move |world:&mut World|{
+            if let Some(worldspawn)=world.get_resource::<crate::gameplay::entity_lifetime::WorldspawnEntity>() {
+                if let Err(error)=simulation.bind_story_root(worldspawn.0) {
+                    error!("Story variable owner publication failed: {error}");
+                    crate::platform::client_diagnostics::record(&format!("Story variable owner publication failed: {error}"));
+                    world.write_message(AppExit::error());
+                    return;
+                }
+            }
             super::objectives::attach(world,&mut simulation);
             world.insert_resource(simulation);
         });

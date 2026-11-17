@@ -168,16 +168,26 @@ impl ShapeRayQuery {
         let result = (|| {
             match &target.shapes.get(item)?.geometry {
                 QueryGeometry::Convex(shape) => {
-                    //The base ConvexShape has no authored planes. Its ray
-                    //virtual uses the existing1412151a0 support GSK kernel.
-                    if let Some(candidate) = super::convex_support::ray::cast(
-                        &shape.vertices,
-                        [origin[0], origin[1], origin[2], 0.],
-                        [direction[0], direction[1], direction[2], 0.],
-                        shape.radius,
-                        control.fraction,
-                        self.query_flags,
-                    )? {
+                    //Sphere overrides base ray virtual+a0 with ca6160. Its
+                    //queryflag4 exit policy is the same source kernel already
+                    //ported for the packed-mesh sphere branch126c750.
+                    let candidate = if target.shapes.get(item)?.header.shape_type == 2 {
+                        super::compressed_mesh_query::convex_ray::sphere(
+                            *shape.vertices.first().ok_or("sphere ray centre absent")?,
+                            origin, direction, shape.radius, control.fraction, self.query_flags)
+                    } else {
+                        //The base ConvexShape has no authored planes. Its ray
+                        //virtual uses the existing1412151a0 support GSK kernel.
+                        super::convex_support::ray::cast(
+                            &shape.vertices,
+                            [origin[0], origin[1], origin[2], 0.],
+                            [direction[0], direction[1], direction[2], 0.],
+                            shape.radius,
+                            control.fraction,
+                            self.query_flags,
+                        )?
+                    };
+                    if let Some(candidate) = candidate {
                         submit(
                             ShapeRayContact {
                                 target: hit,

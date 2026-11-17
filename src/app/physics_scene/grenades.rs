@@ -1207,6 +1207,7 @@ impl PhysicsScene {
                 )?,
                 _ => {
                     self.grenade_resources.get_mut(&key).unwrap().exploding = None;
+                    super::super::gameplay_action_diagnostics::grenade::exploded(world, id);
                     return Ok(());
                 }
             }

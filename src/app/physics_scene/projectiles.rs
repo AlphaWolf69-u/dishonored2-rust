@@ -215,6 +215,61 @@ impl PhysicsScene {
             component,
         )))
     }
+    ///624540 tests the checked Throwable's requested state before7e7b10.
+    pub(in crate::app) fn projectile_throwable_started(&self, handle: ComponentHandle) -> Result<bool, String> {
+        let checked = self.projectiles.get(handle.slot).and_then(|component| component.throwable)
+            .ok_or("projectile checked Throwable absent")?;
+        let owner = self.owner(checked.handle)?;
+        if owner.generation != checked.generation { return Err("projectile Throwable generation stale".into()); }
+        Ok(owner.flags >> 2 & 3 == 2)
+    }
+    ///628df0 snapshots children in reverse binding-list order using the
+    ///parent's explicit impact/pickup matrix and their actual local offsets.
+    pub(in crate::app) fn projectile_child_frames(&self, live: &LiveEntities, id: EntityId,
+        frame: ReferenceFrame) -> Result<super::super::projectiles::Pickup, String> {
+        let &index = self.shared_indices.get(&id).ok_or("projectile child frame owner absent")?;
+        let mut children = Vec::new();
+        children.try_reserve(live.children(id)?.len()).map_err(|error| format!("projectile children: {error}"))?;
+        for &child in live.children(id)?.iter().rev() {
+            let &child_index = self.shared_indices.get(&child).ok_or("projectile child header absent")?;
+            let actor = self.entities[child_index].components.reference_actor
+                .and_then(|handle| self.actors.actors.get(handle.slot))
+                .ok_or("projectile child reference actor absent")?;
+            if actor.binding.entity != Some(index) { return Err("projectile child binding differs from live parent".into()); }
+            let local = crate::gameplay::reference_frame::joints::bind_local_frame(
+                ReferenceFrame::default(), [1.; 3], actor.binding.offset, actor.binding.orientation);
+            children.push(super::super::projectiles::PickupChild {
+                entity: child, frame: crate::gameplay::reference_frame::compose(frame, local), unbound: false,
+            });
+        }
+        Ok(super::super::projectiles::Pickup { children, next: 0 })
+    }
+    ///628df0 uses the same child publication for pickup(detach=true) and
+    ///the newly started stuck body(detach=false). The caller retains this
+    ///cursor across a fallible callback, so delivered children are not replayed.
+    pub(in crate::app) fn publish_projectile_children(&mut self, live: &mut LiveEntities,
+        events: &mut EntityEvents, pending: &mut super::super::projectiles::Pickup,
+        detach: bool) -> Result<(), String> {
+        while let Some(child) = pending.children.get_mut(pending.next) {
+            if detach && !child.unbound {
+                self.unbind_entity(live, child.entity, events)?;
+                child.unbound = true;
+            }
+            let index = *self.shared_indices.get(&child.entity).ok_or("projectile child publication owner absent")?;
+            if self.document_rigid(index)?.is_some() {
+                let current = self.published_entity_frame(live, child.entity)?;
+                self.publish_rigid_motion(live, child.entity, child.frame, current.velocities[0], current.velocities[1])?;
+            } else {
+                let actor = self.entities[index].components.reference_actor.ok_or("projectile child actor absent")?;
+                self.actors.actors[usize::from(actor.slot)].set_transform(child.frame, false);
+                self.entities[index].frame.pose = child.frame;
+                let generation = self.actors.actors[usize::from(actor.slot)].owner.generation;
+                self.request_post_physics_actor(usize::from(actor.slot), generation)?;
+            }
+            pending.next += 1;
+        }
+        Ok(())
+    }
     ///76e2b0 ->6274d0: pickup transfers a real finite projectile back to its
     ///Throwable. Child transforms use628df0's retained actor binding offsets;
     ///the same attachment owner restores body modes and reciprocal links.
@@ -266,90 +321,16 @@ impl PhysicsScene {
             //6274d0 passes the entity's published +300/+30c words, not an
             //actor prediction which has not yet been committed to that entity.
             let frame = self.entities[index].frame.pose;
-            let mut children = Vec::new();
-            children
-                .try_reserve(live.children(id)?.len())
-                .map_err(|error| format!("projectile pickup children: {error}"))?;
-            for &child in live.children(id)?.iter().rev() {
-                let &child_index = self
-                    .shared_indices
-                    .get(&child)
-                    .ok_or("projectile child header absent")?;
-                let actor = self.entities[child_index]
-                    .components
-                    .reference_actor
-                    .and_then(|handle| self.actors.actors.get(handle.slot))
-                    .ok_or("projectile child reference actor absent")?;
-                if actor.binding.entity != Some(index) {
-                    return Err("projectile child actor binding differs from live parent".into());
-                }
-                let local = crate::gameplay::reference_frame::joints::bind_local_frame(
-                    ReferenceFrame::default(),
-                    [1.; 3],
-                    actor.binding.offset,
-                    actor.binding.orientation,
-                );
-                children.push(super::super::projectiles::PickupChild {
-                    entity: child,
-                    frame: crate::gameplay::reference_frame::compose(frame, local),
-                    unbound: false,
-                });
-            }
+            let pending = self.projectile_child_frames(live, id, frame)?;
             let component = self.projectiles.get_mut(handle.slot).unwrap();
             component.runtime.as_mut().unwrap().picked_up = true;
-            component.pickup = Some(super::super::projectiles::Pickup { children, next: 0 });
+            component.pickup = Some(pending);
         }
-        loop {
-            let pending = self
-                .projectiles
-                .get(handle.slot)
-                .unwrap()
-                .pickup
-                .as_ref()
-                .unwrap();
-            let Some(child) = pending.children.get(pending.next) else {
-                break;
-            };
-            let (child, frame, unbound) = (child.entity, child.frame, child.unbound);
-            if !unbound {
-                self.unbind_entity(live, child, events)?;
-                let pending = self
-                    .projectiles
-                    .get_mut(handle.slot)
-                    .unwrap()
-                    .pickup
-                    .as_mut()
-                    .unwrap();
-                pending.children[pending.next].unbound = true;
-            }
-            let child_index = self.shared_indices[&child];
-            if self.document_rigid(child_index)?.is_some() {
-                let current = self.published_entity_frame(live, child)?;
-                self.publish_rigid_motion(
-                    live,
-                    child,
-                    frame,
-                    current.velocities[0],
-                    current.velocities[1],
-                )?;
-            } else {
-                let actor = self.entities[child_index]
-                    .components
-                    .reference_actor
-                    .ok_or("detached projectile child actor absent")?;
-                self.actors.actors[usize::from(actor.slot)].set_transform(frame, false);
-                self.entities[child_index].frame.pose = frame;
-                let generation = self.actors.actors[usize::from(actor.slot)].owner.generation;
-                self.request_post_physics_actor(usize::from(actor.slot), generation)?;
-            }
-            self.projectiles
-                .get_mut(handle.slot)
-                .unwrap()
-                .pickup
-                .as_mut()
-                .unwrap()
-                .next += 1;
-        }
+        let mut pending = self.projectiles.get_mut(handle.slot).unwrap().pickup.take()
+            .ok_or("projectile pickup child cursor absent")?;
+        let result = self.publish_projectile_children(live, events, &mut pending, true);
+        self.projectiles.get_mut(handle.slot).unwrap().pickup = Some(pending);
+        result?;
         let throwable = self
             .projectiles
             .get(handle.slot)
@@ -1297,6 +1278,18 @@ impl PhysicsScene {
                         classes.name_text(metadata.name) == Some(b"arkCpntPhysicsWorld")
                     },
                     can_stick,
+                    //624300: Pickable decl+a0 is holdAndThrowProps+30
+                    //(141738440), not another physics-material stick bit.
+                    target_allows_stick: if let Some(target) = target_id {
+                        match self.grapple_pickable(live, target)? {
+                            Some((_, pickable)) if pickable.definition.hold.is_none() => {
+                                let index = *self.shared_indices.get(&target)
+                                    .ok_or("projectile stick target scene owner absent")?;
+                                self.loot_component_lookup(index, 7, [0x28, 0])?.is_some()
+                            }
+                            _ => true,
+                        }
+                    } else { true },
                     can_break,
                     angle: projectiles::incidence_angle(hit.normal, runtime.velocity),
                     active_water_trigger: self.projectile_water_state(witness)? == Some(true),

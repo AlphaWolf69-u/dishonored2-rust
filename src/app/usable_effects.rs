@@ -125,6 +125,8 @@ pub(super) enum EffectRequest {
     StartEntity { owner: Arc<str>, path: String, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, retirement: Arc<Lifetime>, context: Option<crate::rendering::bevy_backend::world_effects::EntityEffectContext> },
     UpdateEntity { owner: Arc<str>, placement: EntityPlacement },
     UpdateBeam { owner: Arc<str>, origin: [f32; 3], endpoint: [f32; 3] },
+    SetComponentParameters { owner: Arc<str>, parameters: crate::rendering::bevy_backend::world_effects::ComponentParameters },
+    ReferenceEvent { owner: Arc<str>, parent_present: bool, stopping: bool },
     StopEntity { owner: Arc<str> },
     Reserve { owner: Arc<str>, paths: Vec<String> },
     ReleaseReservation { owner: Arc<str> },
@@ -136,6 +138,25 @@ pub(super) enum EffectRequest {
 pub(super) struct EffectRequests(pub(super) std::collections::VecDeque<EffectRequest>);
 
 impl EffectRequests {
+    pub(super) fn reference_event(&mut self,owner:Arc<str>,parent_present:bool,stopping:bool){
+        self.0.push_back(EffectRequest::ReferenceEvent{owner,parent_present,stopping});
+    }
+    pub(super) fn set_component_parameters(&mut self, owner: Arc<str>, parameters: crate::rendering::bevy_backend::world_effects::ComponentParameters) {
+        self.0.push_back(EffectRequest::SetComponentParameters { owner, parameters });
+    }
+    ///4b1d80 starts one actual CpntFX instance. Its follow-position flag is
+    ///independent of this natural-completion receipt.
+    pub(super) fn start_component(&mut self, owner:Arc<str>,path:&str,placement:EntityPlacement,
+        frame:crate::gameplay::reference_frame::ReferenceFrame,
+        context:crate::rendering::bevy_backend::world_effects::EntityEffectContext)->EffectTicket{
+        let initial_world=(!placement.attached).then_some(frame);
+        let mut lifetime=Lifetime::new(true);
+        lifetime.detached=Some(Arc::new(AtomicBool::new(false)));
+        let retirement=Arc::new(lifetime);
+        let ticket=EffectTicket{lifetime:Arc::downgrade(&retirement),path:Arc::from(path)};
+        self.0.push_back(EffectRequest::StartEntity{owner,path:path.to_owned(),placement,initial_world,retirement,context:Some(context)});
+        ticket
+    }
     /// 774d90/776490 write the FX origin and target position independently;
     /// the constructor's identity axes remain unchanged.
     pub(super) fn start_beam(&mut self, owner: Arc<str>, path: &str, origin: bevy_math::Vec3, endpoint: bevy_math::Vec3) -> EffectTicket {
@@ -201,6 +222,9 @@ impl EffectRequests {
 /// Acknowledges actual retirement, including the render snapshot and all
 /// instance particle/sound tails. A cancelled acquisition must also return
 /// before the gameplay entity can release its source owner.
+pub(super) fn component_detach_receipt(ticket:&EffectTicket)->Option<Arc<AtomicBool>>{
+    ticket.lifetime.upgrade()?.detached.clone()
+}
 pub(super) fn effect_completed(ticket: &EffectTicket) -> bool {
     ticket.lifetime.upgrade().is_none_or(|lifetime| lifetime.completed.load(Ordering::Acquire))
 }
@@ -286,7 +310,7 @@ pub(super) fn debug_reservation(world:&bevy::prelude::World,key:&str)->String {
         let source=owner.ready.get(&EffectOwner::Reservation(Arc::from(key),path.clone()));
         let _=write!(output,"\n      path={path} source={} loading={} ",source.is_some(),owner.loading.contains_key(path));
         if let Some(source)=source {
-            let missing_images=source.particle_materials().flat_map(|material|material.images.values())
+            let missing_images=source.material_images()
                 .filter(|image|image.scene_owned&&!images.is_some_and(|images|images.handles.contains_key(&image.path)))
                 .map(|image|image.path.as_ref()).collect::<Vec<_>>();
             let mut missing_sounds=Vec::new();
@@ -335,7 +359,7 @@ pub(super) fn begin_retirement(world: &mut bevy::prelude::World) -> Result<(), S
         let changed = !owner.wanted.is_empty() || !owner.ready.is_empty() || !owner.reservations.is_empty();
         owner.wanted.clear(); owner.ready.clear();
         owner.reservations.clear(); owner.reservations_ready.clear();
-        owner.placements.clear(); owner.entity_placements.clear(); owner.world_placements.clear(); owner.beam_targets.clear();
+        owner.placements.clear(); owner.entity_placements.clear(); owner.world_placements.clear(); owner.beam_targets.clear(); owner.target_references.clear(); owner.reference_events.clear();
         owner.completed.clear(); owner.cache.clear(); owner.base = None;
         owner.resources = Default::default();
         owner.cancel_unwanted_acquisitions();
@@ -365,6 +389,8 @@ pub(super) struct UsableEffects {
     entity_placements: HashMap<EffectOwner, EntityPlacement>,
     world_placements: HashMap<EffectOwner, crate::gameplay::reference_frame::ReferenceFrame>,
     beam_targets: HashMap<EffectOwner, crate::gameplay::particles::beam::BeamTarget>,
+    target_references: HashMap<EffectOwner, crate::rendering::bevy_backend::world_effects::ComponentParameters>,
+    reference_events: HashMap<EffectOwner,(u64,bool,bool)>,
     transform_revision: u64,
     published_transform_revision: u64,
     pub(super) ready: HashMap<EffectOwner, Arc<Sources>>,
@@ -396,7 +422,7 @@ impl UsableEffects {
             (wanted.retirement.once && wanted.retirement.completed.load(Ordering::Acquire)).then_some(key.clone())).collect();
         if completed.is_empty() { return; }
         for key in completed {
-            self.wanted.remove(&key); self.entity_placements.remove(&key); self.world_placements.remove(&key); self.beam_targets.remove(&key);
+            self.wanted.remove(&key); self.entity_placements.remove(&key); self.world_placements.remove(&key); self.beam_targets.remove(&key); self.target_references.remove(&key); self.reference_events.remove(&key);
             if self.ready.remove(&key).is_some() { self.retirement = self.retirement.wrapping_add(1); }
         }
         self.revision = self.revision.wrapping_add(1); self.cleanup_dirty = true;
@@ -561,6 +587,8 @@ impl UsableEffects {
                         self.entity_placements.remove(&owner);
                         self.world_placements.remove(&owner);
                         self.beam_targets.remove(&owner);
+                        self.target_references.remove(&owner);
+                        self.reference_events.remove(&owner);
                     }
                     self.revision = self.revision.wrapping_add(1);
                     self.cleanup_dirty = true;
@@ -643,6 +671,8 @@ pub(super) fn prepare_requests(
                 EffectRequest::StartEntity { owner: key, path, placement, initial_world, retirement, context } => {
                     let key = EffectOwner::Entity(key);
                     owner.beam_targets.remove(&key);
+                    owner.target_references.remove(&key);
+                    owner.reference_events.remove(&key);
                     if let Some(frame) = initial_world { owner.world_placements.insert(key.clone(), frame); }
                     else { owner.world_placements.remove(&key); }
                     owner.entity_placements.insert(key.clone(), placement);
@@ -660,6 +690,23 @@ pub(super) fn prepare_requests(
                         owner.transform_revision = owner.transform_revision.wrapping_add(1);
                     }
                 }
+                EffectRequest::SetComponentParameters { owner: key, parameters } => {
+                    let key = EffectOwner::Entity(key);
+                    if owner.wanted.contains_key(&key) && owner.target_references.get(&key) != Some(&parameters) {
+                        owner.target_references.insert(key, parameters);
+                        owner.transform_revision = owner.transform_revision.wrapping_add(1);
+                    }
+                }
+                EffectRequest::ReferenceEvent { owner:key,parent_present,stopping }=>{
+                    let key=EffectOwner::Entity(key);
+                    if owner.wanted.contains_key(&key){
+                        let parent_present=parent_present&&owner.reference_events.get(&key).is_none_or(|event|event.1);
+                        let stopping=stopping||owner.reference_events.get(&key).is_some_and(|event|event.2);
+                        owner.transform_revision=owner.transform_revision.wrapping_add(1);
+                        let revision=owner.transform_revision;
+                        owner.reference_events.insert(key,(revision,parent_present,stopping));
+                    }
+                }
                 EffectRequest::UpdateBeam { owner: key, origin, endpoint } => {
                     let key = EffectOwner::Entity(key);
                     if !owner.wanted.contains_key(&key) { continue; }
@@ -671,7 +718,7 @@ pub(super) fn prepare_requests(
                 }
                 EffectRequest::StopEntity { owner: key } => {
                     let key = EffectOwner::Entity(key);
-                    owner.wanted.remove(&key); owner.entity_placements.remove(&key); owner.world_placements.remove(&key); owner.beam_targets.remove(&key);
+                    owner.wanted.remove(&key); owner.entity_placements.remove(&key); owner.world_placements.remove(&key); owner.beam_targets.remove(&key); owner.target_references.remove(&key); owner.reference_events.remove(&key);
                     if owner.ready.remove(&key).is_some() { owner.retirement = owner.retirement.wrapping_add(1); }
                     owner.revision = owner.revision.wrapping_add(1); owner.cleanup_dirty = true;
                 }
@@ -848,6 +895,8 @@ pub(super) fn publish(
                 owner.entity_placements.remove(&id);
                 owner.world_placements.remove(&id);
                 owner.beam_targets.remove(&id);
+                owner.target_references.remove(&id);
+                owner.reference_events.remove(&id);
             }
             owner.revision = owner.revision.wrapping_add(1);
             owner.retirement = owner.retirement.wrapping_add(1);
@@ -879,7 +928,7 @@ pub(super) fn publish(
         let combined = Sources::with_additions(&base, owner.ready.values().map(Arc::as_ref));
         let dynamic = Sources::with_additions(&Sources::default(), owner.ready.values()
             .filter(|source| !Arc::ptr_eq(source, &base)).map(Arc::as_ref));
-        let needs_materials = dynamic.particle_materials().next().is_some();
+        let needs_materials = dynamic.particle_materials().next().is_some() || dynamic.quad_materials().next().is_some();
         let needs_world_materials = !dynamic.world_meshes().is_empty();
         let needs_decals = !dynamic.decal_materials().is_empty();
         world.0 = Arc::new(combined);
@@ -948,7 +997,7 @@ pub(super) fn publish(
             if !prewarmed && (!resources.covers(sources)
                 || !resources.bindings_match(sources, coordinator.as_deref(), decal_proxies.as_deref())) { return false; }
             if !sources.gameplay_ready() { return false; }
-            if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
+            if !Arc::ptr_eq(sources, &base) && !sources.material_images()
                 .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { return false; }
             let mut events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
                 .flat_map(|effect| &effect.groups).flat_map(|group| &group.sounds)
@@ -987,7 +1036,7 @@ pub(super) fn publish(
                 EffectOwner::Reservation(_, _) => continue,
             };
             entries.push(DynamicEffect { entity_context: wanted.context, owner: name, revision: wanted.revision, effect: wanted.path.clone(),
-                target, tag, local, attached, initial_world: owner.world_placements.get(id).copied(), explicit_target: owner.beam_targets.get(id).copied(), sources: sources.clone(), retirement: wanted.retirement.clone() });
+                target, tag, local, attached, initial_world: owner.world_placements.get(id).copied(), explicit_target: owner.beam_targets.get(id).copied(), component_parameters: owner.target_references.get(id).cloned(), reference_event: owner.reference_events.get(id).copied(), sources: sources.clone(), retirement: wanted.retirement.clone() });
         }
     }
     for entry in &mut entries {
@@ -995,12 +1044,15 @@ pub(super) fn publish(
             entry.target = placement.target.clone(); entry.tag.clone_from(&placement.tag); entry.local = placement.local; entry.attached = placement.attached;
             entry.initial_world = owner.world_placements.get(id).copied();
             entry.explicit_target = owner.beam_targets.get(id).copied();
+            entry.component_parameters = owner.target_references.get(id).cloned();
+            entry.reference_event = owner.reference_events.get(id).copied();
         }
     }
     if entries.len() != active.0.len() || entries.iter().zip(active.0.iter()).any(|(left, right)| left.owner != right.owner || left.revision != right.revision
         || left.target != right.target || left.tag != right.tag || left.local.position != right.local.position || left.local.basis != right.local.basis || left.attached != right.attached
         || left.initial_world.map(|frame| (frame.position, frame.basis)) != right.initial_world.map(|frame| (frame.position, frame.basis))
-        || left.explicit_target.map(|target| (target.position, target.basis)) != right.explicit_target.map(|target| (target.position, target.basis))) {
+        || left.explicit_target.map(|target| (target.position, target.basis)) != right.explicit_target.map(|target| (target.position, target.basis))
+        || left.component_parameters != right.component_parameters || left.reference_event != right.reference_event) {
         active.0 = Arc::new(entries);
     }
     owner.published_transform_revision = owner.transform_revision;
@@ -1065,7 +1117,7 @@ pub(super) fn observe_admission(world: &bevy::prelude::World, name: &str, path: 
         source_world_meshes = source.world_meshes().len();
         source_decal_materials = source.decal_materials().len();
         if !source.effects.contains_key(path) { prepared_errors.push(format!("requested definition {path} absent from prepared source")); }
-        for image in source.particle_materials().flat_map(|material| material.images.values()).filter(|image| image.scene_owned) {
+        for image in source.material_images().filter(|image| image.scene_owned) {
             image_memberships += 1;
             if !images.handles.contains_key(&image.path) { missing_images.push(image.path.to_string()); }
         }

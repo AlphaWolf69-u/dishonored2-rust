@@ -117,6 +117,22 @@ pub(crate) struct SolvedContact {
     pub event_kind: u8,
 }
 
+/// Opt-in production diagnostic: a current, solved ordinary world contact.
+/// c54d90 applies +normal to A and -normal to B; the reported normal is
+/// directed toward the observed body and opposes the actual world's gravity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WorldSupportObservation {
+    pub completed_frame: i32,
+    pub serial: u64,
+    pub body: u32,
+    pub world_body: u32,
+    pub shape_keys: [u32; 2],
+    pub normal: [f32; 3],
+    pub count: u8,
+    pub points: [ContactPoint; 4],
+    pub impulses: [f32; 4],
+}
+
 pub(crate) struct Contacts {
     manifolds: HashMap<Key, Manifold>,
     pairs: Vec<[u32; 2]>,
@@ -149,6 +165,38 @@ pub(crate) struct Contacts {
     retired_admission: Option<u16>,
 }
 impl Contacts {
+    pub(crate) fn observe_world_support(&self, world: &WorldStorage, body: u32, completed_frame: i32) -> Option<WorldSupportObservation> {
+        world.bodies.get(body)?;
+        for key in &self.active_keys {
+            let side = key.bodies.iter().position(|&id| id == body);
+            let Some(side) = side else { continue };
+            let entry = self.manifolds.get(key)?;
+            if entry.seen != self.serial || entry.response != Response::Contact {
+                continue;
+            }
+            let other = world.bodies.get(key.bodies[1 - side])?;
+            if other.flags & 1 == 0 { continue; }
+            let Some(rows) = entry.rows.as_ref() else { continue };
+            if !entry.callback_state.stream_live || rows.stream_type == 3 || rows.count == 0 {
+                continue;
+            }
+            let sign = if side == 0 { 1.0 } else { -1.0 };
+            let normal = rows.normal.map(|value| value * sign);
+            let gravity_dot = (normal[0] * world.info.gravity[0] + normal[1] * world.info.gravity[1])
+                + normal[2] * world.info.gravity[2];
+            if !(gravity_dot < 0.0) || !entry.state.normal_impulses[..usize::from(rows.count).min(4)]
+                .iter().any(|&impulse| impulse > 0.0) {
+                continue;
+            }
+            return Some(WorldSupportObservation {
+                completed_frame, serial: self.serial, body, world_body: other.id,
+                shape_keys: key.shapes, normal, count: rows.count,
+                points: entry.points, impulses: entry.state.normal_impulses,
+            });
+        }
+        None
+    }
+
     /// Explicit F8 observation of the retained canonical contact owner.
     /// This does not run broadphase, geometry, callbacks or solver work.
     pub(crate) fn write_body_diagnostics(&self, world: &WorldStorage, body: u32, report: &mut String) {
@@ -493,8 +541,11 @@ impl<G: ContactGeometry, E: PublicationEvents + BodyCreationCallbacks> Simulatio
                     &world.quantization.packed,
                     &mut self.overlap_workspace,
                     |_| true,
-                    |_, index| {
-                        world.bodies.get_by_index(index).is_some_and(|other| {
+                    |_, body_id| {
+                        //12871a0's broadphase leaf retains the complete body
+                        //ID.0992c0 masks its slot for array access; get() also
+                        //checks that this exact generation is still current.
+                        world.bodies.get(body_id).is_some_and(|other| {
                             other.id != id
                                 && other.motion_id != body.motion_id
                                 && body_pair_collides(body.filter_info, other.filter_info)
@@ -502,10 +553,10 @@ impl<G: ContactGeometry, E: PublicationEvents + BodyCreationCallbacks> Simulatio
                     },
                     &mut self.overlaps,
                 )?;
-                for &index in &self.overlaps {
+                for &body_id in &self.overlaps {
                     let other = world
                         .bodies
-                        .get_by_index(index)
+                        .get(body_id)
                         .ok_or("contact broadphase body is stale")?;
                     let pair = if id < other.id {
                         [id, other.id]

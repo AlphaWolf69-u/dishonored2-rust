@@ -72,6 +72,7 @@ pub struct FxGraphRuntime {
     random: HashMap<u32, f32>,
     pub(super) random_owner: Option<Arc<Mutex<crate::random::MwcRandom>>>,
     pub(super) variables: SharedVariables,
+    pub(super) story: Option<Box<super::story_flags::State>>,
     pub(super) children: HashMap<u32, SharedVariables>,
     gates: HashMap<u32, GateState>,
     gate_open: HashMap<u32, bool>,
@@ -116,6 +117,26 @@ impl GraphInputs for FxGraphRuntime {
             .iter()
             .find(|point| point.id == port)
             .ok_or("graph variable port absent")?;
+        if let Some(kind)=super::story_flags::kind(&node.class) {
+            if point.name=="m_value" {
+                //9241f0/9043e0 read the actual bound current value; their
+                //missing-variable branch returns the executable's zero slot.
+                return match self.story.as_ref().and_then(|state|state.bindings.get(&node.id)) {
+                    Some(binding)=>binding.get().map(|value|Some(value.unwrap_or(kind))),
+                    None=>Ok(Some(kind)),
+                };
+            }
+        }
+        if super::story_flags::named_kind(&node.class).is_some()
+            && atom(&node.params,"m_variableName").is_some_and(|name|name.contains('/')) {
+            //923f00 ->6cb0d0 resolves entity/variable into that entity's
+            //existing current variable; it is not a key in this caller's map.
+            return match self.story.as_ref().and_then(|state|state.bindings.get(&node.id)) {
+                Some(binding)=>binding.get(),
+                None=>Err(format!("qualified variable {} awaits its actual live actor binding",
+                    atom(&node.params,"m_variableName").unwrap_or(""))),
+            };
+        }
         if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeBreakableNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
             return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
                 .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
@@ -182,6 +203,9 @@ impl FxGraphRuntime {
         let graph = graph.into();
         let relevant = Self::relevant_nodes(&graph, graph.effects.keys().copied().collect());
         let variables = Arc::new(RwLock::new(GraphVariables::new(&graph.variables)));
+        let story=graph.nodes.iter().any(|node|super::story_flags::kind(&node.class).is_some()
+            || super::story_flags::named_kind(&node.class).is_some())
+            .then(||Box::new(super::story_flags::State::default()));
         let gameflow_subscriptions=graph.nodes.iter().enumerate().filter(|(_,node)|matches!(node.class.as_str(),"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification")).map(|(index,_)|index).collect();
         Self {
             owner: graph.owner.clone(),
@@ -190,6 +214,7 @@ impl FxGraphRuntime {
             random,
             random_owner: None,
             variables,
+            story,
             children: HashMap::new(),
             pending: Vec::new(),
             gates: HashMap::new(),
@@ -586,6 +611,30 @@ impl FxGraphRuntime {
                 self.emit(id, if value { "True" } else { "False" })?;
                 false
             }
+            "arkKisculeNodeStoryFlagBool" | "arkKisculeNodeStoryFlagInt" if port.name=="Set" => {
+                let name=atom(&node.params,"m_variableName").unwrap_or("");
+                let kind=super::story_flags::kind(&node.class).ok_or("story variable type absent")?;
+                //926e60/907270 use an explicit Value link first, then the
+                //actual parent declaration input; no link preserves current.
+                let value=if let Some((source,point))=self.input(&node,"m_value") {
+                    Some(kind.read(self,source,point)?)
+                } else {world.parent_value(name,&kind)?};
+                let accepted=if let Some(value)=value {
+                    let binding=self.story.as_ref().and_then(|state|state.bindings.get(&id)).cloned();
+                    if let Some(binding)=binding {
+                        if binding.set(value)? {
+                            self.story.as_mut().ok_or("story state absent")?.updates.push(binding);
+                            true
+                        } else {false}
+                    } else {false}
+                } else {false};
+                if !accepted {
+                    self.emit(id,"Set")?;
+                    self.emit(id,"Out")?;
+                    return Err(format!("story variable {name}: Set lacks a live binding or Value link"));
+                }
+                true
+            }
             "arkKisculeNodeNamedVariableFloat"
             | "arkKisculeNodeNamedVariableBool"
             | "arkKisculeNodeNamedVariableInt"
@@ -612,6 +661,22 @@ impl FxGraphRuntime {
                     world.parent_value(&name, &kind)?
                 };
                 if let Some(value) = value {
+                    if let Some(binding)=self.story.as_ref().and_then(|state|state.bindings.get(&id)).cloned() {
+                        if binding.set(value)? {
+                            self.story.as_mut().ok_or("named variable binding state absent")?.updates.push(binding);
+                            self.emit(id,"Set")?;
+                            self.emit(id,"Out")?;
+                            return Ok(GraphStep::Action{schedule});
+                        }
+                        self.emit(id,"Set")?;
+                        self.emit(id,"Out")?;
+                        return Err(format!("named variable {name} target has retired"));
+                    }
+                    if name.contains('/') {
+                        self.emit(id,"Set")?;
+                        self.emit(id,"Out")?;
+                        return Err(format!("qualified variable {name} has no live target"));
+                    }
                     let bound = self
                         .variables
                         .read()

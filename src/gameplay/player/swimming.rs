@@ -114,16 +114,17 @@ impl WaveFilters {
 
 /// arkCpntPlayerBreath 1404c06f0/1404c07c0/1404c0cf0. Drowning damage
 /// remains owned by the health component rather than being simulated here.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Breath {
     pub remaining: f32,
     pub regen_timer: f32,
     pub regen: f32,
     pub regen_delay: f32,
+    pub audio: Option<super::breath_audio::Runtime>,
 }
 impl Breath {
     pub fn new(regen: f32, regen_delay: f32) -> Self {
-        Self { remaining: 100.0, regen_timer: 0.0, regen, regen_delay }
+        Self { remaining: 100.0, regen_timer: 0.0, regen, regen_delay, audio: None }
     }
     pub fn reset_for_water_entry(&mut self) { self.remaining = 100.0; }
     pub fn consume(&mut self, amount: f32) {

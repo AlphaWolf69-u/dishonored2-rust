@@ -4,18 +4,62 @@ use crate::rendering::bevy_backend::{
 };
 use bevy::prelude::*;
 
-pub(super) fn publish(
-    scene: Res<super::SceneRenderQueue>,
+///Advance native view parameters before CameraUpdateSystems derives its
+///projection/frustum. The late particle pass borrows this same manager.
+pub(super) fn advance_view_effects(
+    fx: crate::rendering::bevy_backend::camera_scene::FxUpdateInputs,
+    mut simulation: Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
+    physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    player: Res<super::player::PlayerState>,
+    actions: Option<Res<super::player_actions::PlayerActions>>,
+    cameras: Query<(&Transform, &mut Projection), With<Camera3d>>,
+    frame: Res<bevy::diagnostic::FrameCount>,
+    mut last_error: Local<Option<String>>,
+) {
+    let (Some(simulation), Some(physics)) = (simulation.as_mut(), physics.as_ref()) else { return };
+    let mut cameras = cameras;
+    let Ok((pose, mut projection)) = cameras.single_mut() else { return };
+    let camera = crate::gameplay::reference_frame::ReferenceFrame {
+        position: super::view_to_game(pose.translation),
+        basis: [super::view_to_game(pose.rotation*Vec3::NEG_Z),
+            super::view_to_game(pose.rotation*Vec3::NEG_X), super::view_to_game(pose.rotation*Vec3::Y)],
+    };
+    let result = (|| -> Result<(), String> {
+        if actions.as_ref().is_some_and(|actions| actions.world_screen_fx_ready()) {
+            simulation.handoff_screen_fx()?;
+        }
+        let world = physics.point_queries()?;
+        let world = world.read().map_err(|_| "level physics query owner is poisoned")?;
+        simulation.advance_world(&fx, frame.0, camera,
+            player.player.as_ref().is_some_and(|player| player.is_underwater()), &world)?;
+        //The base remains the Player camera's unmodified gameplay FOV.
+        //Percentage FX never feed their previous output back into the mixer.
+        if let Some(player) = player.player.as_ref() {
+            if let Projection::Custom(custom) = &*projection {
+                if let Some(game) = custom.get::<super::camera_projection::GameProjection>() {
+                    let fov = simulation.apply_fov(player.camera.fov);
+                    if game.reference_horizontal_degrees != fov {
+                        *projection = Projection::custom(super::camera_projection::GameProjection::new(fov, game.near, game.far));
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => *last_error = None,
+        Err(error) => {
+            if last_error.as_ref() != Some(&error) { warn!("World FX view preparation pending: {error}"); }
+            *last_error = Some(error);
+        }
+    }
+}
+
+pub(super) fn publish_reference_frames(
     player: Res<super::player::PlayerState>,
     mut effect_frames: ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>,
-    data: Res<super::SceneData>,
-    water: Res<WaterSceneFrame>,
-    mut output: ResMut<ParticleQueryFrame>,
-    world_wind: Res<super::fog_scene::WorldWind>,
-    wind: Option<Res<super::vegetation_wind::VegetationWind>>,
     windblasts: Option<Res<super::windblast::Windblasts>>,
     live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
-    mut error: Local<Option<String>>,
     (dynamic, physics, identities, mut frame_error): (
         Option<Res<crate::rendering::bevy_backend::world_effects::DynamicEffects>>,
         Option<Res<super::physics_scene::PhysicsScene>>,
@@ -43,22 +87,22 @@ pub(super) fn publish(
             return Ok(());
         };
         let mut first_failure = None;
-        for effect in dynamic
-            .0
-            .iter()
-            .filter(|effect| effect.initial_world.is_none())
+        for (target, tag, component_target) in dynamic.0.iter().flat_map(|effect| {
+            effect.initial_world.is_none().then_some((&effect.target, effect.tag.as_str(), false))
+                .into_iter().chain(effect.component_parameters.as_ref().and_then(|parameters|parameters.target.as_ref()).map(|(target,tag)|(target,tag.as_str(),true)))
+        })
         {
-            let crate::gameplay::event_graph::EntityReference::Named(name) = &effect.target else {
+            let crate::gameplay::event_graph::EntityReference::Named(name) = target else {
                 continue;
             };
-            if effect_frames.has_authored_entity(name) && effect.tag.is_empty() {
+            if effect_frames.has_authored_entity(name) && tag.is_empty() {
                 continue;
             }
             //An existing source owner (e.g. Windblast) may already have
             //published this frame. Do not require another component owner or
             //resolve a repeated attachment demand again.
             if effect_frames.ephemeral_current(name, "")
-                && effect_frames.ephemeral_current(name, &effect.tag)
+                && effect_frames.ephemeral_current(name, tag)
             {
                 continue;
             }
@@ -85,16 +129,16 @@ pub(super) fn publish(
                     }
                 };
                 effect_frames.publish_ephemeral_frame(name, "", frame);
-                if effect.tag.is_empty() {
+                if tag.is_empty() {
                     return Ok(());
                 }
                 let equipment = player
                     .player
                     .as_ref()
-                    .map(|player| player.equipment_entity_tag_world(id, &effect.tag))
+                    .map(|player| if component_target {player.animation_entity_tag_world(id,tag)} else {player.equipment_entity_tag_world(id, tag)})
                     .transpose()?
                     .flatten();
-                let tag = if let Some(frame) = equipment {
+                let tag_frame = if let Some(frame) = equipment {
                     frame
                 } else {
                     let physics = physics
@@ -105,27 +149,26 @@ pub(super) fn publish(
                         None => physics.published_entity_frame(live, id)?,
                     };
                     let rig = physics.runtime_animation_rig(id)?.ok_or_else(|| {
-                        format!("FX tag {name}/{} has no actual animation owner", effect.tag)
+                        format!("FX tag {name}/{tag} has no actual animation owner")
                     })?;
                     let matrices = physics.runtime_animation_matrices(id)?.ok_or_else(|| {
-                        format!("FX tag {name}/{} has no actual joint palette", effect.tag)
+                        format!("FX tag {name}/{tag} has no actual joint palette")
                     })?;
                     super::joint_frames::current_tag_frame(
                         &rig.rig,
                         matrices,
                         "_info",
-                        &effect.tag,
+                        tag,
                         reference.scale,
                         frame,
                     )?
                     .ok_or_else(|| {
                         format!(
-                            "FX tag/joint {name}/{} is absent from its actual model",
-                            effect.tag
+                            "FX tag/joint {name}/{tag} is absent from its actual model"
                         )
                     })?
                 };
-                effect_frames.publish_ephemeral_frame(name, &effect.tag, tag);
+                effect_frames.publish_ephemeral_frame(name, tag, tag_frame);
                 Ok(())
             })();
             //A retiring/malformed target cannot withhold unrelated source
@@ -152,6 +195,17 @@ pub(super) fn publish(
             *frame_error = Some(failure);
         }
     }
+}
+
+pub(super) fn publish(
+    scene: Res<super::SceneRenderQueue>,
+    data: Res<super::SceneData>,
+    water: Res<WaterSceneFrame>,
+    mut output: ResMut<ParticleQueryFrame>,
+    world_wind: Res<super::fog_scene::WorldWind>,
+    wind: Option<Res<super::vegetation_wind::VegetationWind>>,
+    mut error: Local<Option<String>>,
+) {
     let snapshot = crate::gameplay::wind::WindSnapshot::capture(
         world_wind.0.as_ref(),
         wind.as_ref().map(|wind| wind.manager()),

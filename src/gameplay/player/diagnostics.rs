@@ -14,6 +14,8 @@ impl Player {
         for side in 0..2 {
             let _ = writeln!(report, "  equipment side={} present={} equipped={} transitioning={} socket_published={}", side, self.equipment_changes.preferred(side).is_some(), self.equipment_changes.equipped(side), self.equipment_changes.transitioning(side), self.equipment_frames[side].is_some());
         }
+        let _ = writeln!(report, "  INTERACT down={} pressed={} released={} interaction_descriptor_present={}",self.controller.down(22),self.controller.pressed(22),self.controller.released(22),self.interaction_present);
+        self.equipment_changes.write_diagnostics(report);
         if let Some(weapon) = &self.weapon { weapon.write_diagnostics(report); }
         if let Some(weapon) = &self.throwable {
             let _ = writeln!(report, "  throwable entity={:?} ammo={} magazine={} total={} ready={} scene={} cook_duration={} cook_stage={} low_throw={} armed={} exploded={} flags={:#x} accepted_source={}", weapon.entity, weapon.ammunition_index, weapon.magazine, weapon.total_ammo, weapon.ready, weapon.active_scene, weapon.cooking_duration, weapon.cooking_stage, weapon.low_throw, weapon.grenade_state.is_some_and(|g| g.armed), weapon.grenade_state.is_some_and(|g| g.exploded), weapon.target_flags, weapon.source.is_some());

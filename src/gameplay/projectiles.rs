@@ -357,6 +357,9 @@ pub struct Contact {
     pub npc: bool,
     pub world: bool,
     pub can_stick: bool,
+    ///624300 excludes inventory-only Pickables without a Loot receiver,
+    ///independently of the surface material's stick/break probabilities.
+    pub target_allows_stick: bool,
     pub can_break: bool,
     pub angle: f32,
     pub active_water_trigger: bool,
@@ -388,7 +391,7 @@ pub fn response(
                 } else {
                     declaration.required_stick_angle
                 };
-                if contact.can_stick && contact.angle >= required && !contact.active_water_trigger {
+                if contact.can_stick && contact.target_allows_stick && contact.angle >= required && !contact.active_water_trigger {
                     result = Response::Stick;
                 }
                 if contact.can_break && declaration.can_break {

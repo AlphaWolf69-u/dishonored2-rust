@@ -232,7 +232,7 @@ impl PhysWorld {
                 "hknpConvexPolytopeShape" | "hknpBoxShape" => {
                     QueryGeometry::Polytope(self.convex_polytope(bytes, index)?)
                 }
-                "hknpConvexShape" => QueryGeometry::Convex(self.convex_shape(bytes, index)?),
+                "hknpConvexShape" | "hknpSphereShape" => QueryGeometry::Convex(self.convex_shape(bytes, index)?),
                 "hknpCompressedMeshShape" => {
                     QueryGeometry::CompressedMesh(super::compressed_mesh::CompressedMesh::new(
                         source

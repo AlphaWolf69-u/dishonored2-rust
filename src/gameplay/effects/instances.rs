@@ -56,6 +56,8 @@ pub struct FxGraphInstances {
     random: Option<Arc<Mutex<crate::random::MwcRandom>>>,
     gameflow: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>,
     gameflow_notifications: Vec<crate::gameplay::gameflow::program::Update>,
+    story_root: Option<u64>,
+    story_listeners: HashMap<String,Vec<(u64,u32)>>,
 }
 impl Index<usize> for FxGraphInstances {
     type Output = Option<FxGraphRuntime>;
@@ -73,9 +75,9 @@ impl FxGraphInstances {
     ///6cbf20 uses the engine's zero-initialized bool only for a null lookup.
     ///Borrow the same variable owner that receives graph writes, not a second
     ///snapshot of declaration defaults. Missing graph/variable remains None.
-    pub(crate) fn story_boolean(&self, root: u64, qualified: &str) -> Result<Option<bool>, String> {
+    fn story_index(&self, root: u64, qualified: &str) -> Result<Option<usize>, String> {
         let root = self.instance_index(root).ok_or("story worldspawn graph generation stale")?;
-        let (path, name) = qualified.rsplit_once('/').ok_or("story bool lacks declaration/name")?;
+        let (path, _) = qualified.rsplit_once('/').ok_or("story variable lacks declaration/name")?;
         //Follow the same already-owned authored child order as7bc1d0. Do
         //not scan unrelated actors' graph instances on every rule condition.
         fn find(owner: &FxGraphInstances, index: usize, path: &str) -> Result<Option<usize>, String> {
@@ -89,14 +91,135 @@ impl FxGraphInstances {
             }
             Ok(None)
         }
-        let Some(index) = find(self, root, path)? else { return Ok(None) };
-        let runtime = self.runtimes[index].as_ref().ok_or("story graph is executing")?;
-        let value = runtime.variables.read().map_err(|_| "story variable owner poisoned")?.get(name)?;
-        match value {
-            None => Ok(None),
-            Some(super::variables::GraphValue::Bool(value)) => Ok(Some(value)),
-            Some(_) => Err(format!("story variable {qualified} is not bool")),
+        find(self, root, path)
+    }
+    fn story_binding(&self,root:u64,qualified:&str)->Result<Option<super::story_flags::Binding>,String>{
+        let Some(index)=self.story_index(root,qualified)? else{return Ok(None)};
+        let (_,name)=qualified.rsplit_once('/').ok_or("story variable lacks declaration/name")?;
+        self.variable_binding(index,name,qualified)
+    }
+    fn variable_binding(&self,index:usize,name:&str,qualified:&str)->Result<Option<super::story_flags::Binding>,String>{
+        let runtime=self.runtimes[index].as_ref().ok_or("variable graph is executing")?;
+        if runtime.variables.read().map_err(|_|"story variable owner poisoned")?.get(name)?.is_none() {
+            return Ok(None);
         }
+        let variable=runtime.definition().variables.iter().find(|variable|atom(&variable.parameters,"m_name")==Some(name))
+            .ok_or("story variable declaration absent")?;
+        //8f0f30 initializes GraphVariableBase+10 to zero before authored fields.
+        let global=match atom(&variable.parameters,"m_global").unwrap_or("false") {
+            "true"=>true,"false"=>false,_=>return Err("invalid story variable global flag".into()),
+        };
+        let external;
+        let qualified=if global && !qualified.contains('/') {
+            external=format!("{}/{name}",runtime.graph_owner());external.as_str()
+        } else {qualified};
+        Ok(Some(super::story_flags::Binding::new(&runtime.variables,name,qualified,
+            self.instance_id(index).ok_or("story target generation absent")?,global)))
+    }
+    pub(crate) fn story_boolean(&self,root:u64,qualified:&str)->Result<Option<bool>,String>{
+        let Some(index)=self.story_index(root,qualified)? else{return Ok(None)};
+        let (_,name)=qualified.rsplit_once('/').ok_or("story variable lacks declaration/name")?;
+        let runtime=self.runtimes[index].as_ref().ok_or("story graph is executing")?;
+        let value=runtime.variables.read().map_err(|_|"story variable owner poisoned")?.get(name)?;
+        match value {
+            None=>Ok(None),Some(super::variables::GraphValue::Bool(value))=>Ok(Some(value)),
+            Some(_)=>Err(format!("story variable {qualified} is not bool")),
+        }
+    }
+    ///7bf3e0 selects the actual worldspawn program owner; declaration lookup
+    ///5134e0 and current values remain in that same graph manager.
+    pub(crate) fn bind_story_root(&mut self,root:u64)->Result<(),String>{
+        self.instance_index(root).ok_or("story worldspawn graph generation stale")?;
+        if self.story_root.is_some_and(|previous|previous!=root){return Err("story worldspawn already bound".into());}
+        self.story_root=Some(root);
+        Ok(())
+    }
+    pub(crate) fn prepare_story_bindings(&mut self,index:usize)->Result<(),String>{
+        let runtime=self.runtimes.get(index).and_then(Option::as_ref).ok_or("story caller graph busy")?;
+        let Some(state)=runtime.story.as_ref() else{return Ok(())};
+        if state.ready{return Ok(())}
+        //924050/9042e0 diagnose a null LocateVariable result at the actual
+        //getter/Set call. They do not make an otherwise empty world fail load.
+        let Some(root)=self.story_root else{return Ok(())};
+        let definition=runtime.shared_definition();
+        let mut ready=true;
+        for node in &definition.nodes {
+            let Some(kind)=super::story_flags::kind(&node.class) else{continue};
+            if self.runtimes[index].as_ref().and_then(|runtime|runtime.story.as_ref())
+                .is_some_and(|state|state.bindings.get(&node.id).is_some_and(|binding|binding.variables.strong_count()!=0)){continue;}
+            let name=atom(&node.params,"m_variableName").ok_or("StoryFlag variable name absent")?;
+            if let Some(binding)=self.story_binding(root,name)? {
+                if let Some(value)=binding.get()? {
+                    if std::mem::discriminant(&value)!=std::mem::discriminant(&kind) {
+                        return Err(format!("StoryFlag {name} type differs from {}",node.class));
+                    }
+                }
+                self.runtimes[index].as_mut().and_then(|runtime|runtime.story.as_mut())
+                    .ok_or("story caller state absent")?.bindings.insert(node.id,binding);
+            } else {ready=false;}
+        }
+        self.runtimes[index].as_mut().and_then(|runtime|runtime.story.as_mut())
+            .ok_or("story caller state absent")?.ready=ready;
+        Ok(())
+    }
+    ///923f00 ->6cb0d0: qualified NamedVariable references select a real
+    ///entity's current root-program variables through the existing actor map.
+    pub(crate) fn prepare_named_bindings(&mut self,index:usize,
+        resolve:&mut impl FnMut(&str)->Option<u64>)->Result<(),String>{
+        let runtime=self.runtimes.get(index).and_then(Option::as_ref).ok_or("named variable caller busy")?;
+        let Some(state)=runtime.story.as_ref() else{return Ok(())};
+        if state.named_ready{return Ok(())}
+        let definition=runtime.shared_definition();
+        let mut ready=true;
+        for node in &definition.nodes {
+            let Some(kind)=super::story_flags::named_kind(&node.class) else{continue};
+            let Some(qualified)=atom(&node.params,"m_variableName") else{continue};
+            if self.runtimes[index].as_ref().and_then(|runtime|runtime.story.as_ref())
+                .is_some_and(|state|state.bindings.get(&node.id).is_some_and(|binding|binding.variables.strong_count()!=0)){continue;}
+            let (target,name)=if let Some((entity,name))=qualified.split_once('/') {
+                (resolve(entity).and_then(|root|self.instance_index(root)),name)
+            } else {(Some(index),qualified)};
+            let binding=target.map(|target|self.variable_binding(target,name,qualified)).transpose()?.flatten();
+            if let Some(binding)=binding {
+                if let Some(value)=binding.get()? {
+                    if std::mem::discriminant(&value)!=std::mem::discriminant(&kind) {
+                        return Err(format!("qualified variable {qualified} type differs from {}",node.class));
+                    }
+                }
+                self.runtimes[index].as_mut().and_then(|runtime|runtime.story.as_mut())
+                    .ok_or("named variable caller state absent")?.bindings.insert(node.id,binding);
+            } else {ready=false;}
+        }
+        self.runtimes[index].as_mut().and_then(|runtime|runtime.story.as_mut())
+            .ok_or("named variable caller state absent")?.named_ready=ready;
+        Ok(())
+    }
+    pub(crate) fn prepare_named_all(&mut self,mut resolve:impl FnMut(&str)->Option<u64>)->Result<(),String>{
+        for index in 0..self.runtimes.len(){
+            if self.live[index]{self.prepare_named_bindings(index,&mut resolve)?;}
+        }
+        Ok(())
+    }
+    ///926e60/907270 publish7c07b0 before regular Set/Out forwarding. These
+    ///are references to canonical variables, never copied declaration values.
+    fn story_updated(&mut self,source:usize,update:&super::story_flags::Binding)->Result<(),String>{
+        let target=if update.global {self.instance_index(update.target)} else {Some(source)};
+        if let Some(target)=target {
+            self.runtimes[target].as_mut().ok_or("story notification graph busy")?.variable_updated(&update.name)?;
+            self.flush(target)?;
+        }
+        //7c0b50 has a real name-to-node observer roster; no node-vector scan
+        //or per-write allocation is needed. Generations cannot cross reuse.
+        let key=if update.global {update.qualified.as_ref()} else {update.name.as_ref()};
+        let count=self.story_listeners.get(key).map_or(0,Vec::len);
+        for at in 0..count {
+            let (graph,node)=self.story_listeners[key][at];
+            let Some(index)=self.instance_index(graph) else{continue};
+            if !update.global && index!=source {continue;}
+            self.runtimes[index].as_mut().ok_or("story notification graph busy")?.emit(node,"Updated")?;
+            self.flush(index)?;
+        }
+        Ok(())
     }
     pub fn poll_gameflow(&mut self)->Vec<String>{
         let mut errors=Vec::new();
@@ -166,9 +289,11 @@ impl FxGraphInstances {
         runtime.set_gameflow(self.gameflow.clone());
         runtime.random_owner = Some(Arc::clone(random));
         let effectful = runtime.definition().nodes.iter().any(|node|
-            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class));
+            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class)
+                || super::story_flags::kind(&node.class).is_some());
         let mut targets = runtime.definition().nodes.iter().filter(|node|
             all_nodes || node.class == "arkKisculeNodeEntityFx" || gameflow_action(&node.class)
+                || super::story_flags::kind(&node.class).is_some()
                 || (parent.is_some() && node.class == "arkKisculeNodeDeclExit"))
             .map(|node| node.id).collect::<Vec<_>>();
 
@@ -189,6 +314,18 @@ impl FxGraphInstances {
         };
         // Zero is reserved for exhaustion; never wrap and alias old work.
         self.generations[index] = u32::try_from(NEXT_GRAPH_GENERATION.fetch_add(1, Ordering::Relaxed)).unwrap_or(0);
+        let generation=self.instance_id(index);
+        if let Some(generation)=generation {
+            let definition=self[index].as_ref().unwrap().shared_definition();
+            for node in &definition.nodes {
+                if super::story_flags::kind(&node.class).is_some()
+                    || super::story_flags::named_kind(&node.class).is_some() {
+                    if let Some(name)=atom(&node.params,"m_variableName").filter(|name|name.contains('/')) {
+                        self.story_listeners.entry(name.to_owned()).or_default().push((generation,node.id));
+                    }
+                }
+            }
+        }
         for (node, name) in children {
             let definition = declarations.get(&name).and_then(|graph| {
                 if path.contains(&name) {
@@ -307,6 +444,23 @@ impl FxGraphInstances {
             && self.runtimes.get(index).is_some_and(Option::is_none)) {
             return Err("graph receiver is executing; defer teardown until its action returns".into());
         }
+        if self.story_root.and_then(|root|self.instance_index(root)).is_some_and(|root|indices.contains(&root)) {
+            self.story_root=None;
+            for runtime in self.runtimes.iter_mut().flatten() {
+                if let Some(state)=runtime.story.as_mut(){state.bindings.clear();state.ready=false;state.named_ready=false;}
+            }
+        }
+        for runtime in self.runtimes.iter_mut().flatten() {
+            if let Some(state)=runtime.story.as_mut(){
+                let before=state.bindings.len();
+                state.bindings.retain(|_,binding|!indices.contains(&(binding.target as u32 as usize)));
+                if before!=state.bindings.len(){state.ready=false;state.named_ready=false;}
+            }
+        }
+        self.story_listeners.retain(|_,listeners|{
+            listeners.retain(|(graph,_)|!indices.contains(&(*graph as u32 as usize)));
+            !listeners.is_empty()
+        });
         self.events.retain(|event| !indices.contains(&event.graph()));
         self.children.retain(|(parent, _), child| !indices.contains(parent) && !indices.contains(child));
         self.failures.retain(|(parent, _), _| !indices.contains(parent));
@@ -401,6 +555,14 @@ impl FxGraphInstances {
     pub fn collect(&mut self, index: usize) -> Vec<String> {
         let mut errors = Vec::new();
         let pending = self[index].as_mut().unwrap().take_pending();
+        let updates=self[index].as_mut().and_then(|runtime|runtime.story.as_mut())
+            .map(|state|std::mem::take(&mut state.updates)).unwrap_or_default();
+        for update in &updates {
+            if let Err(error)=self.story_updated(index,update){errors.push(error);}
+        }
+        if let Some(state)=self[index].as_mut().and_then(|runtime|runtime.story.as_mut()) {
+            let mut scratch=updates;scratch.clear();state.updates=scratch;
+        }
         for (node, port) in pending {
             if let Err(error) = self.insert(index, node, port) {
                 errors.push(format!("{} node {node}: {error}", self.owner(index)));

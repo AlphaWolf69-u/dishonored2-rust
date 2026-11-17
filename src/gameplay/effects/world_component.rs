@@ -28,9 +28,18 @@ pub struct WorldFxComponent {
     handle: Option<u32>,
     started: bool,
     stop_requested: bool,
+    reference_revision: u64,
 }
 
 impl WorldFxComponent {
+    ///Host publication receipt for the same source125 callback. A pending
+    ///unbind dominates later rebinds because its immediate stop is irreversible.
+    pub fn reference_event_once(&mut self, revision:u64,parent_present:bool,
+        stop_on_parent_removal:bool,host:&mut impl WorldFxComponentHost)->Result<(),String>{
+        if self.reference_revision==revision{return Ok(());}
+        self.reference_event(parent_present,stop_on_parent_removal,host)?;
+        self.reference_revision=revision;Ok(())
+    }
     pub fn handle(&self) -> Option<u32> {
         self.handle
     }

@@ -46,13 +46,20 @@ pub(super) struct Scene {
     propagated: HashMap<Emitter, Propagated>,
     rates: HashMap<Emitter, (f32, bool)>,
     time_dilation: Option<u32>,
+    /// 4c1160 AA(-2) belongs to all objects of the real player's Audio
+    ///component, including its camera-joint sound object, not equipment.
+    breath_parameter: Option<(u32, f32)>,
+    observe_sources: Option<super::observation::SourceSamples>,
 }
 impl Default for Scene {
     fn default() -> Self { Self { listener: None, motion: Default::default(), minimum: environment::Levels::default(), reflection: false, collects_environment: false,
         rule: Rule::Speakers, panner: Stereo::default(),
-        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
+        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None, breath_parameter: None, observe_sources: None } }
 }
 impl Scene {
+    pub(super) fn observe_sources(&mut self,sink:super::observation::SourceSamples) { self.observe_sources=Some(sink); }
+    pub(super) fn observes_sources(&self)->bool {self.observe_sources.is_some()}
+    pub(super) fn source_observer(&self)->Option<super::observation::SourceSamples>{self.observe_sources.clone()}
     pub(super) fn release_object(&mut self, emitter: Emitter) {
         self.emitters.remove(&emitter);
         self.propagated.remove(&emitter);
@@ -78,7 +85,19 @@ impl Scene {
     }
     pub fn frozen(&self, emitter: Emitter) -> bool { self.rates.get(&emitter).is_some_and(|(_, frozen)| *frozen) }
     pub fn parameters(&self, emitter: Emitter, parameter: Option<(u32, f32)>) -> Vec<(u32, f32)> {
-        let mut parameters = parameter.into_iter().collect::<Vec<_>>();
+        // The additional component RTPC must not introduce a second Vec
+        // growth in this existing per-Playing control path (maximum 3 rows).
+        let mut parameters = if emitter.player_owner() == Emitter::PlayerBody && self.breath_parameter.is_some() {
+            let mut values = Vec::with_capacity(3);
+            values.extend(parameter);
+            values
+        } else { parameter.into_iter().collect::<Vec<_>>() };
+        if emitter.player_owner() == Emitter::PlayerBody {
+            if let Some((id, value)) = self.breath_parameter {
+                parameters.retain(|(parameter, _)| *parameter != id);
+                parameters.push((id, value));
+            }
+        }
         if let (Some(id), Some(&(rate, _))) = (self.time_dilation, self.rates.get(&emitter)) {
             // The component's time parameter is written after posting the
             // event (140708b00), and replaces any prior value of the same ID.
@@ -112,6 +131,7 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
         clock.clock().ok()?.entity_rates(clock.player_timespace().ok()?)
     }).map(|rates| rates[1]);
     if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
+        scene.breath_parameter = player.breath_audio().and_then(|audio| audio.parameter());
         if let Some((listener, settings)) = player.sound_listener() {
             scene.listener = Some(listener);
             scene.minimum = settings.minimum;

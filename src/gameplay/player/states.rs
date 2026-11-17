@@ -656,8 +656,9 @@ impl StateDecl {
                 (StateId::BLOCK, 0.0)
             }
             Kind::Recoil(_) => {
-                //863cb0: actionPress, right arm ownership/lock.
-                flags = StateFlags {primary:false,body_parts:4,locked_body_parts:4,exclusive_body_parts:0,..flags};
+                //863cb0/863f70: right-arm ownership/lock and body-exclusive
+                //mask1 are separate fields in the actual declaration.
+                flags = StateFlags {primary:false,body_parts:4,locked_body_parts:4,exclusive_body_parts:1,..flags};
                 (StateId::RECOIL,0.)
             }
             Kind::CancelFireWeapon => {
@@ -816,6 +817,7 @@ pub struct Frame<'a> {
     pub world: &'a dyn PlayerWorld,
     pub controller: &'a mut Controller,
     pub carrying: &'a mut super::carrying::Runtime,
+    pub interaction_present: bool,
     pub physics: &'a mut PlayerPhysics,
     pub body: &'a mut LocoStances,
     pub footstep: &'a mut super::footsteps::Footstep,
@@ -1215,6 +1217,9 @@ pub struct StateMachine {
     world_pickup: super::world_pickup::Runtime,
     pub(super) grapple_catch:super::grapple_catch::Runtime,
     slash_rules: Option<super::slash_rules::Runtime>,
+    ///One actual callback receipt, only enabled for the opt-in WORLD power
+    ///diagnostic. No animation/event history is retained in normal gameplay.
+    recoil_interrupt_diagnostic:Option<(u64,u32,u32,bool)>,
 }
 
 pub(crate) fn cos_snap(degrees: f32) -> f32 {
@@ -1244,7 +1249,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
+            recoil_interrupt_diagnostic:matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-power"|"world-power-poke")).then_some((0,0,0,false)) }
     }
 
     pub(super) fn world_pickup_busy(&self)->bool{self.world_pickup.busy()}
@@ -1355,7 +1361,8 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
+            recoil_interrupt_diagnostic:matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-power"|"world-power-poke")).then_some((0,0,0,false)) }
     }
 
     pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
@@ -1470,6 +1477,9 @@ impl StateMachine {
             self.request(StateId::RECOIL);
         }
     }
+    pub fn melee_recoil_interrupt_receipt(&self)->Option<(u64,u32,u32,bool)>{self.recoil_interrupt_diagnostic}
+    pub fn melee_left_response(&self)->Option<u32>{self.state(StateId::SLASH).filter(|state|state.active)
+        .map(|state|state.slash.secondary_scene).filter(|handle|*handle!=0)}
 
     pub fn state(&self, id: StateId) -> Option<&State> {
         self.states.iter().find(|s| s.decl.id == id)
@@ -1659,7 +1669,10 @@ impl StateMachine {
                     && frame.equipment_changes.preferred(side).is_some()
                     && self.state(if *left { StateId(64) } else { StateId(53) }).is_some()
             },
-            Kind::Undraw(_) => !self.is_active(StateId::DEAD),
+            //846b50: common body-part gate above, no cancellable action,
+            //and neither primary nor secondary sensor33 descriptor present.
+            Kind::Undraw(_) => !self.is_active(StateId::DEAD)
+                && self.cancelable_count < 1 && !frame.interaction_present,
             Kind::Recoil(decl) => state.recoil.action.can_activate(frame.action_time,decl)
                 && !frame.equipment_transitioning[1],
             Kind::Slash(decl) => frame.equipment_archetypes[1] == Some(1)
@@ -2063,6 +2076,18 @@ impl StateMachine {
     /// BREAK_PLAYER_STATE quits the breakable state playing that scene
     /// (FUN_140802e10).
     pub fn handle_message(&mut self, event: &str, handle: u32) {
+        if event == "ARK_MDNT_MSG_RECOIL_CAN_BE_INTERRUPTED" {
+            if self.recoil_interrupt_diagnostic.is_some() {
+                let current=self.state(StateId::RECOIL).map(|state|(state.midnight,state.active)).unwrap_or_default();
+                let receipt=self.recoil_interrupt_diagnostic.as_mut().unwrap();
+                *receipt=(receipt.0.wrapping_add(1),handle,current.0,current.1);
+            }
+            //7fbe80 (controller C0 subscriber) forwards directly to854190
+            //on its actual Recoil owner. The authored key releases the state
+            //lock without stopping the still-blending recovery animation.
+            if self.index(StateId::RECOIL).is_some() { self.quit(StateId::RECOIL); }
+            return;
+        }
         if event=="ARK_MDNT_MSG_TRIGGER_PLAYER_STATE_ACTION" {
             //854fd0/855750 routes the actual0xf6 scene handle to Action.
             for id in self.active.clone() {
@@ -2958,6 +2983,22 @@ impl StateMachine {
         }
     }
 
+    ///846330: underwater empty hands yield to a real body Midnight or
+    ///one/two-handed hold; at the surface only a left-part action claims it.
+    fn swimming_arms(&self, frame: &mut Frame, leaving: bool) {
+        if frame.underwater && frame.midnight.playing().is_none() {
+            let requested = |id| self.is_active(id) || self.queue.iter()
+                .any(|command| matches!(command, Command::Request(state) if *state == id));
+            let two = requested(StateId::HOLD_TWO_HAND);
+            let one = requested(StateId::HOLD_ONE_HAND);
+            *frame.arms_shown = [!two, !two && !one];
+        } else {
+            let left = self.active.iter().filter_map(|id| self.state(*id))
+                .any(|state| state.decl.flags.body_parts & 2 != 0);
+            *frame.arms_shown = [left || leaving, leaving];
+        }
+    }
+
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
         if self.states[index].active && self.states[index].decl.flags.cancelable {
@@ -3074,6 +3115,7 @@ impl StateMachine {
                 frame.follow_slope.midnight_requests -= 1;
                 return;
             }
+            Kind::Swimming(_) => { self.swimming_arms(frame, true); },
             Kind::ReadNote => { self.read_note.deactivate(); return; },
             Kind::PowerWheel => { self.wheel_requested=false; return; },
             Kind::UseHeart(_) => {self.deactivate_heart(index,frame);return;},
@@ -3410,10 +3452,7 @@ impl StateMachine {
             Kind::Vault(decl) => self.vault_update(index, &decl, frame),
             Kind::Swimming(decl) => {
                 self.navigation_update(index, frame);
-                // 140846330 shows empty hands underwater. The supported mode
-                // has no hold-object state or layered-action producer; surface
-                // swimming keeps the existing unclaimed hands hidden.
-                *frame.arms_shown = [frame.underwater; 2];
+                self.swimming_arms(frame, false);
                 let dive = &mut self.states[index].swimming_dive;
                 if dive.1 > 0.0 {
                     frame.physics.instant_motion();

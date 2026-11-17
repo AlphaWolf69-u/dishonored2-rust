@@ -371,6 +371,10 @@ pub struct Body {
     pub sound_settings: crate::gameplay::sound::component::Settings,
     pub sound_listener: Option<crate::gameplay::sound::listener::Binding>,
     pub(super) sound_requests: Vec<crate::gameplay::sound::Request>,
+    pub animation_sounds: super::midnight::AnimationSoundBank,
+    sound_previous: [[[Option<super::animation::BasicSoundWitness>;22];3];3],
+    pub(super) lower_animation_sounds: Vec<super::midnight::AnimationSoundReceipt>,
+    pub(super) lower_animation_effects:Vec<super::midnight::AnimationEffectReceipt>,
     pub(super) contact_requests: Vec<crate::gameplay::sound::Contact>,
     pub angle: f32,
     bob_amount: f32,
@@ -492,6 +496,10 @@ impl Body {
             sound_settings: Default::default(),
             sound_listener: None,
             sound_requests: Vec::new(),
+            animation_sounds: Default::default(),
+            sound_previous: [[[None;22];3];3],
+            lower_animation_sounds: Vec::new(),
+            lower_animation_effects:Vec::new(),
             contact_requests: Vec::new(),
             angle: 0.0,
             bob_amount: 1.0,
@@ -673,6 +681,67 @@ impl Body {
         let (t0, r0) = split(matrices.first()?);
         let (t, r) = split(matrices.get(joint)?);
         Some((r0.transpose() * (t - t0), r0.transpose() * r))
+    }
+
+    /// The model-space pose: body ⊕ bobAmount·bob ⊕ additives, then the lean layers.
+    ///6f9a90/6e4a30 dispatch each node's own inputs and predecessors.
+    ///Midnight keeps6ff7a0's separate scene callback owner. No leaf clocks
+    ///advance here and paused/loading samples never dispatch event keys.
+    pub(super) fn update_animation_events(&mut self,dt:f32) {
+        if dt==0. {return;}
+        for target in 0..self.arms.len().min(2)+1 {
+            let (bank,animations,loco,basic,bob)=if target==0 {
+                (&self.animation_sounds,&self.animations,&mut self.body_node,&self.additives,Some(&mut self.bob_node))
+            } else {let arm=&mut self.arms[target-1];(&arm.animation_sounds,&arm.animations,&mut arm.loco,&arm.additives,None)};
+            if bank.is_empty() {continue;}
+            let mut nodes=[[None;22];3];
+            let mut transitions=[None;3];
+            nodes[0]=loco.sound_witnesses(animations);
+            transitions[0]=loco.transition_event_interval(animations);
+            nodes[1][..4].copy_from_slice(&basic.sound_witnesses(animations));
+            if let Some(bob)=bob {nodes[2]=bob.sound_witnesses(animations);transitions[2]=bob.transition_event_interval(animations);}
+            let emitter=match target {0=>crate::gameplay::sound::Emitter::PlayerBody,
+                1=>crate::gameplay::sound::Emitter::PlayerLeftArm,_=>crate::gameplay::sound::Emitter::PlayerRightArm};
+            let output=&mut self.lower_animation_sounds;
+            let effects=&mut self.lower_animation_effects;
+            let mut dispatch=|clip,old,new| {
+                bank.visit_clip(0,clip,|sound| {
+                    let key=i32::from(sound.frame);
+                    if if old<=new {old<key&&key<=new} else {old<key||key<=new} {
+                        output.push(super::midnight::AnimationSoundReceipt{target,emitter,sound:sound.clone()});
+                    }
+                });
+                bank.visit_effect_clip(0,clip,|effect| {
+                    let key=i32::from(effect.frame);
+                    if if old<=new {old<key&&key<=new} else {old<key||key<=new} {
+                        effects.push(super::midnight::AnimationEffectReceipt{target,emitter,effect:effect.clone()});
+                    }
+                });
+            };
+            for (node,current) in nodes.iter().enumerate() {
+                if let Some((clip,old,new))=transitions[node] {dispatch(clip,old,new);}
+                //Basic6e4a30 stops at the first missing/nonpositive input;
+                //Loco6f9a90 visits backwards, excluding transition child2.
+                let mut eligible=*current;
+                if node==1 {
+                    let end=current.iter().position(|leaf|leaf.is_none_or(|leaf|leaf.weight<=0.)).unwrap_or(4);
+                    eligible[end..].fill(None);
+                } else {
+                    eligible[2]=None;
+                    for leaf in eligible.iter_mut().flatten() {
+                        if !(leaf.weight>f32::from_bits(0x358637bd)) {leaf.weight=0.;}
+                    }
+                }
+                if node==1 {
+                    let before=self.sound_previous[target][node][..4].try_into().expect("four Basic predecessors");
+                    let after=eligible[..4].try_into().expect("four Basic inputs");
+                    super::animation::visit_leaf_event_crossings::<4>(before,after,false,|_,clip,old,new|dispatch(clip,old,new));
+                } else {
+                    super::animation::visit_leaf_event_crossings(&self.sound_previous[target][node],&eligible,true,|_,clip,old,new|dispatch(clip,old,new));
+                }
+                self.sound_previous[target][node]=*current;
+            }
+        }
     }
 
     /// The model-space pose: body ⊕ bobAmount·bob ⊕ additives, then the lean layers.

@@ -1413,6 +1413,7 @@ impl ParticlePass {
                 step_mode: VertexStepMode::Vertex,
                 attributes: &strip_attributes,
             }];
+            let started = super::screen_effects::passes::trace_pipeline_start();
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some(match (strip, phase == ParticlePhase::OpaqueDepth) {
                     (true, true) => "particle strip depth",
@@ -1463,6 +1464,7 @@ impl ParticlePass {
                 multiview_mask: None,
                 cache: None,
             });
+            super::screen_effects::passes::trace_pipeline_end(started,"particle_create_render_pipeline",&source.name);
             self.pipeline_creations += 1;
             Arc::make_mut(&mut self.programs).pipelines.insert(pipeline_key, pipeline.clone());
             pipeline
@@ -2283,7 +2285,7 @@ impl ParticlePass {
                     super::water_hdr::WaterHdr::new(device, queue, input.extent, input.compressed_hdr, self.colour_format)?));
             }
             let (_, _, vectors, hdr) = self.distortion.as_mut().unwrap();
-            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], None, input.local_time, input.depth, input.inverse_z)?;
+            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], None, input.local_time, input.depth, input.inverse_z, None)?;
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("particle distortion vectors"),
                 color_attachments: &[Some(RenderPassColorAttachment {

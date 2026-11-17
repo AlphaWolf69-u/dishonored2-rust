@@ -777,7 +777,10 @@ struct Host<'a> {
 }
 
 impl Host<'_> {
-    fn audio_objects_retired(&mut self, handle: ComponentHandle) -> Result<bool, String> {
+    fn consumer_objects_retired(&mut self, handle: ComponentHandle) -> Result<bool, String> {
+        if handle.class_id == self.scene.classes[57] {
+            return self.scene.fx_component_retired(handle);
+        }
         if handle.class_id != self.scene.classes[4] { return Ok(true); }
         let Some(world) = self.world.as_deref_mut() else { return Ok(true); };
         let component = self.scene.audios.get_mut(handle.slot)
@@ -867,6 +870,18 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[57] {
+            return self.scene.initialize_fx_component(self.live, handle);
+        }
+        if handle.class_id == self.scene.classes[55] {
+            return self.scene.initialize_openable(
+                self.world.as_deref_mut().ok_or("Openable Initialize requires published world")?,
+                self.live, self.events, registry, handle,
+            );
+        }
+        if handle.class_id == self.scene.classes[56] {
+            return self.scene.initialize_retargeting(handle);
+        }
         if self.scene.is_flash_class(handle.class_id) {
             return self.scene.initialize_flash_component(self.live,self.events,handle);
         }
@@ -899,6 +914,17 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[57] {
+            self.scene.start(handle, registry)?;
+            return self.scene.start_fx_component(self.live, self.events, handle);
+        }
+        if handle.class_id == self.scene.classes[55] {
+            self.scene.start(handle, registry)?;
+            return self.scene.start_openable(
+                self.world.as_deref_mut().ok_or("Openable Start requires published world")?,
+                self.live, self.events, registry, handle,
+            );
+        }
         if handle.class_id == self.scene.classes[4] {
             if let Some(world) = self.world.as_deref_mut() {
                 super::super::audio::resume_component_object(world, crate::gameplay::sound::Emitter::Component {
@@ -1025,7 +1051,9 @@ impl ComponentReleaseWorld for Host<'_> {
             if let Some(owner) = ai_worlds { world.insert_resource(owner); }
             if let Some(owner)=hearts {world.insert_resource(owner);}
             if let Some(owner)=statistics {world.insert_resource(owner);}
-            return result;
+            result?;
+            scene.process_openable_uses(world,live,events)?;
+            return Ok(());
         }
         scene.pump_entity_messages_with_registry(live,events,registry,None,None,None,None,None)
     }
@@ -1154,7 +1182,7 @@ impl ComponentReleaseWorld for Host<'_> {
         } else if handle.class_id == scene.classes[13] {
             scene.stop_projectile(handle,self.events)?;
         } else if handle.class_id == scene.classes[15] {
-            scene.stop_animation(handle)?;
+            scene.stop_animation(handle,self.events)?;
         } else if handle.class_id == scene.classes[17] {
             scene.sound_volumes.get_mut(handle.slot).ok_or("sound volume Stop payload absent")?.started = false;
         } else if handle.class_id == scene.classes[19] {
@@ -1169,6 +1197,10 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_smart_object(self.world.as_deref(),self.live,handle)?;
         } else if scene.is_flash_class(handle.class_id) {
             scene.stop_flash_component(self.world.as_deref_mut(),self.events,handle)?;
+        } else if handle.class_id == scene.classes[55] {
+            scene.stop_openable(self.events,handle)?;
+        } else if handle.class_id == scene.classes[57] {
+            scene.stop_fx_component(self.events,handle)?;
         } else if handle.class_id==scene.classes[48]||handle.class_id==scene.classes[49] {
             scene.stop_cue_component(self.world.as_deref(),self.live,self.events,handle)?;
         } else if scene.is_ai_startup_class(handle.class_id) {
@@ -1258,7 +1290,7 @@ impl ComponentReleaseWorld for Host<'_> {
     ) -> Result<ReleaseStatus, String> {
         //708620 returns actual objects even without a preceding709020 Stop
         //(initialized hidden cue pools). Await the real backend return.
-        if !self.audio_objects_retired(handle)? {
+        if !self.consumer_objects_retired(handle)? {
             return Ok(ReleaseStatus::Pending);
         }
         self.deinitialize(handle, registry)?;
@@ -1271,6 +1303,18 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, true)?;
+        if handle.class_id == self.scene.classes[57] {
+            self.scene.deinitialize_fx_component(handle)?;
+        }
+        if handle.class_id == self.scene.classes[55] {
+            self.scene.deinitialize_openable(
+                self.world.as_deref_mut().ok_or("Openable Deinitialize requires published world")?,
+                self.live, handle,
+            )?;
+        }
+        if handle.class_id == self.scene.classes[56] {
+            self.scene.deinitialize_retargeting(handle)?;
+        }
         if self.scene.is_flash_class(handle.class_id) {
             self.scene.deinitialize_flash_component(self.events,handle)?;
         }
@@ -1593,6 +1637,14 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle,scene.flash_surfaces.get_mut(handle.slot).ok_or("FlashSurface absent")?)
         } else if handle.class_id==scene.classes[53] {
             entity.components.release(handle,scene.interactive_maps.get_mut(handle.slot).ok_or("InteractiveMap absent")?)
+        } else if handle.class_id==scene.classes[54] {
+            entity.components.release(handle,scene.cooking_surfaces.get_mut(handle.slot).ok_or("GrenadeCooking absent")?)
+        } else if handle.class_id==scene.classes[55] {
+            entity.components.release(handle,scene.openables.get_mut(handle.slot).ok_or("Openable absent")?)
+        } else if handle.class_id==scene.classes[56] {
+            entity.components.release(handle,scene.retargeters.get_mut(handle.slot).ok_or("Retargeting absent")?)
+        } else if handle.class_id==scene.classes[57] {
+            entity.components.release(handle,scene.fx_components.get_mut(handle.slot).ok_or("CpntFX absent")?)
         } else if handle.class_id == scene.classes[18] {
             entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
@@ -1607,7 +1659,7 @@ impl ComponentReleaseWorld for Host<'_> {
     ) -> Result<ReleaseStatus, String> {
         //A canceled, uninitialized registration can bypass Deinitialize.
         //Retain its actual immediate-release generation until object return.
-        if !self.audio_objects_retired(handle)? { return Ok(ReleaseStatus::Pending); }
+        if !self.consumer_objects_retired(handle)? { return Ok(ReleaseStatus::Pending); }
         self.released(handle, registry)?;
         Ok(ReleaseStatus::Complete)
     }
@@ -1763,6 +1815,14 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.flash_surfaces.release(handle.slot)?;
         } else if handle.class_id==scene.classes[53] {
             scene.interactive_maps.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[54] {
+            scene.cooking_surfaces.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[55] {
+            scene.openables.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[56] {
+            scene.retargeters.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[57] {
+            scene.fx_components.release(handle.slot)?;
         } else if handle.class_id == scene.classes[18] {
             scene.damage_zones.release(handle.slot)?;
         } else {

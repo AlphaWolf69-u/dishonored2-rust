@@ -2,7 +2,7 @@
 //! 127f590/127f030; no navigation triangles or render meshes become colliders.
 use super::{float, le32, source::ShapeSource, CompressedPrimitiveKind};
 use std::sync::Arc;
-mod surface;
+pub(crate) mod surface;
 
 pub struct CompressedMesh {
     source: Arc<ShapeSource>,

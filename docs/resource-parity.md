@@ -1,5 +1,141 @@
 # Resource parity ledger
 
+## Player animation leaf events and swimming closure (2026-11-18)
+
+Source before change: Loco `1406f9a90` dispatches its22 actual inputs in
+reverse, excluding transition child2 and requiring current weight greater
+than `141acd7c8` (bits0x358637bd). Transition `1406fd6f0` has its own event
+frame, initialized to-1 by `1406fd5b0`. Basic `1406e4a30` visits four inputs
+forward until an absent/nonpositive input. `140242bb0` chooses the latest
+positive predecessor of the same animation resource not ahead of the current
+frame. `1406ee4f0/1406ee650` truncate frames and dispatch actual AnimSet keys;
+Midnight `1406ff7a0` remains its separate scene-input owner. These are per-node
+event decisions, independent of an invented parent-pose sound threshold.
+
+AnimSet remains the metadata owner. `ae_postSoundEvent` keeps the canonical
+SoundEvent lease; `ae_fx` schema `1413964e0` carries FX, joint, target joint and
+updatePosition. `1408755c0` publishes these as A7 with owner/culprit equal to
+the emitting entity; the boolean means following position, not one-shot
+playback. Lower Body/Arm loaded-clip banks and prepared Midnight banks retain
+only typed metadata. Existing FX and audio admission owners prepare resources
+and own playback/retirement. Expected added CPU cost is bounded per-node input
+comparisons when a loaded bank has events; no frame archive reads, decoded
+media cache or additional GPU pass. Paused/loading pose samples dispatch no
+events. Actual callbacks retain their declaration through the existing request
+handoff, with no fabricated swimming clock or sound trigger.
+
+Coverage is the admitted player Body/Arm Loco and AnimBasic nodes plus all
+five player Midnight casts (including actual managed equipment recipients).
+Their selected clip's existing AnimSet owner supplies event metadata; source
+animation identity, per-node predecessor arrays and native transition history
+are retained. Appended equipment/power clip banks prepare metadata on their
+existing worker and merge it before activation; unchanged metadata does not
+advance the admission revision. Other entity animation consumers can borrow
+the same typed metadata, but this entry does not claim an NPC/Usable FX event
+bridge. Inspected sword and Emily gun-base AnimSets contain no `ae_fx`; their
+hit sparks are not demonstrated to originate in these animation keys.
+
+Installed source evidence: base/right_arm.animset has swim movement sound keys
+at frames15/17 and idle keys20/112/182, and `ae_fx` stroke keys on the actual
+elbow/wrist joints. The generic callbacks cover these aliases and other loaded
+animation aliases equally. Base/emily/corvo cpntPlayerFXManager are the only
+three installed declarations: their effective `m_swimmingBodyFX` lists are
+empty (constructor `140821150`, schema `14174a650` +0x18). Helpers
+`14081e420/14081e7d0/14081e850/14081e8d0/14081e4d0` bind/start/stop/update/
+release body-attached FX when authored; they supply no demanded swimming FX
+for these two characters. Do not invent replacement body FX. Swimming
+eligibility uses controller swimming bytes+0x280/+0x281 (in-water/underwater)
+and cinematic state+0x224: controller constructor `1407f7860` places
+`14081bf30` at+0x1d0, and its state is+0x54. This is not PlayerMode or
+possession state. Cinematic playback is currently unhosted; its constructor
+state0 is the admitted ordinary-player case. Runtime/GPU validation remains
+pending the root-owned coherent batch.
+
+## Openable primary interaction and animated-part ownership (2026-11-18)
+
+Source owners: `assets/openable.rs`, `app/physics_scene/openable.rs`, `app/runtime_entities/openables.rs`; the existing runtime factory, AnimBase, Audio, reference-frame/binding, material/GPU and ordinary removal owners remain authoritative. Native74a4a0/74a670 construct the real component/declaration;74c1f0 spawns the retained animated part,74cd90 binds the static door onto its hinge,74b1c0 selects the original interaction,74b6e0 chooses direction/alias,74c5c0 and74e7a0 execute/finish actual animation,74d910 stops listeners and74c560 enqueues ordinary child removal before the common component release. Component55 has its actual typed factory/pool/generation. Component56 ports755350/757b70's legitimate empty Retargeting owner and optional PhysicsSystemEvolved/AnimBase references; door attachment uses752900, not a fabricated slave or physics actor.
+
+Prediction recorded before integration: authored Opened/OpenedCCW/Closed and normal use should reach their real child aliases and hinge-driven rigid/render motion; each actual Openable creates one actual child, while distinct source definitions/rigs are shared by existing canonical resource owners. This is a missing-feature correction, not a measured CPU/GPU improvement. The EotW installed declaration inventory contains20 Openable declarations/27 owners, including8 explicitly opened declarations. There is no object-name exception or new format conversion/cache. Native10fae0's quarter-turn uses the existing compact basis math.53c5b0 resolves alias identities; no clip0 substitution. Native6e4af0 byte9ac includes every playing or blending leaf, exposed by the shared input_playing query used by53e770 consumers. Initial mode4 remains at native weight0/blend-in and advances only on the actual clock; no positive-delta or forced-weight loading shortcut is installed.
+
+Lifecycle: CPU preparation retains compact typed plans and canonical child-definition Arcs, then the actual source factory reserves existing prototype scopes. All placed parent component headers enter one registry before Initialize can resolve linked siblings. Child construction appends to that same registry, with real managed identity, owner and area; initialized children/entered parent cursors survive failures and use the existing scoped rollback/removal journal. Loading waits on actual admitted dependencies. Ordinary component Stop unregisters its real96 and blocker96/A1 listeners and refuses to discard an accepted-use journal; Deinitialize transfers the child to the ordinary delayed-removal FIFO. Definition/prototype leases release at the existing parent lifetime boundary; actual child render/audio/component/GPU owners independently retain their leases until acknowledgement. No strong arsenal cache or fake-ready receipt is added.
+
+Primary behavior covered: real Closed/Open/Locked/Blocked records, source usableByPlayer/Hide policy, CW/CCW open/close/rattle, actual inventory keys (including linked-key sharing), linked initial state/direction/lock policy, Interactable96/BreakableA1 blocker release and actual SoundVolume coefficients. Accepted uses have per-side retry cursors, consumed at the same message barrier before Stop. Settled actors bypass journal/update roster traversal through dirty bits; demanded animation-joint changes wake the existing reference actor queue and reuse its actual sampled matrices. Non-player74dd50 door actions, secondary keyhole request routing and script97/Windblast138 consumers are outside this primary-interaction port and are not represented as successful dummy callbacks. Current admitted actors contain no NPC action or Windblast producer for those paths. A genuinely NoPhysicsShape placed parent still needs generic non-rigid bound-render admission before that variant is claimed; the current canonical publisher claims rigid placements only.
+
+Validation: new isolated modules passed syntax parsing and modified-source whitespace checks. No child build, test, game launch, appearance or heard-sound result is claimed. Parent owns the combined compilation, production loading/retirement and actual interaction checks.
+
+## Usable initial animation admission (2026-11-18)
+
+Source before change: `14077a880/14077b3b0` selects the authored initial
+state's idle/held transition pose at component Start. The client placed its
+whole Usable animation owner behind `is_playing` and then a positive gameclock
+advance, leaving those palettes at rest during loading. The existing worker,
+AnimBasic node, SkinPublication and sound reservation owners must perform the
+initial zero-delta sample before the runtime loading barrier completes.
+Expected cost: one normal acquisition/evaluation/publication for each actual
+started initial-animation demand, moved before first gameplay presentation;
+settled paused frames do not update nodes, tick Usable states or allocate.
+
+Physics audit: `14076d640` installs joint overrides only for control mode2;
+vtable `141c59e68 + 0x148` resolves `14076a390`, reading each body runtime's
+control byte at +0x8c. Activation `14076b6c0` promotes the unkeyed system's
+bodies to max(declaration behavior,current first-body mode). Current machinery
+recipes admit only explicit `BEHAVIOR_DYNAMIC` systems on HIDDEN layers; this
+is value2 (`141a10ea0`), so their all-mapped-body overrides match the admitted
+physics class. This is not evidence that ordinary shutters belong to that owner. No blanket
+physics exclusion or window-specific pose reversal is authorized by this
+finding. Initial-pose admission is ported in `app/usable_animation.rs` using
+the same prepared node and palette owner, with `scene_published` scheduling and
+the loading gate. Paused initialization neither advances scene/Usable clocks
+nor emits animation-sound crossings. Verification remains with the root-owned
+coherent build/run.
+
+## Swimming, breath FX/FOV and power scene lifecycle (2026-11-18)
+
+Source before changes: UsePower `140856c50` checks completion of both the
+entry and current loop scene and re-enters the authored loop while execution
+has not occurred. The shared `powers::action::Action` incorrectly stopped
+considering updates after its first loop handle existed. Expected cost: one
+additional existing scene-finished query during aiming, then ordinary Midnight
+acquisition of the already-prepared scene at each authored completion; no
+invented timer, looping animation, resource cache or extra GPU pass.
+
+Swim equipment: `14088adc0` saves the actual right equipment entity and sends
+state53/null target/flags0x20 for `m_usableWhenSwimming == false` (descriptor
+offset0x6d); `1408894f0` restores that saved entity with flags0x40. The existing
+equipment runtime owns detach/attach callbacks and retained trees. One saved
+identity is acquired on the transition; ordinary swimming frames allocate
+nothing. Arm claims now follow `140846330` (body Midnight, active/requested
+one/two-handed holds, and left-part state claims), including deactivation.
+
+PlayerFXNearDeath `1408200b0/140820130/140820280` starts/stops the actual health
+and underwater-breath FX at authored thresholds (constructor `14081ffc0`
+defaults both to30). Blink `14081f310/14081f330/14081f360` owns real travel/end
+FX independently of aiming. Swimming `140821280/1408212a0/140821350` starts
+enter-water + underwater effects and transitions to the actual leaving effect.
+Seven immutable paths share one canonical reservation; ordinary frames compare
+state only, while transitions enqueue the existing FX requests. All families,
+including sounds, stay in WorldFX. The earlier partial particles/quad producer
+hands off only after the complete source/material/audio readiness barrier.
+Retirement stops requests before releasing their reservation; shared tails and
+level teardown retain the existing source ownership. Breath sound acquisition,
+loading readiness and retirement use the sound owner's existing reservations.
+
+FOV class schema `141503e80`, constructor `14021b130`, runtime
+`14021b360/14021b1b0`, registration/removal `14021b340`, ordered mixer
+`14021b4e0`, and view application `14021da80` now use the native sixteen-slot
+pool (`14019a2f0/14019f570`). Timings/curve sampling, stop tails and shared RNG
+belong to the ordinary FX chain, including sub-FX. Percentage samples use the
+original base FOV and clamp1..150 only when registrations exist. Expected CPU
+cost is at most sixteen scalar samples plus the existing effect updates; no
+per-frame allocation, copied parameter metadata or added GPU pass. The sole
+world-FX advance now precedes camera projection/frustum formation, using the
+actual current camera transform, published reference frames/clock and canonical
+physics read lease. Particle physics/publication remains after current view
+queries. There is no second advancement or previous-frame FOV input.
+
+Verification remains pending the root-owned combined build and actual-input
+execution; source review and whitespace validation do not claim runtime proof.
+
 Normal release measurement (2026-11-17, source `fb14e994`, SHA256
 `687E337AF8866B82B95B96D58FF32AE211F0C0F7DB3D1FB93D30EAD01591E5C2`):
 same-executable walking A/B measured `select_cell` at 24,527.73 → 13,085.13
@@ -24743,3 +24879,31 @@ WORLD sword action observations (2026-11-17): opt-in `world` and `world-poke` sc
 `verified`: mapped original machine code matches156 sorting,52 packed-tree and932 nearest control cases. `acceptance pending`: actual compiled Rust map fixture/plane oracle, full shader-record comparison and same-build scoped walking A/B; this is not a performance acceptance claim. The concrete before-cost/prediction, controls and exact original source addresses are recorded in docs/optimization-opportunities.md. Normal gameplay enables no diagnostic timer, atomic counter or recorder. Original385da0's parent-query borrowing is not claimed ported without an actual parent accessor.
 
 WORLD repeated-contact observation (2026-11-17): the opt-in `world`/`world-poke` sequences now retain a weak ticket and wait for its actual DynamicEffects publication, CPU family start, natural completion and owner retirement before the next physical attack. Each case requires three accepted contacts against the same real body/material, waiting actual Slash/Recoil inactivity and equipment readiness between contacts. Canonical source identity is resolved by the same retirement Arc; read-only main/sub sound-chain traversal attributes actual emitter IDs to that specific FX owner. Existing audio observations report real middleware-event admissions and playing-ID/declaration-reference SourceReady/End callbacks separately; no callback mask or producer queue changes. Actual particle-chain presence is recorded, without imposing particles on an authored effect that has none. The observer keeps numeric/weak receipts only, never prolongs a source/FX lease, never advances a clock and never acknowledges a render/audio resource. Prediction: the scenarios expose cold-start versus repeated-contact resource latency instead of exiting when a ticket is merely requested. Visible dust and audible sound are not inferred from these CPU/source receipts. Root owns the pending same-build production-input validation; no build/run performed for this diagnostic change.
+
+## Combat, view FX and animated interactions — 2026-11-18
+
+`ported` physics shape acquisition: the existing PhysWorld/QueryShapes owner now admits inherited `hknpSphereShape` support vertices while preserving its actual shape type2. Source ca6550/c82490 support, ca6160 ray, ca5f50 geometry and ca5ee0/ce0920 mass use the same compressed source and body/geometry leases as other convex shapes. No synthetic polytope, file conversion or second shape cache. Grenade constructor failures retain their first causal error instead of reporting only a later retry's missing listener.
+
+`ported` contact identity: broadphase12871a0 supplies full generational body IDs; Contacts now passes these through the canonical checked body accessor, matching0992c0's slot extraction. This fixes rejection of real world/body pairs before manifold construction. Existing contact geometry, Jacobians, impulses, callbacks and shape invalidation retain their owners. The opt-in carry check now requires a real ordinary world-contact solver impulse opposing gravity after release, rather than accepting motion alone.
+
+`ported` projectile impact lifetime: source629590/624540 starts the actual dormant Throwable on both Stick2 and Bounce5. The same body/listener Start and628df0 child publication are used at impact and pickup. Source624300's non-hold Pickable/Loot exclusion is retained. Generic runtime-model publication reads the actual Scene frame for culling and drawing; it does not preserve a pickup-time binding baseline or force visibility. Bolt distance-culling parity still requires a live reason receipt, not an arbitrary threshold change.
+
+`ported` player action resources: source820130,81f330/81f360 and821350 request complete canonical NearDeath, Blink and swimming FX definitions, including sound, FOV and quads. The existing preparation scope retains the seven declared paths and waits for their real GPU/media readiness before gameplay. Exit stops all active producers and releases the scope through the normal effect tails; no duplicate swimming image or sound owner remains. Breath4c0990/4c0b50/4c0c60/4c0cf0/4c1160 retains shared event/RTPC metadata, reserves media through Audio, publishes A9/AA on the actual camera joint and transfers Stop before reservation release. Swimming modes suppress this separate heavy-breathing producer as in the source.
+
+`ported` FOV and ScreenQuad runtime:19a2f0/19f570/21b360/21b340 use the canonical sixteen-slot FOV pool. ScreenQuad21d410/21d790/232090/19f710 uses the existing FX links, registration order and native four-most-recent entries per stage (043800/043540/88c210). No effect age is substituted for view local time. Start/update/stop/hard-clear and nested tails share the same FX manager. FOV is applied before projection/frustum publication in the same frame.
+
+`host:` `bevy_backend/screen_quads.rs` adapts31da70 to existing motion-vector and display attachments. Canonical ParticleResources/ParticleImages own immutable material metadata, image programs, residency and streaming; GPU entries retain weak material identity and actual texture views. Preparation certificates include source identity and actual colour/depth formats. Permanent preparation failures publish failure instead of leaving loading pending. Underwater uses the existing vector pass; an active screenblend stage adds its required quad pass. Level retirement drops the GPU owners after normal withdrawal. Installed screenblend uv1/uv2 and screenDisto bytecode drive the supported shader math. ShadowWalkEnd stage0 and undemanded screenblend branches remain explicit unsupported consumers; no replacement pass is invented.
+
+`ported` animation/audio resources: BasicRig now owns immutable per-clip sound keys once, shared by Usable and runtime AnimBase. Source53b090/53e610/53edb0/53ee90/53e9c0 and6ff7a0/242bb0/6ee650 use actual playback crossings and component/joint emitters. Reservation/readiness settles without repeated source scans. Stop transfers accepted A9 records before Audio releases its scopes; Deinit cannot discard untransferred records. The existing JointFrames owner keys runtime demands by full EntityId, without a second pose cache. Authored Usable initial poses load/sample while the loading screen remains up; paused initialization does not emit gameplay or sound ticks.
+
+`ported` Heart graph dependencies: StoryFlagBool920d90/924050/9241f0/926e60 and Int9042e0/9043e0/907270 use the existing shared graph variables and7c07b0/7c0b50 notifications. Actual LoadingEnd writes authored story state; no Heart-specific fallback flag or speech is injected. Qualified NamedVariable923f00/6cb0d0/513720 resolves actual live entity/program generations. Weak bindings and observer indices withdraw before graph retirement/reuse. Diagnostic success now requires actual bark selection, selected Speech event admission, its source callback and nonzero decoded/post-voice samples; the previous request-only Heart receipt did not prove playback.
+
+`ported` grenade cooking resources: HUDGrenade45ba30/45af50/45bc10 owns the authored HUD entity, scale, cooking/sticky tag and FlashSurface-derived component39e9a0 through existing prototype/entity/model/Iggy owners.45b550 reads the real Fire C8, detonation/radius/speed inputs;490cd0 supplies fuse progress.39eb50/39eba0/39ecc0/39ed10/39ed20 call installed `_C_Init`/`_C_UpdateGauge`. Hide45bd60 disables before unbinding; FlashSurface0310c0 awaits actual withdrawal, returns its target and resets the shared material before reuse. Metadata tasks cancel/join and the gauge retires before equipment. `host:` the existing world-Iggy worker coalesces pending scalar updates and uses real render acknowledgements. On-screen warnings for non-held grenades are a separate branch, not claimed by the cooking gauge.
+
+`host:` optional diagnostics observe actual buffers, IDs, poses and completion fences. Per-source audio peaks are measured after voice filtering/gain and before shared bus DSP; route/master numbers are next-block targets, not attributed device output. Cold-pipeline timing distinguishes direct creation, async creation and shader-cache lock waits without changing scheduling. Explicit release RenderDoc capture now enables the already-injected API; ordinary release startup keeps that facility disabled. These controls create no default sample scans, history, additional render pass or resource cache.
+
+`ported` animation A7 construction metadata:64bc20/4903b0 use an actual bare idEntity and the installed CpntFX factory/default declaration (4b1650/4b16c0;1416f3df0/14170bdd0 parameters). The canonical runtime prototype owner warms actual FX references; one supplied registry constructs, binds, configures and explicitly requests Start before its normal drain. Failed construction retains its real generation/source journal for scoped rollback. SELF, source binding, target and culprit remain distinct. D4bit4 is not treated as an automatic-deletion policy; normal component/actor retirement retains the existing FX/GPU/audio acknowledgements.
+
+`ported` first-person arm managed identities:770560/8ae9b0 create the two actual declared idEntity actors at the player's transform, retain Player owner/MAIN tag and source binding, and keep constructor time selector0 without equipment/ammo flag substitutions. The existing Arm rigs, palettes, controllers, sound objects and PlayerArms render resources remain sole owners. Tagged FX reads their same published joint palettes. The existing equipment identity/reference owner now distinguishes Arm from Equipment and Attachment roles; arm surface withdrawal uses its existing per-model GPU receipt before managed-generation release. No extra skeleton, render model or audio cache is created.
+
+Validation for this coordinated source batch is pending its single combined debug build and production-input/loading/exit runs. Source review and parser checks are not runtime, appearance or performance acceptance. The measured Voronoi query improvement from the preceding batch does not establish whole-frame performance or first-shot latency for this one.

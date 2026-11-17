@@ -592,6 +592,7 @@ fn acquire(world: &mut World) {
         if let Some(error) = player_error
             .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
             .or_else(|| super::power_wheel::startup_error(world))
+            .or_else(|| super::animation_effects::startup_error(world))
             .or_else(|| super::ai_world::creation::startup_error(world).map(str::to_owned))
             .or_else(|| super::fx_lights::error(world).map(str::to_owned))
             .or_else(|| super::carrying_resources::startup_error(world)) {
@@ -614,21 +615,34 @@ fn acquire(world: &mut World) {
         };
         let has_player = world.get_resource::<super::player::PlayerState>()
             .is_some_and(|state| state.player.is_some());
+        let usable_pending = world.get_resource::<super::usable_animation::UsableAnimations>()
+            .zip(world.get_resource::<super::interactions::Interactions>())
+            .is_some_and(|(animations, interactions)| animations.startup_pending(interactions));
         let player_pending = has_player && (
-            world.get_resource::<super::player_actions::PlayerActions>()
+            !super::audio::player_breath_ready(world)
+            || !super::audio::player_animations_ready(world)
+            || world.get_resource::<super::player_actions::PlayerActions>()
                 .is_some_and(|actions| actions.startup_pending())
             || super::runtime_materials::equipment_admission::startup_pending(world));
-        if !player_pending && !super::weapon_firing::startup_pending(world)
+        if !player_pending && !usable_pending && !super::physics_scene::runtime_animation::audio_pending(world)
+            && !super::weapon_firing::startup_pending(world)
             && !super::runtime_entities::startup_pending(world)
             && !super::ai_world::creation::startup_pending(world)
             && !super::fx_gameplay::startup_pending(world)
+            && !super::animation_effects::startup_pending(world)
             && !super::power_wheel::startup_pending(world)
+            && !super::grenade_cooking::startup_pending(world)
             && !super::water_impacts::startup_pending(world)
             && !grenade_pending
             && !super::carrying_resources::startup_pending(world) {
             crate::loading::complete("initial runtime resources");
         }
         if let Some(error) = super::weapon_firing::startup_error(world).map(str::to_owned) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
+        if let Some(error) = super::grenade_cooking::startup_error(world).map(str::to_owned) {
             fail_initial_images(world, &error);
             world.insert_resource(state);
             return;

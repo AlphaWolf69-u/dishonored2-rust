@@ -16,6 +16,7 @@ pub mod grapple_catch;
 pub mod combat;
 mod diagnostics;
 pub mod combat_fx;
+pub mod breath_audio;
 pub mod chaos;
 pub mod melee;
 mod power_wheel;
@@ -129,6 +130,7 @@ pub struct Player {
     pub carrying: carrying::Runtime,
     swimming_machine: StateMachine,
     swimming_active: bool,
+    swimming_equipment: Option<String>,
     swimming_eye_height: f32,
     swimming_current: swimming::WaterCurrent,
     swimming_waves: swimming::WaveFilters,
@@ -157,6 +159,8 @@ pub struct Player {
     attribute_requests: Vec<AttributeModifierRequest>,
     entity_events: Vec<EntityEvent>,
     managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
+    ///7fc420's actual primary/secondary interaction descriptor presence.
+    interaction_present: bool,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -171,6 +175,7 @@ pub struct Player {
     /// The mantle dummy's arkCpntRetargeting while it drives the player.
     pub retargeting: Option<Retargeting>,
     scenes: Scenes,
+    animation_scene_revision:u64,
     md6: String,
     health: health::Health,
     damage_receiver: crate::gameplay::damage::Receiver,
@@ -288,7 +293,56 @@ impl Player {
     pub fn take_animation_events(&mut self) -> Vec<AnimationEvent> { std::mem::take(&mut self.animation_events) }
     pub fn drain_animation_events(&mut self) -> std::vec::Drain<'_, AnimationEvent> { self.animation_events.drain(..) }
 
-    pub fn install_animation_scenes(&mut self, scenes: Scenes) { self.scenes.extend(scenes); }
+    pub fn install_animation_scenes(&mut self, scenes: Scenes) {
+        if !scenes.is_empty() {self.scenes.extend(scenes);self.animation_scene_revision=self.animation_scene_revision.wrapping_add(1);}
+    }
+    pub fn lower_animation_sound_revision(&self)->[u64;3] {
+        [self.body.animation_sounds.revision(),self.body.arms[0].animation_sounds.revision(),self.body.arms[1].animation_sounds.revision()]
+    }
+    pub fn animation_effect_revision(&self)->[u64;4] {
+        let lower=self.lower_animation_sound_revision();
+        [lower[0],lower[1],lower[2],self.animation_scene_revision]
+    }
+    pub fn visit_lower_animation_sounds(&self,mut visit:impl FnMut(usize,&midnight::AnimationSound)) {
+        self.body.animation_sounds.visit(|_,sound|visit(0,sound));
+        for (side,arm) in self.body.arms.iter().enumerate() {arm.animation_sounds.visit(|_,sound|visit(side+1,sound));}
+    }
+    pub fn visit_animation_effects(&self,mut visit:impl FnMut(usize,&crate::assets::animation_rig::animset_effects::Effect)) {
+        self.body.animation_sounds.visit_effects(|_,effect|visit(0,effect));
+        for (side,arm) in self.body.arms.iter().enumerate() {arm.animation_sounds.visit_effects(|_,effect|visit(side+1,effect));}
+        for scene in self.scenes.values() {scene.animation_sounds.visit_effects(&mut visit);}
+    }
+    pub fn drain_ready_lower_animation_sounds(&mut self,ready:[bool;3])->impl Iterator<Item=midnight::AnimationSoundReceipt>+'_ {
+        self.body.lower_animation_sounds.extract_if(..,move|receipt|ready.get(receipt.target).copied().unwrap_or(false))
+    }
+    pub fn publish_lower_animation_sounds(&mut self,ready:[bool;3]) {
+        use crate::gameplay::sound::{Emitter,Request};
+        let emitters=&mut self.animation_sound_emitters;
+        let Body{lower_animation_sounds,sound_requests,..}=&mut self.body;
+        for receipt in lower_animation_sounds.extract_if(..,|receipt|ready.get(receipt.target).copied().unwrap_or(false)) {
+            let emitter=if let Some(joint)=receipt.sound.joint {
+                let entity=match receipt.emitter {Emitter::Equipment{entity,..}=>Some(entity),_=>None};
+                Emitter::PlayerJoint{entity,part:receipt.emitter.player_part(),joint}
+            } else {receipt.emitter};
+            if matches!(emitter,Emitter::PlayerJoint{..})&&!emitters.contains(&emitter) {emitters.push(emitter);}
+            sound_requests.push(Request::Post{event:receipt.sound.event.id,emitter});
+        }
+    }
+    pub fn drain_lower_animation_sounds(&mut self)->impl Iterator<Item=midnight::AnimationSoundReceipt>+'_ {
+        self.body.lower_animation_sounds.drain(..)
+    }
+    pub fn drain_animation_effects(&mut self)->impl Iterator<Item=midnight::AnimationEffectReceipt>+'_ {
+        let Body{midnight,lower_animation_effects,..}=&mut self.body;
+        midnight.drain_animation_effects().chain(lower_animation_effects.drain(..))
+    }
+    pub fn register_animation_sound_emitter(&mut self,emitter:crate::gameplay::sound::Emitter) {
+        if !self.animation_sound_emitters.contains(&emitter) {self.animation_sound_emitters.push(emitter);}
+    }
+    ///Borrow the already prepared canonical asset; callers may share its Arc
+    ///when a resource operation must outlive this Player borrow.
+    pub(crate) fn animation_scene_asset(&self, path: &str) -> Option<&std::sync::Arc<midnight::PreparedScene>> {
+        self.scenes.get(path)
+    }
     pub fn equip_ranged(&mut self, identity: &str, settings: std::sync::Arc<weapons::Ranged>, inventory: &dyn weapons::AmmunitionInventory) -> Result<(), String> {
         if self.weapon_identity.as_deref() == Some(identity) { return Ok(()); }
         self.register_ranged(identity, settings, inventory)?;
@@ -391,6 +445,10 @@ impl Player {
         if let Some(value) = self.equipment_archetypes.get_mut(side) { *value = archetype; }
     }
 
+    ///7fc420 publishes sensor33 descriptor presence;846b50 reserves a held
+    ///INTERACT for that object instead of admitting an unrelated Undraw.
+    pub fn set_interaction_presence(&mut self, present: bool) { self.interaction_present = present; }
+
     /// Change only prepared hands. This does not alter visibility requests
     /// belonging to swimming, mantle or a full-body scene.
     pub fn request_arm_equipment(&mut self, equipment: [&str; 2]) -> bool {
@@ -479,6 +537,54 @@ impl Player {
     /// The current health owned by the player; HUD consumers do not mutate it.
     pub fn health(&self) -> f32 {
         self.health.current()
+    }
+    ///Actual animation callback owner (8755c0), distinct from its Player owner.
+    pub fn animation_entity(&self, target: usize) -> Option<crate::gameplay::entity_lifetime::EntityId> {
+        match target {0=>self.managed_entity,1|2=>self.body.arms.get(target-1)?.managed_entity,
+            3|4=>self.body.equipment.get(target-3)?.as_ref()?.managed_entity,_=>None}
+    }
+    pub fn animation_effect_binding(&self,entity:crate::gameplay::entity_lifetime::EntityId,tag:&str)
+        ->Result<(i16,[f32;3],[f32;4]),String>{
+        if self.managed_entity==Some(entity){return self.reference_tag_binding(tag);}
+        if tag.is_empty(){return Ok((-1,[0.;3],[0.,0.,0.,1.]));}
+        let rig=if let Some(arm)=self.body.arms.iter().find(|arm|arm.managed_entity==Some(entity)){
+            arm.rig.as_ref().ok_or("animation FX arm rig lease absent")?
+        }else{
+            &self.body.equipment.iter().flatten().chain(self.equipment_changes.inactive_targets().filter_map(|target|target.tree.as_ref()))
+                .find(|tree|tree.managed_entity==Some(entity)).ok_or("animation FX actual source actor absent")?.rig
+        };
+        let selected=rig.optional_tag_quaternion_in_group("_info",tag)?;
+        let (joint,offset,orientation)=if let Some(selected)=selected{selected}else if let Some(joint)=rig.skeleton.joint_names.iter().position(|name|name==tag){
+            (joint,Vec3::ZERO,bevy_math::Quat::IDENTITY)
+        }else{return Ok((-1,[0.;3],[0.,0.,0.,1.]));};
+        Ok((i16::try_from(joint).map_err(|_|"animation FX joint exceeds source index")?,offset.to_array(),orientation.to_array()))
+    }
+    ///875e80/53dac0 target lookup borrows the same published actor palette
+    ///as its binding. A named MD6 tag and a bare bone share this source path.
+    pub fn animation_entity_tag_world(&self,entity:crate::gameplay::entity_lifetime::EntityId,tag:&str)
+        ->Result<Option<crate::gameplay::reference_frame::ReferenceFrame>,String>{
+        use crate::gameplay::sound::Emitter;
+        let body=self.managed_entity==Some(entity);
+        let arm=self.body.arms.iter().position(|arm|arm.managed_entity==Some(entity));
+        let equipment=self.body.equipment.iter().flatten()
+            .chain(self.equipment_changes.inactive_targets().filter_map(|target|target.tree.as_ref()))
+            .any(|tree|tree.managed_entity==Some(entity));
+        if !body&&arm.is_none()&&!equipment{return Ok(None);}
+        let (joint,offset,orientation)=self.animation_effect_binding(entity,tag)?;
+        let pose=if joint>=0 {
+            if body {
+                self.sound_transform(Emitter::PlayerJoint{entity:None,part:1,
+                    joint:u16::try_from(joint).map_err(|_|"animation FX body joint index invalid")?})
+            }else{self.equipment_joint_world(entity,usize::try_from(joint).map_err(|_|"animation FX joint index invalid")?)}
+        }else if body {self.sound_transform(Emitter::PlayerBody)}
+        else if let Some(side)=arm {self.sound_transform(if side==0{Emitter::PlayerLeftArm}else{Emitter::PlayerRightArm})}
+        else {self.equipment_entity_frames.iter().find_map(|(emitter,position,axis,_)|
+            matches!(emitter,Emitter::Equipment{entity:owner,..}if *owner==entity).then_some((*position,*axis)))};
+        let (position,axis)=pose.ok_or_else(||format!("animation FX target {entity:?} tag {tag} has no actual published pose"))?;
+        Ok(Some(crate::gameplay::reference_frame::ReferenceFrame{
+            position:(position+axis*Vec3::from(offset)).to_array(),
+            basis:(axis*Mat3::from_quat(bevy_math::Quat::from_array(orientation))).to_cols_array_2d(),
+        }))
     }
     pub fn mana(&self) -> f32 { self.mana.current() }
     pub fn max_mana(&self) -> f32 { self.mana.maximum(&self.attributes) }
@@ -627,6 +733,8 @@ impl Player {
 
     /// Breath is a percentage in the original component (0..100).
     pub fn breath(&self) -> f32 { self.breath.remaining }
+    pub(crate) fn breath_audio(&self) -> Option<&breath_audio::Runtime> { self.breath.audio.as_ref() }
+    pub(crate) fn breath_audio_mut(&mut self) -> Option<&mut breath_audio::Runtime> { self.breath.audio.as_mut() }
 
     pub fn arm_pose_errors(&self) -> &[Option<String>; 2] {
         &self.arm_pose_errors
@@ -682,6 +790,7 @@ impl Player {
             swimming_machine: StateMachine::new(swimming_decls, &setup.swimming_rules, setup.swimming_default_state),
             carrying: Default::default(),
             swimming_active: false,
+            swimming_equipment: None,
             swimming_eye_height,
             swimming_current: swimming::WaterCurrent::default(),
             swimming_waves: swimming::WaveFilters::default(),
@@ -713,6 +822,7 @@ impl Player {
             attribute_requests: Vec::new(),
             entity_events: Vec::new(),
             managed_entity: None,
+            interaction_present: false,
             body: setup.body,
             pose,
             autocrouch,
@@ -725,6 +835,7 @@ impl Player {
             swimming_contact: None,
             retargeting: None,
             scenes: setup.scenes,
+            animation_scene_revision:1,
             md6: setup.md6,
             health,
             damage_receiver: setup.damage_receiver,
@@ -934,6 +1045,7 @@ impl Player {
                     holstered_throwables: &mut self.holstered_throwables,
                     equipment_transitioning,
                     equipment_archetypes: self.equipment_archetypes,
+                    interaction_present: self.interaction_present,
                     action_time: self.entity_event_time,
                     sprint_toggle: settings.sprint_toggle,
                     look_stick_sensitivity: settings.look_stick_sensitivity,
@@ -1002,6 +1114,7 @@ impl Player {
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = in_water;
+            self.change_swimming_equipment(in_water);
             if in_water {
                 self.swimming_current = swimming::WaterCurrent::default();
                 self.breath.reset_for_water_entry();
@@ -1046,6 +1159,7 @@ impl Player {
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = false;
+            self.change_swimming_equipment(false);
             self.machine.request(StateId::MANTLE);
             self.machine.think(&mut frame!());
         }
@@ -1068,6 +1182,15 @@ impl Player {
         }
         self.powers.grapple_equipment_events = equipment_events;
         self.breath.update(dt);
+        if let Some(audio) = &mut self.breath.audio {
+            if let Some(event) = audio.update(self.breath.remaining, self.swimming_active) {
+                let emitter = crate::gameplay::sound::Emitter::PlayerJoint {
+                    entity: None, part: 1, joint: self.body.skeleton.camera as u16,
+                };
+                if !self.animation_sound_emitters.contains(&emitter) { self.animation_sound_emitters.push(emitter); }
+                self.body.sound_requests.push(crate::gameplay::sound::Request::Post { event, emitter });
+            }
+        }
         if self.mana.update(dt, &self.attributes, self.mana_replenishes) {
             if let Some(event) = &self.mana_regen_sound {
                 self.body.sound_requests.push(crate::gameplay::sound::Request::Post {
@@ -1154,6 +1277,7 @@ impl Player {
         self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings, ground_normal, supported);
         self.body.update_footsteps(world, &self.physics, &self.attributes, dt, now);
         self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
+        self.body.update_animation_events(dt);
         // ANIMATION (arkCpntAnimEvolved FUN_14054f500): the midnight root
         // motion as priority-1 velocities.
         if let (Some((delta, yaw)), true) = (self.body.midnight.root, dt != 0.0) {
@@ -1351,7 +1475,7 @@ impl Player {
                     std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
                 })
                 .collect();
-            render.push(ArmRender { model: arm.model.clone(), managed_entity: None, joints: rows, visible: arm.visible && self.body.arms_shown[side.min(1)] });
+            render.push(ArmRender { model: arm.model.clone(), managed_entity: arm.managed_entity, joints: rows, visible: arm.visible && self.body.arms_shown[side.min(1)] });
         }
         // Equipment binds to the final controlled owner pose. In particular,
         // arm shoulder controls have already carried the hand's attachment tag;
@@ -1481,7 +1605,7 @@ impl Player {
             }
             equipment::EquipmentBinding::Arm(owner) => {
                 let arm = self.body.arms.get(owner)?;
-                let rows = render.iter().find(|entry| entry.managed_entity.is_none() && entry.model == arm.model)?.joints.get(tree.bind_joint)?;
+                let rows = render.iter().find(|entry| entry.managed_entity == arm.managed_entity && entry.model == arm.model)?.joints.get(tree.bind_joint)?;
                 (Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
                     Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2])))
             }
@@ -1499,6 +1623,12 @@ impl Player {
 
     /// Entity publication also includes actors without an audio component.
     pub fn visit_equipment_entity_frames(&self, mut visit: impl FnMut(crate::gameplay::entity_lifetime::EntityId, Vec3, Mat3)) {
+        for side in 0..2 {
+            if let (Some(entity), Some((position, axis))) = (self.body.arms.get(side).and_then(|arm|arm.managed_entity),
+                self.sound_transform(if side == 0 { crate::gameplay::sound::Emitter::PlayerLeftArm } else { crate::gameplay::sound::Emitter::PlayerRightArm })) {
+                visit(entity, position, axis);
+            }
+        }
         for &(emitter, p, r, _) in &self.equipment_entity_frames {
             if let crate::gameplay::sound::Emitter::Equipment { entity, .. } = emitter { visit(entity, p, r); }
         }
@@ -1548,6 +1678,14 @@ impl Player {
     ///after a hand switch. Its retained palette also drives rendering/audio.
     pub fn equipment_entity_tag_world(&self, entity: crate::gameplay::entity_lifetime::EntityId,
         tag: &str) -> Result<Option<crate::gameplay::reference_frame::ReferenceFrame>, String> {
+        if let Some(arm)=self.body.arms.iter().find(|arm|arm.managed_entity==Some(entity)) {
+            let rig=arm.rig.as_ref().ok_or("arm FX source rig lease absent")?;
+            let (joint,offset,orientation)=rig.tag(tag)?;
+            let (position,axis)=self.equipment_joint_world(entity,joint).ok_or("arm FX source tag pose absent")?;
+            return Ok(Some(crate::gameplay::reference_frame::ReferenceFrame {
+                position:(position+axis*offset).to_array(),basis:(axis*orientation).to_cols_array_2d(),
+            }));
+        }
         let Some(tree) = self.body.equipment.iter().flatten()
             .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
             .find(|tree| tree.managed_entity == Some(entity)) else { return Ok(None); };

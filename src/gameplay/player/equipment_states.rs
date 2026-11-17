@@ -74,6 +74,16 @@ pub struct Runtime {
     callbacks: VecDeque<Callback>,
 }
 impl Runtime {
+    ///Existing F8 owner diagnostics borrow the complete active/pending switch
+    ///receipt; this does not allocate or record history during gameplay.
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        for (side, slot) in self.slots.iter().enumerate() {
+            let _ = writeln!(report, "    switch side={side} current={:?} incoming={:?} equipped={} phase={:?} handle={} flags={:#x} uid={} requested={} restore={} reselect={} restrictions={:?} anonymous={}",
+                slot.current.as_ref().map(|target|target.identity.as_str()),slot.incoming.as_ref().map(|target|target.identity.as_str()),
+                slot.equipped,slot.phase,slot.handle,slot.flags,slot.uid,slot.requested,slot.restore,slot.reselect,slot.restrictions,slot.anonymous);
+        }
+    }
     /// 839a10 ->6145f0 applies the actual equipment entity's own Hide/Show
     /// callback. It does not select, stop or reconstruct its component.
     pub(super) fn set_owned_hidden(&mut self, hidden: bool) {
@@ -238,6 +248,23 @@ fn start(path: &str, side: usize, frame: &mut Frame<'_>) -> Result<u32, String> 
 }
 
 impl Player {
+    ///88adc0 saves the actual right equipment entity, then sends53 with
+    ///null target/flags20 only when its descriptor disallows swimming.
+    ///8894f0 restores that saved entity; owned trees never get cloned.
+    pub(super) fn change_swimming_equipment(&mut self, entering: bool) {
+        if entering {
+            self.swimming_equipment = self.equipment_changes.preferred_identity(1).map(str::to_owned);
+            if self.equipment_changes.preferred(1).is_some_and(|equipment| !equipment.usable_swimming) {
+                self.machine.request_equipment_right(0x20, StateId::NULL);
+            }
+        } else if let Some(identity) = self.swimming_equipment.take() {
+            //Source may have been consumed/deleted while swimming; only an
+            //actual retained target may receive the native restore request.
+            if self.has_equipment_target(&identity) {
+                let _ = self.request_equipment_selection_by_identity(&identity, 0x40);
+            }
+        }
+    }
     pub fn set_owned_equipment_hidden(&mut self, hidden: bool) {
         self.equipment_changes.set_owned_hidden(hidden);
         for tree in self.body.equipment.iter_mut().flatten() { tree.visible = !hidden; }
@@ -375,6 +402,12 @@ impl Player {
                     }
                 }
                 let Some(target) = slot.current.as_mut() else { slot.phase = Phase::Idle; continue };
+                //835e00/8371f0 acknowledge the actual incoming request when
+                //its owner is attached. A selection accepted during the old
+                //unequip must not become a second nil-target holster after
+                //this equip finishes. A distinct later holster (neither
+                //reselect nor restore) still owns its pending request.
+                if slot.reselect || slot.restore { slot.requested = false; }
                 if let Some(tree) = &mut target.tree {
                     tree.bind_equipped(true);
                     tree.visible = true;

@@ -44,6 +44,10 @@ pub(crate) enum Kind {
     TimersManager,
     AISmartSpot(Arc<super::ai_smart_objects::Definition>),
     FlashSurface(Arc<super::flash_surface::Definition>),
+    GrenadeCooking(Arc<super::flash_surface::Definition>),
+    Openable(Arc<super::openable::Definition>),
+    Retargeting,
+    Fx(Arc<super::fx_component::Definition>),
     InteractiveMap(Arc<super::flash_surface::MapDefinition>),
     Observable(Arc<super::ai_cues::ObservableDefinition>),
     AttentionSource(Arc<super::ai_cues::AttentionDefinition>),
@@ -163,6 +167,29 @@ fn validate_capabilities<'a>(
     Ok(())
 }
 impl Definition {
+    ///64bc20 creates a bare idEntity and4903b0 obtains the real default
+    ///arkDeclCpntFX singleton. This is constructor metadata, not an entityDef
+    ///resource or a synthesized declaration file. The caller retains this
+    ///recipe in its actual animation-event preparation scope.
+    pub(crate) fn animation_effect(catalog: &Catalog, parameters: Arc<super::fx_component::Definition>) -> Result<Arc<Self>, String> {
+        let types = ComponentTypes::acquire(catalog)?;
+        let class_index = types.classes().hierarchy().registration_order().iter().copied().find(|&index|
+            types.classes().metadata(index).and_then(|metadata|types.classes().name_text(metadata.name)) == Some(b"idEntity".as_slice()))
+            .ok_or("animation FX idEntity class metadata absent")?;
+        let factory = types.factories().iter().find(|factory|
+            types.classes().metadata(factory.class).and_then(|metadata|types.classes().name_text(metadata.name)) == Some(b"arkCpntFX".as_slice()))
+            .ok_or("animation FX actual component factory absent")?;
+        let mut scheduling = DeclarationScheduling::from_base_flags(0);
+        scheduling.add_updates(0x10); //4b1650.
+        let component = Component { slot: "code:CpntFX".into(), declaration: "".into(), inline: true,
+            class_index: factory.class, factory: factory.pool_index, scheduling: Arc::new(scheduling), kind: Kind::Fx(parameters) };
+        validate_capabilities(&types, std::iter::once(&component))?;
+        Ok(Arc::new(Self { entity: "code:animation-effect".into(), class: "idEntity".into(), class_index,
+            hide_on_spawn: false, navmesh_static_cutting: false, types, model: None,
+            components: vec![component], projectile: None, throwable: None, breakable: None,
+            chunks: Vec::new(), startup_children: Vec::new(), stick_components: Vec::new(),
+            stick_model: None, stick_chunks: Vec::new(), source_paths: Vec::new() }))
+    }
     pub(crate) fn acquire(
         catalog: &Catalog,
         entity: &str,
@@ -322,6 +349,12 @@ impl Definition {
             let mut chunks = Vec::new();
             let mut startup_children: Vec<Arc<Definition>> = Vec::new();
             for (component, descriptor) in components.iter().enumerate() {
+                if let Kind::Openable(openable)=&descriptor.kind {
+                    let source=name(&openable.animated_part);
+                    if !startup_children.iter().any(|child|child.entity==source){
+                        startup_children.push(Self::acquire_inner(catalog,&source,cancelled,stack)?);
+                    }
+                }
                 if let Kind::AIStartup(manager) = &descriptor.kind {
                     for source in manager.child_sources() {
                         let source = name(source);

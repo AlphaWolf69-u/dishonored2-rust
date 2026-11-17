@@ -24,6 +24,7 @@ pub struct Step {
     pub occlusion_shape: usize,
     pub locked: bool,
     pub allowed_swimming: bool,
+    pub send_use_notification: bool,
 }
 
 impl Default for Step {
@@ -35,7 +36,7 @@ impl Default for Step {
             effect_attached: true, wait_transition_end_to_play_effect: false,
             overrides_interaction: false, interaction_name: None, interaction_text: None,
             interaction_icon: None, player_state: None, maximum_distance: 3.0,
-            maximum_height: 1000.0, occlusion_shape: 0, locked: false, allowed_swimming: true }
+            maximum_height: 1000.0, occlusion_shape: 0, locked: false, allowed_swimming: true,send_use_notification:true }
     }
 }
 
@@ -55,6 +56,7 @@ pub struct DefinitionData {
     pub occlusion_shape: usize,
     pub locked: bool,
     pub allowed_swimming: bool,
+    pub send_use_notification: bool,
     pub steps: Box<[Step]>,
 }
 
@@ -365,6 +367,7 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
             occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
             locked: boolean(interaction, "m_lockedInteraction", false)?,
             allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
+            send_use_notification:boolean(interaction,"m_sendUseNotification",true)?,
         });
     }
     let steps = slots.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into_boxed_slice();
@@ -385,6 +388,7 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
         occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
         locked: boolean(interaction, "m_lockedInteraction", false)?,
         allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
+        send_use_notification:boolean(interaction,"m_sendUseNotification",true)?,
         steps,
     })
 }

@@ -197,6 +197,7 @@ struct StanceManager {
     transition_from: Option<String>,
     transition: Option<usize>,
     transition_time: f32,
+    transition_event_frame:f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -272,6 +273,7 @@ impl LocoNode {
                     m.transition_duration = animations[t.clip].duration();
                     m.transition = Some(t.clip);
                     m.transition_time = 0.0;
+                    m.transition_event_frame=-1.;
                 }
                 // m_defaultTransBlendDuration 0.
                 None => {
@@ -576,9 +578,59 @@ const END_MARGIN: f32 = 0.001;
 /// Kept on the caller's stack across the actual update, never a second clock.
 #[derive(Clone, Copy, Debug)]
 pub struct BasicSoundWitness {
-    clip: usize,
-    frame: f32,
-    weight: f32,
+    pub(super) clip: usize,
+    resource:usize,
+    pub(super) frame: f32,
+    pub(super) weight: f32,
+}
+
+///242bb0 selects the latest positive predecessor of this exact animation,
+///not ahead of its current frame. A seek/restart has no catch-up interval.
+pub(super) fn visit_leaf_event_crossings<const N: usize>(
+    previous: &[Option<BasicSoundWitness>; N], current: &[Option<BasicSoundWitness>; N],
+    reverse:bool, mut visit: impl FnMut(usize,usize,i32,i32),
+) {
+    for order in 0..N {
+        let index=if reverse {N-1-order} else {order};
+        let Some(current)=current[index].filter(|leaf|leaf.weight>0.) else {continue;};
+        let previous = previous.iter().rev().flatten().filter(|old|
+            old.weight > 0. && old.resource == current.resource && old.frame <= current.frame)
+            .max_by(|a,b| a.frame.total_cmp(&b.frame));
+        let Some(previous) = previous else { continue };
+        let (old,new)=(previous.frame as i32,current.frame as i32);
+        if old != new { visit(index,current.clip,old,new); }
+    }
+}
+
+impl LocoNode {
+    ///6fd6f0 owns transition child2's previous event frame independently
+    ///of242bb0.6fd5b0 initializes that frame to-1.
+    pub(super) fn transition_event_interval(&mut self,animations:&[EdgeAnimation])->Option<(usize,i32,i32)> {
+        let (clip,weight,time)=self.transition_input?;
+        if !(weight>0.) {return None;}
+        let frame=time.min(animations[clip].duration())*animations[clip].frame_rate;
+        let old=self.manager.transition_event_frame;
+        self.manager.transition_event_frame=frame;
+        ((old as i32)!=(frame as i32)).then_some((clip,old as i32,frame as i32))
+    }
+    ///6f9a90 reads the Loco node's22 input records, independently of
+    ///the parent pose. Transition input2 is not an event source. Current
+    ///eligibility uses141acd7c8; previous inputs need only positive weight.
+    pub(super) fn sound_witnesses(&self, animations: &[EdgeAnimation]) -> [Option<BasicSoundWitness>;22] {
+        let mut leaves=[None;22];
+        if let Some(clip)=self.idle.clip {
+            let animation=&animations[clip];
+            let time=if animation.duration()>0. {self.idle.elapsed.rem_euclid(animation.duration())} else {0.};
+            leaves[3]=Some(BasicSoundWitness{clip,resource:std::ptr::from_ref::<crate::edge_animation::AnimationData>(animation) as usize,frame:time*animation.frame_rate,weight:self.idle.weight});
+        }
+        if let Some((clip,weight,time))=self.transition_input {
+            leaves[2]=Some(BasicSoundWitness{clip,resource:std::ptr::from_ref::<crate::edge_animation::AnimationData>(&animations[clip]) as usize,frame:time.min(animations[clip].duration())*animations[clip].frame_rate,weight});
+        }
+        for (index,&(clip,weight,_)) in self.inputs.iter().enumerate() {
+            leaves[6+index]=Some(BasicSoundWitness{clip,resource:std::ptr::from_ref::<crate::edge_animation::AnimationData>(&animations[clip]) as usize,frame:30.*animations[clip].duration()*self.progress,weight});
+        }
+        leaves
+    }
 }
 
 impl AnimBasicNode {
@@ -586,6 +638,7 @@ impl AnimBasicNode {
         std::array::from_fn(|index| self.clips.get(index).map(|clip| {
             let animation = &animations[self.items[clip.item].clip];
             BasicSoundWitness { clip: self.items[clip.item].clip,
+                resource:std::ptr::from_ref::<crate::edge_animation::AnimationData>(animation) as usize,
                 frame: clip.time * animation.frame_rate.ceil(), weight: clip.weight }
         }))
     }
@@ -595,19 +648,11 @@ impl AnimBasicNode {
     /// A restart/seek/wrap with no eligible witness has no catch-up interval.
     pub fn visit_sound_crossings(&self, previous: &[Option<BasicSoundWitness>; 4],
         animations: &[EdgeAnimation], mut visit: impl FnMut(usize, i32, i32)) {
-        let current = self.sound_witnesses(animations);
-        for (index, witness) in current.iter().enumerate().rev() {
-            let Some(current) = witness else { continue; };
-            if current.weight <= 0.0 { continue; }
-            let mut selected: Option<&BasicSoundWitness> = None;
-            for old in previous.iter().rev().flatten().filter(|old|
-                old.weight > 0.0 && old.clip == current.clip && old.frame <= current.frame) {
-                if selected.is_none_or(|selected| selected.frame < old.frame) { selected = Some(old); }
-            }
-            let Some(old) = selected else { continue; };
-            let (old, new) = (old.frame as i32, current.frame as i32);
-            if old != new { visit(self.clips[index].item, old, new); }
-        }
+        let mut current=self.sound_witnesses(animations);
+        //6e4a30 visits forward and stops at its first absent/zero input.
+        let end=current.iter().position(|leaf|leaf.is_none_or(|leaf|leaf.weight<=0.)).unwrap_or(4);
+        current[end..].fill(None);
+        visit_leaf_event_crossings(previous,&current,false,|index,_,old,new|visit(self.clips[index].item,old,new));
     }
 
     pub fn from_items(items: Vec<AnimBasicItem>, stop_blend_out: f32) -> Self {
@@ -622,6 +667,11 @@ impl AnimBasicNode {
     /// Whether no playback, blending or deferred command can change the pose.
     pub fn is_settled(&self) -> bool {
         self.deferred.is_none() && self.clips.iter().all(|clip| !clip.playing && clip.blend == Blend::None)
+    }
+    ///6e4af0 publishes byte+9ac for53e770: any playing OR blending
+    ///leaf keeps this actual input live, including an outgoing older clip.
+    pub fn input_playing(&self)->bool{
+        self.clips.iter().any(|clip|clip.playing||clip.blend!=Blend::None)
     }
 
     /// The playing clips (item, weight, time), newest first.

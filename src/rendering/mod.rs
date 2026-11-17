@@ -47,3 +47,4 @@ pub mod ocean;
 
 pub mod camera_effects;
 pub mod screen_distortion;
+pub mod screen_quad;

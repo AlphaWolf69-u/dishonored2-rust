@@ -59,6 +59,7 @@ enum SelectionKind {
     Carry,
     CarryLive(crate::gameplay::entity_lifetime::EntityId),
     Pickup(crate::gameplay::entity_lifetime::EntityId),
+    Openable(crate::gameplay::entity_lifetime::EntityId),
 }
 
 struct PendingPickup {
@@ -504,10 +505,14 @@ pub(super) fn focus_and_interact(
     mut requests: Option<ResMut<super::readable_movie::ReadableRequests>>,
     mut inventory: ResMut<super::interaction_focus::DiscoveredDocuments>,
     mut focused: ResMut<super::interaction_focus::FocusedInteraction>,
+    mut entity_events: ResMut<crate::gameplay::entity_events::EntityEvents>,
     mut occlusion: Local<crate::gameplay::interaction_sensor::OcclusionScratch>,
 ) {
     //7f9ea0 retains a press independently from a later release in the
     //same event batch.7f8040 reads that enabled press, not final held state.
+    if let Some(player) = player.as_deref_mut().and_then(|state| state.player.as_mut()) {
+        player.set_interaction_presence(false);
+    }
     let pressed = clock.advanced()
         && player.as_deref().filter(|state| !state.debug_free_fly)
             .and_then(|state| state.player.as_ref())
@@ -810,9 +815,26 @@ pub(super) fn focus_and_interact(
             let readable = interactions.readable_by_entity.get(entity).copied();
             let actor = interactions.actor_by_entity.get(entity).copied();
             let carrying = interactions.carrying_by_entity.get(entity).copied();
-            let (kind, index, step, max_distance, shape, allowed_swimming) = if let Some(index) =
-                carrying
-            {
+            let openable=if let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()){
+                if let Some(id)=hit.entity.or_else(||live.find(entity)){
+                    match scene.interaction_openable(live,id){Ok(value)=>value.map(|value|(id,value)),
+                        Err(error)=>{warn!("Openable sensor for {entity}: {error}");continue;}}
+                }else{None}
+            }else{None};
+            let (kind, index, step, max_distance, shape, allowed_swimming) = if let Some((id,(reference,usage,definition,_)))=openable{
+                use crate::gameplay::interaction_definition::{ALLOW_SWIMMING,CandidateContext,admits_candidate};
+                let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else{continue;};
+                let frame=match scene.entity_frame(live,id){Ok(Some(frame))=>frame,_=>continue};
+                let bounds=match super::world_models::entity_bounds_from_parts(live,id,models.as_deref(),Some(&sources),&placements){
+                    Ok(Some(bounds))=>bounds,Ok(None)=>continue,Err(error)=>{warn!("Openable bounds: {error}");continue;}};
+                let context=CandidateContext{interactable:reference,player_mode:i32::from(swimming),is_possessing:false,
+                    camera:super::view_to_game(eye),point:super::view_to_game(hit.position),target_forward:frame.basis[0],
+                    target_min_z:bounds[0][2],target_max_z:bounds[1][2]};
+                match admits_candidate(definition,&context,|mode,state,_|Err(format!("Openable interaction requires hosted player mode{mode}/state{state}"))){
+                    Ok(true)=>{},Ok(false)=>continue,Err(error)=>{warn!("Openable candidate: {error}");continue;}}
+                let Ok(shape)=usize::try_from(definition.occlusion_shape) else{continue;};
+                (SelectionKind::Openable(id),usize::from(reference.handle.slot),usage,definition.maximum_distance,shape,definition.has(ALLOW_SWIMMING))
+            }else if let Some(index)=carrying{
                 use crate::gameplay::interaction_definition::{
                     ALLOW_SWIMMING, CandidateContext, admits_candidate,
                 };
@@ -1084,6 +1106,14 @@ pub(super) fn focus_and_interact(
     } else if interactions.grapple_prompt.take().is_some() || selected != interactions.selected {
         let prompt = selected
             .map(|(kind, index, step)| {
+                if let SelectionKind::Openable(id)=kind{
+                    let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else{return None;};
+                    let (_,_,definition,labels)=scene.interaction_openable(live,id).ok().flatten()?;
+                    return Some(super::interaction_focus::InteractionPrompt{entity:live.get(id)?.0.to_owned(),
+                        name:labels[0].clone(),usage_text:labels[1].clone(),interaction_type:definition.icon,
+                        binding:"<GBA_INTERACT>".to_owned(),name_postfix:String::new(),hold:false,
+                        locked:definition.has(crate::gameplay::interaction_definition::LOCKED),player_state:String::new()});
+                }
                 if let SelectionKind::Pickup(id) | SelectionKind::CarryLive(id) = kind {
                     let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
                         return None;
@@ -1162,12 +1192,30 @@ pub(super) fn focus_and_interact(
         }
         interactions.selected = selected;
     }
-    if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked) {
+    if let Some(player) = player.as_deref_mut().and_then(|state| state.player.as_mut()) {
+        //Use the sensor's accepted descriptor, not a HUD-only FarReach hint.
+        //Locked interactions still own a descriptor in7fc420/846b50.
+        player.set_interaction_presence(interactions.selected.is_some());
+    }
+    //74b6e0 still processes a locked door use (rattle/key/HUD result).
+    //Its locked icon does not turn it into an unclickable pickup.
+    let door=selected.is_some_and(|(kind,_,_)|matches!(kind,SelectionKind::Openable(_)));
+    if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked&&!door) {
         return;
     }
     let Some((kind, index, _)) = selected else {
         return;
     };
+    if let SelectionKind::Openable(id)=kind{
+        let notify=physics.as_deref().zip(live.as_deref()).and_then(|(scene,live)|scene.interaction_openable(live,id).ok().flatten())
+            .is_some_and(|(_,_,definition,_)|definition.has(crate::gameplay::interaction_definition::SEND_USE_NOTIFICATION));
+        if !notify{return;}
+        let Some(instigator)=player.as_deref().and_then(|state|state.player.as_ref()).and_then(|player|player.managed_entity()) else{return;};
+        entity_events.post(crate::gameplay::entity_events::Event{id:0x96,target:Some(id),
+            payload:crate::gameplay::entity_events::Payload::Use{instigator:Some(instigator)}});
+        interactions.selected=None;
+        return;
+    }
     if let SelectionKind::Pickup(id) = kind {
         if interactions.pending_pickup.is_none() {
             if let (Some(scene), Some(live), Some(player)) = (
@@ -1259,6 +1307,21 @@ pub(super) fn focus_and_interact(
             interactions.request_readable(index, identity, item);
         }
     } else {
+        //77b3b0/74cd90 register the same actual96 on Usable blockers.
+        //This host executes the Usable directly below; publish its authored
+        //use notification to the shared observers without a second executor.
+        let actor=&interactions.actors[index];
+        if let Some(state)=actor.state.as_ref(){
+            let step=&state.definition.steps[state.state];
+            let notify=if step.overrides_interaction{step.send_use_notification}else{state.definition.send_use_notification};
+            if notify{
+                if let (Some(target),Some(instigator))=(live.as_deref().and_then(|live|live.find(&actor.entity)),
+                    player.as_deref().and_then(|state|state.player.as_ref()).and_then(|player|player.managed_entity())){
+                    entity_events.post(crate::gameplay::entity_events::Event{id:0x96,target:Some(target),
+                        payload:crate::gameplay::entity_events::Payload::Use{instigator:Some(instigator)}});
+                }
+            }
+        }
         let changes = {
             let actor = &mut interactions.actors[index];
             let Some(state) = actor.state.as_mut() else {

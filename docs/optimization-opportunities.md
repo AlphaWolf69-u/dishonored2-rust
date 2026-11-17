@@ -1,5 +1,19 @@
 # Optimization opportunities
 
+## Global caster immutable plane validation — 2026-11-18
+
+Prediction before implementation: **7.5% fewer thread cycles in GlobalShadowCasterScratch::gather**, expected range5–10%. The existing passive trace assigns115.24 aggregate CPU ms/s to that function;8.64 CPU ms/s is a model, not an achieved saving or frame-time claim. Investigate a result outside5.25–9.75% before accepting; zero gain requires rejection. The gather already validates every initial active-index list and constructs every reduced list from0..plane_count. Only this proven domain can bypass repeated index validation; public/main-view validation, exact MINPS arithmetic, bounds, NaNs, ordered IDs and cascade masks remain unchanged. No camera/depth cache policy changes.
+
+The same optimized binary exposes both implementations through tome-audit's existing-resource DHC1 replay. Stored original ordered outputs must match, then all eight aligned jobs must match before/after alternating A/B/BA cycle batches. Scratch is retained and decode/formatting/comparison stays outside timing. No circular tests or whole-frame timing substitutes. Acceptance is pending measurement.
+
+Opened-module sweep, deferred findings:
+
+- CasterDirection repeats immutable header/direction metadata loads. Potential gain is small/unmeasured; inspect generated code before another certificate since LLVM may hoist them already. Preserve both packed formats and malformed-offset errors.
+- Plane sign masks are recomputed per box. Preparing the source's exact22-plane masks may remove comparisons but adds scratch traffic; measure independently before changing SIMD layout or arithmetic.
+- Fresh global queries copy eight job slices into independently owned cache rows. Up to eight allocations and8*sum(hit_count) bytes copied per cache miss are concrete; time is unmeasured. Buffer moves/reuse need verified snapshot lease ownership. Scratch cannot alias a retained result, and stale-camera reuse is forbidden.
+- Eight scratch outputs reserve full object_count although each aligned job visits roughly an eighth. Potential reserved capacity saving approaches7*object_count*sizeof(GlobalShadowCasterHit); resident-byte saving is not established. Size from actual job ranges and measure lifecycle separately.
+- CellTree already streams packed runs into fixed stack batches. Bounded fixed-width unpacking might help but needs generated-code evidence and exact truncated-record handling; no decoded whole-level duplicate is proposed.
+
 Findings of the module sweeps in `AGENTS.md` ("Performance work") that were
 not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.

@@ -20,6 +20,7 @@ pub(super) struct LevelLifetime {
     throwing_retired: bool,
     acquisitions_retired: bool,
     animation_events_retired: bool,
+    animation_effects_retired: bool,
     ai_worlds_retired: bool,
     equipment_retired: bool,
     actors_retired: bool,
@@ -70,6 +71,7 @@ impl LevelLifetime {
         // alive after FX shutdown. Pump their real audio owner and immediately
         // deliver resulting C6/29 messages before any actor can lose that ID.
         self.retirement_phase = "accepted audio and entity events";
+        super::animation_effects::begin_retirement(world);
         super::audio::poll_accepted_effects(world)?;
         super::entity_messages::finish_accepted(world)?;
         if !self.animation_events_retired {
@@ -99,6 +101,7 @@ impl LevelLifetime {
             super::physics_scene::water_publication::release_queries(world)?;
             super::physics_scene::carrying_host::retire(world)?;
             self.retirement_phase = "accepted throwable births";
+            if !super::grenade_cooking::shutdown(world)? { return Ok(false); }
             if !self.throwing_retired {
                 if !super::weapon_throwing::shutdown(world)? { return Ok(false); }
                 self.throwing_retired = true;
@@ -113,6 +116,8 @@ impl LevelLifetime {
             if !super::melee::finish_accepted(world)? { return Ok(false); }
             if !super::projectiles::finish_accepted(world)? { return Ok(false); }
             if !super::explosions::finish_accepted(world)? { return Ok(false); }
+            if !super::animation_effects::finish_accepted(world)? { return Ok(false); }
+            super::physics_scene::fx_component::update(world)?;
             super::entity_messages::finish_accepted(world)?;
             super::entity_functions::update(world)?;
             if !super::breakables::finish_accepted(world)? { return Ok(false); }
@@ -144,6 +149,8 @@ impl LevelLifetime {
         // Keep physics, player and audio callback owners throughout this drain.
         self.retirement_phase = "FX requests";
         if !self.effect_requests_retired {
+            super::physics_scene::fx_component::begin_retirement(world);
+            super::physics_scene::fx_component::update(world)?;
             super::usable_effects::begin_retirement(world)?;
             self.effect_requests_retired = true;
         }
@@ -161,6 +168,16 @@ impl LevelLifetime {
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
         }
+        // Real FX shutdown fulfills the tickets; consume those receipts before
+        // the component registry attempts Stop/Deinit or releases source IDs.
+        super::physics_scene::fx_component::update(world)?;
+        if !self.animation_effects_retired {
+            if !super::animation_effects::shutdown(world)? { return Ok(false); }
+            self.animation_effects_retired = true;
+        }
+        // GameLocal teardown releases the real bare FX children before their
+        // arm/equipment parents. During gameplay their completed headers remain.
+        if !super::runtime_entities::retire_effect_actors(world)? { return Ok(false); }
         //226060 retains renderer allocations across flash reuse. The actual
         //FX pool has now drained; free those allocations only at pool teardown.
         self.retirement_phase = "FX light renderer allocations";

@@ -357,6 +357,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     }
     super::projectiles::install(&mut app);
     super::controller_feedback::install(&mut app);
+    super::grenade_cooking::install(&mut app);
     super::explosions::install(&mut app);
     super::breakables::install(&mut app);
     super::entity_functions::install(&mut app);
@@ -450,6 +451,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 gameplay_system(super::water_impacts::prepare),
                 gameplay_system(super::physics_scene::grenades::prepare),
                 super::weapon_throwing::prepare,
+                gameplay_system(super::grenade_cooking::prepare),
                 super::carrying_resources::prepare,
                 super::player_actions::prepare_fx,
                 super::controller_feedback::prepare,
@@ -481,6 +483,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 gameplay_system(super::projectiles::update).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::physics_scene::ai_managers::update).run_if(super::loading_screen::is_playing),
                 super::power_execution::after_frame,
+                gameplay_system(super::grenade_cooking::update).run_if(super::loading_screen::is_playing),
                   gameplay_system(super::flash_surfaces::update),
                 super::entity_messages::update,
                   gameplay_system(super::flash_surfaces::finish),
@@ -490,6 +493,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 (
                 super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
+                super::player_actions::update_player_fx,
                 super::player_arms::update_player_arms,
                 //State/partial-cast changes can enqueue accepted timed exits
                 //after the pre-component drain. Deliver those without another
@@ -526,7 +530,8 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
              super::entity_messages::update,
              gameplay_system(super::entity_functions::update),
              gameplay_system(super::entity_removal::update),
-             super::physics_scene::runtime_animation::update).chain()
+             super::physics_scene::runtime_animation::update,
+             super::physics_scene::openable::update).chain()
                 .before(super::model_motion::publish_model_poses)
                 .run_if(super::pause_menu::game_not_paused)
                 .run_if(super::loading_screen::is_playing),
@@ -540,6 +545,9 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(PreUpdate, (super::player_statistics::bind_prepared_chapter,
             super::interaction_focus::initialize_inventory).chain())
+        .add_systems(Update, gameplay_system(super::animation_effects::prepare)
+            .after(super::runtime_entities::advance_frame)
+            .before(super::player::prepare_animation_frame))
         .add_systems(PostUpdate, super::interactions::sync_boxes
             .after(super::model_motion::publish_model_poses))
         .add_systems(PostUpdate, super::interactions::focus_and_interact
@@ -554,7 +562,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             .after(super::interactions::focus_and_interact)
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
-            .run_if(super::loading_screen::is_playing))
+            .run_if(super::loading_screen::scene_published))
         .add_systems(PostUpdate, super::machinery::pose_scene_systems
             .after(super::usable_animation::advance)
             .before(stream_visible_models)
@@ -572,12 +580,16 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             .before(bevy::transform::TransformSystems::Propagate)
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters))
-        .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
+        .add_systems(PostUpdate, (
+            gameplay_system(super::animation_effects::update),
+            gameplay_system(super::physics_scene::fx_component::update),
+            super::usable_effects::prepare_requests,
             super::runtime_fx_images::synchronize,
             super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),
             super::projected_decals::publish_runtime,
             super::usable_effects::publish).chain()
             .after(super::usable_animation::advance)
+            .after(super::model_motion::publish_model_poses)
             // The loading gate's "initial player resources" waits for owned
             // equipment admission, which this coordinator publishes: it runs
             // once the scene is published, not only after loading ends.
@@ -740,6 +752,16 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 .after(bevy::transform::TransformSystems::Propagate),
         )
         .add_systems(Update, stream_visible_textures)
+        .add_systems(
+            PostUpdate,
+            (super::particle_view::publish_reference_frames,
+                super::particle_view::advance_view_effects).chain()
+                .after(super::model_motion::publish_model_poses)
+                .after(super::usable_effects::publish)
+                .after(game_clock_runtime::ClockSystems::PublishView)
+                .before(bevy::camera::CameraUpdateSystems)
+                .before(bevy::transform::TransformSystems::Propagate),
+        )
         .add_systems(
             PostUpdate,
             super::particle_view::publish

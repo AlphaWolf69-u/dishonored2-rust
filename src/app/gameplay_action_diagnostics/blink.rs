@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 const TOP: &str = "models/effects/gameplay/powers/blink/blink_target_01.fx";
 const BOTTOM: &str = "models/effects/gameplay/powers/blink/blink_target_02.fx";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Select, AimCancel, Cancel, Rearm, AimCast, Cast, Recharge, Done }
+enum Stage { Select, AimCancel, Cancel, Rearm, AimCast, Cast, Recharge, Holster, Redraw, Done }
 
 pub(super) struct Observation {
     stage: Stage,
@@ -18,6 +18,8 @@ pub(super) struct Observation {
     release: Option<Input>,
     held: Option<Input>,
     use_input: Input,
+    selection_input: Input,
+    holster_input: Input,
     owners: [Option<String>; 2],
     aiming_ready: Option<Instant>,
     ledge_reported: bool,
@@ -51,6 +53,7 @@ impl Observation {
         let item = item.item.clone();
         let selection = input_for(action)?;
         let use_input = input_for(20)?;
+        let holster_input = input_for(22)?;
         if binding(Input::Key(KeyCode::KeyF)).is_none() {
             return Err("F has no actual gameplay binding; cannot verify reported F cancellation".into());
         }
@@ -60,7 +63,7 @@ impl Observation {
         eprintln!("ACTION_SMOKE_BLINK_BEGIN owned_item={item} shortcut_action={action} selection={selection:?} use_input={use_input:?} cancel_physical=KeyF cancel_action={:?} mana={mana} regen_event={regen_event:?} no_teleport=true no_state_or_target_override=true no_fake_ACK=true", binding(Input::Key(KeyCode::KeyF)));
         send(world, selection, true)?;
         Ok(Self { stage: Stage::Select, since: Instant::now(), release: Some(selection), held: None,
-            use_input, owners: [None, None], aiming_ready: None, ledge_reported: false, cancel_seen: false,
+            use_input, selection_input: selection, holster_input, owners: [None, None], aiming_ready: None, ledge_reported: false, cancel_seen: false,
             blink_seen: false, mantle_seen: false, cast_start: Vec3::ZERO, mana_before: mana,
             mana_low: mana, spent: false, regen_event, regen_admitted: false,
             regen_source_ready: false, regen_callback: false, audio_before })
@@ -191,8 +194,26 @@ impl Observation {
                 }
                 if player(world)?.mana() > self.mana_low && (self.regen_event.is_none() || self.regen_admitted) {
                     eprintln!("ACTION_SMOKE_PASS check=blink_mana_regenerates current={} low={} actual_regen_event={:?} admitted={} source_ready_callback={} any_callback={} audible_line_not_claimed=true", player(world)?.mana(), self.mana_low, self.regen_event, self.regen_admitted, self.regen_source_ready, self.regen_callback);
-                    self.stage(Stage::Done, world)?;
+                    send(world, self.holster_input, true)?;
+                    self.held = Some(self.holster_input);
+                    self.stage(Stage::Holster, world)?;
                 }
+            }
+            Stage::Holster => {
+                let p = player(world)?;
+                if (0..2).all(|side| p.equipment_action_status(side)
+                    .is_some_and(|(_, equipped, changing)| !equipped && !changing)) {
+                    self.release_use(world)?;
+                    eprintln!("ACTION_SMOKE_PASS check=power_and_sword_actual_hold_undraw both_hands_unequipped=true");
+                    send(world, self.selection_input, true)?;
+                    self.release = Some(self.selection_input);
+                    self.stage(Stage::Redraw, world)?;
+                }
+            }
+            Stage::Redraw if player(world)?.selected_power_hud_status() == Some((2, true))
+                && player(world)?.equipment_action_status(0).is_some_and(|(_, equipped, changing)| equipped && !changing) => {
+                eprintln!("ACTION_SMOKE_PASS check=power_actual_shortcut_redraw current_power=2 equipped=true no_pending_switch_or_holster=true");
+                self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
                 eprintln!("ACTION_SMOKE_PASS check=blink_input_sequence_complete GPU_record_receipt_required_separately=ACTION_SMOKE_FSDISTO_RENDER pixels_verified=false exit=ordinary_ExitDrain");

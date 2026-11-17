@@ -83,7 +83,7 @@ impl Player {
     fn grapple_beam_origin(&self) -> Result<Vec3, String> {
         let (joint, offset, _) = self.body.grapple_tag.ok_or("grapple beam tag has not been admitted")?;
         let arm = self.body.arms.first().ok_or("grapple beam has no left arm")?;
-        let rows = self.arm_render.iter().find(|render| render.managed_entity.is_none() && render.model == arm.model)
+        let rows = self.arm_render.iter().find(|render| render.managed_entity == arm.managed_entity && render.model == arm.model)
             .and_then(|render| render.joints.get(joint)).ok_or("grapple beam has no published left-arm palette")?;
         let p = Vec3::new(rows[0][3], rows[1][3], rows[2][3]);
         let r = Mat3::from_cols(Vec3::new(rows[0][0], rows[1][0], rows[2][0]),

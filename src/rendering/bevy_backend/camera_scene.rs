@@ -36,6 +36,7 @@ pub(super) struct CameraAlphaPass;
 pub(crate) struct FxSimulation {
     generation: u64,
     screen_state: super::screen_effects::ScreenEffectState,
+    world_screen_fx: bool,
     particle_systems: super::particle_systems::ParticleSystems,
     pub(super) world_particles: super::world_particle_state::WorldParticleState,
 }
@@ -45,20 +46,48 @@ impl Default for FxSimulation {
         Self {
             generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             screen_state: Default::default(), particle_systems: Default::default(),
+            world_screen_fx: false,
             world_particles: Default::default(),
         }
     }
 }
 
 impl FxSimulation {
+    pub(crate) fn diagnostic_particle_systems(&self) -> impl Iterator<Item=(usize, &super::particle_system::ParticleSystem)> {
+        self.particle_systems.diagnostic_systems()
+    }
+    ///The complete native family replaces the old partial screen adapter
+    ///only after its ordinary material/audio acquisition barrier succeeds.
+    pub(crate) fn handoff_screen_fx(&mut self) -> Result<(), String> {
+        if !self.world_screen_fx {
+            self.screen_state.shutdown(&mut self.particle_systems)?;
+            self.world_screen_fx = true;
+        }
+        Ok(())
+    }
+    ///21da80 applies registered FOV samples before the view projection is
+    ///formed. Advance the ordinary manager once in that phase; particle
+    ///geometry still simulates after the current view query is published.
+    pub(crate) fn advance_world(&mut self, fx: &FxUpdateInputs<'_>, frame: u32,
+        camera: crate::gameplay::reference_frame::ReferenceFrame, underwater: bool,
+        world: &crate::gameplay::world_point_query::level::LevelPointQueries) -> Result<(), String> {
+        self.world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
+            &mut self.particle_systems, &fx.world_sounds, &fx.decals, frame, camera, underwater,
+            world, fx.live.as_deref())
+    }
     /// Read the last completed canonical FX parameter publication; never
     /// advances an effect or samples its random stream.
+    pub(crate) fn observe_screen_quads(&self)->crate::gameplay::effects::screen_quad::Frame{self.world_particles.screen_quad_frame()}
+    pub(crate) fn apply_fov(&self,base:f32)->f32{self.world_particles.apply_fov(base)}
     pub(crate) fn observe_rumble(&self) -> Option<(u32,[f32;4])> { self.world_particles.rumble_frame() }
     pub(crate) fn observe_screen_distortion(&self) -> crate::gameplay::effects::screen_distortion::Frame {
         self.world_particles.screen_distortion_frame()
     }
     pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
         self.world_particles.story_boolean(worldspawn, qualified)
+    }
+    pub(crate) fn bind_story_root(&mut self,worldspawn:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{
+        self.world_particles.bind_story_root(worldspawn)
     }
     pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> { self.world_particles.pending_gameplay() }
     pub(crate) fn acknowledge_gameplay(&mut self) -> Result<(),String> { self.world_particles.acknowledge_gameplay() }
@@ -138,6 +167,7 @@ pub(super) struct CameraGpu {
     completed: Option<(Entity, u32)>,
     alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
+    pub(super) screen_quads: super::screen_quads::ScreenQuads,
     particles: Option<ParticleGpu>,
     /// The non-isAlpha particle surfaces' zPrePass and opaque colour pass.
     /// Its own buffers: the alpha pass uploads into the shared pass later
@@ -163,6 +193,10 @@ pub(super) struct ParticlePublicationFrame {
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct FxPublication(pub(super) Option<std::sync::Arc<FxFrame>>);
 impl FxPublication {
+    pub(crate) fn diagnostic_particle_draws(&self) -> Option<(u32, &[super::particle_pass::ParticleDraw], &[super::particle_pass::ParticleDraw])> {
+        let particles = self.0.as_ref()?.particles.as_ref()?;
+        Some((particles.frame, &particles.draws, &particles.opaque_draws))
+    }
     /// Read-only lifecycle diagnostic; absence is published by the ordinary
     /// view producer, never manufactured by the observer.
     pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
@@ -183,6 +217,7 @@ pub(super) struct FxFrame {
     pub capacity: (usize, usize),
     pub retired: u64,
     pub screen_distortion: crate::gameplay::effects::screen_distortion::Frame,
+    pub screen_quads: crate::gameplay::effects::screen_quad::Frame,
     pub screen_draws: Option<Vec<super::screen_effects::QuadDraw>>,
     pub particles: Option<ParticlePublicationFrame>,
     pub decals: Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>,
@@ -322,6 +357,7 @@ pub(super) fn release_level(world: &mut World) {
     if let Some(particles) = gpu.particles.take() {
         gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
     }
+    gpu.screen_quads = Default::default();
     gpu.particle_images = Default::default();
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() == Ok("1") {
         gpu.screen_effects.clear_frame();
@@ -481,6 +517,16 @@ struct ParticleLightingScene<'w> {
     world_sources: Res<'w,super::world_effects::WorldEffectSources>,
     prewarm: Res<'w,super::world_effects::DynamicMaterialPrewarm>,
 }
+///Residency waits retain the same request; permanent quad preparation errors
+///must reach the SAME generation failure signal as particle preparation errors.
+fn quad_preparation_result(prewarm:&super::world_effects::DynamicMaterialPrewarm,result:Result<(),String>)->Result<(),String>{
+    if let Err(error)=&result {
+        if !error.contains("not scene-resident") && prewarm.generation!=0 {
+            prewarm.failed.store(prewarm.generation,std::sync::atomic::Ordering::Release);
+        }
+    }
+    result
+}
 /// Submit live sprites after atmosphere/depth and before ordinary transparency.
 fn render_particles(
     lighting_scene: ParticleLightingScene,
@@ -528,6 +574,12 @@ fn render_particles(
         gpu.particles = None;
     }
     let result = (|| -> Result<(), String> {
+        //Even quad-only frames must invalidate their preparation certificate
+        //when the real view attachments change, before the no-draw fast path.
+        let (depth, _) = fog.camera_depth(water.camera, water.matrices.frame)
+            .ok_or("particle depth awaits completed atmosphere")?;
+        let colour_format=target.main_texture_format();
+        let depth_format=depth.alpha.full.format();
         let (mut instances, mut draw_capacity) = publication.0.as_ref()
             .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
             .map_or((0, 0), |frame| frame.capacity);
@@ -538,20 +590,23 @@ fn render_particles(
             // waiting for playback, which itself waits for that prewarm.
             crate::loading::complete(PARTICLE_GATE);
             let prewarm = &lighting_scene.prewarm;
-            let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            let CameraGpu { particles, particle_images, screen_quads, .. } = &mut *gpu;
             particle_images.retire_scene_views(&lighting_scene.scene_images);
             if let Some(particles) = particles.as_mut() {
                 if particles.retirement != prewarm.retirement {
                     particles.pass.retire_unused_materials();
+                    screen_quads.retire_unused();
                     particle_images.retire_unused();
                     particles.retirement = prewarm.retirement;
                     prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
                 }
             }
             use std::sync::atomic::Ordering;
-            if prewarm.generation == 0
+            let quad_pending=lighting_scene.world_sources.0.quad_materials().next().is_some()
+                && screen_quads.source_pending(&lighting_scene.world_sources.0,colour_format,depth_format);
+            if !quad_pending && (prewarm.generation == 0
                 || prewarm.completed.load(Ordering::Acquire) == prewarm.generation
-                || prewarm.failed.load(Ordering::Acquire) == prewarm.generation { return Ok(()); }
+                || prewarm.failed.load(Ordering::Acquire) == prewarm.generation) { return Ok(()); }
             instances = instances.max(1);
             draw_capacity = draw_capacity.max(1);
             prewarm_only = true;
@@ -571,9 +626,6 @@ fn render_particles(
             .as_ref()
             .filter(|f| f.camera == water.camera)
             .ok_or("particle fog awaits the gameplay camera")?;
-        let (depth, _) = fog
-            .camera_depth(water.camera, water.matrices.frame)
-            .ok_or("particle depth awaits completed atmosphere")?;
         let matrices = &water.matrices.current;
         let frame_publication = publication.0.as_ref()
             .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
@@ -591,8 +643,6 @@ fn render_particles(
             .filter(|f| f.camera == water.camera)
             .and_then(|f| f.lens.as_ref())
             .ok_or("particle HDR settings await the current view")?;
-        let colour_format = target.main_texture_format();
-        let depth_format = depth.alpha.full.format();
         // A larger live capacity only grows the instance/draw storage; the
         // pass and its level materials are rebuilt only for new targets.
         if let Some(particles) = gpu.particles.as_mut().filter(|p| {
@@ -632,11 +682,12 @@ fn render_particles(
         // The level's particle materials are created before play, not at
         // their first draw; a sampler change rebuilds them all here.
         if let Some(sampler) = lighting_scene.sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler) {
-            let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            let CameraGpu { particles, particle_images, screen_quads, .. } = &mut *gpu;
             let particles = particles.as_mut().unwrap();
             if particle_images.sync_scene(&lighting_scene.scene_images, &images,
                 particles.pass.sampler_changed(sampler))? {
                 particles.pass.refresh_scene_bindings(particle_images, &device, &queue, sampler)?;
+                quad_preparation_result(&lighting_scene.prewarm,screen_quads.prepare_source(particle_images,&device,&queue,&lighting_scene.world_sources.0,particles.colour_format,particles.depth_format))?;
             }
             if !particles.prepared || particles.pass.sampler_changed(sampler) {
                 let console = crate::platform::console::shared().read();
@@ -653,11 +704,16 @@ fn render_particles(
                     info!(created, "Level particle materials prepared");
                     crate::loading::complete(PARTICLE_GATE);
                 }
+                quad_preparation_result(&lighting_scene.prewarm,screen_quads.prepare_source(particle_images,&device,&queue,&lighting_scene.world_sources.0,particles.colour_format,particles.depth_format))?;
                 particles.prepared = true;
+            }
+            if screen_quads.source_pending(&lighting_scene.world_sources.0,colour_format,depth_format) {
+                quad_preparation_result(&lighting_scene.prewarm,screen_quads.prepare_source(particle_images,&device,&queue,&lighting_scene.world_sources.0,particles.colour_format,particles.depth_format))?;
             }
             let prewarm = &lighting_scene.prewarm;
             if particles.retirement != prewarm.retirement {
                 particles.pass.retire_unused_materials();
+                screen_quads.retire_unused();
                 particle_images.retire_unused();
                 particles.retirement = prewarm.retirement;
                 prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -666,7 +722,7 @@ fn render_particles(
             if prewarm.generation != 0
                 && prewarm.completed.load(Ordering::Acquire) != prewarm.generation
                 && prewarm.failed.load(Ordering::Acquire) != prewarm.generation
-                && prewarm.sources.particle_materials().flat_map(|material| material.images.values())
+                && prewarm.sources.material_images()
                     .filter(|image| image.scene_owned)
                     .all(|image| lighting_scene.scene_images.handles.contains_key(&image.path)) {
                 let console = crate::platform::console::shared().read();
@@ -678,7 +734,10 @@ fn render_particles(
                             eprintln!("FX_LIFECYCLE gpu_prepare generation={} created={created} complete={complete} cpu_ms={:.3}",
                                 prewarm.generation, started.elapsed().as_secs_f64() * 1000.0);
                         }
-                        if complete { prewarm.completed.store(prewarm.generation, Ordering::Release); }
+                        if complete {
+                            quad_preparation_result(prewarm,screen_quads.prepare(particle_images,&device,&queue,prewarm.sources.quad_material_stages(),particles.colour_format))?;
+                            prewarm.completed.store(prewarm.generation, Ordering::Release);
+                        }
                     }
                     Err(error) if error.contains("not scene-resident") => {},
                     Err(error) => {
@@ -713,7 +772,7 @@ fn render_particles(
         let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
             lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
             &depth.alpha.full_attachment, target.main_texture_view())?;
-        let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+        let CameraGpu { particles, particle_images, screen_quads, .. } = &mut *gpu;
         particles.as_mut().unwrap().pass.record(
             particle_images, &device,
             &queue,
@@ -1049,7 +1108,6 @@ pub(crate) fn simulate_effects(
     mut published: ResMut<FxPublication>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
-    mut world_error: Local<Option<String>>,
     mut decal_error: Local<Option<String>>,
 ) {
     let trace = super::world_effects::trace_lifecycle();
@@ -1079,12 +1137,14 @@ pub(crate) fn simulate_effects(
             std::array::from_fn(|i| water.matrices.current.view[1][i]),
         ],
     };
-    let FxSimulation { screen_state, particle_systems, .. } = &mut *simulation;
+    let FxSimulation { screen_state, particle_systems, world_screen_fx, .. } = &mut *simulation;
     // Reuse the existing opt-in lifecycle trace gate. With tracing disabled
     // there are no new snapshots, allocations, counters or frame systems.
     let screen_before = trace.then(|| screen_state.lifecycle_snapshot());
-    let screen = screen_state.advance(sources, particle_systems, water.matrices.frame,
-        water.delta_seconds, underwater, camera_frame);
+    let screen = if *world_screen_fx { Ok(Vec::new()) } else {
+        screen_state.advance(sources, particle_systems, water.matrices.frame,
+            water.delta_seconds, underwater, camera_frame)
+    };
     if let Some(before) = screen_before {
         let after = screen_state.lifecycle_snapshot();
         if before.ownership_changed(after) || screen.is_err() {
@@ -1094,23 +1154,9 @@ pub(crate) fn simulate_effects(
         }
     }
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
-        let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
+        let particle_systems = &mut simulation.particle_systems;
         particle_systems.collision = inputs.collision.clone();
         particle_systems.moving = inputs.moving.clone();
-        // The frame retains the authoritative shared query owner. Hold its
-        // actual read lease through this FX batch; never clone a physics world.
-        let result = inputs.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())
-            .and_then(|world| world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
-                particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater,
-                &world, fx.live.as_deref()));
-        match result {
-            Ok(()) => *world_error = None,
-            Err(error) if world_error.as_ref() != Some(&error) => {
-                warn!("World particle preparation pending: {error}");
-                *world_error = Some(error);
-            }
-            Err(_) => {}
-        }
     }
     let (screen_draws, particles) = match screen {
         Ok(draws) => {
@@ -1170,7 +1216,7 @@ pub(crate) fn simulate_effects(
     published.0 = Some(std::sync::Arc::new(FxFrame {
         camera: water.camera, frame: water.matrices.frame, generation: simulation.generation,
         capacity: simulation.particle_systems.capacity(), retired: simulation.world_particles.dynamic_retired(),
-        screen_draws, particles, decals, screen_distortion,
+        screen_draws, particles, decals, screen_distortion, screen_quads: simulation.observe_screen_quads(),
     }));
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
@@ -1226,7 +1272,7 @@ fn prepare_ocean_queries(
         else { frame.retired != 0 }
     });
     if retired {
-        let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+        let CameraGpu { particles, particle_images, screen_quads, .. } = &mut *gpu;
         if let Some(particles) = particles.as_mut() { particles.pass.retire_unused_materials(); }
         particle_images.retire_unused();
         prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -1408,7 +1454,8 @@ fn render_camera<const PREPARE_ALPHA: bool>(
                 .ok_or("player FX commands await current atmosphere")?;
             let draws = published.screen_draws.as_deref()
                 .ok_or("player FX screen commands await current atmosphere")?;
-            gpu.screen_effects.record(
+            let CameraGpu {screen_effects,screen_quads,..}=&mut *gpu;
+            screen_effects.record(
                 &device,
                 &queue,
                 context.command_encoder(),
@@ -1431,7 +1478,12 @@ fn render_camera<const PREPARE_ALPHA: bool>(
                 lens.white_level,
                 &exposure.buffer,
                 [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
+                screen_quads,&published.screen_quads,
             )?;
+            screen_quads.record(&device,&queue,context.command_encoder(),&published.screen_quads,
+                crate::assets::fx::screen_quad::ScreenQuadStage::BeforeToneMap,colour,config.host_format,
+                &depth.alpha.full_sample,&exposure.buffer,full,water.shader_time,water.local_time[0],
+                [inverse.z_axis.w,inverse.w_axis.w,inverse.w_axis.z])?;
         }
         gpu.completed = Some((frame.camera, water.matrices.frame));
         Ok(())

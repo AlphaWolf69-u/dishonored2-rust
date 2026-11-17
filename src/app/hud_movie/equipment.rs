@@ -7,6 +7,7 @@ use super::*;
 pub(in crate::app) struct Snapshot {
     gadget: [i32; 3],
     power: Option<(i32, bool, bool)>,
+    cancel_power: Option<i32>,
     crosshair: i32,
     kind: i32,
     dot: i32,
@@ -18,6 +19,7 @@ impl Default for Snapshot {
         Self {
             gadget: [0, -1, -1],
             power: None,
+            cancel_power: None,
             crosshair: 0,
             kind: -1,
             dot: 0,
@@ -32,6 +34,12 @@ pub(in crate::app) fn snapshot(
     inventory: &crate::app::interaction_focus::DiscoveredDocuments,
 ) -> Snapshot {
     let mut out = Snapshot::default();
+    //460580 invokes each actually active state's status callback.856820
+    //adds the selected power's cancel row for the real UsePower63 owner;
+    //a selected/affordable power alone does not produce a cancel prompt.
+    if player.active_player_states().iter().any(|state| state.0 == 63) {
+        out.cancel_power = player.selected_power().map(|cast| cast.settings.id);
+    }
     if let Some(path) = inventory.equipped(1) {
         if let Some((equipment, _, _)) = player.equipment_target_metadata(path) {
             out.kind = equipment.hud.kind;
@@ -143,6 +151,7 @@ impl HudMovie {
         self.apply_equipment(input)
     }
     pub(super) fn apply_equipment(&mut self, input: Snapshot) -> Result<(), String> {
+        self.status.publish(&mut self.player, input.cancel_power)?;
         if let Some((index, activated, available)) = input.power {
             self.player
                 .call_path_method(

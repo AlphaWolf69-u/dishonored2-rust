@@ -6,6 +6,7 @@
 mod objectives;
 mod markers;
 mod equipment;
+mod status;
 pub(in crate::app) mod notifications;
 pub(super) use equipment::{Snapshot as Equipment, snapshot as equipment_snapshot};
 use crate::assets::archive::Catalog;
@@ -15,6 +16,7 @@ use crate::rendering::bevy_backend::flash_ui::FlashFrame;
 use std::sync::Arc;
 
 pub(super) struct HudMovie {
+    status: status::State,
     objectives: objectives::State,
     markers: markers::State,
     player: Player,
@@ -240,6 +242,7 @@ impl HudMovie {
         ));
         let (objectives,markers)=objectives::State::load(catalog,language)?;
         Ok(Self {
+            status: status::State::load(catalog)?,
             objectives,
             markers,
             player,

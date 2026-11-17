@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use bevy::prelude::Resource;
 use crate::{archive::Catalog, entities::PlacedModel, gameplay::reference_frame::{self, ReferenceFrame}};
+use crate::gameplay::sound::component::AnimationSource;
 
 #[derive(Clone, Copy)]
 pub(super) struct JointBinding {
@@ -31,7 +32,7 @@ struct PlacementFrames {
 /// are not duplicated. The ordinary level resource owner drops this map.
 #[derive(Resource, Default)]
 pub(super) struct JointFrames {
-    placements: HashMap<usize, PlacementFrames>,
+    placements: HashMap<AnimationSource, PlacementFrames>,
 }
 
 impl JointFrames {
@@ -78,7 +79,7 @@ impl JointFrames {
                     .transpose()?.unwrap_or(-1),
                     offset: [0.; 3], orientation: [0., 0., 0., 1.], from_tag: false },
             };
-            let frames = result.placements.entry(*placement).or_insert_with(|| PlacementFrames {
+            let frames = result.placements.entry((*placement).into()).or_insert_with(|| PlacementFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
             if binding.joint < 0 {
@@ -134,7 +135,7 @@ impl JointFrames {
             let matrix = *usize::try_from(joint).ok().and_then(|joint| matrices.get(joint))
                 .ok_or("marker tag joint is outside initialized pose bank")?;
             let initial = matrix_frame(matrix);
-            let frames = self.placements.entry(*placement).or_insert_with(|| PlacementFrames {
+            let frames = self.placements.entry((*placement).into()).or_insert_with(|| PlacementFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
             frames.joints.entry(joint).and_modify(|frame| frame.owners |= 1)
@@ -146,7 +147,7 @@ impl JointFrames {
 
     ///709f70 borrows the animator bank. Admit only actual sound-joint demands;
     ///the existing final-pose publisher updates this same retained frame.
-    pub(super) fn admit_audio(&mut self, placement: usize, scale: [f32; 3], joint: i16,
+    pub(super) fn admit_audio(&mut self, placement: AnimationSource, scale: [f32; 3], joint: i16,
         initial: super::physics_skinning::Affine) -> Result<(), String> {
         if joint < 0 { return Err("default audio object is not a skeleton demand".into()); }
         let entry = self.placements.entry(placement).or_insert_with(|| PlacementFrames {
@@ -159,7 +160,7 @@ impl JointFrames {
         Ok(())
     }
 
-    pub(super) fn release_audio(&mut self, placement: usize, joint: i16) {
+    pub(super) fn release_audio(&mut self, placement: AnimationSource, joint: i16) {
         let Some(entry) = self.placements.get_mut(&placement) else { return; };
         if let Some(frame) = entry.joints.get_mut(&joint) { frame.owners &= !2; }
         entry.joints.retain(|_, frame| frame.owners != 0);
@@ -168,12 +169,12 @@ impl JointFrames {
 
     /// `group` is the bound child's model (879890's property selector).
     pub(super) fn resolve(&self, placement: usize, group: Option<&str>, tag: &str) -> Result<Option<JointBinding>, String> {
-        Ok(self.placements.get(&placement).and_then(|entry| entry.bindings.iter()
+        Ok(self.placements.get(&AnimationSource::Placed(placement)).and_then(|entry| entry.bindings.iter()
             .find(|((g, t), _)| g.as_deref() == group && t == tag)).map(|(_, binding)| *binding))
     }
 
     pub(super) fn frame(&self, placement: usize, joint: i16, phase: u8) -> Result<Option<ReferenceFrame>, String> {
-        let Some(frame) = self.placements.get(&placement).and_then(|entry| entry.joints.get(&joint)) else { return Ok(None); };
+        let Some(frame) = self.placements.get(&AnimationSource::Placed(placement)).and_then(|entry| entry.joints.get(&joint)) else { return Ok(None); };
         match phase {
             0 => Ok(Some(frame.initial)),
             3 => Ok(Some(frame.current)),
@@ -185,7 +186,7 @@ impl JointFrames {
         offset: [f32; 3], orientation: [f32; 4])
         -> Result<Option<ReferenceFrame>, String> {
         let Some(frame) = self.frame(placement, joint, phase)? else { return Ok(None); };
-        let scale = self.placements.get(&placement).ok_or("joint attachment placement disappeared")?.scale;
+        let scale = self.placements.get(&AnimationSource::Placed(placement)).ok_or("joint attachment placement disappeared")?.scale;
         Ok(Some(reference_frame::joints::bind_local_frame(frame, scale, offset, orientation)))
     }
 
@@ -201,6 +202,20 @@ impl JointFrames {
     /// Called at the existing final-pose boundary, before inverse-bind. There
     /// is no new evaluation, allocation, rig lookup or whole-palette copy.
     pub(super) fn publish(&mut self, placement: usize, current: &[[[f32; 4]; 3]]) {
+        self.publish_audio(placement.into(), current);
+    }
+
+    pub(super) fn bound_audio_frame(&self, source: AnimationSource, joint:i16,
+        parent:ReferenceFrame)->Result<Option<ReferenceFrame>,String> {
+        let Some(entry)=self.placements.get(&source) else{return Ok(None)};
+        let Some(frame)=entry.joints.get(&joint) else{return Ok(None)};
+        let local=reference_frame::joints::bind_local_frame(frame.current,entry.scale,[0.;3],[0.,0.,0.,1.]);
+        let mut world=reference_frame::compose(parent,local);
+        world.basis=reference_frame::joints::normalize_basis(world.basis);
+        Ok(Some(world))
+    }
+
+    pub(super) fn publish_audio(&mut self, placement: AnimationSource, current: &[[[f32; 4]; 3]]) {
         if self.placements.is_empty() { return; }
         let Some(entry) = self.placements.get_mut(&placement) else { return; };
         for (&joint, frames) in &mut entry.joints {

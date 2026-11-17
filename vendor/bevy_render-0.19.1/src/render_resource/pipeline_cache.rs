@@ -27,6 +27,21 @@ use core::{future::Future, mem};
 use std::sync::{Mutex, PoisonError};
 use wgpu::{PipelineCompilationOptions, VertexBufferLayout as RawVertexBufferLayout};
 
+// Host diagnostic only: cold FX compilation and the extraction lock it shares.
+// No timing or environment lookup is performed on cached draw paths.
+fn fx_pipeline_timing() -> Option<std::time::Instant> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ENABLED.get_or_init(|| std::env::var_os("DH2_TRACE_WORLD_FX").is_some())
+        .then(std::time::Instant::now)
+}
+fn fx_pipeline_report(start: Option<std::time::Instant>, stage: &str, name: impl core::fmt::Debug) {
+    if let Some(start) = start {
+        let elapsed = start.elapsed();
+        let event_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
+        eprintln!("FX_PIPELINE event_us={event_us} thread={:?} stage={stage} name={name:?} elapsed_ms={:.3}",std::thread::current().id(),elapsed.as_secs_f64()*1000.);
+    }
+}
+
 /// A pipeline defining the data layout and shader logic for a specific GPU task.
 ///
 /// Used to store a heterogenous collection of render and compute pipelines together.
@@ -447,8 +462,12 @@ impl PipelineCache {
 
     /// Inserts a [`Shader`] into this cache with the provided [`AssetId`].
     pub fn set_shader(&mut self, id: AssetId<Shader>, shader: Shader) {
+        let started = fx_pipeline_timing();
         let mut shader_cache = self.shader_cache.lock().unwrap();
+        fx_pipeline_report(started, "extract_set_shader_lock_wait", id);
+        let started = fx_pipeline_timing();
         let pipelines_to_queue = shader_cache.set_shader(id, shader);
+        fx_pipeline_report(started, "extract_set_shader", id);
         for cached_pipeline in pipelines_to_queue {
             self.pipelines[cached_pipeline].state = CachedPipelineState::Queued;
             self.waiting_pipelines.insert(cached_pipeline);
@@ -484,8 +503,13 @@ impl PipelineCache {
 
         create_pipeline_task(
             async move {
+                let started = fx_pipeline_timing();
                 let mut shader_cache = shader_cache.lock().unwrap();
+                fx_pipeline_report(started, "render_shader_cache_lock_wait", (id, &descriptor.label));
+                let started = fx_pipeline_timing();
                 let mut layout_cache = layout_cache.lock().unwrap();
+                fx_pipeline_report(started, "render_layout_cache_lock_wait", (id, &descriptor.label));
+                let started = fx_pipeline_timing();
 
                 let vertex_module = match shader_cache.get(
                     id,
@@ -513,6 +537,7 @@ impl PipelineCache {
                 };
 
                 drop((shader_cache, layout_cache));
+                fx_pipeline_report(started, "render_shader_get_and_layout", (id, &descriptor.label));
 
                 let vertex_buffer_layouts = descriptor
                     .vertex
@@ -565,9 +590,10 @@ impl PipelineCache {
                     cache: None,
                 };
 
-                Ok(Pipeline::RenderPipeline(
-                    device.create_render_pipeline(&descriptor),
-                ))
+                let started = fx_pipeline_timing();
+                let pipeline = device.create_render_pipeline(&descriptor);
+                fx_pipeline_report(started, "async_create_render_pipeline", (id, descriptor.label));
+                Ok(Pipeline::RenderPipeline(pipeline))
             },
             self.synchronous_pipeline_compilation,
         )

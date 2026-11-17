@@ -207,6 +207,13 @@ fn load_arm(
     let animation_aliases = clips.loaded;
     let animations = clips.animations;
     let mut arm = Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items);
+    arm.entity_declaration = def.clone();
+    arm.entity_class = crate::entities::player::entity_chain(def,&mut |path:&str|text_of(catalog,path))?
+        .iter().rev().find_map(|layer|crate::entities::scene_motion::atom(layer,"class").map(str::to_owned))
+        .ok_or_else(|| format!("arm {def} has no actual entity class"))?;
+    arm.bind_tag = tag.clone();
+    arm.rig = Some(rig.clone());
+    arm.ai_tampering_declared = crate::entities::player::entity_component(def,"cpntaitampering",read)?.is_some();
     arm.animation_aliases = animation_aliases;
     arm.sound_settings = crate::entities::player::entity_component(def, "cpntaudio", read)?
         .map(|fields| crate::gameplay::sound::component::Settings::read(&fields)).transpose()?;
@@ -342,12 +349,16 @@ fn load_body(
         arm.animations = clips.animations;
         arm.animation_aliases = clips.loaded;
     }
+    for (arm,rig) in arms.iter_mut().zip(&arm_rigs) {
+        for (alias,&clip) in &arm.animation_aliases {arm.animation_sounds.prepare(0,clip,rig,alias)?;}
+    }
     let animation_aliases = clips.loaded;
     let animations = clips.animations;
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
     body.animation_aliases = animation_aliases;
+    for (alias,&clip) in &body.animation_aliases {body.animation_sounds.prepare(0,clip,&rig,alias)?;}
     for name in rig.tag_names() {
         if !body.tags.contains_key(name) {
             body.tags.insert(name.to_owned(), rig.tag(name)?);
@@ -449,7 +460,11 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         swimming_has_mantle: declarations.swimming_states.iter().any(|(kind, _)| kind == "playerstateswimmantle"),
         swimming_read_note: decls::swimming_read_note(&declarations)?,
         swimming_death: decls::swimming_death(&declarations)?,
-        breath: decls::breath(&declarations.breath)?,
+        breath: {
+            let mut breath = decls::breath(&declarations.breath)?;
+            breath.audio = crate::gameplay::player::breath_audio::Runtime::acquire(catalog, &declarations.breath)?;
+            breath
+        },
         accepts_water_damage,
         drowning_damage_enabled: drowning_damage.is_some(),
     })
@@ -884,6 +899,8 @@ pub(super) fn update_player(
     for request in player.body.midnight.take_sound_requests() {
         sound_events.write(super::audio::SoundEvent(request));
     }
+    let lower_ready=actions.as_deref().map_or([false;3],|actions|actions.animation_audio.ready(player.lower_animation_sound_revision()));
+    player.publish_lower_animation_sounds(lower_ready);
     for request in player.body.take_sound_requests() {
         sound_events.write(super::audio::SoundEvent(request));
     }

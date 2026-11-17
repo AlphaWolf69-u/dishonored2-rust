@@ -116,7 +116,7 @@ pub(super) fn hull(samples: &[[f32; 4]]) -> Result<Vec<[[f32; 3]; 3]>, String> {
 pub(super) fn convex(vertices: &[[f32; 4]], radius: f32) -> Result<Vec<[[f32; 3]; 3]>, String> {
     Ok(ConvexHull::build_geometry(vertices, radius)?.geometry_triangles())
 }
-pub(super) fn sphere(center: [f32; 4], radius: f32) -> Result<Vec<[[f32; 3]; 3]>, String> {
+pub(crate) fn sphere(center: [f32; 4], radius: f32) -> Result<Vec<[[f32; 3]; 3]>, String> {
     let mut samples = Vec::with_capacity(256);
     for u in 0..16 {
         for v in 0..16 {

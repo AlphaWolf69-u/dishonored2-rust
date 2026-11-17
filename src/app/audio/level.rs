@@ -131,7 +131,7 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
         for joint in audio.joints.iter().filter(|joint| joint.allocated) {
             let emitter = Emitter::ComponentJoint { handle: handle.packed(), generation: audio.owner.generation, joint: joint.joint };
             let frame = joints.as_ref().ok_or("Audio joint pose owner absent")?
-                .bound_frame(joint.placement, joint.joint, 3, [0.;3], [0.,0.,0.,1.], frame)?
+                .bound_audio_frame(joint.placement, joint.joint, frame)?
                 .ok_or("Audio joint actual sampled frame absent")?;
             let position = Vec3::from_array(frame.position);
             let front = Vec3::from_array(frame.basis[0]);

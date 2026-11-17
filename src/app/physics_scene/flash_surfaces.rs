@@ -17,14 +17,17 @@ pub(super) struct Surface {
     requested: bool,
     loaded: bool,
     playing: bool,
-    requires_map: bool,
+    requires_configuration: bool,
     configured: bool,
     rendered: bool,
     reported: bool,
     static_released: bool,
     capture_remaining: f32,
     pending_map: Option<Arc<MapDefinition>>,
+    cooking: Option<Cooking>,
 }
+///39ed10 stores the initial fraction/type;39ed20 updates only the live gauge.
+struct Cooking { initial: f32, kind: i32, initialize: bool, value: Option<f32>, last_value: Option<f32> }
 impl Surface {
     fn new(definition: Arc<Definition>) -> Self {
         Self {
@@ -35,12 +38,13 @@ impl Surface {
             requested: false,
             loaded: false,
             playing: false,
-            requires_map: false,
+            requires_configuration: false,
             configured: false,
             rendered: false,
             reported: false,
             static_released: false,
             pending_map: None,
+            cooking: None,
         }
     }
 }
@@ -65,6 +69,21 @@ instance!(Surface);
 instance!(Map);
 
 impl PhysicsScene {
+    fn is_surface_class(&self, class: i32) -> bool {
+        class == self.classes[52] || class == self.classes[54]
+    }
+    fn surface(&self, handle: ComponentHandle) -> Result<&Surface, String> {
+        let pool = if handle.class_id == self.classes[52] { &self.flash_surfaces }
+            else if handle.class_id == self.classes[54] { &self.cooking_surfaces }
+            else { return Err("world movie component is not a FlashSurface class".into()); };
+        pool.get(handle.slot).ok_or_else(|| "world FlashSurface payload absent".into())
+    }
+    fn surface_mut(&mut self, handle: ComponentHandle) -> Result<&mut Surface, String> {
+        let pool = if handle.class_id == self.classes[52] { &mut self.flash_surfaces }
+            else if handle.class_id == self.classes[54] { &mut self.cooking_surfaces }
+            else { return Err("world movie component is not a FlashSurface class".into()); };
+        pool.get_mut(handle.slot).ok_or_else(|| "world FlashSurface payload absent".into())
+    }
     ///Direct construction rollback reaches model destruction before the
     ///ordinary entity batch. Finish the same source7e7c00 Stop/ACK first;
     ///never remove a movie behind a still-started component or steal another
@@ -90,8 +109,8 @@ impl PhysicsScene {
             .any(|&packed| {
                 ComponentHandle::from_packed(packed)
                     .ok()
-                    .filter(|h| h.class_id == self.classes[52])
-                    .and_then(|h| self.flash_surfaces.get(h.slot))
+                    .filter(|h| self.is_surface_class(h.class_id))
+                    .and_then(|h| self.surface(h).ok())
                     .is_some_and(|s| s.requested)
             });
         if !pending {
@@ -126,7 +145,7 @@ impl PhysicsScene {
                     .values()
                     .iter()
                     .filter_map(|&packed| ComponentHandle::from_packed(packed).ok())
-                    .filter(|h| h.class_id == self.classes[52])
+                    .filter(|h| self.is_surface_class(h.class_id))
                     .nth(cursor);
                 let Some(handle) = handle else { break };
                 cursor += 1;
@@ -158,8 +177,8 @@ impl PhysicsScene {
             .any(|&packed| {
                 ComponentHandle::from_packed(packed)
                     .ok()
-                    .filter(|h| h.class_id == self.classes[52])
-                    .and_then(|h| self.flash_surfaces.get(h.slot))
+                    .filter(|h| self.is_surface_class(h.class_id))
+                    .and_then(|h| self.surface(h).ok())
                     .is_some_and(|s| s.requested)
             }))
     }
@@ -167,23 +186,23 @@ impl PhysicsScene {
         use std::fmt::Write;
         let _ = writeln!(
             report,
-            "\nWorld FlashSurface owners={} maps={} ready={}",
+            "\nWorld FlashSurface owners={} maps={} cooking={} ready={}",
             self.flash_surfaces.roster.used,
             self.interactive_maps.roster.used,
+            self.cooking_surfaces.roster.used,
             self.flash_surfaces_ready()
         );
-        for position in 0..self.flash_surfaces.roster.used as usize {
-            let slot = self.flash_surfaces.roster.indices[position];
-            let Some(surface) = self.flash_surfaces.get(slot) else {
-                continue;
-            };
+        for position in 0..(self.flash_surfaces.roster.used+self.cooking_surfaces.roster.used) as usize {
+            let Some(key)=self.flash_update_key(position).ok().flatten()else{continue};
+            let slot=key.handle.slot;
+            let Ok(surface)=self.surface(key.handle)else{continue};
             let entity = surface
                 .owner
                 .entity
                 .and_then(|index| self.entities.get(index));
             let _ = writeln!(
                 report,
-                "  entity={:?} name={:?} slot={} generation={} flags={:#x} iggy_info={} started={} requested={} loaded={} playing={} requires_map={} configured={} rendered={} static={} capture_remaining={} static_released={} pending_map={}",
+                "  entity={:?} name={:?} slot={} generation={} flags={:#x} iggy_info={} started={} requested={} loaded={} playing={} requires_configuration={} configured={} rendered={} static={} capture_remaining={} static_released={} pending_map={}",
                 entity.map(|e| e.shared),
                 entity.map(|e| e.name.as_str()),
                 slot,
@@ -194,7 +213,7 @@ impl PhysicsScene {
                 surface.requested,
                 surface.loaded,
                 surface.playing,
-                surface.requires_map,
+                surface.requires_configuration,
                 surface.configured,
                 surface.rendered,
                 surface.definition.is_static_texture,
@@ -202,6 +221,10 @@ impl PhysicsScene {
                 surface.static_released,
                 surface.pending_map.is_some()
             );
+            if let Some(cooking) = &surface.cooking {
+                let _ = writeln!(report, "    cooking initial={} kind={} init_pending={} value_pending={:?} last_value={:?}",
+                    cooking.initial, cooking.kind, cooking.initialize, cooking.value, cooking.last_value);
+            }
         }
     }
     pub(super) fn admit_placed_flash_components(
@@ -369,48 +392,44 @@ impl PhysicsScene {
         Ok(())
     }
     pub(in crate::app) fn has_flash_surfaces(&self) -> bool {
-        self.flash_surfaces.roster.used != 0
+        self.flash_surfaces.roster.used != 0 || self.cooking_surfaces.roster.used != 0
     }
     pub(in crate::app) fn flash_surfaces_ready(&self) -> bool {
-        (0..self.flash_surfaces.roster.used as usize).all(|position| {
-            self.flash_surfaces
-                .get(self.flash_surfaces.roster.indices[position])
+        (0..(self.flash_surfaces.roster.used + self.cooking_surfaces.roster.used) as usize).all(|position| {
+            self.flash_update_key(position).ok().flatten().and_then(|key| self.surface(key.handle).ok())
                 .is_some_and(|s| {
                     !s.started
                         || (s.loaded
                             && s.playing
                             && s.rendered
                             && s.pending_map.is_none()
-                            && (!s.requires_map || s.configured))
+                            && (!s.requires_configuration || s.configured))
                 })
         })
     }
     pub(in crate::app) fn flash_update_key(&self, position: usize) -> Result<Option<Key>, String> {
-        if position >= self.flash_surfaces.roster.used as usize {
-            return Ok(None);
-        }
+        let base = self.flash_surfaces.roster.used as usize;
+        let (pool, class, position) = if position < base { (&self.flash_surfaces, self.classes[52], position) }
+            else { (&self.cooking_surfaces, self.classes[54], position - base) };
+        if position >= pool.roster.used as usize { return Ok(None); }
         self.flash_key(ComponentHandle {
-            class_id: self.classes[52],
-            slot: self.flash_surfaces.roster.indices[position],
+            class_id: class,
+            slot: pool.roster.indices[position],
         })
         .map(Some)
     }
     fn checked_surface(&self, key: Key) -> Result<&Surface, String> {
-        if key.handle.class_id != self.classes[52] {
+        if !self.is_surface_class(key.handle.class_id) {
             return Err("world movie command targeted another component class".into());
         }
         if self.flash_key(key.handle)? != key {
             return Err("world FlashSurface command generation differs".into());
         }
-        self.flash_surfaces
-            .get(key.handle.slot)
-            .ok_or("world FlashSurface payload absent".into())
+        self.surface(key.handle)
     }
     fn checked_surface_mut(&mut self, key: Key) -> Result<&mut Surface, String> {
         self.checked_surface(key)?;
-        self.flash_surfaces
-            .get_mut(key.handle.slot)
-            .ok_or("world FlashSurface payload absent".into())
+        self.surface_mut(key.handle)
     }
     //None: source stopped. Some(None): same generation already requested.
     pub(in crate::app) fn flash_request(
@@ -427,10 +446,21 @@ impl PhysicsScene {
         if s.definition.iggy_info.is_empty() {
             return Err("FlashSurface Start has no IggyInfo".into());
         }
-        Ok(Some(Some((s.definition.clone(), s.requires_map))))
+        Ok(Some(Some((s.definition.clone(), s.requires_configuration))))
     }
     pub(in crate::app) fn flash_requested(&mut self, key: Key) -> Result<(), String> {
         self.checked_surface_mut(key)?.requested = true;
+        Ok(())
+    }
+    pub(in crate::app) fn flash_stopped_pending(&self, key: Key) -> Result<bool, String> {
+        let surface = self.checked_surface(key)?;
+        Ok(!surface.started && surface.requested)
+    }
+    pub(in crate::app) fn flash_stopped_acknowledged(&mut self, key: Key) -> Result<(), String> {
+        let surface = self.checked_surface_mut(key)?;
+        surface.requested = false; surface.loaded = false; surface.playing = false;
+        surface.configured = false; surface.rendered = false; surface.reported = false;
+        surface.static_released = false;
         Ok(())
     }
     pub(in crate::app) fn flash_static_released(&mut self, key: Key) -> Result<(), String> {
@@ -451,7 +481,7 @@ impl PhysicsScene {
         Ok(())
     }
     pub(super) fn is_flash_class(&self, class: i32) -> bool {
-        self.classes[52..54].contains(&class)
+        self.classes[52..55].contains(&class)
     }
     pub(super) fn create_flash_surface(
         &mut self,
@@ -473,6 +503,18 @@ impl PhysicsScene {
             |_, _, _| Ok(Surface::new(definition)),
             |_, _, _| Ok(()),
         )
+    }
+    pub(super) fn create_cooking_surface(
+        &mut self, index: usize, definition: Arc<Definition>,
+        declaration: &ComponentDeclaration, registry: &mut ComponentRegistry, immediate: bool,
+    ) -> Result<Option<ComponentHandle>, String> {
+        ComponentFactory { declaration, pool: &mut self.cooking_surfaces, registry, grow_one_at_a_time: false }
+            .create(&mut self.entities[index].components, immediate, |_, _, _| {
+                let mut surface = Surface::new(definition);
+                surface.requires_configuration = true;
+                surface.cooking = Some(Cooking { initial: 0., kind: -1, initialize: false, value: None, last_value: None });
+                Ok(surface)
+            }, |_, _, _| Ok(()))
     }
     pub(super) fn create_interactive_map(
         &mut self,
@@ -563,18 +605,15 @@ impl PhysicsScene {
                 self.flash_surfaces
                     .get_mut(surface.slot)
                     .ok_or("InteractiveMap FlashSurface absent")?
-                    .requires_map = true;
+                    .requires_configuration = true;
             }
         }
         self.owner_mut(h)?.mark_initialized();
         Ok(())
     }
     pub(super) fn start_flash_component(&mut self, h: ComponentHandle) -> Result<(), String> {
-        if h.class_id == self.classes[52] {
-            let surface = self
-                .flash_surfaces
-                .get_mut(h.slot)
-                .ok_or("FlashSurface payload absent")?;
+        if self.is_surface_class(h.class_id) {
+            let surface = self.surface_mut(h)?;
             if surface.requested {
                 return Err("FlashSurface restart precedes previous movie retirement".into());
             }
@@ -646,13 +685,11 @@ impl PhysicsScene {
         h: ComponentHandle,
     ) -> Result<(), String> {
         let key = self.flash_key(h)?;
-        if h.class_id == self.classes[52] {
-            let surface = self
-                .flash_surfaces
-                .get_mut(h.slot)
-                .ok_or("FlashSurface payload absent")?;
+        if self.is_surface_class(h.class_id) {
+            let surface = self.surface_mut(h)?;
             surface.started = false;
             surface.pending_map = None;
+            if let Some(cooking) = &mut surface.cooking { cooking.initialize = false; cooking.value = None; cooking.last_value = None; }
             if surface.requested {
                 super::super::flash_surface_movie::remove(
                     world.ok_or("FlashSurface movie retirement requires published world")?,
@@ -687,16 +724,11 @@ impl PhysicsScene {
         world: Option<&mut bevy::prelude::World>,
         h: ComponentHandle,
     ) -> Result<bool, String> {
-        if h.class_id != self.classes[52] {
+        if !self.is_surface_class(h.class_id) {
             return Ok(true);
         }
         let key = self.flash_key(h)?;
-        if !self
-            .flash_surfaces
-            .get(h.slot)
-            .ok_or("FlashSurface payload absent")?
-            .requested
-        {
+        if !self.surface(h)?.requested {
             return Ok(true);
         }
         let world = world.ok_or("FlashSurface retirement owner absent")?;
@@ -705,14 +737,7 @@ impl PhysicsScene {
             super::super::flash_surface_movie::status(world, key)?.is_some_and(|s| s.retired);
         if retired {
             super::super::flash_surface_movie::forget(world, key)?;
-            let s = self.flash_surfaces.get_mut(h.slot).unwrap();
-            s.requested = false;
-            s.loaded = false;
-            s.playing = false;
-            s.configured = false;
-            s.rendered = false;
-            s.reported = false;
-            s.static_released = false;
+            self.flash_stopped_acknowledged(key)?;
         }
         Ok(retired)
     }
@@ -729,6 +754,7 @@ impl PhysicsScene {
         }
         if status.loaded && !s.loaded {
             s.loaded = true;
+            if let Some(cooking) = &mut s.cooking { cooking.initialize = true; }
             events.post(Event {
                 id: 0x198,
                 target: Some(key.entity),
@@ -745,7 +771,7 @@ impl PhysicsScene {
         }
         s.configured = status.configured;
         s.rendered |= status.captured;
-        if !s.reported && s.loaded && s.playing && s.rendered && (!s.requires_map || s.configured) {
+        if !s.reported && s.loaded && s.playing && s.rendered && (!s.requires_configuration || s.configured) {
             s.reported = true;
             static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_WORLD_FLASH").is_some()) {
@@ -768,5 +794,46 @@ impl PhysicsScene {
             return Ok(s.capture_remaining <= 0. && status.captured);
         }
         Ok(false)
+    }
+    ///HUD45af50/39ed10 initializes the actual subclass before Start. The
+    ///later39ed20 value is the canonical Grenade490cd0 output, not a timer.
+    pub(in crate::app) fn set_grenade_cooking(
+        &mut self, live: &LiveEntities, entity: crate::gameplay::entity_lifetime::EntityId,
+        initial: Option<f32>, kind: i32, value: f32,
+    ) -> Result<(), String> {
+        live.get(entity).ok_or("GrenadeCooking entity generation stale")?;
+        let index = *self.shared_indices.get(&entity).ok_or("GrenadeCooking entity absent")?;
+        let handle = self.entities[index].components.find_component([self.classes[54]; 2], [0, 0], |h| {
+            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                flags: self.owner(h)?.flags,
+                start_phases: self.declarations.get(&h.packed()).map(|decl| decl.scheduling.start_phases),
+            })
+        })?.ok_or("HUD gauge entity has no actual GrenadeCooking component")?;
+        let cooking = self.surface_mut(handle)?.cooking.as_mut().ok_or("GrenadeCooking subclass state absent")?;
+        if let Some(initial)=initial { cooking.initial=initial; cooking.kind=kind; }
+        if cooking.last_value!=Some(value){cooking.value=Some(value);cooking.last_value=Some(value);}
+        Ok(())
+    }
+    pub(in crate::app) fn grenade_cooking_can_start(&self, entity:crate::gameplay::entity_lifetime::EntityId)->Result<bool,String>{
+        let index=*self.shared_indices.get(&entity).ok_or("GrenadeCooking entity absent")?;
+        for &packed in self.entities[index].components.entries.values(){
+            let handle=ComponentHandle::from_packed(packed)?;
+            if handle.class_id==self.classes[54]{let surface=self.surface(handle)?;return Ok(!surface.requested||surface.started);}
+        }
+        Err("GrenadeCooking actor has no actual component".into())
+    }
+    pub(in crate::app) fn flash_pending_cooking(&self, key: Key)
+        -> Result<Option<crate::app::flash_surfaces::CookingCommand>, String> {
+        let surface = self.checked_surface(key)?;
+        if !surface.started || !surface.loaded { return Ok(None); }
+        let Some(cooking) = &surface.cooking else { return Ok(None); };
+        Ok(if cooking.initialize {
+            Some(crate::app::flash_surfaces::CookingCommand::Initialize { value: cooking.initial, kind: cooking.kind })
+        } else { cooking.value.map(crate::app::flash_surfaces::CookingCommand::Update) })
+    }
+    pub(in crate::app) fn flash_cooking_submitted(&mut self, key: Key) -> Result<(), String> {
+        let cooking = self.checked_surface_mut(key)?.cooking.as_mut().ok_or("GrenadeCooking subclass state absent")?;
+        if cooking.initialize { cooking.initialize = false; } else { cooking.value = None; }
+        Ok(())
     }
 }

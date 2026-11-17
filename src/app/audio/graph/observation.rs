@@ -1,0 +1,123 @@
+//! Opt-in source-frame witness at the existing pre-bus production boundary.
+//! No sample tap, alternate mix, history or default per-sample atomic work.
+use super::*;
+
+pub(super) fn enabled(scene: &super::super::spatial::Scene) -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    scene.observes_sources()
+        || *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref() == Ok("1"))
+}
+
+pub(super) struct Meter {
+    sink:Option<super::super::observation::SourceSamples>,
+    identity: Option<(u32, u32, Emitter)>,
+    node: u32,
+    frames: u64,
+    decoded_peak: f32,
+    dry_peak: f32,
+    aux_peak: f32,
+    speaker_gain_peak: f32,
+    source_gain: f32,
+    parent_gain: f32,
+    route_bus: Option<u32>,
+    route_next_block_gain: Option<f32>,
+    master_next_block_gain: Option<f32>,
+    reported: bool,
+}
+impl Meter {
+    pub(super) fn new(node: u32,sink:Option<super::super::observation::SourceSamples>) -> Self {
+        Self {
+            sink,
+            identity: None,
+            node,
+            frames: 0,
+            decoded_peak: 0.,
+            dry_peak: 0.,
+            aux_peak: 0.,
+            speaker_gain_peak: 0.,
+            source_gain: 0.,
+            parent_gain: 0.,
+            route_bus: None,
+            route_next_block_gain: None,
+            master_next_block_gain: None,
+            reported: false,
+        }
+    }
+    pub(super) fn identify(&mut self, audio: &ScheduledAudio) {
+        if self.identity.is_none() {
+            self.identity = audio.event.as_ref().map(|event| {
+                (
+                    event.event().declaration,
+                    event.id().value(),
+                    event.event().object,
+                )
+            });
+        }
+    }
+    pub(super) fn decoded(&mut self, samples: &[f32]) {
+        if !self.reported {
+            for sample in samples {
+                self.decoded_peak = self.decoded_peak.max(sample.abs());
+            }
+        }
+    }
+    pub(super) fn reported(&self) -> bool {
+        self.reported
+    }
+    pub(super) fn frame(
+        &mut self,
+        dry: &[f32],
+        aux: f32,
+        gains: &[f32],
+        source_gain: f32,
+        parent_gain: f32,
+        route: Option<(u32, f32, f32)>,
+    ) {
+        if self.reported {
+            return;
+        }
+        self.frames += 1;
+        for sample in dry {
+            self.dry_peak = self.dry_peak.max(sample.abs());
+        }
+        self.aux_peak = self.aux_peak.max(aux);
+        for gain in gains {
+            self.speaker_gain_peak = self.speaker_gain_peak.max(gain.abs());
+        }
+        self.source_gain = source_gain;
+        self.parent_gain = parent_gain;
+        if let Some((bus, gain, master)) = route {
+            self.route_bus = Some(bus);
+            self.route_next_block_gain = Some(gain);
+            self.master_next_block_gain = Some(master);
+        }
+        if self.decoded_peak > 0. && (self.dry_peak > 0. || self.aux_peak > 0.) {
+            self.report("first_nonzero");
+        }
+    }
+    fn report(&mut self, reason: &'static str) {
+        let Some((event, playing, object)) = self.identity else {
+            return;
+        };
+        eprintln!("AUDIO_SOURCE_PROCESSED_SAMPLES event={event:#010x} playing_id={playing} object={object:?} selected_source_node={:#010x} frames={} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_ramp_gain_peak={} source_fade_gain={} parent_gain={} route_bus={:?} route_next_block_gain={:?} master_next_block_gain={:?} stage=post_voice_filters_gain_pre_bus_DSP final_bus_contribution_not_attributed=true reason={reason}",
+            self.node,self.frames,self.decoded_peak,self.dry_peak,self.aux_peak,self.speaker_gain_peak,
+            self.source_gain,self.parent_gain,self.route_bus,self.route_next_block_gain,self.master_next_block_gain);
+        if let Some(sink)=&self.sink {sink.lock().unwrap_or_else(|error|error.into_inner()).push(super::super::observation::SourceReceipt{
+            event,playing_id:playing,object,selected_source:self.node,decoded_peak:self.decoded_peak,
+            dry_peak:self.dry_peak,aux_peak:self.aux_peak,gain_peak:self.speaker_gain_peak,
+            route_next_block_gain:self.route_next_block_gain,master_next_block_gain:self.master_next_block_gain,reason,
+        });}
+        self.reported = true;
+    }
+}
+impl Drop for Meter {
+    fn drop(&mut self) {
+        if !self.reported {
+            self.report(if self.frames == 0 {
+                "source_retired_before_post_gain_sample"
+            } else {
+                "source_retired_without_nonzero_post_gain"
+            });
+        }
+    }
+}

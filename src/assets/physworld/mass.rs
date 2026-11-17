@@ -34,6 +34,19 @@ pub struct PrincipalMassProperties {
     pub orientation: [f32; 4],
 }
 
+///Sphere mass virtual ca5ee0 -> ce0920. Nonpositive/unordered radius uses
+///the same c96ab0/ce0820 bounds fallback; no support-hull mass is invented.
+pub(crate) fn sphere_mass_properties(config: [u32; 3], center: [f32; 4], radius: f32,
+    bounds: [[f32; 4]; 2]) -> PrincipalMassProperties {
+    if !(0. < radius) { return bounds_mass_properties(config, bounds); }
+    let volume = ((radius * f32::from_bits(0x40860a92)) * radius) * radius;
+    let requested = f32::from_bits(config[2]);
+    let mass = if requested < 0. { f32::from_bits((requested * volume).to_bits() ^ 0x80000000) } else { requested };
+    let inertia = (((radius * radius) * f32::from_bits(0x3ecccccd)) * mass) * f32::from_bits(config[1]);
+    PrincipalMassProperties { volume, mass, center: [center[0], center[1], center[2], 0.],
+        inertia: [inertia; 4], orientation: [0., 0., 0., 1.] }
+}
+
 impl MassProperties {
     /// c28d50: diagonalize the tensor and retain the source's volume in the
     /// fourth principal-inertia lane before converting the axes to a quaternion.

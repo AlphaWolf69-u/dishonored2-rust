@@ -22,7 +22,7 @@ use bevy::{
         storage::GpuShaderBuffer,
         sync_world::MainEntity,
         texture::GpuImage,
-        view::ViewTarget,
+        view::{ViewTarget,ExtractedView},
         Render, RenderApp, RenderSystems,
     },
 };
@@ -120,11 +120,12 @@ fn retire_display(
 
 fn render_display(
     frame: Res<DisplaySceneFrame>,
+    fx_publication: Res<super::camera_scene::FxPublication>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     images: Res<RenderAssets<GpuImage>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
-    camera_outputs: (Res<super::camera_scene::CameraGpu>, Res<super::alpha_depth_scene::AlphaGpu>, Res<super::fog_scene::FogGpu>),
+    camera_outputs: (ResMut<super::camera_scene::CameraGpu>, Res<super::alpha_depth_scene::AlphaGpu>, Res<super::fog_scene::FogGpu>),
     water_frame: Res<super::water_scene::WaterSceneFrame>,
     mut gpu: ResMut<DisplayGpu>,
     mut pyramids: ResMut<LuminanceViews>,
@@ -138,17 +139,18 @@ fn render_display(
         &MaterialExposure,
         Option<&super::auto_exposure::ExposureParameters>,
         &mut Tonemapping,
+        &ExtractedView,
     )>,
     status: (Local<Option<String>>, Local<Option<String>>, Local<Option<Entity>>),
     capture_request: Res<super::display_capture::DisplayCaptureRequest>,
     mut capture: ResMut<super::display_capture::DisplayCaptureGpu>,
 ) {
     let (mut last_error, mut last_lens_error, mut ready_view) = status;
-    let (camera_gpu, alpha_gpu, fog_gpu) = camera_outputs;
+    let (mut camera_gpu, alpha_gpu, fog_gpu) = camera_outputs;
     let Some(frame) = &frame.0 else {
         return;
     };
-    let (entity, main, target, camera, exposure, exposure_parameters, mut tonemapping_mode) = view.into_inner();
+    let (entity, main, target, camera, exposure, exposure_parameters, mut tonemapping_mode,render_view) = view.into_inner();
     if main.id() != frame.camera {
         return;
     }
@@ -398,6 +400,18 @@ fn render_display(
                 &exposure.buffer,
                 post.destination,
             );
+        }
+        if let (Some(water),Some(fx))=(&water_frame.0,&fx_publication.0) {
+            if fx.camera==frame.camera && fx.frame==water.matrices.frame {
+                let depth=fog_gpu.camera_depth(frame.camera,water.matrices.frame)
+                    .ok_or("screen quad depth awaits atmosphere")?.0;
+                camera_gpu.screen_quads.record(&device,&queue,context.command_encoder(),&fx.screen_quads,
+                    crate::assets::fx::screen_quad::ScreenQuadStage::AfterToneMap,post.destination,
+                    target.main_texture_format(),&depth.alpha.full_sample,&exposure.buffer,full,water.shader_time,water.local_time[0],{
+                        let inverse=render_view.clip_from_view.inverse();
+                        [inverse.z_axis.w,inverse.w_axis.w,inverse.w_axis.z]
+                    })?;
+            }
         }
         // Extracted from the unchanged main-world setting again next frame.
         // The backend pass returns immediately for None; never apply both.

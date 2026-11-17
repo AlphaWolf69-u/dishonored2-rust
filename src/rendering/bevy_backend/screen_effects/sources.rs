@@ -8,7 +8,7 @@ use crate::{
     rendering::screen_distortion::ScreenDistortionMaterial,
     shader_cache::ProgramLibrary,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 pub struct QuadDefinition {
     pub material: usize,
@@ -72,65 +72,15 @@ impl ScreenEffectSources {
             .ok_or("player FX manager swimming descriptor absent")?;
         let underwater = atom(swimming, "m_underWaterFX").ok_or("player underwater FX absent")?;
         let leave_water = atom(swimming, "m_leaveWaterFX").ok_or("player leave-water FX absent")?;
-        let mut materials = Vec::new();
-        let mut indices = HashMap::<String, usize>::new();
-        let mut load = |effect: &str| -> Result<EffectDefinition, String> {
-            let source = crate::assets::fx::declaration::acquire(catalog, effect,
-                crate::assets::fx::definition::Consumer::Screen, None)?;
-            let mut groups = Vec::new();
-            for group in &source.groups {
-                let common = &group.asset;
-                if !common.enabled { continue; }
-                if common.location != crate::assets::fx::EffectGroupLocation::Everywhere {
-                    return Err(format!(
-                        "screen effect group location is not connected: {:?}",
-                        common.location
-                    ));
-                }
-                let mut quads = Vec::new();
-                for quad in group.quads.get().expect("screen FX families acquired")
-                    .as_ref().map_err(Clone::clone)? {
-                    let quad = quad.as_ref().map_err(Clone::clone)?;
-                    if !quad.enabled || quad.stage == ScreenQuadStage::Never {
-                        continue;
-                    }
-                    let Some(name) = &quad.material else { continue };
-                    if !matches!(
-                        quad.stage,
-                        ScreenQuadStage::MotionVectorBegin | ScreenQuadStage::MotionVectorEnd
-                    ) {
-                        return Err(format!(
-                            "underwater FX requires unsupported screen stage {:?}",
-                            quad.stage
-                        ));
-                    }
-                    let material = if let Some(&index) = indices.get(name) {
-                        index
-                    } else {
-                        let index = materials.len();
-                        materials.push(ScreenDistortionMaterial::load(catalog, library, name)?);
-                        indices.insert(name.clone(), index);
-                        index
-                    };
-                    quads.push(QuadDefinition {
-                        material,
-                        stage: quad.stage,
-                        blend: quad.blend.clone(),
-                    });
-                }
-                groups.push(GroupDefinition {
-                    timing: common.timings,
-                    quads,
-                    particles: match group.particles.get().expect("screen FX families acquired") {
-                        Ok(particles) => particles.iter().map(|asset|
-                            asset.as_ref().map_err(Clone::clone).and_then(|asset|
-                                ParticleDefinition::from_asset_cancellable(asset.clone(), catalog, library, resources, None)))
-                            .collect(),
-                        Err(error) => vec![Err(error.clone())],
-                    },
-                });
-            }
-            Ok(EffectDefinition { _source: source, groups })
+        // Generic WorldFX now owns the complete underwater/leave-water
+        // groups, their particles and canonical screen-quad image residency.
+        // Retain only declaration metadata here during the compatibility
+        // handoff; no second quad/material/image or particle preparation.
+        let materials = Vec::new();
+        let load = |effect: &str| -> Result<EffectDefinition,String> {
+            let source=crate::assets::fx::declaration::acquire(catalog,effect,
+                crate::assets::fx::definition::Consumer::Screen,None)?;
+            Ok(EffectDefinition{_source:source,groups:Vec::new()})
         };
         let underwater = load(underwater)?;
         let leave_water = load(leave_water)?;

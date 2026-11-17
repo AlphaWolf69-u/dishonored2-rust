@@ -87,7 +87,12 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
             physworld::query_geometry::QueryGeometry::Polytope(polytope) =>
                 physworld::mass::convex::calculate(&polytope.vertices, polytope.radius, config, shape.bounds),
             physworld::query_geometry::QueryGeometry::Convex(convex) =>
-                physworld::mass::convex::calculate(&convex.vertices, convex.radius, config, shape.bounds),
+                if shape.header.shape_type == 2 {
+                    Ok(physworld::mass::sphere_mass_properties(config,
+                        *convex.vertices.first().ok_or("sphere mass centre absent")?, convex.radius, shape.bounds))
+                } else {
+                    physworld::mass::convex::calculate(&convex.vertices, convex.radius, config, shape.bounds)
+                },
             physworld::query_geometry::QueryGeometry::CompressedMesh(_) =>
                 Err("compressed world mesh has no dynamic mass calculator".into()),
         }.map_err(|error| format!("{}: {error}", shape.path))

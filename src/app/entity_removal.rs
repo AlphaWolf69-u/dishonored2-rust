@@ -18,6 +18,21 @@ pub(super) fn initialize(world: &mut World) {
     world.init_resource::<EntityRemoval>();
 }
 
+///Resource owners disposing an ordinary actor must enter8794b0/8ab380's
+///actual FIFO, including save-name preparation, attachment/component release
+///and final managed-ID acknowledgement. Never call the batch's final-retire
+///callback directly after only draining components. The sole existing batch
+///retains every pending cursor; this helper creates no second removal queue.
+pub(super) fn request_and_wait(world: &mut World, entity: EntityId) -> Result<bool, String> {
+    let mut live = world.get_resource_mut::<LiveEntities>()
+        .ok_or("entity removal managed owner is absent")?;
+    if live.get(entity).is_none() { return Ok(true); }
+    live.request_removal(entity)?;
+    drop(live);
+    update(world)?;
+    Ok(world.resource::<LiveEntities>().get(entity).is_none())
+}
+
 fn with_scene<T>(
     world: &mut World,
     callback: impl FnOnce(

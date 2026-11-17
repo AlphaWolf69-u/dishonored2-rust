@@ -45,8 +45,8 @@ pub(in crate::app) fn prepare_usable_animation_audio(
             let mut frames = world.get_resource_mut::<super::super::joint_frames::JointFrames>()
                 .ok_or("AnimBasic sound joint-frame owner absent")?;
             for &(joint, initial, range) in joints {
-                scene.admit_animation_audio_joint(handle, generation, joint, placement, range)?;
-                frames.admit_audio(placement, scale, joint, initial)?;
+                scene.admit_animation_audio_joint(handle, generation, joint, placement.into(), range)?;
+                frames.admit_audio(placement.into(), scale, joint, initial)?;
             }
             Ok::<_, String>(())
         })?;
@@ -57,7 +57,8 @@ pub(in crate::app) fn prepare_usable_animation_audio(
 }
 
 pub(super) fn prepare(world: &mut World) -> Result<(), bevy::ecs::error::BevyError> {
-    super::super::usable_animation::prepare_audio(world).map_err(Into::into)
+    super::super::usable_animation::prepare_audio(world)?;
+    super::super::physics_scene::runtime_animation::prepare_audio(world).map_err(Into::into)
 }
 
 /// Ordinary publication already borrows Scene, its actual pose bank and the
@@ -90,7 +91,7 @@ fn post_frame(post: &crate::gameplay::sound::component::AnimationPost,
     -> Result<crate::gameplay::reference_frame::ReferenceFrame, String> {
     if post.joint < 0 { return Ok(post.frame); }
     frames.ok_or("Audio A9 joint frames absent")?
-        .bound_frame(post.placement, post.joint, 3, [0.;3], [0.,0.,0.,1.], post.frame)?
+        .bound_audio_frame(post.placement, post.joint, post.frame)?
         .ok_or_else(||"Audio A9 actual joint pose absent".into())
 }
 

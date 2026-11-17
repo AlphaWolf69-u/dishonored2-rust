@@ -6,6 +6,7 @@ use std::{collections::{HashMap, HashSet}, sync::{Arc, Weak}};
 #[derive(Clone, Default)]
 pub(super) struct Inputs {
     particles: HashMap<usize, (String, Weak<crate::rendering::particles::material::ParticleMaterial>)>,
+    quads: HashMap<(usize,u32), Weak<crate::rendering::screen_quad::ScreenQuadMaterial>>,
     strips: HashSet<String>,
     meshes: HashMap<(String, String), Option<Weak<crate::assets::particle_model::ParticleModel>>>,
     decals: HashSet<(String, bool)>,
@@ -18,6 +19,7 @@ impl Inputs {
                 .or_insert_with(|| (material.name.clone(), Arc::downgrade(material)));
         }
         Self {
+            quads: source.quad_material_stages().map(|(stage,material)|((Arc::as_ptr(material) as usize,stage as u32),Arc::downgrade(material))).collect(),
             particles, strips: source.strip_materials(),
             meshes: source.world_meshes().into_iter().map(|(name, material, model)| {
                 //world_meshes constructs an empty placeholder for the SAME
@@ -30,7 +32,8 @@ impl Inputs {
         }
     }
     fn covered_by(&self, prepared: &Self) -> bool {
-        self.particles.iter().all(|(key, (name, identity))| prepared.particles.get(key)
+        self.quads.iter().all(|(key,identity)|prepared.quads.get(key).is_some_and(|other|Weak::ptr_eq(identity,other)))
+            && self.particles.iter().all(|(key, (name, identity))| prepared.particles.get(key)
             .is_some_and(|(other_name, other)| name == other_name && Weak::ptr_eq(identity, other)))
             && self.strips.is_subset(&prepared.strips)
             && self.meshes.iter().all(|(key, identity)| prepared.meshes.get(key)

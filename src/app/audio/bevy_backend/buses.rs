@@ -83,6 +83,8 @@ impl Buses {
             power10((bus.base_db + self.activity.output_ducking(bus.id, false)) * 0.05)
         })
     }
+    /// Diagnostic target, not per-source attribution after shared bus DSP.
+    pub(in crate::app::audio) fn master_next_block_gain(&self)->f32{self.output_gain(self.primary)}
 
     pub fn begin(&mut self) {
         self.output.fill(0.0);

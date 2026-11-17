@@ -224,7 +224,8 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<bool, String> {
             .insert(identity.to_owned(), id);
     }
     if let Some(id) = id {
-        if super::super::player_animation_events::blocks_retirement(world, id) { return Ok(false); }
+        if super::super::player_animation_events::blocks_retirement(world, id)
+            || super::super::animation_effects::blocks_retirement(world, id) { return Ok(false); }
         if !super::super::weapon_firing::retired(world, identity) { return Ok(false); }
         super::super::weapon_throwing::remove_owned(world, identity);
         super::super::melee::remove_owned(world, identity);
@@ -785,7 +786,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                 bevy::log::warn!("Owned equipment {identity} Start failed: {error}");
             }
         }
-        for ready in actions.take_ready() {
+        for mut ready in actions.take_ready() {
             if inventory.quantity(&ready.item.path) > 0 {
                 if let Err(error) = retain_owned(
                     world,
@@ -800,6 +801,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                         .load_error
                         .get_or_insert(error.clone());
                     bevy::log::warn!("Owned equipment {} Start failed: {error}", ready.item.path);
+                    if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                     continue;
                 }
             }
@@ -808,6 +810,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                 continue;
             }
             if !ready.is_current(player) {
+                if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                 if !actions
                     .active(ready.side())
                     .is_some_and(|active| Arc::ptr_eq(active, &ready.descriptor))
@@ -828,6 +831,7 @@ pub(in crate::app) fn advance(world: &mut World) {
             }
             let identity = ready.item.path.to_string();
             if inventory.quantity(&identity) == 0 {
+                if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                 withdraw(world, &ready.item.path);
                 continue;
             }
@@ -836,6 +840,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                 continue;
             };
             if let Some(error) = failure(world, entity) {
+                if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                 bevy::log::warn!("Equipment {identity} material admission failed: {error}");
                 withdraw(world, &ready.item.path);
                 continue;
@@ -849,13 +854,15 @@ pub(in crate::app) fn advance(world: &mut World) {
                             .equipment
                             .load_error
                             .get_or_insert(error.clone());
-                        bevy::log::warn!("Equipment {identity} admission failed: {error}")
+                        bevy::log::warn!("Equipment {identity} admission failed: {error}");
+                        if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                     }
                 }
                 continue;
             }
             let descriptor = ready.descriptor.clone();
             let dependencies_ready = (|| {
+                if !ready.prepare_animation_audio(world,entity)?{return Ok(false)}
                 if descriptor.throwable.is_some() {
                     if let Some(item) = actions.selected_ammunition.get(&identity).and_then(Option::as_deref) {
                         super::super::weapon_throwing::request_ammunition(world, &identity, item)?;
@@ -869,9 +876,13 @@ pub(in crate::app) fn advance(world: &mut World) {
             match dependencies_ready {
                 Ok(true) => {},
                 Ok(false) => { actions.requeue(ready); continue; },
-                Err(error) => { record_error(world, error); continue; },
+                Err(error) => {
+                    if let Err(release)=ready.cancel_animation_audio(world){record_error(world,release);}
+                    record_error(world, error); continue;
+                },
             }
             let slot = descriptor.equipment.slot;
+            actions.animation_audio.transfer(ready.take_animation_audio());
             match ready.stage(player) {
                 Ok(mut target) => {
                     if let Some(tree) = target.tree.as_mut() {
@@ -921,6 +932,9 @@ pub(in crate::app) fn advance(world: &mut World) {
                         .get_or_insert(error.clone());
                     bevy::log::warn!("Equipment {identity} bank publication failed: {error}")
                 }
+            }
+            if let Some(id)=super::super::player_lifetime::id(world){
+                if let Err(error)=actions.animation_audio.prepare(world,id,player){record_error(world,error);}
             }
         }
     }
@@ -1241,7 +1255,7 @@ fn publish_entity_frames(world: &mut World) -> Result<(), String> {
                     return;
                 }
             };
-            if let Err(error) = super::super::equipment_identity::publish_frame(
+            if let Err(error) = super::super::equipment_identity::publish_frame_using(
                 world,
                 id,
                 ReferenceFrame {
@@ -1249,6 +1263,7 @@ fn publish_entity_frames(world: &mut World) -> Result<(), String> {
                     basis: basis.to_cols_array_2d(),
                 },
                 rate,
+                Some(player),
             ) {
                 failure = Some(error);
             }

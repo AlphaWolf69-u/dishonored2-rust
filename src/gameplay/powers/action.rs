@@ -26,10 +26,12 @@ impl Action {
         cast.begin(); self.entry = entry; self.loop_scene = None;
         Ok(true)
     }
-    /// 140856c50 changes in->loop after the entry scene has ended and the
-    /// power has not cast. No timer duplicates the animation owner's clock.
+    /// 140856c50 waits for both handles to finish, then starts the authored
+    /// loop again while the power has not cast. A loop Midnight can itself
+    /// be finite; its actual completion drives re-entry, rather than a timer.
     pub fn update<S: Scenes>(&mut self, cast: &Cast, sliding: bool, scenes: &mut S) -> Result<(), S::Error> {
-        if cast.phase() != Phase::Aiming || self.loop_scene.is_some() { return Ok(()); }
+        if cast.phase() != Phase::Aiming { return Ok(()); }
+        if self.loop_scene.is_some_and(|handle| !scenes.finished(handle)) { return Ok(()); }
         if self.entry.is_some_and(|handle| !scenes.finished(handle)) { return Ok(()); }
         if let Some(path) = variant(sliding, &cast.settings.loop_midnight, &cast.settings.loop_midnight_slide) {
             self.loop_scene = Some(scenes.start(path)?);

@@ -16,6 +16,28 @@ pub(in crate::app) struct Retirement {
     pub(in crate::app) rollback_done: bool,
 }
 impl PhysicsScene {
+    pub(in crate::app) fn with_runtime_registry<R>(&mut self,
+        callback:impl FnOnce(&mut Self,&mut ComponentRegistry)->Result<R,String>)->Result<R,String>{
+        let mut registry=self.registry.take().ok_or("runtime component registry borrowed")?;
+        let result=callback(self,&mut registry);
+        self.registry=Some(registry);
+        result
+    }
+    pub(in crate::app) fn bind_animation_effect(&mut self,live:&mut LiveEntities,events:&mut EntityEvents,
+        id:EntityId,parent:EntityId,pose:super::throwable::BindingPose,joint_world:Option<crate::gameplay::reference_frame::ReferenceFrame>,registry:&mut ComponentRegistry)->Result<(),String>{
+        let &index=self.shared_indices.get(&id).ok_or("animation FX source header absent")?;
+        //64bc20 sets this actual constructor field before875e80/4903b0.
+        self.entity_flags_d4[index]|=0x10;
+        if pose.joint>=0 {
+            let parent_index=*self.shared_indices.get(&parent).ok_or("animation FX parent header absent")?;
+            let parent_frame=self.entities[parent_index].frame.pose;
+            let joint_world=joint_world.ok_or("animation FX actual bound joint pose absent")?;
+            let (offset,orientation)=crate::gameplay::reference_frame::relative_binding(parent_frame,joint_world);
+            self.document_hierarchy.external_joints.insert((parent_index,pose.joint),crate::gameplay::reference_frame::bind(
+                crate::gameplay::reference_frame::ReferenceFrame::default(),offset,orientation));
+        }
+        self.bind_entity_in_registry(live,id,parent,pose,events,registry)
+    }
     pub(in crate::app) fn set_runtime_actor_visible(&mut self, world: &mut bevy::prelude::World,
         live: &LiveEntities, id: EntityId, visible: bool) -> Result<(), String> {
         live.get(id).ok_or("runtime visibility generation is stale")?;
@@ -563,8 +585,16 @@ impl PhysicsScene {
                 )?;
                 let immediate = declaration.scheduling.starts_on_spawn();
                 let handle = match &component.kind {
+                    Kind::Openable(source)=>{
+                        let child=definition.startup_children.iter().find(|child|child.entity.eq_ignore_ascii_case(&source.animated_part))
+                            .cloned().ok_or("Openable animated child source was not prepared")?;
+                        self.create_openable(index,source.clone(),child,&declaration,&mut registry,immediate)?
+                    }
+                    Kind::Retargeting=>self.create_retargeting(index,&declaration,&mut registry,immediate)?,
+                    Kind::Fx(source)=>self.create_fx_component(index,source.clone(),&declaration,&mut registry,immediate)?,
                     Kind::AISmartSpot(definition)=>self.create_smart_object(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::FlashSurface(definition)=>self.create_flash_surface(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::GrenadeCooking(definition)=>self.create_cooking_surface(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::InteractiveMap(definition)=>self.create_interactive_map(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::Observable(definition)=>self.create_observable(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::AttentionSource(definition)=>self.create_attention_source(index,definition.clone(),&declaration,&mut registry,immediate)?,

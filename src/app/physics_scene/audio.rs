@@ -79,7 +79,7 @@ impl PhysicsScene {
 
     /// Register the demanded native joint slot before any event can fire.
     pub(in crate::app) fn admit_animation_audio_joint(
-        &mut self,handle:ComponentHandle,generation:u32,joint:i16,placement:usize,max_distance:f32,
+        &mut self,handle:ComponentHandle,generation:u32,joint:i16,placement:crate::gameplay::sound::component::AnimationSource,max_distance:f32,
     )->Result<(),String>{
         if handle.class_id!=self.classes[4]{return Err("animation joint audio class differs".into());}
         let component=self.audios.get_mut(handle.slot).ok_or("animation joint audio component absent")?;

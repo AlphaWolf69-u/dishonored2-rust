@@ -10,11 +10,13 @@ use bevy::prelude::*;
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
+enum Role { Equipment, Attachment, Arm }
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct Key {
     parent: EntityId,
     identity: String,
     declaration: String,
-    ammo: bool,
+    role: Role,
 }
 struct Entry {
     key: Key,
@@ -69,7 +71,42 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         entries: HashMap::new(),
         pending: Vec::new(),
     });
+    admit_arms(world)?;
     Ok(())
+}
+
+///770560/8ae9b0 create two actual source-declared arm actors. Their existing
+///Player rigs, controllers, sound objects and render surfaces remain owners.
+fn admit_arms(world: &mut World) -> Result<(), String> {
+    let Some(mut state)=world.remove_resource::<super::player::PlayerState>() else {
+        return Err("arm admission has no actual PlayerState".into());
+    };
+    let result=(||{
+        let Some(player)=state.player.as_mut() else{return Ok(());};
+        let parent=player.managed_entity().ok_or("arm admission player identity absent")?;
+        let timespace=world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>().entity_time_state(parent).map_err(str::to_owned)?.0;
+        super::runtime_entities::with_scene(world,|_,scene,live,events|
+            scene.admit_player_reference(player,live,events,timespace))?;
+        for side in 0..player.body.arms.len() {
+            let arm=&player.body.arms[side];
+            if arm.managed_entity.is_some(){continue;}
+            if arm.entity_class!="idEntity" {return Err(format!("arm {} requires actual constructor {}",arm.entity_declaration,arm.entity_class));}
+            let id=admit(world,&format!("player-arm:{side}"),&arm.entity_declaration,&arm.entity_declaration,
+                &arm.entity_class,parent,Role::Arm,arm.ai_tampering_declared)?;
+            player.body.arms[side].managed_entity=Some(id);
+            world.resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>().register_entity_time(id,0)?;
+            super::runtime_entities::with_scene(world,|_,scene,live,events|
+                scene.bind_to_player(live,id,player,&player.body.arms[side].bind_tag,[0.;3],[0.,0.,0.,1.],events))?;
+            if let Some(mut renders)=world.get_resource_mut::<super::player_arms::PlayerArms>() {
+                renders.bind_arm_identity(&player.body.arms[side].model,id)?;
+                drop(renders);
+                mark_rendered(world,id)?;
+            }
+        }
+        Ok(())
+    })();
+    world.insert_resource(state);
+    result
 }
 
 /// Only a real admitted player can own equipment (619380). This function is
@@ -101,7 +138,7 @@ pub(super) fn admit_equipment(
         declaration,
         class,
         parent,
-        false,
+        Role::Equipment,
         ai_tampering_declared,
     )
 }
@@ -128,7 +165,7 @@ pub(super) fn admit_attachment(
     if !identities
         .entries
         .get(&weapon)
-        .is_some_and(|entry| !entry.key.ammo && entry.linked)
+        .is_some_and(|entry| entry.key.role == Role::Equipment && entry.linked)
     {
         return Err("ammunition parent is not an admitted weapon generation".into());
     }
@@ -147,7 +184,7 @@ pub(super) fn admit_attachment(
         &descriptor.name_source,
         &descriptor.class,
         weapon,
-        true,
+        Role::Attachment,
         //The canonical attachment reader admits only an actual AnimBasic
         //component or a source component-less static-model constructor.
         false,
@@ -165,14 +202,14 @@ fn admit(
     name_source: &str,
     class: &str,
     parent: EntityId,
-    ammo: bool,
+    role: Role,
     ai_tampering_declared: bool,
 ) -> Result<EntityId, String> {
     let key = Key {
         parent,
         identity: identity.to_owned(),
         declaration: declaration.to_owned(),
-        ammo,
+        role: role.clone(),
     };
     if let Some((&id, _entry)) = world.get_resource::<Identities>().and_then(|owner| {
         owner
@@ -197,7 +234,7 @@ fn admit(
     let birth_frame = world.get_resource::<super::physics_scene::PhysicsScene>()
         .ok_or("equipment reference scene is absent")?
         .equipment_parent_frame(world.resource::<LiveEntities>(), parent)?;
-    let timespace = if ammo { 0 } else {
+    let timespace = if role != Role::Equipment { 0 } else {
         world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
             .ok_or("equipment reference clock is absent")?.entity_time_state(parent)
             .map_err(str::to_owned)?.0
@@ -223,18 +260,18 @@ fn admit(
     // idEntity constructor uses MAIN. Equipment619380 copies the actual
     // owning player's tag before registration; ammo8ae9b0 leaves MAIN intact.
     let main = types.intern_name(Some(b"MAIN"))?;
-    let tag = if ammo { main } else { tag };
+    let tag = if role == Role::Attachment { main } else { tag };
     if tag != main {
         return Err("equipment player spawn tag has no admitted spelling".into());
     }
     //4e65a0's arkGrenade constructor precedes619380 equipment admission.
     let constructor_flags = if class == "arkGrenade" { 0x20 } else { 0 };
-    let runtime_flags = constructor_flags | if ammo { 0 } else { 8 };
+    let runtime_flags = constructor_flags | if role == Role::Equipment { 8 } else { 0 };
     let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
         //619380 writes the actual inventory owner's ID at equipment+ac
         //before8aecc0 registration. Ammo8ae9b0 leaves its own owner unset.
-        .set_owner(id, (!ammo).then_some(parent))
+        .set_owner(id, (role != Role::Attachment).then_some(parent))
         .and_then(|()| live.initialized(id))
         .and_then(|()| live.spawned(id))
         .and_then(|()| live.publish_spawn_tag(id, "MAIN"));
@@ -254,7 +291,7 @@ fn admit(
         Entry {
             key,
             linked: false,
-            runtime_flags: if ammo { constructor_flags | 0x10 } else { runtime_flags },
+            runtime_flags: if role == Role::Attachment { constructor_flags | 0x10 } else { runtime_flags },
             frame: Some(birth_frame),
             time_scale: 1.0,
             audio: None,
@@ -269,7 +306,7 @@ fn admit(
     let admitted = super::runtime_entities::with_scene(world, |_, scene, live, events| {
         scene.admit_equipment_reference(live, events, id, birth_frame, timespace)?;
         scene.publish_external_tampering_presence(live, id, ai_tampering_declared)?;
-        scene.publish_equipment_runtime_flags(live, id, if ammo { constructor_flags | 0x10 } else { runtime_flags })?;
+        scene.publish_equipment_runtime_flags(live, id, if role == Role::Attachment { constructor_flags | 0x10 } else { runtime_flags })?;
         scene.bind_equipment_reference(live, events, id, parent)
     });
     if let Err(error) = admitted {
@@ -285,7 +322,7 @@ fn admit(
 
 pub(super) fn item_identity(world: &World, id: EntityId) -> Option<&str> {
     let entry = world.get_resource::<Identities>()?.entries.get(&id)?;
-    (!entry.key.ammo && entry.linked).then_some(entry.key.identity.as_str())
+    (entry.key.role == Role::Equipment && entry.linked).then_some(entry.key.identity.as_str())
 }
 
 pub(super) fn runtime_flags(world: &World, id: EntityId) -> Option<u8> {
@@ -310,7 +347,7 @@ pub(super) fn movable_linked_entity(world:&World,id:EntityId)->Option<Option<Ent
 pub(super) fn equipment(world: &World, identity: &str) -> Option<EntityId> {
     let owner = world.get_resource::<Identities>()?;
     owner.entries.iter().find_map(|(&id, entry)| {
-        (!entry.key.ammo && entry.linked && entry.key.identity == identity).then_some(id)
+        (entry.key.role == Role::Equipment && entry.linked && entry.key.identity == identity).then_some(id)
     })
 }
 
@@ -329,7 +366,7 @@ pub(super) fn bind_audio(world: &mut World, id: EntityId, part: u8) -> Result<()
         .entries
         .get_mut(&id)
         .ok_or("equipment audio generation is absent")?;
-    if entry.key.ammo || !entry.linked {
+    if entry.key.role != Role::Equipment || !entry.linked {
         return Err("equipment audio has no live component actor".into());
     }
     let emitter = crate::gameplay::sound::Emitter::Equipment { entity: id, part };
@@ -361,6 +398,12 @@ pub(super) fn publish_frame(
     frame: crate::gameplay::reference_frame::ReferenceFrame,
     time_scale: f32,
 ) -> Result<(), String> {
+    publish_frame_using(world, id, frame, time_scale, None)
+}
+pub(super) fn publish_frame_using(
+    world: &mut World, id: EntityId, frame: crate::gameplay::reference_frame::ReferenceFrame,
+    time_scale: f32, player: Option<&crate::gameplay::player::Player>,
+) -> Result<(), String> {
     if !time_scale.is_finite() || time_scale < 0.0 {
         return Err("equipment time scale is invalid".into());
     }
@@ -381,7 +424,7 @@ pub(super) fn publish_frame(
         let clock = world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
             .ok_or("equipment publication clock is absent")?;
         let timespace = clock.entity_time_state(id).map_err(str::to_owned)?.0;
-        scene.publish_equipment_reference(live, id, frame, timespace, clock.clock().map_err(str::to_owned)?)
+        scene.publish_equipment_reference(live, id, frame, timespace, clock.clock().map_err(str::to_owned)?, player)
     })
 }
 
@@ -422,6 +465,7 @@ pub(super) fn detach(world: &mut World, id: EntityId) -> Result<(), String> {
 /// Called only after the existing PlayerArms submitted-work acknowledgement.
 /// Source/model leases stay with the retired render payload through that ack.
 pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<bool, String> {
+    if super::animation_effects::blocks_retirement(world, id) { return Ok(false); }
     let owner = world
         .get_resource::<Identities>()
         .ok_or("equipment identity owner is absent")?;
@@ -613,6 +657,18 @@ pub(super) fn poll_retirements(world: &mut World) -> Result<bool, String> {
 /// After all actual equipment/attachment renderer withdrawals, wait for their
 /// receipts before allowing the player generation and level owner to retire.
 pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
+    //The same per-model GPU receipt owns first-person arms as equipment;
+    //withdraw after producers stop, before their real identities are freed.
+    let arms=world.get_resource::<Identities>().map(|owner|owner.entries.iter()
+        .filter_map(|(&id,entry)|(entry.key.role==Role::Arm&&entry.linked).then_some(id)).collect::<Vec<_>>()).unwrap_or_default();
+    for id in arms {
+        let mut commands=super::setup_commands::SetupCommands::prepared(world);
+        let receipt=world.get_resource_mut::<super::player_arms::PlayerArms>()
+            .and_then(|mut models|models.remove_arm_model(id,&mut commands));
+        commands.publish(world);
+        if let Some(receipt)=receipt {await_render_retirement(world,id,receipt)?;}
+        else {await_unrendered_retirement(world,id)?;}
+    }
     if !poll_retirements(world)? {
         return Ok(false);
     }

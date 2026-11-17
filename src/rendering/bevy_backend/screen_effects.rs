@@ -114,11 +114,13 @@ impl ScreenEffects {
         white_level: f32,
         adaptation: &Buffer,
         inverse_z: [f32; 3],
+        quads: &mut super::screen_quads::ScreenQuads,
+        quad_frame: &crate::gameplay::effects::screen_quad::Frame,
     ) -> Result<(), String> {
         self.completed = false;
         self.fullscreen_recorded = false;
         if !fullscreen.active() { self.last_fullscreen_receipt = None; }
-        if draws.is_empty() && !fullscreen.active() {
+        if draws.is_empty() && !fullscreen.active() && !quad_frame.iter().any(|draw| matches!(draw.asset.stage,ScreenQuadStage::MotionVectorBegin|ScreenQuadStage::MotionVectorEnd)) {
             return Ok(());
         }
         // 3222f0 tests DAT14397a8f8, registered at 14397a8d0 as
@@ -157,6 +159,7 @@ impl ScreenEffects {
         let (_, passes, hdr) = self.gpu.as_mut().unwrap();
         passes.record_vectors(
             device, queue, encoder, sources, draws, Some(fullscreen), local_time, depth, inverse_z,
+            Some(passes::QuadInputs{gpu:quads,frame:quad_frame,exposure:adaptation,shader_time:fullscreen.shader_time}),
         )?;
         let hdr = hdr.prepare(
             device,

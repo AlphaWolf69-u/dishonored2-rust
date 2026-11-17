@@ -15,6 +15,9 @@ pub struct WorldEffectGroup {
     pub sounds: Vec<WorldSoundDefinition>,
     pub lights: Vec<Result<Arc<crate::assets::fx::light::LightAsset>, String>>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
+    pub(crate) quads: Vec<Result<Arc<crate::assets::fx::screen_quad::ScreenQuadAsset>, String>>,
+    pub(crate) quad_materials: Vec<(crate::assets::fx::screen_quad::ScreenQuadStage,Arc<crate::rendering::screen_quad::ScreenQuadMaterial>)>,
+    pub(crate) fovs: Vec<Result<Arc<crate::assets::fx::fov::Asset>, String>>,
     pub(crate) rumbles: Vec<Result<Arc<crate::assets::fx::rumble::Asset>, String>>,
     pub(crate) screen_distortions: Vec<Result<Arc<crate::assets::fx::screen_distortion::Prepared>, String>>,
     pub(crate) entity_defs: Vec<Arc<WorldEntityDef>>,
@@ -209,6 +212,18 @@ impl WorldFxSources {
             .collect()
     }
 
+    pub(crate) fn quad_materials(&self) -> impl Iterator<Item=&Arc<crate::rendering::screen_quad::ScreenQuadMaterial>> {
+        self.effects.values().filter_map(|effect|effect.as_ref().ok())
+            .flat_map(|effect|&effect.groups).flat_map(|group|&group.quad_materials).map(|(_,material)|material)
+    }
+    pub(crate) fn quad_material_stages(&self) -> impl Iterator<Item=(crate::assets::fx::screen_quad::ScreenQuadStage,&Arc<crate::rendering::screen_quad::ScreenQuadMaterial>)> {
+        self.effects.values().filter_map(|effect|effect.as_ref().ok()).flat_map(|effect|&effect.groups)
+            .flat_map(|group|&group.quad_materials).map(|(stage,material)|(*stage,material))
+    }
+    pub(crate) fn material_images(&self) -> impl Iterator<Item=&Arc<super::image_resources::ParticleImage>> {
+        self.particle_materials().flat_map(|material|material.images.values())
+            .chain(self.quad_materials().flat_map(|material|material.images.values()))
+    }
     pub fn particle_materials(
         &self,
     ) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
@@ -632,6 +647,17 @@ impl WorldFxSources {
                             prepared: false.into(),
                         }));
                     }
+                    let quads: Vec<_> = group.quads.get().ok_or("world quad family not acquired")?.as_ref().map_err(Clone::clone)?.iter().cloned().collect();
+                    let mut quad_materials=Vec::new();
+                    for quad in &quads {
+                        let quad=quad.as_ref().map_err(Clone::clone)?;
+                        if !quad.enabled || quad.stage==crate::assets::fx::screen_quad::ScreenQuadStage::Never {continue;}
+                        if quad.material.is_some() && quad.stage==crate::assets::fx::screen_quad::ScreenQuadStage::ShadowWalkEnd {
+                            return Err("screen quad ShadowWalkEnd requires the actual31dce0 ShadowWalk geometry consumer".into());
+                        }
+                        if let Some(name)=&quad.material {quad_materials.push((quad.stage,resources.quad_material(catalog,library,name)?));}
+                    }
+                    let fovs = group.fovs.get().ok_or("world FOV family not acquired")?.as_ref().map_err(Clone::clone)?.iter().cloned().collect();
                     let rumbles = group.rumbles.get().ok_or("world rumble family not acquired")?.as_ref().map_err(Clone::clone)?.iter().cloned().collect();
                     let screen_distortions = group.screen_distortions.get()
                         .ok_or("world FSDisto family not acquired")?.as_ref().map_err(Clone::clone)?
@@ -647,6 +673,9 @@ impl WorldFxSources {
                         entity_defs,
                         screen_distortions,
                         rumbles,
+                        quads,
+                        quad_materials,
+                        fovs,
                         explosions,
                         source_group,
                     });

@@ -920,6 +920,15 @@ pub struct GlobalShadowCasterScratch {
     output: Vec<GlobalShadowCasterHit>,
 }
 
+#[inline]
+fn gather_bounds_accepts<const VALIDATED:bool>(query:[[f32;4];2],bounds:[[f32;4];2],planes:&[[f32;4]],active:&[usize])->Result<bool,String>{
+    if VALIDATED {
+        // gather_impl proves original lists are 0..len; reduced lists come
+        // exclusively from active_query_planes_into's 0..len iterator.
+        Ok(unsafe {super::query_bounds_accepts_aabb_prevalidated(query,bounds,planes,active)})
+    } else {query_bounds_accepts_aabb(query,bounds,planes,active)}
+}
+
 impl GlobalShadowCasterScratch {
     pub fn new(object_count: usize, cascade_count: usize) -> Self {
         Self {
@@ -935,6 +944,32 @@ impl GlobalShadowCasterScratch {
     /// masks and receiver mode bit4 clear. No ordinary-camera visibility list
     /// is consulted: off-camera objects can cast into a visible receiver.
     pub fn gather<'a>(
+        &'a mut self,
+        tome: &ShadowCasterTome,
+        input: &GlobalShadowCasterInput<'_>,
+    ) -> Result<&'a [GlobalShadowCasterHit], String> {
+        self.gather_impl::<true>(tome,input)
+    }
+
+    /// Same-build offline replay control; no device, image or camera access.
+    pub fn gather_reference<'a>(&'a mut self,tome:&ShadowCasterTome,input:&GlobalShadowCasterInput<'_>)
+        -> Result<&'a [GlobalShadowCasterHit],String> {
+        self.gather_impl::<false>(tome,input)
+    }
+
+    /// Reuse the actual thread-cycle provider, outside the measured loop.
+    pub fn replay_cycles(&mut self,tome:&ShadowCasterTome,input:&GlobalShadowCasterInput<'_>,reference:bool,repeats:usize)
+        -> Result<Option<u64>,String> {
+        let start=crate::loading::thread_cycles();
+        if reference {
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<false>(tome,std::hint::black_box(input))?);}
+        } else {
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<true>(tome,std::hint::black_box(input))?);}
+        }
+        Ok(start.zip(crate::loading::thread_cycles()).map(|(a,b)|b.saturating_sub(a)))
+    }
+
+    fn gather_impl<'a, const VALIDATED:bool>(
         &'a mut self,
         tome: &ShadowCasterTome,
         input: &GlobalShadowCasterInput<'_>,
@@ -991,7 +1026,7 @@ impl GlobalShadowCasterScratch {
                 continue;
             }
             let bounds = bounds4(object.bounds);
-            if !query_bounds_accepts_aabb(
+            if !gather_bounds_accepts::<VALIDATED>(
                 bounds4(input.primary.bounds),
                 bounds,
                 input.primary.planes,
@@ -1008,7 +1043,7 @@ impl GlobalShadowCasterScratch {
             let mut cascade_mask = 0;
             for (cascade, &receiver) in input.cascades.iter().enumerate() {
                 if self.cascade_enabled[cascade]
-                    && query_bounds_accepts_aabb(
+                    && gather_bounds_accepts::<VALIDATED>(
                         bounds4(receiver.bounds),
                         bounds,
                         receiver.planes,

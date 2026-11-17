@@ -28,6 +28,8 @@ struct Delivery {
     contact: Option<super::physics_scene::explosion_effects::Contact>,
     recovery_disabled: bool,
     stick_recoverable: Option<bool>,
+    stick_start_requested: Option<bool>,
+    stick_children: Option<Pickup>,
 }
 struct Trail {
     key: Arc<str>,
@@ -534,6 +536,8 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                         contact: None,
                         recovery_disabled: false,
                         stick_recoverable: None,
+                        stick_start_requested: None,
+                        stick_children: None,
                     },
                 );
             }
@@ -899,6 +903,35 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                 delivery.phase = 8;
             }
             if delivery.phase == 8 {
+                //629590 ends BOTH Stick(2) and Bounce(5) with624540.
+                //The earlier Stick callback4c6b70 only binds; it does not
+                //start the dormant Throwable or publish its query body.
+                if matches!(delivery.step.handoff, Handoff::Stick) {
+                    if delivery.stick_start_requested.is_none() {
+                        delivery.stick_start_requested = Some(!world.resource::<PhysicsScene>()
+                            .projectile_throwable_started(handle)?);
+                    }
+                    if delivery.stick_start_requested == Some(true) {
+                        world.resource_scope(|world, mut scene: bevy::prelude::Mut<PhysicsScene>| {
+                            world.resource_scope(|world, mut live: bevy::prelude::Mut<LiveEntities>| {
+                                scene.start_throwable(&mut live, id, &mut world.resource_mut::<EntityEvents>())
+                            })
+                        })?;
+                        //624540 returning false on the new request causes
+                        //628df0(false), preserving actual child bindings.
+                        if delivery.stick_children.is_none() {
+                            delivery.stick_children = Some(world.resource::<PhysicsScene>()
+                                .projectile_child_frames(world.resource::<LiveEntities>(), id, delivery.step.frame)?);
+                        }
+                        world.resource_scope(|world, mut scene: bevy::prelude::Mut<PhysicsScene>| {
+                            world.resource_scope(|world, mut live: bevy::prelude::Mut<LiveEntities>| {
+                                scene.publish_projectile_children(&mut live,
+                                    &mut world.resource_mut::<EntityEvents>(),
+                                    delivery.stick_children.as_mut().unwrap(), false)
+                            })
+                        })?;
+                    }
+                }
                 delivery.phase = 9;
             }
             if delivery.step.retire {

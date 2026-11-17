@@ -19,7 +19,7 @@ use crate::gameplay::sound::{Emitter, Request as SoundRequest};
 use bevy_math::{Mat3, Quat, Vec3};
 use std::sync::Arc;
 mod animation_sounds;
-pub use animation_sounds::{AnimationSound, AnimationSoundBank, AnimationSoundReceipt};
+pub use animation_sounds::{AnimationSound, AnimationSoundBank, AnimationSoundReceipt,AnimationEffectReceipt};
 
 /// A scene decl with its anim names resolved to body clips.
 #[derive(Debug)]
@@ -204,6 +204,7 @@ struct Clip {
     curve: Option<FloatCurve>,
     main: bool,
     sounds: Arc<[AnimationSound]>,
+    effects:Arc<[crate::assets::animation_rig::animset_effects::Effect]>,
 }
 
 /// One clip of the frame's midnightData.
@@ -305,6 +306,7 @@ pub struct Midnight {
     next_handle: u32,
     sound_requests: Vec<SoundRequest>,
     animation_sound_receipts: Vec<AnimationSoundReceipt>,
+    animation_effect_receipts:Vec<AnimationEffectReceipt>,
     equipment_emitters: [Option<Emitter>; 2],
     point_events: Vec<PointEvent>,
     nodes: [Node; TARGETS],
@@ -681,6 +683,7 @@ impl Midnight {
                     curve: key.curve.clone(),
                     main: key.main_clip,
                     sounds: prepared.animation_sounds.get(target, anim),
+                    effects:prepared.animation_sounds.get_effects(target,anim),
                 });
             }
             // Every group cast to this tree keeps its own event track.
@@ -869,7 +872,7 @@ impl Midnight {
             }
         }
         self.write(cast);
-        animation_sounds::cross(&self.instances, &self.nodes, &mut self.animation_sound_receipts);
+        animation_sounds::cross(&self.instances, &self.nodes, &mut self.animation_sound_receipts,&mut self.animation_effect_receipts);
         Ok(messages)
     }
 

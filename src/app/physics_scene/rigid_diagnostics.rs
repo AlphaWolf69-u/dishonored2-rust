@@ -4,6 +4,30 @@ use crate::gameplay::{collision_hit::ShapeHitInfo, entity_lifetime::EntityId};
 use std::fmt::Write;
 
 impl PhysicsScene {
+    /// Reads the accepted solver's retained rows; never submits a query or
+    /// substitutes the level navigation mesh for the actual physical world.
+    pub(in crate::app) fn observe_rigid_world_support(
+        &self,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+        id: EntityId,
+    ) -> Result<Option<crate::gameplay::physics_world::contacts::WorldSupportObservation>, String> {
+        use crate::gameplay::component_state::entity_lookup::ComponentLookupState;
+        if live.get(id).is_none() { return Err("world-support entity generation retired".into()); }
+        let index = *self.shared_indices.get(&id).ok_or("world-support Scene identity absent")?;
+        let entity = self.entities.get(index).ok_or("world-support Scene entity absent")?;
+        let range = self.rigid_class_range()?;
+        let Some(handle) = entity.components.find_component(range, [0x20, 0], |handle| {
+            let component = self.rigid_component(handle)?;
+            Ok(ComponentLookupState {
+                flags: component.owner.flags,
+                start_phases: self.declarations.get(&handle.packed()).map(|decl| decl.scheduling.start_phases),
+            })
+        })? else { return Ok(None) };
+        let Some(body) = self.rigid_component(handle)?.body() else { return Ok(None) };
+        let storage = self.world.read().map_err(|_| "world-support physics owner poisoned")?;
+        Ok(self.simulation.as_ref().and_then(|driver| driver.observe_world_support(&storage.storage, body)))
+    }
+
     pub(in crate::app) fn write_rigid_diagnostics(
         &self,
         world: &bevy::prelude::World,

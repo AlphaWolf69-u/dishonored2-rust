@@ -43,6 +43,13 @@ pub struct EntityEffectContext {
     ///439480 contact-stimulus completion callback; it is not a clock.
     pub contact_stimulus_enabled:Option<bool>,
 }
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ComponentParameters {
+    pub target: Option<(crate::gameplay::event_graph::EntityReference, String)>,
+    pub dont_spawn_if_culled: bool,
+    pub stop_on_target_removal: bool,
+    pub stop_on_parent_removal: bool,
+}
 #[derive(Clone)]
 pub struct DynamicEffect {
     pub entity_context: Option<EntityEffectContext>,
@@ -57,6 +64,10 @@ pub struct DynamicEffect {
     /// asynchronous preparation, without resolving a moving parent later.
     pub initial_world: Option<ReferenceFrame>,
     pub explicit_target: Option<crate::gameplay::particles::beam::BeamTarget>,
+    ///4b1880/4b20b0 retain a target entity/tag separately from the bound
+    ///origin. The target continues moving even when updatePosition is false.
+    pub component_parameters: Option<ComponentParameters>,
+    pub reference_event: Option<(u64,bool,bool)>,
     /// Keeps sub-effect dependencies alive through stopped particle tails.
     pub sources: Arc<WorldFxSources>,
     /// The component's acknowledgement remains live through real render,
@@ -70,9 +81,10 @@ pub struct DynamicEffect {
 pub struct DynamicEffectLifetime {
     pub once: bool,
     pub completed: std::sync::atomic::AtomicBool,
+    pub detached: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl DynamicEffectLifetime {
-    pub fn new(once: bool) -> Self { Self { once, completed: std::sync::atomic::AtomicBool::new(false) } }
+    pub fn new(once: bool) -> Self { Self { once, completed: std::sync::atomic::AtomicBool::new(false), detached: None } }
 }
 
 /// Request-scoped GPU material preparation. A completion acknowledges only

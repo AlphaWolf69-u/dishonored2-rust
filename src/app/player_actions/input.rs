@@ -291,6 +291,7 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
         actions.selection_requests.extend(waiting);
         for mut ready in actions.take_ready_powers() {
             if inventory.quantity(&ready.item.path) == 0 {
+                if let Err(error)=ready.cancel_animation_audio(world){actions.startup_error=Some(error);}
                 continue;
             }
             if !ready.can_apply(player) {
@@ -298,6 +299,7 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 continue;
             }
             if !ready.is_current(player) {
+                if let Err(error)=ready.cancel_animation_audio(world){actions.startup_error=Some(error);}
                 let entity = ready.item.equipment.clone();
                 actions.selection_requests.push(ShortcutSelection {
                     equipment: ready.item.path.to_string(),
@@ -314,6 +316,7 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 }
                 Err(error) => {
                     let path = ready.item.path.to_string();
+                    if let Err(release)=ready.cancel_animation_audio(world){actions.startup_error=Some(release);}
                     eprintln!("Owned power dependencies {path}: {error}");
                     actions
                         .startup_error
@@ -323,12 +326,16 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 }
             }
             let path = ready.item.path.to_string();
+            actions.animation_audio.transfer(ready.audio_scope.take());
             match ready.stage(player) {
                 Ok((target, activation)) => {
                     actions.power_activations.insert(path, activation);
                     actions.power_targets.push(target);
                 }
                 Err(error) => eprintln!("Power selection {path}: {error}"),
+            }
+            if let Some(id)=super::super::player_lifetime::id(world){
+                if let Err(error)=actions.animation_audio.prepare(world,id,player){actions.startup_error=Some(error);}
             }
         }
     }

@@ -267,14 +267,18 @@ fn modifiers(
             .transpose()?
             .flatten()
             == Some(id);
+    Ok(player_radius_modifiers(player, &request.declaration, owned))
+}
+fn player_radius_modifiers(player: &crate::gameplay::player::Player, declaration: &Declaration, owned: bool)
+    -> (crate::gameplay::explosions::RadiusModifiers, bool) {
     let attribute = |name| player.attributes.0.get(name).copied().unwrap_or(1.);
-    let source_radius = match request.declaration.source {
+    let source_radius = match declaration.source {
         1 => attribute("ARK_ATTRIBUTE_INCENDIARY_BOLT_RANGE_FACTOR"),
         2 => attribute("ARK_ATTRIBUTE_BOTTLE_EXPLOSION_RANGE_FACTOR"),
         3 => attribute("ARK_ATTRIBUTE_HOWLING_BOLTS_RANGE_FACTOR"),
         _ => 1.,
     };
-    let player_owned_radius = if owned && matches!(request.declaration.source, 2 | 5 | 6) {
+    let player_owned_radius = if owned && matches!(declaration.source, 2 | 5 | 6) {
         attribute("ARK_ATTRIBUTE_PLAYER_INFLICTED_EXPLOSION_RADIUS_FACTOR")
     } else {
         1.
@@ -287,13 +291,20 @@ fn modifiers(
             .copied()
             .unwrap_or(0.)
             > 0.;
-    Ok((
+    (
         crate::gameplay::explosions::RadiusModifiers {
             source_radius,
             player_owned_radius,
         },
         full,
-    ))
+    )
+}
+///7b3630's true/false/true radius request, used by the real held-grenade HUD.
+pub(super) fn player_owned_damage_radius(world: &World, declaration: &Declaration) -> Result<f32,String> {
+    let player=world.get_resource::<super::player::PlayerState>().and_then(|state|state.player.as_ref())
+        .ok_or("held grenade radius requires the actual Player attribute owner")?;
+    let modifiers=player_radius_modifiers(player,declaration,true).0;
+    Ok((declaration.radius * declaration.player_radius_scale) * (modifiers.source_radius * modifiers.player_owned_radius))
 }
 
 ///651020's real two-material SurfaceImpact packet uses the same ContactFX

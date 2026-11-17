@@ -303,7 +303,16 @@ pub(in crate::app) fn publish(world:&mut World){
         match result{
             Ok(true)=>{},
             Ok(false)=>{owner.deliveries.push_front(delivery);break;}
-            Err(error)=>{owner.error=Some(error);owner.deliveries.push_front(delivery);break;}
+            Err(error)=>{
+                //Retain the actual constructor failure before another shared
+                //startup pass can report a secondary error from its entered
+                //component. One receipt per failed action, not per retry.
+                if owner.error.is_none(){
+                    crate::platform::client_diagnostics::record(&format!("Throwable callback failed for {:?}: {error}",delivery.id));
+                    owner.error=Some(error);
+                }
+                owner.deliveries.push_front(delivery);break;
+            }
         }
     }
     if let Err(error)=prune(world,&mut owner){owner.error=Some(error);}

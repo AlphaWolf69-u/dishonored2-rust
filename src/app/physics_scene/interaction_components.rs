@@ -628,6 +628,18 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if handle.class_id == self.scene.classes[57] {
+                return self.scene.initialize_fx_component(self.live, handle);
+            }
+            if handle.class_id == self.scene.classes[55] {
+                return self.scene.initialize_openable(
+                    self.world.as_deref_mut().ok_or("Openable Initialize requires published world")?,
+                    self.live, self.events, registry, handle,
+                );
+            }
+            if handle.class_id == self.scene.classes[56] {
+                return self.scene.initialize_retargeting(handle);
+            }
             if self.scene.is_flash_class(handle.class_id) {
                 return self.scene.initialize_flash_component(self.live,self.events,handle);
             }
@@ -704,6 +716,17 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if handle.class_id == self.scene.classes[57] {
+                self.scene.start(handle, registry)?;
+                return self.scene.start_fx_component(self.live, self.events, handle);
+            }
+            if handle.class_id == self.scene.classes[55] {
+                self.scene.start(handle, registry)?;
+                return self.scene.start_openable(
+                    self.world.as_deref_mut().ok_or("Openable Start requires published world")?,
+                    self.live, self.events, registry, handle,
+                );
+            }
             if handle.class_id == self.scene.classes[4] {
                 //708340 can create objects after an acknowledged708620 Stop
                 //on this same component generation. Retain pending Stops.
@@ -1001,6 +1024,14 @@ impl PhysicsScene {
             membership!(self.flash_surfaces)
         } else if handle.class_id==self.classes[53] {
             membership!(self.interactive_maps)
+        } else if handle.class_id==self.classes[54] {
+            membership!(self.cooking_surfaces)
+        } else if handle.class_id==self.classes[55] {
+            membership!(self.openables)
+        } else if handle.class_id==self.classes[56] {
+            membership!(self.retargeters)
+        } else if handle.class_id==self.classes[57] {
+            membership!(self.fx_components)
         } else if handle.class_id == self.classes[18] {
             membership!(self.damage_zones)
         } else {

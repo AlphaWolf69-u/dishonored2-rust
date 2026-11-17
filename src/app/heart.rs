@@ -32,6 +32,10 @@ pub(super) struct Hearts {
     view: Option<bevy::ecs::query::QueryState<&'static Projection, With<Camera3d>>>,
 }
 impl Hearts {
+    /// Borrow the real selected Speech event, never the Heart equip event.
+    pub(super) fn current_bark_event(&self,id:EntityId)->Option<(u32,Emitter)>{
+        self.entries.get(&id)?.device.as_ref()?.current_voice_event(id)
+    }
     pub(super) fn write_diagnostics(&self, report: &mut String) {
         use std::fmt::Write;
         let _ = writeln!(report, "  Heart owners={} listener={:?}", self.entries.len(), self.subscription);

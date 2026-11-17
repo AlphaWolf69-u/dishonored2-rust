@@ -23,7 +23,8 @@ pub(super) fn finish_borrowed(world:&mut World,scene:&mut super::physics_scene::
     if let Some(owner)=ai_worlds{world.insert_resource(owner);}
     if let Some(owner)=hearts{world.insert_resource(owner);}
     if let Some(owner)=statistics{world.insert_resource(owner);}
-    result
+    result?;
+    scene.process_openable_uses(world,live,events)
 }
 
 /// Preserve real callback failures at outgoing lifetime boundaries.
@@ -51,7 +52,7 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
         {
             world.resource_scope(
                 |world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
-                    if world.contains_resource::<super::player::PlayerState>() {
+                    let result=if world.contains_resource::<super::player::PlayerState>() {
                         world.resource_scope(|world,mut player:Mut<super::player::PlayerState>| {
                             scene.pump_entity_messages(world.resource::<LiveEntities>(),&mut events,
                                 world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),player.player.as_mut(), ai_worlds.as_mut(),hearts.as_mut(),statistics.as_mut())
@@ -59,7 +60,9 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
                     } else {
                         scene.pump_entity_messages(world.resource::<LiveEntities>(),&mut events,
                             world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),None, ai_worlds.as_mut(),hearts.as_mut(),statistics.as_mut())
-                    }
+                    };
+                    result?;
+                    world.resource_scope(|world,live:Mut<LiveEntities>|scene.process_openable_uses(world,&live,&mut events))
                 },
             )
         } else {

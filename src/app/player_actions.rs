@@ -44,6 +44,15 @@ struct Bank {
     base: usize,
     animations: Vec<crate::edge_animation::EdgeAnimation>,
     aliases: HashMap<String, usize>,
+    animation_sounds:player::midnight::AnimationSoundBank,
+}
+impl Bank {
+    fn prepare(clips:Clips<'_>,snapshot:Snapshot)->Result<Self,String> {
+        let mut animation_sounds=player::midnight::AnimationSoundBank::default();
+        for (alias,&clip) in &clips.loaded {animation_sounds.prepare(0,snapshot.base+clip,clips.rig,alias)?;}
+        Ok(Self{managed_entity:snapshot.managed_entity,model:snapshot.model,base:snapshot.base,
+            animations:clips.animations,aliases:clips.loaded,animation_sounds})
+    }
 }
 
 struct Pending {
@@ -69,6 +78,8 @@ struct PendingOwned {
 }
 
 pub(super) struct ReadyPower {
+    audio_scope:Option<Arc<str>>,
+    audio_prepared:bool,
     pub item: Arc<PickableItem>,
     pub equipment: player::weapons::Equipment,
     pub id: i32,
@@ -127,7 +138,20 @@ type BlinkOwner = OwnedFamily<super::blink::Runtime>;
 type FarReachOwner = OwnedFamily<super::far_reach::Runtime>;
 
 impl ReadyPower {
+    fn prepare_animation_audio(&mut self,world:&mut World)->Result<bool,String>{
+        if let Some(scope)=&self.audio_scope{return super::audio::events_ready(world,scope)}
+        if self.audio_prepared{return Ok(true)}
+        let mut events=Vec::new();
+        if let Some(arm)=&self.arm{arm.animation_sounds.visit(|_,sound|events.push(sound.event.clone()));}
+        for bank in self.banks.iter().take(3).flatten(){bank.animation_sounds.visit(|_,sound|events.push(sound.event.clone()));}
+        let ready=super::audio::player_animation::prepare_dependency(world,&self.reservation_key,&mut self.audio_scope,events)?;
+        self.audio_prepared=true;Ok(ready)
+    }
+    fn cancel_animation_audio(&mut self,world:&mut World)->Result<(),String>{
+        super::audio::player_animation::cancel_dependency(world,&mut self.audio_scope)
+    }
     fn publish_dependencies(&mut self, world: &mut World) -> Result<bool, String> {
+        if !self.prepare_animation_audio(world)?{return Ok(false)}
         if let Some(family) = self.family.take() {
             match family {
                 PreparedFamily::BendTime(sources) => world
@@ -205,11 +229,13 @@ impl ReadyPower {
                 .map(|(alias, index)| (alias, bank.base + index));
             match target {
                 0 => {
+                    player.body.animation_sounds.absorb(bank.animation_sounds);
                     player.body.animations.extend(bank.animations);
                     player.body.animation_aliases.extend(aliases);
                 }
                 1 | 2 => {
                     let arm = &mut player.body.arms[target - 1];
+                    arm.animation_sounds.absorb(bank.animation_sounds);
                     arm.animations.extend(bank.animations);
                     arm.animation_aliases.extend(aliases);
                 }
@@ -271,6 +297,8 @@ impl ReadyPower {
 /// CPU preparation is complete, but the material/image and render owners
 /// must admit the actual selected model before apply changes the live hand.
 pub(super) struct ReadyEquipment {
+    audio_scope:Option<Arc<str>>,
+    audio_prepared:bool,
     pub item: Arc<PickableItem>,
     pub descriptor: Arc<Descriptor>,
     pub tree: Option<EquipmentTree>,
@@ -281,6 +309,19 @@ pub(super) struct ReadyEquipment {
 }
 
 impl ReadyEquipment {
+    pub(super) fn prepare_animation_audio(&mut self,world:&mut World,entity:crate::gameplay::entity_lifetime::EntityId)->Result<bool,String>{
+        if let Some(scope)=&self.audio_scope{return super::audio::events_ready(world,scope)}
+        if self.audio_prepared{return Ok(true)}
+        let mut events=Vec::new();
+        if let Some(arm)=&self.arm{arm.animation_sounds.visit(|_,sound|events.push(sound.event.clone()));}
+        for bank in self.banks.iter().take(3).flatten(){bank.animation_sounds.visit(|_,sound|events.push(sound.event.clone()));}
+        let ready=super::audio::player_animation::prepare_dependency(world,&format!("player-equipment:{entity:?}"),&mut self.audio_scope,events)?;
+        self.audio_prepared=true;Ok(ready)
+    }
+    pub(super) fn cancel_animation_audio(&mut self,world:&mut World)->Result<(),String>{
+        super::audio::player_animation::cancel_dependency(world,&mut self.audio_scope)
+    }
+    pub(super) fn take_animation_audio(&mut self)->Option<Arc<str>>{self.audio_scope.take()}
     pub fn side(&self) -> usize {
         self.side
     }
@@ -330,11 +371,13 @@ impl ReadyEquipment {
                 .map(|(alias, index)| (alias, bank.base + index));
             match target {
                 0 => {
+                    player.body.animation_sounds.absorb(bank.animation_sounds);
                     player.body.animations.extend(bank.animations);
                     player.body.animation_aliases.extend(aliases);
                 }
                 1 | 2 => {
                     let arm = &mut player.body.arms[target - 1];
+                    arm.animation_sounds.absorb(bank.animation_sounds);
                     arm.animations.extend(bank.animations);
                     arm.animation_aliases.extend(aliases);
                 }
@@ -407,6 +450,8 @@ pub(super) struct PlayerActions {
     equipment_admissions: HashSet<String>,
     startup_error: Option<String>,
     motion_blur: Option<MotionBlur>,
+    fx: fx::Runtime,
+    pub(in crate::app) animation_audio: super::audio::player_animation::Admission,
     metadata: HashMap<String, Arc<crate::assets::equipment::Metadata>>,
     metadata_failed: HashSet<String>,
     metadata_order: VecDeque<String>,
@@ -597,6 +642,8 @@ impl PlayerActions {
             startup_error: None,
             motion_blur: player::combat_fx::motion_blur_source(&declarations.fx).map(|path|
                 MotionBlur { path, scope: None, started: false, ready: false, closed: false }),
+            fx: fx::Runtime::new(&declarations.fx)?,
+            animation_audio: Default::default(),
             metadata: Default::default(),
             metadata_failed: Default::default(),
             metadata_order: Default::default(),
@@ -668,6 +715,7 @@ impl PlayerActions {
 
     pub fn startup_pending(&self) -> bool {
         !self.rehydrated
+            || !self.fx.ready
             || self.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed)
             || !self.loading.is_empty()
             || !self.power_loading.is_empty()
@@ -680,6 +728,7 @@ impl PlayerActions {
             || !self.prepared_owned_metadata.is_empty()
             || !self.owned_targets.is_empty()
     }
+    pub(super) fn world_screen_fx_ready(&self) -> bool { self.fx.ready }
     pub(in crate::app) fn debug_ready_targets(&self,player:&Player)->String {
         self.ready.iter().map(|ready|format!("ready[{}] side={} can_apply={} current={} visual={} Heart={} melee={} throwable={} wanted={}",
             ready.item.path,ready.side(),ready.can_apply(player),ready.is_current(player),ready.descriptor.visual.is_some(),
@@ -691,6 +740,11 @@ impl PlayerActions {
     /// Merely dropping a task does not acknowledge Catalog scope retirement.
     pub fn retire_acquisitions(&mut self) -> bool {
         self.close_acquisitions();
+        // This path can run before gameplay Stop during failed loading. Keep
+        // accepted event leases in the same admission owner until its Audio
+        // retirement, rather than losing a reservation key with a Ready task.
+        for ready in &mut self.ready {self.animation_audio.transfer(ready.audio_scope.take());}
+        for ready in &mut self.power_ready {self.animation_audio.transfer(ready.audio_scope.take());}
         self.ready.clear();
         self.power_ready.clear();
         self.prepared_owned_equipment.clear();
@@ -1547,6 +1601,10 @@ impl PlayerActions {
             .flatten()
             .cloned()
             .collect();
+            //86c6a0 casts the selected left equipment's authored response
+            //alongside the sword scene, including equipment supplied by a
+            //power component. Keep it in this same admission/clip lease.
+            paths.extend(equipment.slash_midnights.iter().flatten().cloned());
             if let Some(prepared) = &far_reach {
                 paths.extend(prepared.scene_paths().map(str::to_owned));
             }
@@ -1559,17 +1617,11 @@ impl PlayerActions {
             let banks = clips
                 .into_iter()
                 .zip(snapshots)
-                .map(|(clips, snapshot)| {
-                    clips.zip(snapshot).map(|(clips, snapshot)| Bank {
-                        managed_entity: snapshot.managed_entity,
-                        model: snapshot.model,
-                        base: snapshot.base,
-                        animations: clips.animations,
-                        aliases: clips.loaded,
-                    })
-                })
-                .collect();
+                .map(|(clips,snapshot)|clips.zip(snapshot).map(|(clips,snapshot)|Bank::prepare(clips,snapshot)).transpose())
+                .collect::<Result<Vec<_>,String>>()?;
             Ok(ReadyPower {
+                audio_scope:None,
+                audio_prepared:false,
                 item,
                 equipment,
                 id,
@@ -1746,17 +1798,11 @@ impl PlayerActions {
             let banks = clips
                 .into_iter()
                 .zip(snapshots)
-                .map(|(clips, snapshot)| {
-                    clips.zip(snapshot).map(|(clips, snapshot)| Bank {
-                        managed_entity: snapshot.managed_entity,
-                        model: snapshot.model,
-                        base: snapshot.base,
-                        animations: clips.animations,
-                        aliases: clips.loaded,
-                    })
-                })
-                .collect();
+                .map(|(clips,snapshot)|clips.zip(snapshot).map(|(clips,snapshot)|Bank::prepare(clips,snapshot)).transpose())
+                .collect::<Result<Vec<_>,String>>()?;
             Ok(ReadyEquipment {
+                audio_scope:None,
+                audio_prepared:false,
                 item,
                 descriptor,
                 tree,
@@ -2011,7 +2057,34 @@ pub(super) fn retire_acquisitions(world: &mut World) -> bool {
 ///6846b0 ->8120b0: start the authored persistent, attached PlayerFX through
 ///the same requested/playing source owner as other Player effects. This runs
 ///during loading so its real resource admission participates in that barrier.
+impl PlayerActions {
+    pub(in crate::app) fn cancel_pending_animation_audio(&mut self,world:&mut World)->Result<(),String>{
+        for ready in &mut self.ready{ready.cancel_animation_audio(world)?;}
+        for ready in &mut self.power_ready{ready.cancel_animation_audio(world)?;}
+        Ok(())
+    }
+}
 pub(super) fn prepare_fx(world: &mut World) {
+    if let Err(error)=super::audio::prepare_player_animations(world){
+        if let Some(mut actions)=world.get_resource_mut::<PlayerActions>(){actions.startup_error=Some(format!("Player animation Audio: {error}"));}
+        return;
+    }
+    if let Err(error) = super::audio::prepare_player_breath(world) {
+        if let Some(mut actions) = world.get_resource_mut::<PlayerActions>() {
+            actions.startup_error = Some(format!("Player breath: {error}"));
+        }
+        return;
+    }
+    let Some(player) = super::player_lifetime::id(world) else { return };
+    if world.contains_resource::<PlayerActions>() && world.contains_resource::<super::usable_effects::EffectRequests>() {
+        let result = world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
+            if actions.cancelled.load(Ordering::Acquire) || actions.startup_error.is_some() { return Ok(()); }
+            actions.fx.prepare(world, player)
+        });
+        if let Err(error) = result {
+            world.resource_mut::<PlayerActions>().startup_error = Some(format!("Player FX manager: {error}"));
+        }
+    }
     let Some(actions) = world.get_resource::<PlayerActions>() else { return };
     if actions.cancelled.load(Ordering::Acquire) || actions.startup_error.is_some()
         || !actions.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed) { return; }
@@ -2046,6 +2119,13 @@ pub(super) fn prepare_fx(world: &mut World) {
 /// Both the selected component and a detached, still-moving Blink are real
 /// consumers; equipment selection alone is not their completion signal.
 pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
+    super::audio::retire_player_animations(world)?;
+    super::audio::retire_player_breath(world)?;
+    if world.contains_resource::<PlayerActions>() && world.contains_resource::<super::usable_effects::EffectRequests>() {
+        world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
+            actions.fx.retire(&mut world.resource_mut::<super::usable_effects::EffectRequests>());
+        });
+    }
     let Some(actions) = world.get_resource::<PlayerActions>() else {
         return Ok(());
     };
@@ -2136,6 +2216,8 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
 }
 
 mod input;
+mod fx;
+pub(super) use fx::update as update_player_fx;
 pub(super) use input::{
     advance_selection, dispatch_automatic_potion, dispatch_potions, dispatch_shortcuts,
     install_ranged, player_frame, prepare_animation_frame, register_ranged,

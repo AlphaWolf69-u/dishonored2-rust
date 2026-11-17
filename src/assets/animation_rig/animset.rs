@@ -13,6 +13,7 @@ struct StoredAlias {
     movement: Option<std::num::NonZeroU32>,
     markers: Option<std::num::NonZeroU32>,
     sounds: Option<std::num::NonZeroU32>,
+    effects: Option<std::num::NonZeroU32>,
 }
 
 pub(crate) struct AnimSet {
@@ -24,6 +25,7 @@ pub(crate) struct AnimSet {
     marker_groups: Box<[Box<[crate::edge_animation::AnimMarker]>]>,
     marker_error: Option<Box<str>>,
     sound_groups: Box<[Box<[super::animset_sounds::Sound]>]>,
+    effect_groups: Box<[Box<[super::animset_effects::Effect]>]>,
     source_bytes: usize,
     // A composable digest is retained only for the existing rig diagnostic;
     // ordinary marker lookup reads its selected declaration lazily.
@@ -31,6 +33,10 @@ pub(crate) struct AnimSet {
 }
 
 impl AnimSet {
+    pub(crate) fn effects(&self,name:&str)->&[super::animset_effects::Effect] {
+        self.aliases.get(name).and_then(|alias|alias.effects)
+            .and_then(|index|self.effect_groups.get(index.get() as usize-1)).map_or(&[],|effects|effects.as_ref())
+    }
     pub(crate) fn sounds(&self, name: &str) -> &[super::animset_sounds::Sound] {
         self.aliases.get(name).and_then(|alias| alias.sounds)
             .and_then(|index| self.sound_groups.get(index.get() as usize - 1))
@@ -61,6 +67,9 @@ impl AnimSet {
             + self.sound_groups.len() * std::mem::size_of::<Box<[super::animset_sounds::Sound]>>()
             + self.sound_groups.iter().map(|sounds| sounds.len() * std::mem::size_of::<super::animset_sounds::Sound>()
                 + sounds.iter().map(|sound| sound.joint.len()).sum::<usize>()).sum::<usize>()
+            + self.effect_groups.len()*std::mem::size_of::<Box<[super::animset_effects::Effect]>>()
+            + self.effect_groups.iter().map(|effects|effects.len()*std::mem::size_of::<super::animset_effects::Effect>()
+                +effects.iter().map(|effect|effect.effect.len()+effect.joint.len()+effect.target_joint.len()).sum::<usize>()).sum::<usize>()
             + self.aliases.iter().map(|(name, path)| name.len() + path.animation.len()).sum::<usize>()
     }
 }
@@ -281,6 +290,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     let mut marker_groups = Vec::new();
     let mut marker_error = None;
     let mut sound_groups = Vec::new();
+    let mut effect_groups=Vec::new();
     let parsed = {
         let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
         let tokens = crate::entities::declaration_lexemes(&source)?;
@@ -301,7 +311,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
                 }
             }
             aliases.insert(name.into_boxed_str(), StoredAlias { animation: alias.animation.into_boxed_str(),
-                _force_load: alias.force_load, _force_zero_speed: alias.force_zero_speed, movement: alias.movement, markers: None, sounds: None });
+                _force_load: alias.force_load, _force_zero_speed: alias.force_zero_speed, movement: alias.movement, markers: None, sounds: None, effects:None });
             Ok(())
         })?;
         movements.reserve_exact(tokens.iter().filter(|token| **token == "aliasRef").count());
@@ -330,13 +340,21 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
                 marker_groups.push(markers.into_boxed_slice());
             }
         }
-        super::animset_sounds::read(catalog, &tokens, |animation, sounds| {
-            let matching = |alias: &StoredAlias| alias.animation.replace('\\', "/").eq_ignore_ascii_case(animation);
-            if aliases.values().any(|alias| matching(alias)) {
-                let index = u32::try_from(sound_groups.len()).ok().and_then(|value| value.checked_add(1))
-                    .and_then(std::num::NonZeroU32::new).ok_or("too many animation sound groups")?;
-                for alias in aliases.values_mut().filter(|alias| matching(alias)) { alias.sounds = Some(index); }
-                sound_groups.push(sounds.into_boxed_slice());
+        super::animset_sounds::read(catalog,&tokens,|animation,sounds,effects| {
+            let matching=|alias:&StoredAlias|alias.animation.replace('\\',"/").eq_ignore_ascii_case(animation);
+            if aliases.values().any(|alias|matching(alias)) {
+                if !sounds.is_empty() {
+                    let index=u32::try_from(sound_groups.len()).ok().and_then(|value|value.checked_add(1))
+                        .and_then(std::num::NonZeroU32::new).ok_or("too many animation sound groups")?;
+                    for alias in aliases.values_mut().filter(|alias|matching(alias)) {alias.sounds=Some(index);}
+                    sound_groups.push(sounds.into_boxed_slice());
+                }
+                if !effects.is_empty() {
+                    let index=u32::try_from(effect_groups.len()).ok().and_then(|value|value.checked_add(1))
+                        .and_then(std::num::NonZeroU32::new).ok_or("too many animation FX groups")?;
+                    for alias in aliases.values_mut().filter(|alias|matching(alias)) {alias.effects=Some(index);}
+                    effect_groups.push(effects.into_boxed_slice());
+                }
             }
             Ok(())
         })?;
@@ -355,7 +373,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     let set = {
         let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
         Arc::new(AnimSet { path: path.clone(), aliases, movements: movements.into_boxed_slice(),
-            marker_groups: marker_groups.into_boxed_slice(), marker_error, sound_groups: sound_groups.into_boxed_slice(), source_bytes: source.len(), source_crc })
+            marker_groups: marker_groups.into_boxed_slice(), marker_error, sound_groups: sound_groups.into_boxed_slice(), effect_groups:effect_groups.into_boxed_slice(), source_bytes: source.len(), source_crc })
     };
     // Current callers are actual model/Rig acquisitions in level scope. A
     // future common preloader must pass its actual allocator scope here.

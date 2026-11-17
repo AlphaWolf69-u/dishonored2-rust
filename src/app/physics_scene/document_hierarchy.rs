@@ -21,7 +21,6 @@ pub(super) struct Binding {
     pub(super) joint: i16,
     child_actor: (ComponentHandle, u32),
     parent_actor: (ComponentHandle, u32),
-    initial_render_frame: ReferenceFrame,
     last_render_frame: Option<ReferenceFrame>,
 }
 
@@ -42,7 +41,7 @@ impl DocumentHierarchy {
         self.ancestors.entry(parent).or_insert((parent_frame,parent_placement));
         self.render_frames.entry(parent).or_insert(parent_frame);
         self.render_frames.entry(child).or_insert(initial);
-        self.bindings.push(Binding {child,parent,parent_placement,joint,child_actor,parent_actor,initial_render_frame:initial,last_render_frame:None});
+        self.bindings.push(Binding {child,parent,parent_placement,joint,child_actor,parent_actor,last_render_frame:None});
     }
 }
 
@@ -142,7 +141,7 @@ pub(in crate::app) fn joint_requests(
             };
             if matches!(
                 entities::components::entry_class(entry, &declarations)?.as_deref(),
-                Some("cpntrigidbody" | "cpntthrowable" | "cpntrigidbodythrowable" | "cpntaudio" | "cpnttrigger")
+                Some("cpntrigidbody" | "cpntthrowable" | "cpntrigidbodythrowable" | "cpntaudio" | "cpnttrigger" | "cpntopenable")
             ) {
                 seeds.push(definition.id.as_str());
                 break;
@@ -268,7 +267,6 @@ impl PhysicsScene {
             }
             let child = indices[&binding.entity_id];
             let parent = indices[&binding.parent];
-            let initial_render_frame = self.entities[child].frame.pose;
             self.document_hierarchy.ancestors.entry(parent).or_insert((self.entities[parent].frame.pose, placements.get(binding.parent.as_str()).copied()));
             self.document_hierarchy.render_frames.insert(parent, self.entities[parent].frame.pose);
             self.document_hierarchy.render_frames.insert(child, self.entities[child].frame.pose);
@@ -324,7 +322,7 @@ impl PhysicsScene {
             self.entities[child].entity_flags |= 0x80;
             self.document_hierarchy.bindings.push(Binding { child, parent, parent_placement: placement, joint,
                 child_actor: (child_handle, child_generation), parent_actor: (parent_handle, parent_generation),
-                initial_render_frame, last_render_frame: None });
+                last_render_frame: None });
         }
         eprintln!("DOCUMENT_HIERARCHY phase=prepared bindings={} ancestors={} joints={}",
             self.document_hierarchy.bindings.len(), self.document_hierarchy.ancestors.len(),
@@ -434,7 +432,13 @@ impl PhysicsScene {
             // 878c60/878d10 make808880 return immediately for hidden/retired
             // render entities. Otherwise publish only actual changed inputs.
             if child.entity_flags & 3 != 0 || binding.last_render_frame.is_some_and(|last| last.position == current.position && last.basis == current.basis) { continue; }
-            let delta = super::rigid_actor::render_delta(binding.initial_render_frame, current)?;
+            //808880 publishes a world pose. ModelPose is the host's delta
+            //against the original placement, exactly as the ordinary rigid
+            //publisher uses. A runtime attachment pose is not that baseline:
+            //pulling an object before binding must not rebase it to its spawn.
+            let initial = *self.initial_rigid_frames.get(&binding.child)
+                .ok_or("bound render original rigid frame absent")?;
+            let delta = super::rigid_actor::render_delta(initial, current)?;
             pending.0.try_reserve(1).map_err(|error| format!("bound render publication: {error}"))?;
             pending.0.push(super::super::model_motion::ModelPose { placement, delta });
             binding.last_render_frame = Some(current);

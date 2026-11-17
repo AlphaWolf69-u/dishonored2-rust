@@ -207,6 +207,7 @@ impl PhysicsScene {
                 };
                 if self.interaction_pickable(live, entity)?.is_none()
                     && self.interaction_usable(live, entity)?.is_none()
+                    && self.interaction_openable(live,entity)?.is_none()
                 {
                     continue;
                 }

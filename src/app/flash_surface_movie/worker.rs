@@ -50,15 +50,36 @@ impl Worker {
                 let frame=movie.frame();
                 let _=movie.events.send(Event::Configured(key,frame));
             }
-            Operation::Tick(dt)=>{
+            Operation::Cooking(command)=>{
+                let movie=self.movies.get_mut(&key).ok_or("GrenadeCooking command targeted an unloaded world movie")?;
+                match command {
+                    super::super::flash_surfaces::CookingCommand::Initialize{value,kind} => {
+                        movie.player.call_root_method("_C_Init",&[f64::from(value).into(),kind.into()])
+                            .map_err(|error|movie.player.describe(&error))?;
+                    }
+                    super::super::flash_surfaces::CookingCommand::Update(_) => return Err("GrenadeCooking scalar bypassed the ordinary movie tick".into()),
+                };
+                movie.check_uncaught()?;
+                let frame=movie.frame();
+                let _=movie.events.send(Event::Configured(key,frame));
+            }
+            Operation::Tick(dt,cooking)=>{
                 let movie=self.movies.get_mut(&key).ok_or("tick targeted an unloaded world movie")?;
+                if let Some(value)=cooking {
+                    movie.player.call_root_method("_C_UpdateGauge",&[f64::from(value).into()])
+                        .map_err(|error|movie.player.describe(&error))?;
+                }
                 movie.pending+=dt;movie.elapsed+=dt;
-                let frame=if movie.pending>=movie.interval {
+                let advance=movie.pending>=movie.interval;
+                if advance {
                     let elapsed=std::mem::take(&mut movie.elapsed);
                     movie.pending=(movie.pending-movie.interval).max(0.);
                     movie.player.tick(elapsed).map_err(|error|movie.player.describe(&error))?;
-                    Some(movie.frame())
-                } else {None};
+                }
+                //A real host setter changes display properties even between
+                //timeline frames. Draw those changes in this ordinary tick;
+                //never submit a second gauge-only pass or advance twice.
+                let frame=(advance||cooking.is_some()).then(||movie.frame());
                 for (name,args) in movie.player.take_notifications() {
                     if name=="PostSoundEvent" {
                         if let Some(value)=args.first(){let id=crate::flash::avm2::value::to_uint32(value.primitive_to_number());

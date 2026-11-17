@@ -60,6 +60,11 @@ pub(super) struct PhysicsFrameDriver {
     last_solver: Option<SolverParameters>,
 }
 impl PhysicsFrameDriver {
+    pub(super) fn observe_world_support(&self, storage: &WorldStorage, body: u32) -> Option<crate::gameplay::physics_world::contacts::WorldSupportObservation> {
+        if !self.is_idle() { return None; }
+        self.contacts.observe_world_support(storage, body, self.completed?)
+    }
+
     pub(super) fn write_body_diagnostics(&self, storage: &WorldStorage, body: u32, report: &mut String) {
         self.contacts.write_body_diagnostics(storage, body, report);
     }

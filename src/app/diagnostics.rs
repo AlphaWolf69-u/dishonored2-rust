@@ -583,6 +583,8 @@ pub(super) fn collision_report(
                 let mut detail=String::new();
                 super::breakables::write_diagnostics(world,owner_eye,&mut detail);
                 super::flash_surfaces::write_diagnostics(world,&mut detail);
+                super::world_models::write_query_diagnostics(world,&mut detail);
+                particle_diagnostics::write(world,owner_eye,&mut detail);
                 let last_hit=world.get_resource::<super::melee::Melee>()
                     .and_then(|owner| owner.diagnostic_last_contact());
                 if let Some(scene)=world.get_resource::<super::physics_scene::PhysicsScene>() {
@@ -641,3 +643,5 @@ fn swimming_clip_aliases(
     }
     Ok(result)
 }
+#[path = "particle_diagnostics.rs"]
+mod particle_diagnostics;

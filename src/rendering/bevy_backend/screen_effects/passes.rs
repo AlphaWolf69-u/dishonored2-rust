@@ -9,6 +9,32 @@ use bevy::{
 };
 use std::collections::HashMap;
 
+///Present only for the view's real WorldFX quad publication. Particle-only
+///vector accumulation has no screen-quad owner, exposure binding or clock.
+pub(in crate::rendering::bevy_backend) struct QuadInputs<'a> {
+    pub gpu:&'a mut super::super::screen_quads::ScreenQuads,
+    pub frame:&'a crate::gameplay::effects::screen_quad::Frame,
+    pub exposure:&'a Buffer,
+    pub shader_time:f32,
+}
+
+/// Opt-in cold pipeline timing; cached draws never enter this scope.
+pub(in crate::rendering::bevy_backend) fn trace_pipeline_start() -> Option<(std::time::Instant, Option<u64>)> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ENABLED.get_or_init(|| std::env::var_os("DH2_TRACE_WORLD_FX").is_some())
+        .then(|| (std::time::Instant::now(), crate::loading::thread_cycles()))
+}
+pub(in crate::rendering::bevy_backend) fn trace_pipeline_end(
+    start: Option<(std::time::Instant, Option<u64>)>, stage: &str, name: &str,
+) {
+    if let Some((start, cycles)) = start {
+        let elapsed = start.elapsed();
+        let cycles = cycles.zip(crate::loading::thread_cycles()).map(|(a,b)|b.saturating_sub(a));
+        let event_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros();
+        eprintln!("FX_PIPELINE event_us={event_us} thread={:?} stage={stage} name={name:?} elapsed_ms={:.3} thread_cycles={cycles:?}",std::thread::current().id(),elapsed.as_secs_f64()*1000.);
+    }
+}
+
 struct MaterialGpu {
     _images: [Texture; 3],
     views: [TextureView; 3],
@@ -32,7 +58,7 @@ pub struct DistortionPasses {
     resolve_binding: Option<([TextureViewId; 2], [BindGroup; 2])>,
     fullscreen: Option<FullscreenDistortion>,
 }
-pub(super) fn pipeline(
+pub(in crate::rendering::bevy_backend) fn pipeline(
     device: &RenderDevice,
     module: &ShaderModule,
     layout: Option<&PipelineLayout>,
@@ -44,7 +70,8 @@ pub(super) fn pipeline(
 ) -> Result<RenderPipeline, String> {
     let target = crate::render_state::blend_state(state).targets[0]
         .ok_or("screen effect target state absent")?;
-    Ok(device.create_render_pipeline(&RawRenderPipelineDescriptor {
+    let started = trace_pipeline_start();
+    let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
         label: Some(label),
         layout,
         vertex: RawVertexState {
@@ -71,7 +98,9 @@ pub(super) fn pipeline(
         multisample: default(),
         multiview_mask: None,
         cache: None,
-    }))
+    });
+    trace_pipeline_end(started, "screen_create_render_pipeline", label);
+    Ok(pipeline)
 }
 impl DistortionPasses {
     pub fn new(
@@ -304,6 +333,7 @@ impl DistortionPasses {
         time: f32,
         depth: &TextureView,
         unproject: [f32; 3],
+        mut quads: Option<QuadInputs<'_>>,
     ) -> Result<(), String> {
         if draws.len() > 8 {
             return Err("screen vector stage capacity exceeded".into());
@@ -398,19 +428,15 @@ impl DistortionPasses {
             self.fullscreen.as_mut().unwrap().prepare(device, queue, fullscreen.unwrap(),
                 self.vector_extent, depth, &self.clamp, unproject)?;
         }
-        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("screen distortion vectors"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &self.vector_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(default()),
-                    store: StoreOp::Store,
-                },
-            })],
-            ..default()
-        });
+        if let Some(quads)=quads.as_mut() {
+            for stage in [crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorBegin,
+                crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorEnd] {
+                quads.gpu.prepare_frame(device,queue,quads.frame,stage,depth,quads.exposure,self.vector_extent,quads.shader_time,time,unproject)?;
+            }
+        }
+        let mut pass=encoder.begin_render_pass(&RenderPassDescriptor{label:Some("screen distortion vectors"),
+            color_attachments:&[Some(RenderPassColorAttachment{view:&self.vector_view,depth_slice:None,resolve_target:None,
+                ops:Operations{load:LoadOp::Clear(default()),store:StoreOp::Store}})],..default()});
         for stage in [crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorBegin,
             crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorEnd] {
             // 3222f0 draws stage1 quads, scene perturbers, the view's
@@ -430,6 +456,13 @@ impl DistortionPasses {
                     &[(index * self.stride) as u32],
                 );
                 pass.draw(0..3, 0..1);
+            }
+            if let Some(quads)=quads.as_ref() {
+                quads.gpu.visit_draws(quads.frame,stage,TextureFormat::Rgba16Float, |pipeline,binding,offset| {
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0,binding,&[offset]);
+                    pass.draw(0..3,0..1);
+                })?;
             }
         }
         Ok(())

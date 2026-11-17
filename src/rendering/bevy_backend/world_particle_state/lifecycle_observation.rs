@@ -11,6 +11,8 @@ pub(crate) struct OwnerSnapshot {
     pub sounds: usize,
     pub decals: usize,
     pub rumbles: usize,
+    pub fovs: usize,
+    pub quads: usize,
     pub sub_effects: usize,
     pub retired: u64,
 }
@@ -18,7 +20,7 @@ impl OwnerSnapshot {
     pub(crate) fn only_decal_tails(&self) -> bool {
         !self.handles.is_empty() && self.pending_starts == 0
             && self.stopping == self.handles.len()
-            && self.particles == 0 && self.sounds == 0 && self.rumbles == 0 && self.decals != 0
+            && self.particles == 0 && self.sounds == 0 && self.rumbles == 0 && self.fovs == 0 && self.quads == 0 && self.decals != 0
     }
 }
 fn sub_chains(sub: &super::super::world_sub_effects::SubEffect, sample: &mut OwnerSnapshot) {
@@ -27,6 +29,8 @@ fn sub_chains(sub: &super::super::world_sub_effects::SubEffect, sample: &mut Own
     sample.sounds += usize::from(sub.sound_head != u16::MAX);
     sample.decals += usize::from(sub.decal_head != u16::MAX);
     sample.rumbles += usize::from(sub.rumble_head != u16::MAX);
+    sample.fovs += usize::from(sub.fov_head != u16::MAX);
+    sample.quads += usize::from(sub.quad_head != u16::MAX);
     for child in &sub.children { sub_chains(child, sample); }
 }
 impl WorldParticleState {
@@ -59,16 +63,18 @@ impl WorldParticleState {
             chains.sounds = usize::from(instance.sound_head != u16::MAX);
             chains.decals = usize::from(instance.decal_head != u16::MAX);
             chains.rumbles = usize::from(instance.rumble_head != u16::MAX);
+            chains.fovs = usize::from(instance.fov_head != u16::MAX);
+            chains.quads = usize::from(instance.quad_head != u16::MAX);
             for sub in &instance.sub_effects { sub_chains(sub, &mut chains); }
-            if chains.particles == 0 && chains.sounds == 0 && chains.decals == 0 && chains.rumbles == 0 { continue; }
+            if chains.particles == 0 && chains.sounds == 0 && chains.decals == 0 && chains.rumbles == 0 && chains.fovs == 0 && chains.quads == 0 { continue; }
             let owner = self.entities.get(&instance.entity).map(|entity| match &entity.owner {
                 FxEntityOwner::Actor { name, .. } => format!("actor:{name}"),
                 FxEntityOwner::Node { graph, node } => format!("graph:{} node:{node}", self.graphs.owner(*graph)),
                 FxEntityOwner::Detached => "detached".to_owned(),
             });
-            result.push(format!("effect={:?} owner={owner:?} entity={} handle={} particle_heads={} sound_heads={} decal_heads={} rumble_heads={} sub_effects={}",
+            result.push(format!("effect={:?} owner={owner:?} entity={} handle={} particle_heads={} sound_heads={} decal_heads={} rumble_heads={} fov_heads={} quad_heads={} sub_effects={}",
                 instance.parameters.effect, instance.entity, instance.id,
-                chains.particles, chains.sounds, chains.decals, chains.rumbles, chains.sub_effects));
+                chains.particles, chains.sounds, chains.decals, chains.rumbles, chains.fovs, chains.quads, chains.sub_effects));
         }
         result.sort();
         result
@@ -89,6 +95,8 @@ impl WorldParticleState {
             sample.sounds += usize::from(instance.sound_head != u16::MAX);
             sample.decals += usize::from(instance.decal_head != u16::MAX);
             sample.rumbles += usize::from(instance.rumble_head != u16::MAX);
+            sample.fovs += usize::from(instance.fov_head != u16::MAX);
+            sample.quads += usize::from(instance.quad_head != u16::MAX);
             for sub in &instance.sub_effects { sub_chains(sub, &mut sample); }
         }
         sample.handles.sort_unstable();

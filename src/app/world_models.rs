@@ -62,6 +62,22 @@ pub(super) struct WorldModels {
     retiring_resources: Vec<RetiredModel>,
     closing: bool,
 }
+/// Called only inside the existing F8 exclusive callback. The bounded snapshot
+/// borrows runtime model entries; it does not walk placed level geometry.
+pub(super) fn write_query_diagnostics(world: &World, output: &mut String) {
+    use std::fmt::Write;
+    let Some(owner) = world.get_resource::<WorldModels>() else { return; };
+    let state = world.get_resource::<super::SceneRenderQueue>()
+        .and_then(|queue|queue.shadow_ordinary_query.as_ref()).and_then(|query|query.state.as_ref());
+    let _ = writeln!(output, "\nruntime model queries: {} entries; at most 32 current CPU explanations", owner.entries.len());
+    for &id in owner.entries.keys().take(32) {
+        match owner.query_diagnostic(id, state) {
+            Ok(Some(explanation)) => { let _ = writeln!(output, "model {id:?}: {explanation}"); }
+            Ok(None) => {}
+            Err(error) => { let _ = writeln!(output, "model {id:?}: query explanation failed: {error}"); }
+        }
+    }
+}
 impl WorldModels {
     /// Borrow the actual renderer pose and draw entities for action diagnostics.
     /// Requested Entry.frame alone does not prove the surface publisher ran.
@@ -76,6 +92,30 @@ impl WorldModels {
     pub(super) fn publication_visibility(&self, id: EntityId) -> Option<(bool, bool, Option<f32>)> {
         let entry = self.entries.get(&id)?;
         self.models.has(id).then_some((entry.visible, self.models.visible(id), entry.area))
+    }
+    /// F8/action-diagnostic only: re-evaluate the actual current 31ad30 inputs.
+    /// This is a CPU explanation, not evidence of a completed GPU draw.
+    pub(super) fn query_diagnostic(&self, id: EntityId, state: Option<&crate::visibility::tome::RenderQueryState>) -> Result<Option<String>, String> {
+        let Some(entry) = self.entries.get(&id) else { return Ok(None); };
+        let bounds = self.interaction_bounds(id).ok_or("runtime model bounds absent")?;
+        let published_pose = self.models.frame(id);
+        let Some(state) = state else {
+            return Ok(Some(format!("query=absent requested={} model_present={} frame={:?} published_frame={published_pose:?} bounds={bounds:?}", entry.visible, self.models.has(id), entry.frame)));
+        };
+        let mut input = super::initial_placed_model_query(&entry.descriptor.placement, entry.descriptor.geometry.bounds())
+            .ok_or("world model has no prepared bounds query")?;
+        input.bounds = bounds;
+        input.region = crate::render_model::range_region(bounds, entry.descriptor.placement.max_visible_range.unwrap_or(crate::render_model::INITIAL_MODEL_MAX_VISIBLE_RANGE));
+        let viewport = [(state.viewport[2]-state.viewport[0]) as u32, (state.viewport[3]-state.viewport[1]) as u32];
+        let query = crate::visibility::tome::RenderAabbQuery::from_state(state)?;
+        let eligible = crate::render_model::model_eligible(input.frame_flags, input.shape_flags);
+        let in_region = crate::render_model::in_model_region(state.camera_point, input.region);
+        let frustum = query.bounds_in_frustum(bounds)?;
+        let (spatial_visible, area) = query.visibility_and_area(bounds)?;
+        let accepted = crate::render_model::model_visible_area(&query, state.camera_point, viewport, input)?;
+        let pixels = area * viewport[0] as f32 * viewport[1] as f32;
+        let reason = if !self.models.has(id) { "unpublished" } else if !entry.visible { "owner_hidden" } else if !eligible { "flags" } else if !in_region { "range" } else if !frustum { "frustum" } else if !spatial_visible { "spatial_depth" } else if accepted.is_none() { "minimum_area" } else { "accepted" };
+        Ok(Some(format!("reason={reason} requested={} published_visible={} cached_area={:?} flags={:#x}/{:#x} camera={:?} viewport={viewport:?} region={:?} bounds={bounds:?} eligible={eligible} in_region={in_region} frustum={frustum} spatial_visible={spatial_visible} area={area} pixels={pixels} threshold_pixels=25 accepted_area={accepted:?} frame={:?} published_frame={published_pose:?}", entry.visible, self.models.visible(id), entry.area, input.frame_flags, input.shape_flags, state.camera_point, input.region, entry.frame)))
     }
     pub(super) fn interaction_bounds(&self, id: EntityId) -> Option<[[f32; 3]; 2]> {
         let entry = self.entries.get(&id)?;
@@ -844,6 +884,8 @@ pub(super) fn publish_poses(
     mut joints: Query<&mut GlobalTransform, Without<Mesh3d>>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     world_poses: Option<Res<super::physics_scene::PhysicsScene>>,
+    live: Option<Res<LiveEntities>>,
+    mut projections: Option<ResMut<super::projected_decals::ModelProjectionContexts>>,
     mut model_bounds: Query<&mut bevy::camera::primitives::Aabb, With<Mesh3d>>,
 ) {
     let state = queue
@@ -861,6 +903,23 @@ pub(super) fn publish_poses(
         for (&id, entry) in entries {
             if !models.has(id) {
                 continue;
+            }
+            //7545a0/753c10 publish the same bound reference actor before its
+            //render wrapper is queried. Model producers need not manually
+            //repeat that publication (e.g. a bound component-less idEntity).
+            //Keep requested visibility and the existing depth/clock owner.
+            if let (Some(scene), Some(live)) = (world_poses.as_deref(), live.as_deref()) {
+                if live.get(id).is_some() {
+                    if let Some(frame) = scene.entity_frame(live, id)? {
+                        if entry.frame.position != frame.position || entry.frame.basis != frame.basis {
+                            entry.frame = frame;
+                            models.set_world_frame(id, frame)?;
+                            if let Some(projections) = projections.as_deref_mut() {
+                                projections.dirty(super::projected_decals::ModelKey::Actor(id));
+                            }
+                        }
+                    }
+                }
             }
             let mut visible = entry.visible;
             if let (Some(query), Some(state)) = (query.as_ref(), state) {

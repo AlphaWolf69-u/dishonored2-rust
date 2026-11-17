@@ -112,8 +112,14 @@ fn verify_world_bounds(world: &world_mesh::WorldMesh) -> (usize, usize, f32) {
     (checked, escaped, largest_escape)
 }
 
+#[path="tome_audit/gather_replay.rs"]
+mod gather_replay;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
+    if args.get(1).is_some_and(|value|value=="--gather-replay") {
+        return gather_replay::run(&args[2..]);
+    }
     let path = args.get(1).ok_or(
         "usage: tome-audit <extracted .tome> [matching .bwm] [--point x y z] [--slot-rows] [--verify-bounds]",
     )?;

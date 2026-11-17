@@ -162,6 +162,7 @@ impl PhysicsScene {
         frame: ReferenceFrame,
         timespace: u32,
         clock: &GameClock,
+        player: Option<&crate::gameplay::player::Player>,
     ) -> Result<(), String> {
         if live.get(id).is_none() || timespace > 1 {
             return Err("equipment frame generation or clock selector is stale".into());
@@ -213,6 +214,17 @@ impl PhysicsScene {
         self.entities[index].frame.pose = frame;
         self.entities[index].frame.velocities = velocities;
         self.entities[index].timespace = timespace;
+        //752900's bound equipment joints reuse the same already-published
+        //palette as the weapon itself. Only demanded live bindings are kept.
+        for (&(parent, joint), local) in &mut self.document_hierarchy.external_joints {
+            if parent != index { continue; }
+            let player = player.ok_or("bound equipment joint has no actual published palette")?;
+            let (position, axis) = player.equipment_joint_world(id, usize::try_from(joint).map_err(|_|"invalid equipment joint")?)
+                .ok_or("bound equipment joint pose absent")?;
+            let joint_frame = ReferenceFrame { position: position.to_array(), basis: axis.to_cols_array_2d() };
+            let (offset, orientation) = relative_binding(frame, joint_frame);
+            *local = crate::gameplay::reference_frame::bind(ReferenceFrame::default(), offset, orientation);
+        }
         self.request_post_physics_actor(handle.slot as usize, generation).map(|_| ())
     }
 

@@ -156,6 +156,26 @@ impl PhysicsScene {
                 .lock()
                 .map_err(|_| "water ocean owner poisoned")?;
             let ring = state.ring;
+            if !shared.active {
+                // Actual ocean-owner withdrawal cancels its outstanding
+                // samples; it must not strand an accepted physics frame.
+                for pending in &mut state.rings {
+                    for handle in pending.iter_mut() { shared.queue.release(handle)?; }
+                    pending.clear();
+                }
+            } else {
+                for &handle in &state.rings[ring] {
+                    if !shared.queue.is_ready(handle)? {
+                        // Host: a minimized/paused renderer may not publish
+                        // another view. Retain this entire ring for its exact
+                        // result, deferring water forces without blocking the
+                        // accepted physics step or replacing it with a guessed
+                        // height. No new query is issued while it is pending.
+                        state.complete = true;
+                        return Ok(());
+                    }
+                }
+            }
             state.results.resize(state.rings[ring].len() * 32, [0.; 4]);
             state.result_counts.clear();
             state.result_counts.resize(state.rings[ring].len(), 0);

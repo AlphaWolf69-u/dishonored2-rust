@@ -6,14 +6,17 @@ use crate::{gameplay::{entity_lifetime::EntityId, player::{Player, states::State
 use bevy::{input::{ButtonState, keyboard::{KeyboardInput, Key, NativeKey}, mouse::MouseButtonInput}, prelude::*};
 use std::{collections::HashSet, time::{Duration, Instant}};
 mod blink;
+pub(super) mod grenade;
 
 #[derive(Resource, Default)]
-struct Receipts { heart_uses: u64, heart: Option<EntityId> }
+struct Receipts { heart_uses: u64, heart: Option<EntityId>, heart_selected:Option<bool>,
+    heart_events:HashSet<(u32,crate::gameplay::sound::Emitter)>, heart_audio_start:usize }
 /// Called only after the real Heart owner accepts its pending use request.
 pub(super) fn heart_used(world: &mut World, entity: EntityId, selected:bool) {
     if let Some(mut receipts) = world.get_resource_mut::<Receipts>() {
         receipts.heart_uses += 1;
         receipts.heart = Some(entity);
+        receipts.heart_selected=Some(selected);
         eprintln!("ACTION_SMOKE_HEART_USE entity={entity:?} processed=true bark_selection_accepted={selected}");
     }
 }
@@ -55,7 +58,7 @@ fn player(world: &World) -> Result<&Player, String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldSword, WorldCharge, WorldAim, WorldContact, WorldTail, PickObject, ThrowObject, ObjectMotion, Done }
+enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldPower, WorldSword, WorldCharge, WorldAim, WorldContact, WorldTail, PickObject, ThrowObject, ObjectMotion, Done }
 struct WorldEffectObservation {
     ticket:super::usable_effects::EffectTicket,
     identity:Option<(std::sync::Arc<str>,std::sync::Arc<str>)>,
@@ -84,6 +87,8 @@ pub(super) struct Observation {
     heart_action: i32,
     projectile_seen: bool,
     object: Option<(EntityId,[f32;3])>,
+    object_motion_seen: bool,
+    object_throw_frame: Option<i32>,
     focus_samples: u32,
     focus_nonzero: bool,
     focus_release_attack: bool,
@@ -110,17 +115,24 @@ pub(super) struct Observation {
     wheel_cursor: Option<(f64, f64)>,
     world_only: bool,
     world_poke: bool,
+    world_power: bool,
+    world_recovery_baseline:u64,
+    world_chain_inputs:u8,
+    world_recovery_pending:Option<(u64,u32)>,
+    world_left_response_seen:bool,
+    world_prior_effects:Vec<(u8,WorldEffectObservation)>,
     world_crouch: Option<Input>,
     world_target: Option<crate::gameplay::collision_hit::ShapeHitInfo>,
     world_contacts:u8,
     world_effect:Option<WorldEffectObservation>,
     blink: Option<blink::Observation>,
+    grenade: Option<grenade::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("blink")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke or blink")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("grenade")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink or grenade")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -130,25 +142,28 @@ impl Observation {
         }
         let melee_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("melee");
         let poke_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("poke");
-        let world_poke=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-poke");
-        let world_only=world_poke||std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world");
+        let world_poke=matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-poke"|"world-power-poke"));
+        let world_power=matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-power"|"world-power-poke"));
+        let world_only=world_power||world_poke||std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world");
         let contact_only=melee_only || poke_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("contact");
         let carry_only=contact_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("carry");
-        if !heart_only && !carry_only && !world_only {
+        let grenade_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("grenade");
+        if !heart_only && !carry_only && !world_only && !grenade_only {
             for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
                 if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
             }
         }
         world.insert_resource(Receipts::default());
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
+        let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
-            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
+            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
-            world_only,world_poke,world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink })
+            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -386,6 +401,11 @@ impl Observation {
                 let published=in_flight&&parent.is_none()&&pose.position==projectile.position.to_array()
                     &&count>0&&matching&&owner.interaction_visible(id)&&owner.interaction_bounds(id).is_some();
                 eprintln!("ACTION_SMOKE_PROJECTILE_PUBLICATION id={id:?} in_flight={in_flight} parent={parent:?} runtime_position={:?} published_position={:?} actual_draws={count} translations_match={matching} max_matrix_error={max_error} draws_visible={draws_visible} source_visibility={:?} visible={} bounds={:?} complete={published} witness=actual_CPU_draw_GlobalTransforms_not_GPU_draw",projectile.position,pose.position,owner.publication_visibility(id),owner.interaction_visible(id),owner.interaction_bounds(id));
+                let query_state=world.get_resource::<super::SceneRenderQueue>()
+                    .and_then(|queue|queue.shadow_ordinary_query.as_ref()).and_then(|query|query.state.as_ref());
+                if let Some(explanation)=owner.query_diagnostic(id,query_state)? {
+                    eprintln!("ACTION_SMOKE_PROJECTILE_QUERY id={id:?} {explanation}");
+                }
                 if !published{continue}
                 if !draws_visible{eprintln!("ACTION_SMOKE_NOT_COVERED check=bolt_visible_render reason=actual_camera_culled_draw source_visibility={:?} CPU_pose_publication_verified=true GPU_or_visible_output_not_claimed=true",owner.publication_visibility(id));}
                 eprintln!("ACTION_SMOKE_PROJECTILE id={id:?} source={} origin={:?} position={:?} velocity={:?} moving={}",
@@ -452,8 +472,17 @@ impl Observation {
             self.world_poke,self.world_target,definition.material,definition.focused_material,p.machine.melee_focus_charge(),super::melee::debug_startup_pending(world));
         Ok(())
     }
-    fn world_effect_progress(&mut self,world:&mut World)->Result<bool,String>{
-        let observation=self.world_effect.as_mut().ok_or("WORLD accepted callback lost its weak FX receipt")?;
+    fn world_followup_input(&mut self,world:&World)->Result<(),String>{
+        if let Some((serial,handle))=self.world_recovery_pending {
+            let p=player(world)?;
+            if p.body.midnight.finished(handle){return Err("WORLD diagnostic steering missed the source recovery animation; early-input proof not achieved".into());}
+            if p.machine.is_active(StateId::RECOIL){return Err("WORLD followup attempted before actual Recoil quit".into());}
+            eprintln!("ACTION_SMOKE_WORLD_RECOIL_INPUT actual_marker_serial={serial} source_recovery_handle={handle} source_recovery_scene_still_playing=true actual_physical_attack_input=true");
+            self.world_chain_inputs+=1;self.world_recovery_pending=None;
+        }
+        Ok(())
+    }
+    fn world_effect_progress(world:&mut World,observation:&mut WorldEffectObservation,contact:u8)->Result<bool,String>{
         if observation.retired{return Ok(true)}
         if observation.identity.is_none(){observation.identity=super::usable_effects::ticket_request_identity(world,&observation.ticket);}
         if let Some((raw,path))=&observation.identity{
@@ -463,7 +492,7 @@ impl Observation {
                     if observation.publication.is_none(){
                         let frame=world.resource::<bevy::diagnostic::FrameCount>().0;
                         observation.publication=Some((frame,entry.revision));
-                        eprintln!("ACTION_SMOKE_WORLD_FX_PUBLICATION contact={} owner={owner} actual_path={} publication_app_frame={frame} revision={} ticket={}",self.world_contacts+1,entry.effect,entry.revision,super::usable_effects::debug_ticket(world,&observation.ticket));
+                        eprintln!("ACTION_SMOKE_WORLD_FX_PUBLICATION contact={} owner={owner} actual_path={} publication_app_frame={frame} revision={} ticket={}",contact,entry.effect,entry.revision,super::usable_effects::debug_ticket(world,&observation.ticket));
                     }
                     for (source,definition) in &entry.sources.effects{
                         let definition=definition.as_ref().map_err(|error|format!("WORLD FX source {source}: {error}"))?;
@@ -479,13 +508,13 @@ impl Observation {
                     if observation.started.is_none(){
                         observation.started=snapshot.frame;
                         observation.started_app_frame=world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0);
-                        eprintln!("ACTION_SMOKE_WORLD_FX_CPU_START contact={} owner={owner} path={path} FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} publication_app_frame_and_revision={:?}",self.world_contacts+1,snapshot.frame,observation.started_app_frame,observation.publication);
+                        eprintln!("ACTION_SMOKE_WORLD_FX_CPU_START contact={} owner={owner} path={path} FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} publication_app_frame_and_revision={:?}",contact,snapshot.frame,observation.started_app_frame,observation.publication);
                     }
                     observation.particles|=snapshot.particles>0;
                 }
                 for object in simulation.observe_fx_owner_audio(&owner)?{observation.emitters.insert(format!("{object:?}"));}
                 if observation.last.as_ref()!=Some(&snapshot){
-                    eprintln!("ACTION_SMOKE_WORLD_FX_CHAINS contact={} owner={owner} path={path} actual={snapshot:?} actual_sound_objects={:?}",self.world_contacts+1,observation.emitters);
+                    eprintln!("ACTION_SMOKE_WORLD_FX_CHAINS contact={} owner={owner} path={path} actual={snapshot:?} actual_sound_objects={:?}",contact,observation.emitters);
                     observation.last=Some(snapshot);
                 }
             }
@@ -496,13 +525,13 @@ impl Observation {
         for admission in &audio.admissions{
             if observation.emitters.contains(&admission.object)&&observation.expected_events.contains(&admission.event)
                 &&observation.admissions.insert(admission.playing_id){
-                eprintln!("ACTION_SMOKE_WORLD_SOUND_ADMITTED contact={} actual_event={} playing_id={} actual_object={} error={:?} publication={:?} CPU_start={:?}",self.world_contacts+1,admission.event,admission.playing_id,admission.object,admission.error,observation.publication,observation.started);
+                eprintln!("ACTION_SMOKE_WORLD_SOUND_ADMITTED contact={} actual_event={} playing_id={} actual_object={} error={:?} publication={:?} CPU_start={:?}",contact,admission.event,admission.playing_id,admission.object,admission.error,observation.publication,observation.started);
                 if let Some(error)=&admission.error{return Err(format!("WORLD sound admission {} on {}: {error}",admission.event,admission.object))}
             }
         }
         for callback in &audio.callbacks{
             if observation.emitters.contains(&callback.object){
-                eprintln!("ACTION_SMOKE_WORLD_SOUND_CALLBACK contact={} playing_id={} actual_declaration_reference={} object={} kind={} output_blocks={} not_audibility_proof=true",self.world_contacts+1,callback.playing_id,callback.declaration,callback.object,callback.kind,audio.output.blocks);
+                eprintln!("ACTION_SMOKE_WORLD_SOUND_CALLBACK contact={} playing_id={} actual_declaration_reference={} object={} kind={} output_blocks={} not_audibility_proof=true",contact,callback.playing_id,callback.declaration,callback.object,callback.kind,audio.output.blocks);
                 if callback.kind=="SourceReady"{observation.processed.insert(callback.playing_id);}
             }
         }
@@ -511,9 +540,9 @@ impl Observation {
         if !complete||!retired{return Ok(false)}
         let started=observation.started.is_some();
         if !started{
-            return Err(format!("WORLD FX retired without actual start: contact={} publication={:?} CPU_start={:?} particles={} authored_sound_events={:?} objects={:?} admissions={:?} processed={:?} ticket={}",self.world_contacts+1,observation.publication,observation.started,observation.particles,observation.expected_events,observation.emitters,observation.admissions,observation.processed,super::usable_effects::debug_ticket(world,&observation.ticket)))
+            return Err(format!("WORLD FX retired without actual start: contact={} publication={:?} CPU_start={:?} particles={} authored_sound_events={:?} objects={:?} admissions={:?} processed={:?} ticket={}",contact,observation.publication,observation.started,observation.particles,observation.expected_events,observation.emitters,observation.admissions,observation.processed,super::usable_effects::debug_ticket(world,&observation.ticket)))
         }
-        eprintln!("ACTION_SMOKE_WORLD_FX_RETIRED contact={} publication_app_frame_and_revision={:?} CPU_start_FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} real_particle_chains_seen={} source_processed_playing_ids={:?} actual_sound_admissions={:?} visible_or_audible_output_not_claimed=true",self.world_contacts+1,observation.publication,observation.started,observation.started_app_frame,observation.particles,observation.processed,observation.admissions);
+        eprintln!("ACTION_SMOKE_WORLD_FX_RETIRED contact={} publication_app_frame_and_revision={:?} CPU_start_FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} real_particle_chains_seen={} source_processed_playing_ids={:?} actual_sound_admissions={:?} visible_or_audible_output_not_claimed=true",contact,observation.publication,observation.started,observation.started_app_frame,observation.particles,observation.processed,observation.admissions);
         observation.retired=true;
         Ok(true)
     }
@@ -546,10 +575,27 @@ impl Observation {
         Ok((fx.focus_requested(),count,count>0&&full))
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(grenade)=&mut self.grenade{
+            let complete=grenade.poll(world)?;
+            if complete{self.stage=Stage::Done;}
+            return Ok(complete)
+        }
         if let Some(blink)=&mut self.blink{
             let complete=blink.poll(world)?;
             if complete{self.stage=Stage::Done;}
             return Ok(complete)
+        }
+        for (contact,observation) in &mut self.world_prior_effects {
+            Self::world_effect_progress(world,observation,*contact)?;
+        }
+        if self.world_power {
+            let p=player(world)?;
+            if let Some(handle)=p.machine.melee_left_response().filter(|handle|!p.body.midnight.finished(*handle)) {
+                if !self.world_left_response_seen {
+                    eprintln!("ACTION_SMOKE_WORLD_POWER_LEFT_RESPONSE actual_handle={handle} actual_scene_playing=true selected_power={:?} not_pixel_proof=true",p.selected_power().map(|power|power.settings.id));
+                    self.world_left_response_seen=true;
+                }
+            }
         }
         // Sample every actual app frame across hold/release, including the
         // input-release frame, so endpoint-only evidence cannot hide a snap.
@@ -560,6 +606,9 @@ impl Observation {
         if self.since.elapsed()>Duration::from_secs(90) {
             let mut snapshot=String::new();player(world)?.write_combat_diagnostics(&mut snapshot);
             super::weapon_firing::write_diagnostics(world,&mut snapshot);
+            if matches!(self.stage,Stage::Heart|Stage::HeartUse){
+                if let Some(hearts)=world.get_resource::<super::heart::Hearts>(){hearts.write_diagnostics(&mut snapshot);}
+            }
             if self.melee_only||self.poke_only||self.world_only {
                 snapshot.push_str(&super::melee::debug_startup_pending(world));
             }
@@ -575,11 +624,24 @@ impl Observation {
         }
         match self.stage {
             Stage::Begin if self.world_only => {
-                eprintln!("ACTION_SMOKE_SCENARIO name={} setup=actual_level_spawn+physical_crouch+mouse source=630890+62f900 no_teleport=true no_range_override=true",if self.world_poke{"world-poke"}else{"world"});
-                // Normal LMB captures the virtual window and draws the sword;
-                // this setup swing is explicitly excluded by a later serial.
-                self.tap(world,19)?;
-                self.stage(Stage::WorldSword,world)?;
+                let name=match(self.world_power,self.world_poke){(true,true)=>"world-power-poke",(true,false)=>"world-power",(false,true)=>"world-poke",_=>"world"};
+                eprintln!("ACTION_SMOKE_SCENARIO name={name} setup=actual_level_spawn+physical_crouch+mouse source=630890+62f900 no_teleport=true no_range_override=true");
+                if self.world_power {
+                    let inventory=world.resource::<DiscoveredDocuments>();
+                    let powers=world.resource::<super::powers::Powers>();
+                    let power=powers.definitions.0.iter().find(|power|
+                        crate::assets::power_journal::power_id(&power.power_id)==Some(2)&&inventory.quantity(&power.item)>0)
+                        .ok_or("WORLD power scenario requires actually owned Blink")?;
+                    let action=(0..10).find(|&index|inventory.wheel_shortcut_pair(index).0==Some(power.item.as_str()))
+                        .map(|index|25+index as i32).ok_or("owned Blink has no actual shortcut")?;
+                    eprintln!("ACTION_SMOKE_WORLD_POWER_SELECT actual_owned_item={} shortcut_action={action}",power.item);
+                    self.tap(world,action)?;self.stage(Stage::WorldPower,world)?;
+                }else{self.tap(world,19)?;self.stage(Stage::WorldSword,world)?;}
+            }
+            Stage::WorldPower if player(world)?.selected_power().is_some_and(|power|power.settings.id==2)
+                &&player(world)?.equipment_action_status(0).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)=>{
+                eprintln!("ACTION_SMOKE_WORLD_POWER_EQUIPPED actual_power=2 actual_left_transition_complete=true");
+                self.tap(world,19)?;self.stage(Stage::WorldSword,world)?;
             }
             Stage::WorldSword if player(world)?.equipment_action_status(1).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)
                 &&!player(world)?.machine.is_active(StateId::SLASH) => {
@@ -594,7 +656,7 @@ impl Observation {
                 let (_,axis)=player(world)?.published_camera_frame();
                 if self.held.is_none(){
                     if axis.x_axis.z<=0.{world.write_message(bevy::input::mouse::MouseMotion{delta:Vec2::new(0.,-8.)});}
-                    else{let input=input_for(19)?;send(world,input,true)?;self.held=Some(input);}
+                    else{self.world_followup_input(world)?;let input=input_for(19)?;send(world,input,true)?;self.held=Some(input);}
                 }else if let Some((elapsed,required))=player(world)?.machine.melee_focus_charge(){
                     if elapsed>=required{
                         eprintln!("ACTION_SMOKE_WORLD_CHARGE elapsed={elapsed} authored_focus_hold_duration={required} ready=true source=86bec0");
@@ -614,12 +676,20 @@ impl Observation {
                     }else{self.world_target=Some(hit);}
                     self.contact_serial=super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);
                     self.contact_windows=super::melee::active_windows(world);
+                    if self.world_power {
+                        let p=player(world)?;
+                        if !p.selected_power().is_some_and(|power|power.settings.id==2)
+                            || !p.equipment_action_status(0).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning) {
+                            return Err("WORLD attack lost its actual equipped power".into());
+                        }
+                        self.world_recovery_baseline=p.machine.melee_recoil_interrupt_receipt().ok_or("WORLD power marker recorder absent")?.0;
+                    }
                     self.world_evidence(world,"before-physical-attack")?;
                     if self.world_poke{
                         let (elapsed,required)=player(world)?.machine.melee_focus_charge().ok_or("WORLD poke lost held focus before release")?;
                         if elapsed<required{return Err("WORLD poke native charge regressed before release".into())}
                         let input=self.held.take().ok_or("WORLD poke physical hold absent")?;send(world,input,false)?;
-                    }else{self.tap(world,19)?;}
+                    }else{self.world_followup_input(world)?;self.tap(world,19)?;}
                     self.stage(Stage::WorldContact,world)?;
                 }else{
                     // Controller fixture increments only. No collision point,
@@ -657,17 +727,32 @@ impl Observation {
                 }
             }
             Stage::WorldTail => {
-                let retired=self.world_effect_progress(world)?;
+                let observation=self.world_effect.as_mut().ok_or("WORLD callback FX receipt absent")?;
+                let retired=Self::world_effect_progress(world,observation,self.world_contacts+1)?;
                 let p=player(world)?;
                 let animation_ready=p.equipment_action_status(1).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)
                     &&!p.machine.is_active(StateId::SLASH)&&!p.machine.is_active(StateId::RECOIL);
-                if retired&&animation_ready{
+                let marker=if self.world_power{p.machine.melee_recoil_interrupt_receipt()}else{None};
+                let early_recovery=marker.is_some_and(|(serial,source,current,active)|serial>self.world_recovery_baseline
+                    &&source!=0&&source==current&&active&&!p.machine.is_active(StateId::RECOIL)
+                    &&!p.body.midnight.finished(source));
+                if self.world_power&&!self.world_poke&&self.world_contacts<2&&animation_ready&&early_recovery{
+                    let receipt=marker.unwrap();
+                    eprintln!("ACTION_SMOKE_WORLD_RECOIL_CHAIN actual_marker={receipt:?} native_recovery_scene_still_playing=true physical_followup_allowed=true no_time_or_state_override=true prior_tail_retired={retired}");
+                    self.world_prior_effects.push((self.world_contacts+1,self.world_effect.take().unwrap()));
+                    self.world_contacts+=1;self.world_recovery_pending=Some((receipt.0,receipt.1));
+                    self.stage(if self.world_poke{Stage::WorldCharge}else{Stage::WorldAim},world)?;
+                }else if retired&&animation_ready&&self.world_prior_effects.iter().all(|(_,effect)|effect.retired){
+                    if self.world_power&&(!self.world_left_response_seen || !self.world_poke&&(self.world_contacts!=2||self.world_chain_inputs!=2)){
+                        return Err("WORLD power sequence lacks two real early-marker physical followups or actual left response".into());
+                    }
                     self.world_contacts+=1;self.world_effect=None;
-                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_WORLD_owner_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target);
+                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_WORLD_owner_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true power_equipped={} early_marker_followups={} left_response_started={}",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target,self.world_power,self.world_chain_inputs,self.world_left_response_seen);
                     if self.world_contacts==3{
                         if let Some(input)=self.world_crouch.take(){send(world,input,false)?}
                         self.stage(Stage::Done,world)?;
-                    }else{self.stage(if self.world_poke{Stage::WorldCharge}else{Stage::WorldAim},world)?;}
+                    }else if self.world_power&&!self.world_poke{return Err("WORLD recovery scene ended without the actual early interrupt receipt".into())}
+                    else{self.stage(if self.world_poke{Stage::WorldCharge}else{Stage::WorldAim},world)?;}
                 }
             }
             Stage::Begin if self.carry_only => {
@@ -781,12 +866,38 @@ impl Observation {
                 if p.heart_entity().is_some() && p.equipment_action_status(0).is_some_and(|(identity,equipped,transitioning)|
                     equipped&&!transitioning&&p.equipment_target_metadata(identity).is_some_and(|(equipment,_,_)|equipment.archetype==7)) {
                     self.heart_before=world.resource::<Receipts>().heart_uses;
+                    let start=super::audio::observation::snapshot(world).admissions.len();
+                    let mut receipts=world.resource_mut::<Receipts>();
+                    receipts.heart_audio_start=start;receipts.heart_events.clear();drop(receipts);
                     self.tap(world,20)?;self.stage(Stage::HeartUse,world)?;
                 }
             }
             Stage::HeartUse if world.resource::<Receipts>().heart_uses>self.heart_before => {
-                eprintln!("ACTION_SMOKE_PASS check=Heart_actual_bark_request_ack entity={:?} playback_not_assumed=true",world.resource::<Receipts>().heart);
-                let input=input_for(45)?;send(world,input,true)?;self.held=Some(input);self.stage(Stage::WheelOpen,world)?;
+                let receipts=world.resource::<Receipts>();
+                let id=receipts.heart.ok_or("Heart use receipt has no actual actor")?;
+                if receipts.heart_selected!=Some(true){
+                    let mut report=String::new();
+                    if let Some(hearts)=world.get_resource::<super::heart::Hearts>(){hearts.write_diagnostics(&mut report);}
+                    eprintln!("ACTION_SMOKE_HEART_SELECTION_FAILED {report}");
+                    return Err(format!("Heart use processed but real bark selection was {:?}; actor={id:?}; actual Heart diagnostics emitted",receipts.heart_selected));
+                }
+                if let Some(event)=world.get_resource::<super::heart::Hearts>().and_then(|hearts|hearts.current_bark_event(id)){
+                    if world.resource_mut::<Receipts>().heart_events.insert(event){eprintln!("ACTION_SMOKE_HEART_SELECTED_EVENT entity={id:?} event={:#010x} object={:?} source=canonical_Heart_Device_voice",event.0,event.1);}
+                }
+                let audio=super::audio::observation::snapshot(world);
+                let expected=&world.resource::<Receipts>().heart_events;
+                let positive=audio.source_samples.iter().find(|source|
+                    expected.contains(&(source.event,source.object))
+                    && source.decoded_peak>0. && (source.dry_peak>0. || source.aux_peak>0.)
+                    && audio.source_processed_ids.contains(&source.playing_id)
+                    && audio.admissions.iter().skip(world.resource::<Receipts>().heart_audio_start).any(|admission|admission.error.is_none()
+                        && admission.playing_id==source.playing_id && admission.event==source.event
+                        && admission.object==format!("{:?}",source.object)));
+                if let Some(source)=positive{
+                    eprintln!("ACTION_SMOKE_PASS check=Heart_actual_bark_selection_and_nonzero_pre_bus_samples entity={id:?} selection=true source_callback=true actual_admission=true event={:#010x} playing_id={} object={:?} selected_source={:#010x} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_gain_peak={} route_next_block_gain={:?} master_next_block_gain={:?} receipt_reason={} final_bus_or_physical_audibility_not_claimed=true",
+                        source.event,source.playing_id,source.object,source.selected_source,source.decoded_peak,source.dry_peak,source.aux_peak,source.gain_peak,source.route_next_block_gain,source.master_next_block_gain,source.reason);
+                    let input=input_for(45)?;send(world,input,true)?;self.held=Some(input);self.stage(Stage::WheelOpen,world)?;
+                }
             }
             Stage::WheelOpen if world.get_resource::<super::power_wheel::State>().is_some_and(|wheel|wheel.movie_frame_ready()) => {
                 eprintln!("ACTION_SMOKE_PASS check=wheel_real_open");
@@ -990,16 +1101,25 @@ impl Observation {
                 let id=self.object.unwrap().0;
                 let frame=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),id)?
                     .ok_or("held object's actual frame absent")?;
+                self.object_throw_frame=Some(world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>().clock().map_err(str::to_owned)?.frame_marker());
                 self.object=Some((id,frame.position));self.tap(world,19)?;self.stage(Stage::ObjectMotion,world)?;
             }
             Stage::ObjectMotion if !player(world)?.carrying.has_work() => {
                 let (id,before)=self.object.unwrap();
                 let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
-                if live.get(id).is_none(){return Err("thrown object retired before a physical motion observation".into())}
-                if let Some(frame)=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(live,id)? {
+                if live.get(id).is_none(){return Err(format!("thrown object retired before actual world-support receipt; motion_seen={}; this fixture cannot establish support after retirement",self.object_motion_seen))}
+                let scene=world.resource::<super::physics_scene::PhysicsScene>();
+                if let Some(frame)=scene.entity_frame(live,id)? {
                     if frame.position!=before && live.parent(id)?.is_none(){
-                        eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion unparented=true entity={id:?} before={before:?} after={:?}",frame.position);
-                        self.stage(Stage::Done,world)?;
+                        if !self.object_motion_seen {
+                            eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion unparented=true entity={id:?} before={before:?} after={:?} world_support_still_required=true",frame.position);
+                            self.object_motion_seen=true;
+                        }
+                        if let Some(support)=scene.observe_rigid_world_support(live,id)? {
+                            if self.object_throw_frame==Some(support.completed_frame){return Ok(false)}
+                            eprintln!("ACTION_SMOKE_PASS check=actual_throw_world_support unparented=true entity={id:?} after={:?} actual_solver_support={support:?} scope=observed_completed_physics_step continuous_support_or_never_falls_not_claimed=true",frame.position);
+                            self.stage(Stage::Done,world)?;
+                        }
                     }
                 }
             }

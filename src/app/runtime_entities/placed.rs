@@ -92,6 +92,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
         }
         world.resource_mut::<RuntimeEntities>().placed_pending[index].requested = true;
     }
+    super::openables::advance(world)?;
     loop {
         let Some(plan) = world.resource::<RuntimeEntities>().placed_pending.front() else {
             return Ok(());
@@ -172,6 +173,7 @@ pub(super) fn release(world: &mut World, id: EntityId) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn shutdown(world: &mut World) -> Result<(), String> {
+    super::openables::shutdown(world)?;
     //Actual admitted components retain their own typed definition until the
     //shared registry releases them; unadmitted plans have no backend lease.
     world

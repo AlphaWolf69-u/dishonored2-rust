@@ -42,11 +42,18 @@ pub enum StartupAction { None, Stop, Post }
 /// backend owns voice storage; this component retains the sound object after
 /// its voices stop, until the component's shutdown releases it (140708620).
 /// Accepted 875ba0 A9 delivery retained until the canonical audio FIFO accepts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AnimationSource {
+    Placed(usize),
+    Runtime(crate::gameplay::entity_lifetime::EntityId),
+}
+impl From<usize> for AnimationSource { fn from(value:usize)->Self {Self::Placed(value)} }
+
 pub struct AnimationPost {
     pub entity: crate::gameplay::entity_lifetime::EntityId,
     pub frame: crate::gameplay::reference_frame::ReferenceFrame,
     pub joint: i16,
-    pub placement: usize,
+    pub placement: AnimationSource,
     pub event: std::sync::Arc<SoundEventDeclaration>,
 }
 
@@ -54,7 +61,7 @@ pub struct AnimationPost {
 pub struct JointObject {
     pub allocated: bool,
     pub joint: i16,
-    pub placement: usize,
+    pub placement: AnimationSource,
     pub max_distance: f32,
 }
 

@@ -9,7 +9,7 @@ pub(crate) struct Sound {
 }
 
 pub(super) fn read(catalog: &crate::archive::Catalog, tokens: &[&str],
-    mut visit: impl FnMut(&str, Vec<Sound>) -> Result<(), String>) -> Result<(), String> {
+    mut visit: impl FnMut(&str, Vec<Sound>,Vec<super::animset_effects::Effect>) -> Result<(), String>) -> Result<(), String> {
     fn end(tokens: &[&str], open: usize) -> Result<usize, String> {
         if tokens.get(open) != Some(&"{") { return Err("animation sound block is absent".into()); }
         let mut depth = 1usize;
@@ -32,6 +32,7 @@ pub(super) fn read(catalog: &crate::archive::Catalog, tokens: &[&str],
         let animation = tokens[at + 1].trim_matches('"');
         let animation_end = end(tokens, at + 2)?;
         let mut sounds = Vec::new();
+        let mut effects=Vec::new();
         let mut cursor = at + 3;
         while cursor < animation_end {
             if tokens[cursor] != "event" || tokens.get(cursor + 2) != Some(&"{") { return Err("invalid animation sound event".into()); }
@@ -48,10 +49,12 @@ pub(super) fn read(catalog: &crate::archive::Catalog, tokens: &[&str],
                         crate::assets::declaration_texts::read_common_or_catalog(catalog, path))?;
                     sounds.push(Sound { frame, joint, event });
                 }
+            } else if tokens[cursor+1].trim_matches('"')=="ae_fx" {
+                if let Some(effect)=super::animset_effects::descriptor(&tokens[cursor+3..event_end])? {effects.push(effect);}
             }
             cursor = event_end + 1;
         }
-        if !sounds.is_empty() { visit(animation, sounds)?; }
+        if !sounds.is_empty()||!effects.is_empty() { visit(animation, sounds,effects)?; }
         at = animation_end + 1;
     }
     Ok(())

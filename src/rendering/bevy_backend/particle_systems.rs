@@ -59,6 +59,10 @@ impl Default for ParticleSystems {
     }
 }
 impl ParticleSystems {
+    /// F8 borrows the actual slots; no simulation or diagnostic cache.
+    pub(super) fn diagnostic_systems(&self) -> impl Iterator<Item=(usize, &ParticleSystem)> {
+        self.slots.iter().enumerate().filter_map(|(slot, system)| system.as_ref().map(|system| (slot, system)))
+    }
     pub(super) fn allocated_count(&self) -> u16 { self.links.allocated_count }
 
     pub fn start(

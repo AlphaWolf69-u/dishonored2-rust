@@ -22,6 +22,9 @@ impl OceanQueryHandle {
 struct QueryRecord {
     offset: u16,
     count: u16,
+    // Host: Bevy game/render ticks are independent. A ring's previous
+    // initialized tail is not the result of this registration.
+    generation: u64,
 }
 
 pub struct OceanQueryQueue {
@@ -29,6 +32,8 @@ pub struct OceanQueryQueue {
     records: Box<[QueryRecord; OCEAN_QUERY_CAPACITY]>,
     next_slot: usize,
     submitted_counts: [usize; 4],
+    submitted_generations: [u64; 4],
+    completed_generations: [u64; 4],
 }
 impl Default for OceanQueryQueue {
     fn default() -> Self {
@@ -43,6 +48,8 @@ impl OceanQueryQueue {
             records: Box::new([QueryRecord::default(); OCEAN_QUERY_CAPACITY]),
             next_slot: 0,
             submitted_counts: [0; 4],
+            submitted_generations: [0; 4],
+            completed_generations: [0; 4],
         }
     }
 
@@ -75,6 +82,7 @@ impl OceanQueryQueue {
         self.records[original_slot] = QueryRecord {
             offset: self.pending.len() as u16,
             count: points.len() as u16,
+            generation: self.submitted_generations[(current_ring + 1) & 3] + 1,
         };
         self.pending.extend_from_slice(points);
         let handle = OceanQueryHandle {
@@ -97,11 +105,31 @@ impl OceanQueryQueue {
             .get_mut(current_ring)
             .ok_or("ocean query ring is outside four slots")?;
         *count = self.pending.len();
+        self.submitted_generations[current_ring] += 1;
         self.pending.clear();
         Ok(*count)
     }
     pub fn submitted_count(&self, ring: usize) -> Option<usize> {
         self.submitted_counts.get(ring).copied()
+    }
+
+    /// Called only after the selected submission has actually been mapped
+    /// and copied into its canonical CPU ring (304c40 host handoff).
+    pub fn mark_completed(&mut self, ring: usize) -> Result<(), String> {
+        let generation = *self.submitted_generations.get(ring).ok_or("ocean completion ring is out of range")?;
+        self.completed_generations[ring] = generation;
+        Ok(())
+    }
+
+    pub fn is_ready(&self, handle: OceanQueryHandle) -> Result<bool, String> {
+        if handle.is_invalid() { return Ok(true); }
+        let record = self.records.get(usize::from(handle.slot)).ok_or("ocean query handle slot is out of range")?;
+        let completed = *self.completed_generations.get(usize::from(handle.ring)).ok_or("ocean query handle ring is out of range")?;
+        if record.count == 0 { return Ok(true); }
+        if completed > record.generation {
+            return Err(format!("ocean query result expired before consumption: slot={} ring={} expected={} completed={completed}", handle.slot, handle.ring, record.generation));
+        }
+        Ok(completed == record.generation)
     }
 
     /// 302840 copies packed height/normal float4s and consumes the handle. The
@@ -127,6 +155,7 @@ impl OceanQueryQueue {
         output: &mut [[f32; 4]],
     ) -> Result<Option<usize>, String> {
         if handle.is_invalid() { return Ok(None); }
+        if !self.is_ready(handle)? { return Ok(None); }
         let slot = usize::from(handle.slot);
         let record = *self
             .records
@@ -143,7 +172,8 @@ impl OceanQueryQueue {
             let offset = usize::from(record.offset);
             let values = ring
                 .get(offset..offset + count)
-                .ok_or("ocean query result storage is not available")?;
+                .ok_or_else(|| format!("completed ocean query storage is inconsistent: slot={} ring={} generation={} offset={offset} count={count} available={}",
+                    handle.slot, handle.ring, record.generation, ring.len()))?;
             destination.copy_from_slice(values);
         }
         Ok(Some(count))
@@ -212,7 +242,16 @@ impl OceanMultiQuery {
     /// (14064e040; a batch that does not fit keeps an invalid handle).
     pub fn exchange(&mut self, shared: &mut SharedOceanQueries) -> Result<(), String> {
         if self.positions.is_empty() || !shared.active {
+            for ring in &mut self.rings {
+                for handle in ring.iter_mut() { shared.queue.release(handle)?; }
+                ring.clear();
+            }
             return Ok(());
+        }
+        // Keep the whole source ring until its actual render submission is
+        // available; clearing it on pending would leak live handle records.
+        for &handle in &self.rings[self.ring] {
+            if !shared.queue.is_ready(handle)? { return Ok(()); }
         }
         let SharedOceanQueries { queue, completed, register_ring, .. } = shared;
         let completed = completed.each_ref().map(Vec::as_slice);

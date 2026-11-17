@@ -122,8 +122,7 @@ pub(super) fn synchronize(
     }
     if state.seen_revision != Some(owner.revision) || world_changed {
         for slot in state.slots.values_mut() { slot.wanted = false; }
-        for source in owner.ready.values().flat_map(|sources| sources.particle_materials())
-            .flat_map(|material| material.images.values())
+        for source in owner.ready.values().flat_map(|sources| sources.material_images())
             .chain(world.images.values().flat_map(|images| images.iter().map(|(_, image)| image)))
             .chain(world.extra_images.iter())
             .filter(|image| image.scene_owned)

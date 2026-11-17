@@ -1723,6 +1723,22 @@ pub fn query_bounds_accepts_aabb(
         })))
 }
 
+// Host optimization: the global gather has already validated its immutable
+// active-index lists. Preserve a71b90 arithmetic and unordered MINPS order.
+// SAFETY: every active index must be less than planes.len().
+unsafe fn query_bounds_accepts_aabb_prevalidated(
+    query_bounds: [[f32; 4]; 2], input: [[f32; 4]; 2],
+    planes: &[[f32; 4]], active: &[usize],
+) -> bool {
+    if active.is_empty() { return true; }
+    #[cfg(target_arch = "x86_64")]
+    let minimum = unsafe { simd_predicates::plane_minimum(planes,input,active,true,0.) };
+    #[cfg(not(target_arch = "x86_64"))]
+    let minimum = query_plane_minimum_scalar(planes,input,active,true,0.);
+    !(minimum < 0. || (0..4).any(|axis|
+        query_bounds[1][axis] < input[0][axis] || input[1][axis] < query_bounds[0][axis]))
+}
+
 /// FUN_140a76f30: minimum-corner containment, with no query-bounds gate.
 /// The caster query uses this to stop testing later receiver/cascade volumes
 /// once a box is completely contained. This is NOT a depth-occlusion test.
@@ -4417,6 +4433,12 @@ impl<'a> RenderAabbQuery<'a> {
         }
         // No-grid descriptors keep the original fast predicate: unused area
         // cannot affect visibility, so no projection is needed here.
+        self.bounds_in_frustum(bounds)
+    }
+
+    /// Read-only component of the same descriptor predicate, for opt-in
+    /// diagnostics which distinguish frustum rejection from depth rejection.
+    pub fn bounds_in_frustum(&self, bounds: [[f32; 3]; 2]) -> Result<bool, String> {
         query_bounds_accepts_aabb(
             self.query_bounds,
             self.expanded_bounds(bounds)?,

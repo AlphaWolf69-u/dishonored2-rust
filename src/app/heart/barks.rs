@@ -32,6 +32,10 @@ struct Voice {
     priority: i32,
 }
 impl Device {
+    pub(super) fn current_voice_event(&self,id:EntityId)->Option<(u32,Emitter)>{
+        if self.pending.is_some(){return None;}
+        self.voice.as_ref().filter(|voice|!voice.stopping).and_then(|voice|voice.event).map(|event|(event,emitter(id)))
+    }
     pub(super) fn write_diagnostics(&self, report: &mut String) {
         use std::fmt::Write;
         let _ = writeln!(report, "      bark retiring={} pending_delay={:?} voice={:?} completion_callbacks={}", self.retiring, self.pending.as_ref().map(|pending| pending.remaining), self.voice.as_ref().map(|voice| (voice.line, voice.event, voice.stopping, voice.priority)), self.completion_callbacks);
@@ -160,6 +164,24 @@ fn frequency(value: &str) -> Result<usize, String> {
         _ => return Err(format!("unknown Bark frequency {value}")),
     })
 }
+fn report_selection_facts(world:&World,id:EntityId,target:Option<EntityId>,already:bool,definition:&barks::Definition){
+    static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    if !world.contains_resource::<super::super::audio::observation::Observation>()
+        && !*TRACE.get_or_init(||std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref()==Ok("1")){return;}
+    let facts=super::super::heart_context::Facts::read(world,id,target,already);
+    let mut facts=match facts{Ok(facts)=>facts,Err(error)=>{eprintln!("HEART_BARK_SELECTION_FACT_ERROR actor={id:?} error={error}");return;}};
+    let mut seen=std::collections::HashSet::new();
+    for condition in definition.handlers.iter().flat_map(|(_,handlers)|handlers).flat_map(|handler|&handler.rules).flat_map(|rule|&rule.conditions){
+        if !seen.insert(condition.variable.as_ref()){continue;}
+        use crate::assets::slash_rules::barks::Expected;
+        let actual=match &condition.expected{
+            Expected::Boolean(_)=>format!("{:?}",facts.boolean(&condition.variable)),
+            Expected::Symbol(_)=>format!("{:?}",facts.symbol(&condition.variable)),
+            Expected::AreaTag(_)=>format!("{:?}",facts.area_tag(&condition.variable)),
+        };
+        eprintln!("HEART_BARK_SELECTION_FACT actor={id:?} variable={} actual={actual}",condition.variable);
+    }
+}
 pub(super) fn request(
     world: &mut World,
     id: EntityId,
@@ -243,6 +265,7 @@ pub(super) fn request(
     let selection = match selection {
         Ok(Some(value)) => value,
         other => {
+            report_selection_facts(world,id,target,entry.runtime.already_asked(world.resource::<LiveEntities>()),&device.definition);
             (entry.runtime.bark_target, entry.runtime.bark_time) = old;
             return other.map(|_| false);
         }

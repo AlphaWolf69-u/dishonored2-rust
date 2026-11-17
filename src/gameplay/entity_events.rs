@@ -75,7 +75,7 @@ pub struct Event {
 #[derive(Clone, Debug)]
 pub enum Payload {
     /// 875ba0 -> 70a030: signed joint and the actual SoundEvent declaration lease.
-    AnimationSound { joint:i16, event:std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>, placement:usize },
+    AnimationSound { joint:i16, event:std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>, placement:crate::gameplay::sound::component::AnimationSource },
     ///458490's76 packet owns its managed NPC list; no process-pointer list
     ///header is serialized into Bytes across the rewrite's receiver boundary.
     AICueRequest{kind:u32,position:[f32;3],perceivers:Vec<EntityId>,midnight_handle:u32},

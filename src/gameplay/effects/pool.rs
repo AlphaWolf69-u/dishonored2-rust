@@ -16,6 +16,10 @@ impl EffectPoolLinks {
     }
     ///19a250/19f4a0:64 shared FSDisto parameter-family slots.
     pub fn screen_distortion() -> Self { Self::ascending(64) }
+    ///19a3f0/19f710:32 shared fullscreen-quad runtimes.
+    pub fn screen_quads() -> Self { Self::ascending(32) }
+    ///19a2f0/19f570: sixteen shared FOV-family slots.
+    pub fn fov() -> Self { Self::ascending(16) }
     ///19a650/19fa50:32 shared rumble-family slots.
     pub fn rumble() -> Self { Self::ascending(32) }
 

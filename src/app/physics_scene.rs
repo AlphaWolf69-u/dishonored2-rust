@@ -75,6 +75,10 @@ pub(super) mod explosions;
 pub(super) mod explosion_effects;
 mod interaction_components;
 mod flash_surfaces;
+mod grenade_cooking;
+pub(super) mod openable;
+mod retargeting;
+pub(in crate::app) mod fx_component;
 pub(super) mod interaction_queries;
 pub(super) mod level_bodies;
 pub(super) mod player_reference;
@@ -142,8 +146,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 54],
-    classes: [i32; 54],
+    factories: [u32; 58],
+    classes: [i32; 58],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -166,6 +170,9 @@ pub(super) struct PhysicsScene {
     breakables: ComponentPool<breakable::BreakableComponent>,
     prepared_breakables: Vec<super::runtime_entities::PreparedBreakable>,
     prepared_sound_volumes: Vec<super::runtime_entities::PreparedSoundVolume>,
+    prepared_openables: Vec<openable::Prepared>,
+    openable_uses_pending: bool,
+    openable_updates_pending: bool,
     sound_volumes: ComponentPool<crate::gameplay::sound::volume_control::Component>,
     damage_zones: ComponentPool<crate::gameplay::damage_zone::Component>,
     grenades: ComponentPool<crate::gameplay::grenade::Component>,
@@ -203,6 +210,11 @@ pub(super) struct PhysicsScene {
     dynamic_search_spots: ComponentPool<crate::gameplay::ai_smart_objects::Component>,
     flash_surfaces: ComponentPool<flash_surfaces::Surface>,
     interactive_maps: ComponentPool<flash_surfaces::Map>,
+    cooking_surfaces: ComponentPool<flash_surfaces::Surface>,
+    openables: ComponentPool<openable::Component>,
+    retargeters: ComponentPool<retargeting::Component>,
+    fx_components: ComponentPool<fx_component::Component>,
+    fx_publications: Vec<crate::gameplay::pickable_component::CheckedComponent>,
     cue_actions:std::collections::VecDeque<ai_cue_events::Action>,
     cue_update_marker:Option<i32>,
     ///Host callback retry position in the actual clock's1/2/3 stage frame.
@@ -214,6 +226,7 @@ pub(super) struct PhysicsScene {
     projectiles: ComponentPool<super::projectiles::Component>,
     level_bodies: ComponentPool<level_bodies::PhysicsWorldComponent>,
     animations: ComponentPool<runtime_animation::AnimBaseComponent>,
+    animation_audio_pending: bool,
     free_rigid_movement: Vec<usize>,
     rigid_wind_bodies: Vec<(ComponentHandle, u32)>,
     rigid_placements: HashMap<usize, usize>,
@@ -529,6 +542,10 @@ impl PhysicsScene {
             factory(b"arkCpntAISearchSpot_Dynamic")?,
             factory(b"arkCpntFlashSurface")?,
             factory(b"arkCpntInteractiveMap")?,
+            factory(b"arkCpntGrenadeCooking")?,
+            factory(b"arkCpntOpenable")?,
+            factory(b"arkCpntRetargeting")?,
+            factory(b"arkCpntFX")?,
         ];
         let names = types
             .classes()
@@ -558,7 +575,7 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 54];
+        let mut classes = [0; 58];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
@@ -676,6 +693,9 @@ impl PhysicsScene {
             breakables: types.create_pool(factories[11], &cvars.cvars)?,
             prepared_breakables: Vec::new(),
             prepared_sound_volumes: Vec::new(),
+            prepared_openables: Vec::new(),
+            openable_uses_pending: false,
+            openable_updates_pending: false,
             sound_volumes: types.create_pool(factories[17], &cvars.cvars)?,
             damage_zones: types.create_pool(factories[18], &cvars.cvars)?,
             grenades: types.create_pool(factories[19], &cvars.cvars)?,
@@ -713,6 +733,11 @@ impl PhysicsScene {
             dynamic_search_spots: types.create_pool(factories[51], &cvars.cvars)?,
             flash_surfaces: types.create_pool(factories[52], &cvars.cvars)?,
             interactive_maps: types.create_pool(factories[53], &cvars.cvars)?,
+            cooking_surfaces: types.create_pool(factories[54], &cvars.cvars)?,
+            openables: types.create_pool(factories[55], &cvars.cvars)?,
+            retargeters: types.create_pool(factories[56], &cvars.cvars)?,
+            fx_components: types.create_pool(factories[57], &cvars.cvars)?,
+            fx_publications: Vec::new(),
             cue_actions:Default::default(),
             cue_update_marker:None,
             ai_stage_frame:None,
@@ -724,6 +749,7 @@ impl PhysicsScene {
             projectiles: types.create_pool(factories[13], &cvars.cvars)?,
             level_bodies: types.create_pool(factories[14], &cvars.cvars)?,
             animations: types.create_pool(factories[15], &cvars.cvars)?,
+            animation_audio_pending: false,
             free_rigid_movement: Vec::new(),
             rigid_wind_bodies: Vec::new(),
             rigid_post_path: Vec::new(),
@@ -1035,6 +1061,7 @@ impl PhysicsScene {
             scene.admit_health_components(catalog, document, &mut registry)?;
             scene.prepare_placed_sound_volumes(catalog, document, models)?;
             scene.prepare_placed_breakables(catalog, document, models)?;
+            scene.prepare_placed_openables(catalog, document, models, live, &mut registry)?;
             if let Some(prepared) = level_bodies {
                 scene.admit_level_bodies(
                     document,
@@ -1469,6 +1496,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.flash_surfaces.get(handle.slot).map(|v|&v.owner)
         } else if handle.class_id==self.classes[53] {
             self.interactive_maps.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[54] {
+            self.cooking_surfaces.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[55] {
+            self.openables.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[56] {
+            self.retargeters.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[57] {
+            self.fx_components.get(handle.slot).map(|v|&v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1542,6 +1577,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.flash_surfaces.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if handle.class_id==self.classes[53] {
             self.interactive_maps.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[54] {
+            self.cooking_surfaces.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[55] {
+            self.openables.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[56] {
+            self.retargeters.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[57] {
+            self.fx_components.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner_mut(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1844,6 +1887,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.flash_surfaces.schedule(handle.slot)?;
                 } else if handle.class_id==self.classes[53] {
                     self.interactive_maps.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[54] {
+                    self.cooking_surfaces.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[55] {
+                    self.openables.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[56] {
+                    self.retargeters.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[57] {
+                    self.fx_components.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[18] {
                     self.damage_zones.schedule(handle.slot)?;
                 } else {

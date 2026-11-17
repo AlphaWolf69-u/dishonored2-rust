@@ -26,6 +26,7 @@ fn check_active(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
 /// state. These host caches never share a particle's age, RNG or pool slot.
 pub struct ParticleResources {
     images: super::image_resources::ParticleImages,
+    quad_materials: HashMap<String, Weak<crate::rendering::screen_quad::ScreenQuadMaterial>>,
     pub(super) decal_resources: crate::assets::decal::DecalResources,
     declarations: HashMap<String, Result<Arc<particle_declaration::ParticleDeclaration>, String>>,
     models: HashMap<String, Arc<crate::assets::particle_model::ParticleModel>>,
@@ -46,6 +47,7 @@ impl Default for ParticleResources {
     fn default() -> Self {
         Self {
             images: Default::default(),
+            quad_materials: Default::default(),
             decal_resources: Default::default(),
             declarations: Default::default(),
             models: Default::default(),
@@ -63,6 +65,16 @@ impl Default for ParticleResources {
     }
 }
 impl ParticleResources {
+    pub(crate) fn image(&mut self, catalog: &Catalog, source: &str) -> Result<Arc<super::image_resources::ParticleImage>, String> {
+        self.images.image(catalog, source)
+    }
+    pub(crate) fn quad_material(&mut self, catalog: &Catalog, library: &mut ProgramLibrary, name: &str)
+        -> Result<Arc<crate::rendering::screen_quad::ScreenQuadMaterial>, String> {
+        if let Some(material) = self.quad_materials.get(name).and_then(Weak::upgrade) { return Ok(material); }
+        let material=Arc::new(crate::rendering::screen_quad::ScreenQuadMaterial::load(catalog,library,self,name)?);
+        self.quad_materials.insert(name.to_owned(),Arc::downgrade(&material));
+        Ok(material)
+    }
     pub fn use_scene_images(&mut self) { self.images.use_scene_images(); }
     pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<super::image_resources::ParticleImage>>, String> {
         self.images.scene_image(catalog, name)
@@ -82,6 +94,7 @@ impl ParticleResources {
             Err(_) => true,
         });
         self.materials.retain(|_, value| value.strong_count() != 0);
+        self.quad_materials.retain(|_, value| value.strong_count() != 0);
         self.models.retain(|_, value| Arc::strong_count(value) > 1);
         self.field_images.retain(|_, value| Arc::strong_count(value) > 1);
         let (images, payload_bytes) = self.images.retire_unused();

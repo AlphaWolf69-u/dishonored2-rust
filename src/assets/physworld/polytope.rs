@@ -56,14 +56,16 @@ impl ConvexPolytope {
 impl PhysWorld {
     pub fn convex_shape(&self, bytes: &[u8], index: usize) -> Result<ConvexShape, String> {
         let item = self.items.get(index).ok_or("convex shape item missing")?;
-        if self.types[item.type_index].name != "hknpConvexShape" {
-            return Err("support-only convex reader requires hknpConvexShape".into());
+        if !matches!(self.types[item.type_index].name.as_str(), "hknpConvexShape" | "hknpSphereShape") {
+            return Err("support-only convex reader requires ConvexShape or SphereShape".into());
         }
         let shape = self.item_at(bytes, index, 0)?;
         //The tagfile's inherited field schema stores the relocated relative
         //array as an item reference. Runtime c82490 reads the same vertices
         //through the expanded relative-array header; never copy its offsets
-        //onto the compact serialized object.
+        //onto the compact serialized object. Sphere ca6550 inherits this
+        //same relative array and c82490 support virtual; its one source
+        //vertex is the actual centre, not a generated polytope.
         let reference = le32(shape, self.field_offset(item.type_index, "vertices")?)? as usize;
         let vertices = self.convex_vectors(bytes, reference)?;
         if vertices.is_empty() {

@@ -92,14 +92,23 @@ impl Surface {
                 }
             }
             QueryGeometry::Convex(convex) => {
-                //Actual hknpConvexShape buildGeometry ce1e30: derive the hull
-                //from support vertices, including the authored convex radius.
-                //This transient geometry belongs only to the shared key1 owner.
-                let hull = crate::gameplay::havok_fx::convex_hull::Hull::build_geometry(
-                    &convex.vertices,
-                    convex.radius,
-                )?;
-                for triangle in hull.geometry_triangles() {
+                //Sphere ca6550 uses the same support-array owner, but its
+                //buildGeometry virtual ca5f50 samples the real sphere. Reuse
+                //that already ported kernel, not the general convex hull.
+                let triangles = if shapes.get(item)?.header.shape_type == 2 {
+                    super::super::compressed_mesh::surface::sphere(
+                        *convex.vertices.first().ok_or("sphere property centre absent")?, convex.radius)?
+                } else {
+                    //Actual hknpConvexShape buildGeometry ce1e30: derive the hull
+                    //from support vertices, including the authored convex radius.
+                    //This transient geometry belongs only to the shared key1 owner.
+                    let hull = crate::gameplay::havok_fx::convex_hull::Hull::build_geometry(
+                        &convex.vertices,
+                        convex.radius,
+                    )?;
+                    hull.geometry_triangles()
+                };
+                for triangle in triangles {
                     let first = u32::try_from(self.vertices.len())
                         .map_err(|_| "shape property convex vertex count overflow")?;
                     self.vertices.extend(triangle.map(|point| {

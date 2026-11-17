@@ -9,7 +9,7 @@ use crate::gameplay::{
     pickable_component::CheckedComponent,
 };
 impl PhysicsScene {
-    fn loot_component_lookup(
+    pub(super) fn loot_component_lookup(
         &self,
         index: usize,
         factory: usize,

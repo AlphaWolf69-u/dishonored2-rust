@@ -135,6 +135,11 @@ pub(crate) fn load_with_entities(document: &Document,
         let relevant = super::event_graph::items(child(fields, "m_nodes")).any(|node|
             matches!(super::event_graph::atom(node, "m_name"),
                 Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance" |
+                    //63fa90 startup writers can live on componentless script
+                    //actors. Retain their actual program before filtering its
+                    //executable paths; current StoryFlag getters share its
+                    //canonical world variable owner (5134e0/926e60).
+                    "arkKisculeNodeStoryFlagBool" | "arkKisculeNodeStoryFlagInt" |
                     "arkKisculeNodeActionGameflowMission" | "arkKisculeNodeActionGameflowObjective" |
                     "arkKisculeNodeActionGameflowTask" | "arkKisculeNodeActionGameflowMarkerControl")));
         let managed = live.is_some_and(|live| live.find(&entity.id).is_some_and(|id|

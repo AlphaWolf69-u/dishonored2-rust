@@ -6,7 +6,7 @@ use crate::gameplay::{
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[1] * b[1] + a[0] * b[0]) + a[2] * b[2]
 }
-/// Packed sphere primitive branch, including queryflag4's exit mask141e846a0.
+/// Sphere ca6160 and packed primitive126c750, including queryflag4's exit mask141e846a0.
 pub fn sphere(
     center: [f32; 4],
     origin: [f32; 3],
