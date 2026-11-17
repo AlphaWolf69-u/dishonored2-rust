@@ -237,49 +237,11 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
     ])
 }
 
-/// arkPlayerStateId_t names the port resolves (enum table 0x142391a90).
+/// The same complete142391a90 enum owner used by interaction definitions.
+/// Partial local lists silently changed carrying state48 into fallback47 and
+/// two-hand hold50 into fallback49 when decoding their authored m_id.
 pub fn state_id(name: &str) -> Option<StateId> {
-    let value = match name.strip_prefix("PLAYER_STATE_")? {
-        "READ_NOTE" => 52,
-        "POWERWHEEL" => 82,
-        "EQUIP_CHANGE_RIGHT_HAND" => 53,
-        "DRAW_RIGHT_HAND" => 54,
-        "EQUIP_CHANGE_LEFT_HAND" => 64,
-        "DRAW_LEFT_HAND" => 65,
-        "UNDRAW" => 81,
-        "FIRE_WEAPON" => 56,
-        "PLAY_HEART_BARKS"=>66,
-        "USE_HEART"=>67,
-        "LOCK_HEART_TARGET"=>73,
-        "CANCEL_FIRE_WEAPON" => 57,
-        "REQUEST_RELOAD_WEAPON" => 58,
-        "RELOAD_WEAPON" => 59,
-        "RUNNING" => 0,
-        "SPRINTING" => 1,
-        "JUMPING" => 2,
-        "FALLING" => 3,
-        "CATFALL" => 4,
-        "SLIPPING" => 5,
-        "SNEAKING" => 6,
-        "SLIDING" => 7,
-        "MANTLE" => 8,
-        "VAULT" => 9,
-        "AUTOCROUCH" => 10,
-        "WALLCROUCH" => 11,
-        "BLINKING" => 12,
-        "DEAD" => 15,
-        "LEANING" => 18,
-        "IDLE" => 22,
-        "CINEMATIC" => 23,
-        "PEEKING" => 24,
-        "GRAPPLE" => 27,
-        "SLASH" => 39,
-        "BLOCK" => 44,
-        "NULL" => 91,
-        "ANY" => 92,
-        _ => return None,
-    };
-    Some(StateId(value))
+    crate::gameplay::interaction_definition::player_state_id(name).ok().map(StateId)
 }
 
 fn shape_settings(fields: &Fields) -> Result<ShapeSettings, String> {

@@ -73,6 +73,10 @@ impl WorldModels {
     pub(super) fn publication_draws(&self, id: EntityId) -> Option<impl Iterator<Item = Entity> + '_> {
         Some(self.models.projection_draws(id)?.map(|(entity, _, _, _, _)| entity))
     }
+    pub(super) fn publication_visibility(&self, id: EntityId) -> Option<(bool, bool, Option<f32>)> {
+        let entry = self.entries.get(&id)?;
+        self.models.has(id).then_some((entry.visible, self.models.visible(id), entry.area))
+    }
     pub(super) fn interaction_bounds(&self, id: EntityId) -> Option<[[f32; 3]; 2]> {
         let entry = self.entries.get(&id)?;
         Some(crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(), entry.frame.position, entry.frame.basis, entry.scale))

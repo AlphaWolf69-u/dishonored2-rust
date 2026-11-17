@@ -86,6 +86,7 @@ pub(super) struct Observation {
     approach_move: Option<Input>,
     fixture_gate: Option<(bool,bool,bool,bool)>,
     fixture_reports: u32,
+    projectile_draw_reports: HashSet<(Entity,u8)>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -113,7 +114,7 @@ impl Observation {
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
-            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0 })
+            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new() })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -239,9 +240,20 @@ impl Observation {
                 let affine=crate::render_model::affine_rows(pose.position,pose.basis,scale);
                 let expected=super::view_geometry::game_affine_to_view(&std::array::from_fn(|index|affine[index/4][index%4]));
                 let expected=GlobalTransform::from(expected).to_matrix().to_cols_array();
-                let mut count=0;let mut matching=true;let mut max_error=0.0f32;
+                let mut count=0;let mut matching=true;let mut draws_visible=true;let mut max_error=0.0f32;
                 if let Some(draws)=owner.publication_draws(id){for entity in draws{
                     count+=1;
+                    let global=world.get::<GlobalTransform>(entity);
+                    let local=world.get::<Transform>(entity);
+                    let visibility=world.get::<Visibility>(entity);
+                    let flags=u8::from(global.is_some())|u8::from(local.is_some())<<1|u8::from(visibility.is_some())<<2
+                        |u8::from(visibility.is_some_and(|value|*value==Visibility::Hidden))<<3|u8::from(world.get_entity(entity).is_ok())<<4;
+                    if self.projectile_draw_reports.len()<32&&self.projectile_draw_reports.insert((entity,flags)){
+                        let components=world.get_entity(entity).ok().map(|entry|entry.archetype().components().iter()
+                            .filter_map(|id|world.components().get_info(*id)).map(|info|info.name().to_string()).collect::<Vec<_>>());
+                        eprintln!("ACTION_SMOKE_PROJECTILE_DRAW id={id:?} drawable={entity:?} exists={} component_flags={flags:#x} mesh={:?} local={local:?} global={global:?} expected_matrix={expected:?} visibility={visibility:?} inherited_visibility={:?} view_visibility={:?} bevy_parent={:?} components={components:?}",
+                            world.get_entity(entity).is_ok(),world.get::<Mesh3d>(entity),world.get::<InheritedVisibility>(entity),world.get::<ViewVisibility>(entity),world.get::<ChildOf>(entity));
+                    }
                     let Some(actual)=world.get::<GlobalTransform>(entity)else{matching=false;continue};
                     let actual=actual.to_matrix().to_cols_array();
                     // The reported failure is a drawable stuck at the muzzle.
@@ -252,13 +264,14 @@ impl Observation {
                         let error=(actual-expected).abs();max_error=max_error.max(error);
                         matching &= actual.is_finite();
                     }
-                    matching &= world.get::<Visibility>(entity).is_some_and(|visibility|*visibility!=Visibility::Hidden);
+                    draws_visible &= world.get::<Visibility>(entity).is_some_and(|visibility|*visibility!=Visibility::Hidden);
                 }}
                 let in_flight=projectile.movement_enabled&&!projectile.impact_stopped&&!projectile.has_hit_and_stopped&&!projectile.picked_up;
                 let published=in_flight&&parent.is_none()&&pose.position==projectile.position.to_array()
                     &&count>0&&matching&&owner.interaction_visible(id)&&owner.interaction_bounds(id).is_some();
-                eprintln!("ACTION_SMOKE_PROJECTILE_PUBLICATION id={id:?} in_flight={in_flight} parent={parent:?} runtime_position={:?} published_position={:?} actual_draws={count} translations_match={matching} max_matrix_error={max_error} visible={} bounds={:?} complete={published} witness=actual_CPU_draw_GlobalTransforms_not_GPU_draw",projectile.position,pose.position,owner.interaction_visible(id),owner.interaction_bounds(id));
+                eprintln!("ACTION_SMOKE_PROJECTILE_PUBLICATION id={id:?} in_flight={in_flight} parent={parent:?} runtime_position={:?} published_position={:?} actual_draws={count} translations_match={matching} max_matrix_error={max_error} draws_visible={draws_visible} source_visibility={:?} visible={} bounds={:?} complete={published} witness=actual_CPU_draw_GlobalTransforms_not_GPU_draw",projectile.position,pose.position,owner.publication_visibility(id),owner.interaction_visible(id),owner.interaction_bounds(id));
                 if !published{continue}
+                if !draws_visible{eprintln!("ACTION_SMOKE_NOT_COVERED check=bolt_visible_render reason=actual_camera_culled_draw source_visibility={:?} CPU_pose_publication_verified=true GPU_or_visible_output_not_claimed=true",owner.publication_visibility(id));}
                 eprintln!("ACTION_SMOKE_PROJECTILE id={id:?} source={} origin={:?} position={:?} velocity={:?} moving={}",
                     projectile.declaration.entity,projectile.origin,projectile.position,projectile.velocity,projectile.movement_enabled);
                 moved=true;
