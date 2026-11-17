@@ -686,6 +686,14 @@ impl ComponentLifecycleWorld for Startup<'_> {
     ) -> Result<(), String> {
         let result = (|| {
             if handle.class_id == self.scene.classes[4] {
+                //708340 can create objects after an acknowledged708620 Stop
+                //on this same component generation. Retain pending Stops.
+                if let Some(world)=self.world.as_deref_mut() {
+                    super::super::audio::resume_component_object(world,crate::gameplay::sound::Emitter::Component {
+                        handle:handle.packed(),generation:self.scene.audios.get(handle.slot)
+                            .ok_or("audio Start component absent")?.owner.generation,
+                    })?;
+                }
                 self.scene.start(handle, registry)?;
                 return self.scene.start_audio_events(self.live, self.events, handle);
             }

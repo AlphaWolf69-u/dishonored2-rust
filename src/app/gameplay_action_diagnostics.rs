@@ -74,23 +74,30 @@ pub(super) struct Observation {
     focus_release_attack: bool,
     expected_bolt: Option<(EntityId,String)>,
     gun_trigger_pending: bool,
+    heart_only: bool,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
+        let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
+            Ok("heart")=>true,Ok("full")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full or heart")),
+        };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
         }
         if super::player::debug_benchmark_walk_enabled() {
             return Err("action smoke requires benchmark walking disabled; it must not steer or teleport while firing".into());
         }
-        for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
-            if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
+        if !heart_only {
+            for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
+                if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
+            }
         }
         world.insert_resource(Receipts::default());
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
-            focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false })
+            focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -103,6 +110,15 @@ impl Observation {
     }
     fn select(&mut self, world: &mut World, key: KeyCode) -> Result<(), String> {
         let input=Input::Key(key);send(world,input,true)?;self.release=Some(input);Ok(())
+    }
+    fn select_heart(&mut self, world:&mut World)->Result<(),String>{
+        let p=player(world)?;
+        let inventory=world.get_resource::<DiscoveredDocuments>().ok_or("actual inventory absent")?;
+        self.heart_action=(0..10).find_map(|index|{
+            let (item,_)=inventory.wheel_shortcut_pair(index);let item=item?;
+            p.equipment_target_metadata(item).filter(|(equipment,_,_)|equipment.archetype==7).map(|_|25+index as i32)
+        }).ok_or("actual Corvo shortcut set has no owned Heart")?;
+        self.tap(world,self.heart_action)?;self.stage(Stage::Heart,world)
     }
     fn ranged_ready(world: &World, family: RangedFamily) -> Result<bool, String> {
         let p=player(world)?;
@@ -173,6 +189,10 @@ impl Observation {
         }
         match self.stage {
             Stage::Begin => {
+                if self.heart_only{
+                    eprintln!("ACTION_SMOKE_SCENARIO name=heart coverage=Heart_real_use+wheel+ordinary_exit ranged_not_claimed=true");
+                    self.select_heart(world)?;return Ok(false)
+                }
                 self.projectiles(world,true)?;
                 self.select(world,KeyCode::Digit1)?;self.stage(Stage::Crossbow,world)?;
             }
@@ -249,13 +269,7 @@ impl Observation {
                 if !self.focus_nonzero{return Err("focus had no observed nonzero producer sample".into())}
                 eprintln!("ACTION_SMOKE_PASS check=focused_release_actual_producer_retirement samples={} release_slash_state_seen={}",self.focus_samples,self.focus_release_attack);
                 eprintln!("ACTION_SMOKE_NOT_COVERED check=sword_contact_damage reason=no_authoritative_near_contact_fixture; slash_state_is_not_damage_receipt");
-                let p=player(world)?;
-                let inventory=world.get_resource::<DiscoveredDocuments>().ok_or("actual inventory absent")?;
-                self.heart_action=(0..10).find_map(|index|{
-                    let (item,_)=inventory.wheel_shortcut_pair(index);let item=item?;
-                    p.equipment_target_metadata(item).filter(|(equipment,_,_)|equipment.archetype==7).map(|_|25+index as i32)
-                }).ok_or("actual Corvo shortcut set has no owned Heart")?;
-                self.tap(world,self.heart_action)?;self.stage(Stage::Heart,world)?;
+                self.select_heart(world)?;
             }
             Stage::Heart => {
                 let p=player(world)?;
@@ -276,6 +290,7 @@ impl Observation {
             }
             Stage::WheelClose if world.get_resource::<super::power_wheel::State>().is_some_and(|wheel|!wheel.blocks_input()) => {
                 eprintln!("ACTION_SMOKE_PASS check=wheel_real_close");
+                if self.heart_only{self.stage(Stage::Done,world)?;return Ok(false)}
                 let focused=world.get_resource::<super::interaction_focus::FocusedInteraction>().and_then(|focus|focus.current.as_ref())
                     .filter(|prompt|!prompt.locked).and_then(|prompt|{
                         let interactions=world.get_resource::<super::interactions::Interactions>()?;

@@ -627,7 +627,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                             else { entry.definition.npc_focus };
                         if !focus.contains(origin, eye, camera,
                             entry.definition.focus_step_back,
-                            Vec3::from_array(witness(hit.hit).position)) {
+                            Vec3::from_slice(&witness(hit.hit).position)) {
                             entry.receipts.outside_focus += 1;
                             continue;
                         }
