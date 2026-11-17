@@ -476,7 +476,8 @@ pub(in crate::app) fn debug_startup_pending(world: &World) -> String {
         report.push_str("\n  ");report.push_str(&actions.debug_ready_targets(player));
     }
     for details in [super::super::equipment_attachment_admission::debug_startup_pending(world),
-        super::super::weapon_throwing::debug_startup_pending(world),super::super::melee::debug_startup_pending(world)] {
+        super::super::weapon_throwing::debug_startup_pending(world),super::super::melee::debug_startup_pending(world),
+        super::super::fx_gameplay::debug_pending(world)] {
         report.push('\n');report.push_str(&details);
     }
     report

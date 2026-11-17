@@ -1217,6 +1217,9 @@ pub fn queue_material_meshes(
 
             // Fetch the slabs that this mesh resides in.
             let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+                view_pending_mesh_material_queues
+                    .current_frame
+                    .insert((*render_entity, *visible_entity));
                 continue;
             };
 

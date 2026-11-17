@@ -1433,6 +1433,9 @@ pub fn specialize_wireframes(
                 continue;
             };
             let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                view_pending_wireframe_queues
+                    .current_frame
+                    .insert((*render_entity, *visible_entity));
                 continue;
             };
 
@@ -1612,6 +1615,9 @@ fn queue_wireframes(
                 morph_target_slab_id: morph_target_slab,
             }) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id())
             else {
+                view_pending_wireframe_queues
+                    .current_frame
+                    .insert((*render_entity, *visible_entity));
                 continue;
             };
             let bin_key = Wireframe3dBinKey {

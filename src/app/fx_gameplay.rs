@@ -213,6 +213,26 @@ pub(super) fn startup_pending(world: &World) -> bool {
         .get_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectSources>()
         .is_some_and(|sources| !sources.0.gameplay_ready())
 }
+///Print actual pending graph nodes once, with scope names as edges rather
+///than recursively expanding them. Cyclic source graphs remain diagnosable.
+pub(super) fn debug_pending(world:&World)->String {
+    use std::fmt::Write;
+    let Some(owner)=world.get_resource::<FxGameplay>()else{return "FX gameplay owner=absent".into();};
+    let mut report=format!("FX gameplay nodes={} closed={} generation={}",owner.entries.len(),owner.closed,owner.generation);
+    for (key,entry) in owner.entries.iter().filter(|(_,entry)|!entry.ready) {
+        let _=write!(report,"\n    source={key:?} scope={} alive={} entities={}/{} attempted={} explosion_requested={} explosion_attempted={}",
+            entry.scope,entry.lifetime.strong_count()!=0,entry.requested,entry.entities.len(),entry.attempted,
+            entry.explosion_requested,entry.explosion_attempted);
+        for definition in &entry.entities {
+            let _=write!(report,"\n      entity={} ready={:?}",definition.entity,super::runtime_entities::ready(world,definition));
+        }
+        if let Some(declaration)=&entry.explosion {
+            let _=write!(report,"\n      explosion_ready={:?}\n      {}",super::explosions::ready_owned(world,&entry.scope,declaration),
+                super::explosions::debug_owned(world,&entry.scope));
+        }
+    }
+    report
+}
 /// The actual FX queue is retained until canonical acceptance succeeds.
 pub(super) fn update(world: &mut World) -> Result<(), String> {
     if world
