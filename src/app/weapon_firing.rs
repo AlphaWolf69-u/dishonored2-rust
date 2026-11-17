@@ -30,7 +30,7 @@ mod owned;
 pub(super) use owned::{remove_owned, request_owned, shutdown, startup_pending};
 
 #[derive(Resource, Default)]
-struct Firing {
+pub(super) struct Firing {
     owned: HashMap<EntityId, owned::Owned>,
     generation: u64,
     next_effect: u64,
@@ -45,6 +45,51 @@ struct Firing {
 struct Delivery {
     message: WeaponMessage,
     phase: u8,
+}
+
+///Borrow current production receipts for F8/action diagnostics. No history,
+///counter or resource query is maintained on the normal gameplay path.
+#[derive(Debug)]
+pub(super) struct ActionStatus<'a> {
+    pub entity: EntityId,
+    pub ready: bool,
+    pub retiring: bool,
+    pub pending_callbacks: usize,
+    pub pending_fire: usize,
+    pub front_phase: Option<u8>,
+    pub effect_tails: usize,
+    pub error: Option<&'a str>,
+}
+impl Firing {
+    fn action_status(&self, identity: &str) -> Option<ActionStatus<'_>> {
+        let entry = self.owned.values().find(|entry|entry.identity.as_ref() == identity)?;
+        let mut pending_callbacks = 0;
+        let mut pending_fire = 0;
+        let mut front_phase = None;
+        for delivery in self.deliveries.iter().filter(|delivery|delivery.message.entity == Some(entry.entity)) {
+            pending_callbacks += 1;
+            pending_fire += usize::from(matches!(&delivery.message.effect, WeaponEffect::Fire { .. }));
+            front_phase.get_or_insert(delivery.phase);
+        }
+        Some(ActionStatus { entity:entry.entity, ready:entry.ready, retiring:entry.is_retiring(),
+            pending_callbacks, pending_fire, front_phase, effect_tails:entry.effects.len(), error:self.error.as_deref() })
+    }
+    pub(super) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  ranged callback owners={} pending={} error={:.240}", self.owned.len(), self.deliveries.len(), self.error.as_deref().unwrap_or("<none>"));
+        for entry in self.owned.values().take(4) {
+            if let Some(status) = self.action_status(&entry.identity) {
+                let _ = writeln!(report, "    identity={:.160} entity={:?} ready={} retiring={} callbacks={} fire_callbacks={} front_phase={:?} effect_tails={}", entry.identity, status.entity, status.ready, status.retiring, status.pending_callbacks, status.pending_fire, status.front_phase, status.effect_tails);
+            }
+        }
+    }
+}
+pub(super) fn action_status<'a>(world: &'a World, identity: &str) -> Option<ActionStatus<'a>> {
+    world.get_resource::<Firing>()?.action_status(identity)
+}
+/// On-demand formatting of the existing callback journal, with no new history.
+pub(super) fn write_diagnostics(world: &World, report: &mut String) {
+    if let Some(owner)=world.get_resource::<Firing>() { owner.write_diagnostics(report); }
 }
 pub(super) fn startup_error(world: &World) -> Option<&str> {
     world

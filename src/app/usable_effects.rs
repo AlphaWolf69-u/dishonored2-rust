@@ -96,6 +96,17 @@ pub(super) struct EntityPlacement {
 #[derive(Clone)]
 pub(super) struct EffectTicket { lifetime: Weak<Lifetime>, path: Arc<str> }
 
+///Borrow actual request/source/publication state only when F8 asks for it.
+pub(super) fn debug_ticket(world:&bevy::prelude::World,ticket:&EffectTicket)->String {
+    let lifetime=ticket.lifetime.upgrade();
+    let Some(owner)=world.get_resource::<UsableEffects>() else {return format!("path={} lifetime={} owner=absent",ticket.path,lifetime.is_some());};
+    let wanted=lifetime.as_ref().and_then(|lifetime|owner.wanted.iter().find(|(_,wanted)|Arc::ptr_eq(&wanted.retirement,lifetime)));
+    let ready=wanted.and_then(|(key,_)|owner.ready.get(key));
+    let errors=ready.into_iter().flat_map(|source|source.effects.values()).filter_map(|effect|effect.as_ref().err()).collect::<Vec<_>>();
+    format!("path={} lifetime={} completed={} wanted={} loading={} source_ready={} source_errors={errors:?} revision={} published={:?} active_publication={:?}",
+        ticket.path,lifetime.is_some(),effect_completed(ticket),wanted.is_some(),owner.loading.contains_key(ticket.path.as_ref()),ready.is_some(),owner.revision,owner.published_revision,owner.published_active_revision)
+}
+
 pub(super) enum EffectRequest {
     StartPlayer { owner: String, path: String },
     StopPlayer { owner: String },

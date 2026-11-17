@@ -1,5 +1,35 @@
 # Resource parity ledger
 
+## Owned equipment retention and action validation (2026-11-17)
+
+Owner: `app::player_actions::input`, using the existing inventory and equipment
+actor owners. `ported`:619640/619740 deactivate quantity-positive equipment;
+only the actual `Unequipped.destroy` branch retires it. The bridge previously
+discarded that distinction, scheduling destruction after ordinary holster or
+same-frame reselection. It now preserves the existing actor, model and runtime
+when `destroy=false`; quantity-zero destruction and level teardown retain their
+existing owners and acknowledgements. Expected result: reselection and ordinary
+holster no longer invalidate a retained weapon. This is a correctness repair,
+not a measured CPU or memory improvement.
+
+`host:` `app::gameplay_action_diagnostics` is an explicitly enabled windowless
+production-input observation. It borrows real owners, sends physical input
+messages through the normal binding sampler, observes actual animation and
+projectile acknowledgements, and exits through ordinary retirement. It supplies
+no alternate actors, ammunition, clocks, animation keys or resource readiness.
+Temporary observation state belongs to the diagnostic run. Missing reachable
+contact/throw fixtures are reported as uncovered, not passed. Combined debug
+build and action execution are pending; compilation/loading alone do not verify
+combat, sound, particles or performance.
+
+Focused-camera overlap correction: `gameplay::player::combat_fx` follows
+21a190/806a00/890970 and88e220 by averaging participating override targets and
+weights before one interpolation. Sequential interpolation incorrectly compounded
+overlapping fade-out and fade-in producers. A single producer is unchanged;
+this does not establish a fix for the reported single-focus DoF snap. The
+on-demand producer snapshots borrow canonical definitions without an ordinary
+gameplay frame history or a second camera effect owner.
+
 ## PlayerChaos ownership and source incapacitation packets (2026-11-16)
 
 Owners: `gameplay::player::chaos`, `app::player_chaos`, and the canonical
@@ -210,6 +240,12 @@ selection/cast and teardown checks are pending. No builds/tests or runtime
 timing/appearance claims accompanied this source batch.
 
 ## Equipment reference-actor integration (2026-11-16)
+
+### Production AI manager startup dispatch repair (2026-11-17)
+
+The reported Heart squeeze crash (`session-1794901578239-24988.log:531`) exposed a missing production lifecycle dispatch, not a nullable blackboard. Native5dbd90 calls4e52a0, which dereferences the selected AIWorld's actual+370 CoordinationBB before417140 obtains its Heart-bark history. The existing typed Coordination payload/pool/binding and teardown were already implemented, but `interaction_components::Startup` omitted the concrete Initialize and Start callbacks for all six AIStartup manager classes23–28 and Statistics21/Timers22. Generic header initialization falsely completed admission without registering the real AIWorld slots, manager listeners, source-owned Cue/Crew children or DSM sources. The separate lifecycle-drain host already dispatched those actual callbacks.
+
+Production startup now invokes the same existing concrete manager methods with the published World, actual LiveEntities/EntityEvents and the SAME shared ComponentRegistry. Coordination still binds its checked concrete pool generation at real Initialize; no empty/default BB, fallback AIWorld, private history or suppressed Heart error is introduced. Statistics/Timers use their actual initialization/listeners and AIWorld slot ownership as well. Existing entered-callback cursors, supplied-registry child construction, resource readiness, Stop/Deinit/child removal and final owner release remain authoritative. Prediction: the actual AIWorld component slots and mandatory startup side effects exist before gameplay/Heart admission; this restores previously omitted work and may increase startup cost/residency toward the original. It is not a performance optimization, and no CPU/RAM gain is claimed. Syntax-only parsing and whitespace review passed; root owns the coordinated build, windowless loading/action smoke and retirement validation.
 
 Owner: `app::physics_scene::equipment_reference`, composed by the existing
 `equipment_identity` admission/receipt owner. `ported`: 619380 and 8ae9b0
@@ -551,7 +587,7 @@ clock/resource registry.
 | Selector, model clock and notification publication | `14087ce70`, `14087d050`, `14080f620` | `ported` source state/order: preserve elapsed local time with the source float rounding, project the actual selector into its owner, publish raw entity clock offset and mapped model group, then send real `AD`/`AC` events. Traverse actual actor children first, then explicit attachment children through their877500 binding roots, depth first; an excluded node skips its own selector update while its children remain visited. The Player bridge retains its actual selector instead of inventing a Scene header. Retained stage acknowledgements prevent duplicate notifications after a fallible callback. `host`: model-clock fields use the existing model shader-data/SH publication owner and matching CPU shadow clock because the renderer has no original model-memory layout. |
 | Identity destruction and buffer reuse | actual managed identity retirement and `14080f040` root removal | `ported`: runtime entity retirement unregisters only after graph/render/audio acknowledgements and before actual Live identity destruction. Whole-world retirement unregisters actual nonexternal Scene roots; the Player owner unregisters its own external root. Component-only Stop retains a still-live identity's clock. Unregister removes its override and queued publication references; reusable traversal buffers retain capacity without retaining retired identities. |
 
-Far Reach released-target timestamps440db0/8778030 lazily admit placed
+Far Reach released-target timestamps440db0/878030 lazily admit placed
 entities through `time_sync::register_entity_time` before the first149
 timestamp and released-target interval read. The actual Scene selector and
 874c50 constructor-origin offset feed the existing ClockRuntime owner;
@@ -23848,6 +23884,44 @@ Far Reach cancels an unaccepted aim independently of the last-released target in
 Prediction: repairs lost notifications and stale canceled aim; no steady-frame cost or CPU/GPU/memory gain claimed. Source review and whitespace checks only; these edits are beyond the separately compiled766603d4 and await the next coherent build/production observation. No tests or visible launches performed.
 ### Accepted ranged callback retirement and melee collector identity (2026-11-17)
 
+Melee action follow-up (2026-11-17): `ported:` MeleePlayer vtable
+141b9d508+118 is630890, not the base636630 rejection policy. The player
+callback uses636630's first non-owner ray hit to replace the complete
+body/entity/material witness and ignores its rejection return. With active
+forward-attack bit2 it additionally casts the source camera-eye ray, stops
+at the first non-owner hit and replaces the packet only for entity+d7
+bits2/8 or a mode2 PhysicsBase component (registration1413e4c70,
+DAT1439e85b0). The rewrite previously discarded different-object ray hits
+and omitted that forward/poke ray. Raw world/entity collector packets now
+use their respective declared world/NPC focus shapes (631020/62ee20);
+entity damage does not acquire an extra world-only post-retarget focus
+gate. Accepted damage/ContactFX continue through the existing receipt
+cursor, material leases and effect-tail owner. The typed PhysicsBase range
+is resolved once at actual weapon admission, without a frame-time metadata
+scan or another geometry/query/resource owner.
+
+Prediction: restore contacts previously rejected by the wrong virtual policy
+and the missing focused target refinement, without widening authored ranges
+or masks. Ordinary swings retain the same obstruction query; forward attacks
+add630890's actual extra ray. No speedup is claimed. Constant-size numeric
+F8 receipts retain actual windows, query completions, filters, damage results
+and real FX tickets for production action validation; no frame history or
+per-frame diagnostic allocation is added. Source/syntax/whitespace review
+only; combined compilation and real slash/poke action verification pending.
+
+`ported:`619640/619740's positive-quantity Unequip and empty-record destruction
+remain distinct through `InventoryChange::Unequipped.destroy`. The player-action
+consumer now retires only a destroy=true notification. A holster or same-item
+ammo/reselection no longer retires the retained managed actor, its ranged
+runtime, clip/model leases and firing scopes after a later Equipped callback
+has already reused them. The actual equipment callback already deactivates and
+rebinds the positive-quantity actor. This fixes an execution-lifetime defect,
+not a renderer visibility override or a respawn workaround. Prediction: less
+destruction/reacquisition on positive-quantity switches, with no new per-frame
+work or resources; no measured timing claim. Current F8/action diagnostics
+borrow the actual Firing FIFO, readiness/error and effect-tail counts only
+when requested; no diagnostic action history or counters are recorded.
+
 `ported:`636b40's closest ray enters the world result list only for a null
 target or the actual registered idWorldspawn ancestry range1439b8470. A ray
 hitting an ordinary prop enters the entity list even though the ray mask
@@ -23890,3 +23964,5 @@ Prediction: adds the missing authored usable sounds at their actual keys and joi
 Scope audit: currently admitted equipment attachments allow only no components or AnimBase, with no Audio receiver; forwarding their keys to a parent weapon would violate875ba0. The actual regular thrown grenade uses rigid LWO geometry and no AnimBase, so this is not its fuse/weapon sound path. Primary gun/crossbow sounds retain the existing Player/Midnight owner. Generic runtime_animation with a future actually animated Audio-equipped actor still needs its own witness hookup; this entry does not claim every animation owner or A8/AA/AB messages ported.
 Coordinated f7a7a242 acceptance (2026-11-17): the completed usable-audio, HUD, melee/ranged ownership and grenade-transfer batch passed the dev game build, shared-core feature check, actual windowless gameplay and clean resource retirement on Edge of the World, Dust District and Institute, and a separate actual pause-menu exit; all four processes exited0 without runtime errors. Evidence: analysis/gameplay-repair-20261116/current-validation-source.json, gameplay-cycle-result.json and gameplay-runtime-result.json (finished05:23:10UTC). This verifies loading/readiness and teardown for the compiled production paths. It does not establish heard sounds, attack/catch input or appearance, every action-dependent tail, FPS recovery, or original physics CPU timing parity. No tests or visible launches were run. The main release build follows this coherent source batch; no executable is copied to bin.
 Normal main release acceptance (d68acadb, 2026-11-17): the actual DH2/target/release/dishonored2-rust.exe passed release compilation and all four production observations: gameplay+clean retirement on EotW/DD/Institute and actual pause-menu exit. Final result finished05:56:14UTC, executable SHA2564fc5a0f73d1b838c7b453ea555434a0cb4c253a424ec397e7ad61190b871547d. Evidence: DH2/analysis/gameplay-repair-20261116/gameplay-release-cycle-result.json and gameplay-release-runtime-result.json. Main source stayed at the expected commit throughout compilation. No tests, visible launches, focus changes or bin copies were performed. This proves normal-release loading/readiness/retirement; the user's pending gameplay report remains necessary for the reported inputs, heard sounds, action-dependent crash/tails and FPS. No original CPU timing or FPS recovery claim is made.
+
+Ordinary holdable interaction correction (2026-11-17): the installed Pickable default state is47, and841500 chooses real holdAndThrow metadata to request49/50 after physical pull. Normal placed and runtime holdable focus previously required GrabObject48 solely because hold props existed, rejecting authored47 before input could start the bottle transaction. Focus now uses the authored state's existing admission owner; actual47 requests share app::pickups' existing optional-item/checked-component/real-Hold journal with Far Reach, with fromGrapple=false for ordinary interaction. Explicit48 declarations retain their original carry route. No declaration state, input mapping, pull completion, body pose or throw velocity is fabricated. Same source/resource leases and ACK cleanup are reused; no new cache or update scan. The downstream51→8451e0 source still uses actual19/22 edges and default possession14 to select throw/drop, then the existing149/body release path. Expected outcome is restored reachability of ordinary bottle pickup/hold/throw, not a claimed CPU or memory gain. Source syntax and whitespace were reviewed; combined build and bounded actual-action diagnostics are root-owned.

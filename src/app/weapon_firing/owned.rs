@@ -46,6 +46,9 @@ pub(super) struct Effect {
     pub(super) ticket: super::super::usable_effects::EffectTicket,
     pub(super) attached: bool,
 }
+impl Owned {
+    pub(super) fn is_retiring(&self) -> bool { self.retired }
+}
 
 pub(in crate::app) fn request_owned(
     world: &mut World,

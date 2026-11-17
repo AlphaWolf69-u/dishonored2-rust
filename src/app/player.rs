@@ -537,7 +537,7 @@ fn base_fov() -> f32 {
 }
 
 /// DirectInput buttons 0..6 are engine codes 0xe0..0xe6.
-fn mouse_button_key(button: MouseButton) -> Option<u32> {
+pub(super) fn mouse_button_key(button: MouseButton) -> Option<u32> {
     Some(match button {
         MouseButton::Left => 0xe0,
         MouseButton::Right => 0xe1,

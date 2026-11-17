@@ -109,8 +109,11 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                     equipment_entity: entity,
                 });
             }
-            InventoryChange::Unequipped { path, .. } => {
-                actions.removed_equipment.push(path);
+            InventoryChange::Unequipped { path, destroy, .. } => {
+                //619640/619740 deactivate a quantity-positive owned actor.
+                //The actual Unequipped callback already stopped/rebound it;
+                //retiring it here also destroys a same-frame reselection.
+                if destroy { actions.removed_equipment.push(path); }
             }
             InventoryChange::Equipped { .. } => {} // Produced by the admitted live component transaction.
             _ => unreachable!("filtered equipment message"),

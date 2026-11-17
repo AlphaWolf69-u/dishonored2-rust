@@ -9,6 +9,71 @@ use crate::gameplay::{
 use bevy::prelude::{Mut, World};
 use std::sync::Arc;
 
+///The actual47 transaction shared by43f9b0 arrival and691970 movable catch.
+pub(in crate::app) fn request(
+    world: &mut World,
+    scene: &physics_scene::PhysicsScene,
+    live: &crate::gameplay::entity_lifetime::LiveEntities,
+    player: &mut crate::gameplay::player::Player,
+    id: EntityId,
+) -> Result<bool, String> {
+    let mut interactions = world
+        .get_resource_mut::<interactions::Interactions>()
+        .ok_or("GrappleCatch interaction owner absent")?;
+    request_borrowed(&mut interactions, scene, live, player, id, true)
+}
+
+///83f590/841500's same parameterized47 transaction for ordinary interaction
+///and Far Reach. Authored47 hold props use49/50 after reaching the player;
+///their presence does not turn the request into a different Grab48 class.
+pub(in crate::app) fn request_borrowed(
+    interactions: &mut interactions::Interactions,
+    scene: &physics_scene::PhysicsScene,
+    live: &crate::gameplay::entity_lifetime::LiveEntities,
+    player: &mut crate::gameplay::player::Player,
+    id: EntityId,
+    from_grapple: bool,
+) -> Result<bool, String> {
+    if !scene.grapple_pickup_available(live, player, id)? {
+        return Ok(false);
+    }
+    if interactions.pending_pickup.is_some() {
+        return Ok(false);
+    }
+    let Some((reference, pickable)) = scene.grapple_pickable(live, id)? else {
+        return Ok(false);
+    };
+    if pickable.interaction_flags & 2 != 0 {
+        return Ok(false);
+    }
+    let definition = pickable.definition.clone();
+    let item = pickable.item.clone();
+    let maximum = item
+        .as_ref()
+        .map_or(0, |item| interactions.limits.maximum(&item.path));
+    let hold = player.loot_hold_target(id, definition.clone())?;
+    if !player.request_loot_object(id) {
+        return Ok(false);
+    }
+    interactions.pending_pickup = Some(Pending {
+        entity: id,
+        reference,
+        definition,
+        item,
+        hold,
+        maximum,
+        phase: 0,
+        admitted: 0,
+        hud_notified: false,
+        from_grapple,
+        notice: Default::default(),
+        rejected_notice: false,
+        rejected_sound: None,
+    });
+    Ok(true)
+}
+
+
 pub(super) struct Pending {
     pub entity: EntityId,
     pub reference: CheckedComponent,

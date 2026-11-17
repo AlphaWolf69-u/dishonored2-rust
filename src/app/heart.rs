@@ -360,7 +360,10 @@ pub(super) fn update(world: &mut World, default_mode: bool) -> Result<(), String
             {
                 return Err("Heart use actor is stale".into());
             }
-            barks::request(world, request.equipment, request.target, entry)?;
+            let selected=barks::request(world, request.equipment, request.target, entry)?;
+            //A real processed request can legitimately select no line. This
+            //receipt observes delivery, not fabricated playback/completion.
+            super::gameplay_action_diagnostics::heart_used(world,request.equipment,selected);
             world
                 .resource_mut::<super::player::PlayerState>()
                 .player

@@ -3,6 +3,11 @@ use super::Player;
 use std::fmt::Write;
 
 impl Player {
+    /// Borrow actual switch-owner state for opt-in action diagnostics.
+    pub fn equipment_action_status(&self, side: usize) -> Option<(&str, bool, bool)> {
+        Some((self.equipment_changes.preferred_identity(side)?,
+            self.equipment_changes.equipped(side), self.equipment_changes.transitioning(side)))
+    }
     pub fn write_combat_diagnostics(&self, report: &mut String) {
         let _ = writeln!(report, "\nCombat current snapshot (not action history): swimming={} equipment_handles={:?} animation_events={} weapon_callbacks={} throwable_callbacks={} target_entity={:?} target_point={:?}", self.swimming_active, self.equipment_action_handles, self.animation_events.len(), self.weapon_effects.len(), self.throwable_effects.len(), self.ranged_target_entity, self.ranged_target_hit);
         let _ = writeln!(report, "  ranged identity={:.160} holstered={} throwable identity={:.160} holstered={} heart={:?}", self.weapon_identity.as_deref().unwrap_or("<none>"), self.holstered_weapons.len(), self.throwable_identity.as_deref().unwrap_or("<none>"), self.holstered_throwables.len(), self.heart_entity);

@@ -38,6 +38,25 @@ struct Delivery {
     phase: u8,
     contact: Option<super::physics_scene::explosion_effects::Contact>,
 }
+/// Retained receipts for F8/action diagnostics, not another attack history.
+/// No formatting, allocation or geometry copying occurs while recording.
+#[derive(Default, Debug)]
+struct Receipts {
+    windows: u64,
+    queries: u64,
+    completed: u64,
+    raw_contacts: u64,
+    eligible_contacts: u64,
+    retargeted: u64,
+    outside_focus: u64,
+    world_dwell: u64,
+    accepted: u64,
+    damage: u64,
+    damage_accepted: u64,
+    health_damage: f32,
+    contact_fx: u64,
+    contact_tickets: u64,
+}
 struct Owned {
     identity: Arc<str>,
     entity: EntityId,
@@ -61,6 +80,9 @@ struct Owned {
     tails: Vec<super::usable_effects::EffectTicket>,
     world_hit_duration: f32,
     shape_length: f32,
+    receipts: Receipts,
+    last_sweep: Option<([f32; 3], [f32; 3], [f32; 3], f32)>,
+    physics_base: [i32; 2],
 }
 #[derive(Resource, Default)]
 pub(super) struct Melee {
@@ -68,14 +90,16 @@ pub(super) struct Melee {
     queries: MeleeQueries,
     generation: u64,
     error: Option<String>,
+    active_frame_events: u64,
 }
 
 impl Melee {
     pub(super) fn write_diagnostics(&self, report: &mut String) {
         use std::fmt::Write;
-        let _ = writeln!(report, "  melee owners={} query_work_pending={} error={:.240}", self.owned.len(), self.queries.has_pending(), self.error.as_deref().unwrap_or("<none>"));
+        let _ = writeln!(report, "  melee owners={} query_work_pending={} active_frame_events={} error={:.240}", self.owned.len(), self.queries.has_pending(), self.active_frame_events, self.error.as_deref().unwrap_or("<none>"));
         for entry in self.owned.values().take(4) {
             let _ = writeln!(report, "    entity={:?} ready={} requested={} retiring={} active={} stop_pending={} forward={} heavy_block={} damage_factor={} previous_frame={} hit_count={} seen_count={} contact_callbacks={} tails={} world_hit_duration={}", entry.entity, entry.ready, entry.requested, entry.retiring, entry.active, entry.stop_after_update, entry.forward_attack, entry.heavy_block, entry.factor, entry.previous.is_some(), entry.hits.len(), entry.seen.len(), entry.deliveries.len(), entry.tails.len(), entry.world_hit_duration);
+            let _ = writeln!(report, "      receipts={:?} last_sweep={:?}", entry.receipts, entry.last_sweep);
             if let Some(delivery) = entry.deliveries.front() {
                 let _ = writeln!(report, "      front_contact target={:?} phase={} focused={} recoil={} velocity={:?}", delivery.target, delivery.phase, delivery.focused, delivery.recoil, delivery.velocity);
             }
@@ -93,13 +117,14 @@ pub(super) fn request_owned(
     };
     let entity = super::equipment_identity::id(world, &identity)
         .ok_or("owned melee equipment identity is not admitted")?;
+    if world.get_resource::<Melee>().is_some_and(|owner| owner.owned.contains_key(&entity)) {
+        return Ok(());
+    }
     if !world.contains_resource::<Melee>() {
         world.init_resource::<Melee>();
     }
+    let physics_base = world.resource::<PhysicsScene>().melee_physics_base_range()?;
     let mut owner = world.resource_mut::<Melee>();
-    if owner.owned.contains_key(&entity) {
-        return Ok(());
-    }
     let mut shape = None;
     super::physics_scene::melee::prepare_shape(&mut shape, definition.dimensions)?;
     owner.generation = owner.generation.wrapping_add(1);
@@ -147,6 +172,9 @@ pub(super) fn request_owned(
             tails: Vec::new(),
             world_hit_duration: 0.,
             shape_length,
+            receipts: Receipts::default(),
+            last_sweep: None,
+            physics_base,
         },
     );
     Ok(())
@@ -224,6 +252,7 @@ pub(super) fn handle_animation_event(
     let Some(mut owner) = world.get_resource_mut::<Melee>() else {
         return Ok(());
     };
+    owner.active_frame_events += 1;
     for entry in owner.owned.values_mut().filter(|entry| !entry.retiring) {
         let receives = match event.target {
             0 => bound.contains(&entry.entity),
@@ -241,6 +270,7 @@ pub(super) fn handle_animation_event(
                 return Err("melee active frames reached an unprepared owned component".into());
             }
             entry.active = true;
+            entry.receipts.windows += 1;
             entry.forward_attack = settings.forward_attack;
             entry.heavy_block = settings.heavy_block;
             entry.factor = settings.damage_factor;
@@ -269,10 +299,11 @@ fn witness(hit: Hit) -> ShapeRayContact {
     }
 }
 
-///636630 validates the swept witness against the first real occluder.
+///630890 calls636630 to replace the swept witness with the first real hit,
+///ignores its rejection return, then optionally selects the forward ray.
 ///The player supplies XY and the weapon supplies Z; target contacts are
 ///biased inward by the source .01 before extending to the active shape length.
-fn unobstructed(
+fn player_contact(
     world: &World,
     queries: &mut MeleeQueries,
     equipment: EntityId,
@@ -282,7 +313,11 @@ fn unobstructed(
     target: Option<EntityId>,
     raw: ShapeRayContact,
     player_origin: Vec3,
-) -> Result<Option<ShapeRayContact>, String> {
+    eye: Vec3,
+    camera: Mat3,
+    forward_attack: bool,
+    physics_base: [i32; 2],
+) -> Result<(ShapeRayContact, Option<EntityId>), String> {
     let from = Vec3::new(player_origin.x, player_origin.y, frame.position[2]);
     let mut to = Vec3::new(raw.position[0], raw.position[1], raw.position[2]);
     if target.is_some() {
@@ -294,21 +329,34 @@ fn unobstructed(
         maximum_fraction: 1.,
         layers: 0x443e,
     };
-    let contacts = world.resource::<PhysicsScene>().melee_ray_contacts(
-        world.resource::<LiveEntities>(),
+    let scene = world.resource::<PhysicsScene>();
+    let live = world.resource::<LiveEntities>();
+    let contacts = scene.melee_ray_contacts(
+        live,
         queries,
         &ray,
     )?;
+    let mut selected = (raw, target);
     for contact in contacts {
         if contact.entity == Some(attacker) || contact.entity == Some(equipment) {
             continue;
         }
-        if contact.entity != target {
-            return Ok(None);
-        }
-        return Ok(Some(witness(contact.hit)));
+        selected = (witness(contact.hit), contact.entity);
+        break;
     }
-    Ok(Some(raw))
+    if forward_attack {
+        let ray = Ray { origin: eye.to_array(), direction: (camera.x_axis * length).to_array(),
+            maximum_fraction: 1., layers: 0x443e };
+        for contact in scene.melee_ray_contacts(live, queries, &ray)? {
+            if contact.entity == Some(attacker) { continue; }
+            if scene.melee_forward_candidate(live, contact.entity, physics_base)? {
+                selected = (witness(contact.hit), contact.entity);
+            }
+            //630890 never looks through the first non-owner occluder.
+            break;
+        }
+    }
+    Ok(selected)
 }
 
 fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
@@ -377,7 +425,7 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                 parameters.affected_regions = 1 << region;
                 parameters.attacker = Some(attacker);
                 parameters.inflictor = Some(entry.entity);
-                world.resource_scope(|world, mut scene: Mut<PhysicsScene>| {
+                let result = world.resource_scope(|world, mut scene: Mut<PhysicsScene>| {
                     world.resource_scope(|world, mut live: Mut<LiveEntities>| {
                         scene
                             .damage_collision_target(
@@ -386,9 +434,13 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                                 delivery.hit.target.user_data,
                                 &parameters,
                             )
-                            .map(|_| ())
                     })
                 })?;
+                entry.receipts.damage += 1;
+                if let Some(result) = result {
+                    entry.receipts.damage_accepted += u64::from(result.accepted);
+                    entry.receipts.health_damage += result.health_damage;
+                }
             }
             delivery.phase = 2;
         }
@@ -431,9 +483,13 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                     context,
                 )? {
                     super::explosions::ContactPost::Pending => return Ok(()),
-                    super::explosions::ContactPost::Complete(Some(ticket)) => entry.tails.push(ticket),
+                    super::explosions::ContactPost::Complete(Some(ticket)) => {
+                        entry.receipts.contact_tickets += 1;
+                        entry.tails.push(ticket);
+                    }
                     super::explosions::ContactPost::Complete(None) => {},
                 }
+                entry.receipts.contact_fx += 1;
             }
             delivery.phase = 3;
         }
@@ -550,6 +606,8 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 let scene = world.resource::<PhysicsScene>();
                 let live = world.resource::<LiveEntities>();
                 if let Some(hits) = scene.poll_melee_query(live, &mut owner.queries, id)? {
+                    entry.receipts.completed += 1;
+                    entry.receipts.raw_contacts += hits.len() as u64;
                     for hit in hits {
                         if hit.entity == Some(attacker)
                             || hit.entity == Some(entry.entity)
@@ -560,7 +618,19 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         if !scene.melee_contact_allowed(live, entry.entity, hit)? {
                             continue;
                         }
+                        entry.receipts.eligible_contacts += 1;
                         let world_hit = scene.melee_contact_world(live, hit, bank)?;
+                        //631020/62ee20 first admit each original collector
+                        //against its own declared focus shape. The entity
+                        //collector uses NPC focus even for ordinary props.
+                        let focus = if world_hit { entry.definition.world_focus }
+                            else { entry.definition.npc_focus };
+                        if !focus.contains(origin, eye, camera,
+                            entry.definition.focus_step_back,
+                            Vec3::from_array(witness(hit.hit).position)) {
+                            entry.receipts.outside_focus += 1;
+                            continue;
+                        }
                         if let Some(existing) = entry
                             .hits
                             .iter_mut()
@@ -593,7 +663,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         continue;
                     }
                     let raw_witness = witness(hit.hit);
-                    let Some(witness) = unobstructed(
+                    let (witness, target) = player_contact(
                         world,
                         &mut owner.queries,
                         entry.entity,
@@ -603,22 +673,28 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         hit.entity,
                         raw_witness,
                         origin,
-                    )?
-                    else {
-                        continue;
-                    };
+                        eye,
+                        camera,
+                        entry.forward_attack,
+                        entry.physics_base,
+                    )?;
+                    if target != hit.entity { entry.receipts.retargeted += 1; }
+                    if entry.seen.contains(&target) { continue; }
                     let point = Vec3::new(
                         witness.position[0],
                         witness.position[1],
                         witness.position[2],
                     );
-                    if !entry.definition.world_focus.contains(
+                    //World impacts are checked again after630890 has
+                    //replaced their packet; entity damage follows634320.
+                    if *world_hit && !entry.definition.world_focus.contains(
                         origin,
                         eye,
                         camera,
                         entry.definition.focus_step_back,
                         point,
                     ) {
+                        entry.receipts.outside_focus += 1;
                         continue;
                     }
                     let damage = if focused {
@@ -633,7 +709,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     let recoil = world.resource::<PhysicsScene>().melee_world_blocks(
                         world.resource::<LiveEntities>(),
                         witness.target,
-                        hit.entity,
+                        target,
                         attacker,
                         damage,
                     )?;
@@ -644,12 +720,13 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         if !entry.forward_attack
                             && entry.world_hit_duration < f32::from_bits(0x3db8_51ed)
                         {
+                            entry.receipts.world_dwell += 1;
                             continue;
                         }
                     }
                     entry.deliveries.push_back(Delivery {
                         hit: witness,
-                        target: hit.entity,
+                        target,
                         attacker,
                         velocity,
                         direction: (Vec3::from_array(current.position) - point).normalize_or_zero(),
@@ -659,7 +736,8 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         phase: 0,
                         contact: None,
                     });
-                    entry.seen.push(hit.entity);
+                    entry.receipts.accepted += 1;
+                    entry.seen.push(target);
                     if recoil {
                         entry.active = false;
                         entry.stop_after_update = false;
@@ -730,6 +808,8 @@ fn submit(
         entry.forward_attack,
     );
     entry.shape_length = sweep.shape_length;
+    entry.last_sweep = Some((sweep.from.to_array(), sweep.to.to_array(),
+        sweep.blade_direction.to_array(), sweep.shape_length));
     let dimensions = Vec3::new(
         sweep.shape_length,
         entry.definition.dimensions.y,
@@ -773,6 +853,7 @@ fn submit(
         },
         world.contains_resource::<PhysicsScene>(),
     )?;
+    entry.receipts.queries += entry.queries.iter().filter(|id| id.is_valid()).count() as u64;
     Ok(())
 }
 

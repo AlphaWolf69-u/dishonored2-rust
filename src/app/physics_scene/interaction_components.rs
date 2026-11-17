@@ -618,6 +618,18 @@ impl ComponentLifecycleWorld for Startup<'_> {
             if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
                 return self.scene.initialize_cue_component(self.live,handle);
             }
+            if self.scene.is_ai_startup_class(handle.class_id) {
+                return self.scene.initialize_ai_startup(
+                    self.world.as_deref_mut().ok_or("AI manager Initialize requires published world")?,
+                    self.live,self.events,registry,handle,
+                );
+            }
+            if handle.class_id==self.scene.classes[21] {
+                return self.scene.initialize_statistics(handle);
+            }
+            if handle.class_id==self.scene.classes[22] {
+                return self.scene.initialize_timers(self.world.as_deref_mut(),self.live,handle);
+            }
             if self.scene.is_crew_class(handle.class_id) {
                 self.scene.initialize_crew(handle)
             } else if self.scene.is_crew_collector_class(handle.class_id) {
@@ -684,6 +696,21 @@ impl ComponentLifecycleWorld for Startup<'_> {
             if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
                 self.scene.start(handle,registry)?;
                 return self.scene.start_cue_component(self.world.as_deref(),self.live,self.events,handle);
+            }
+            if self.scene.is_ai_startup_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_ai_startup(
+                    self.world.as_deref_mut().ok_or("AI manager Start requires published world")?,
+                    self.events,registry,handle,
+                );
+            }
+            if handle.class_id==self.scene.classes[21] {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_statistics(self.events,handle);
+            }
+            if handle.class_id==self.scene.classes[22] {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_timers(self.live,handle);
             }
             if self.scene.is_crew_class(handle.class_id) {
                 self.scene.start(handle,registry)?;

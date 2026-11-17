@@ -179,6 +179,35 @@ impl MeleeQueries {
     }
 }
 impl PhysicsScene {
+    ///630890's final condition is the real PhysicsBase family, not just
+    ///RigidBody. Resolve this immutable class identity at weapon admission.
+    pub(in crate::app) fn melee_physics_base_range(&self) -> Result<[i32; 2], String> {
+        let classes = self.types.classes();
+        let class = classes.hierarchy().registration_order().iter().copied().find(|&class|
+            classes.metadata(class).is_some_and(|metadata|
+                classes.name_text(metadata.name) == Some(b"arkCpntPhysicsBase")))
+            .ok_or("melee PhysicsBase class metadata absent")?;
+        classes.hierarchy().type_range(class)
+    }
+
+    ///630890: the FIRST non-owner hit can replace the focused contact only
+    ///for damageable, special-damage, or actually Started PhysicsBase targets.
+    pub(in crate::app) fn melee_forward_candidate(&self, live: &LiveEntities,
+        target: Option<EntityId>, physics_base: [i32; 2]) -> Result<bool, String> {
+        let Some(target) = target else { return Ok(false); };
+        if live.get(target).is_none() { return Ok(false); }
+        let Some(&index) = self.shared_indices.get(&target) else { return Ok(false); };
+        let entity = self.entities.get(index).ok_or("melee focused target header absent")?;
+        if entity.retired || entity.shared != target { return Ok(false); }
+        if entity.entity_flags_d7 & (2 | 8) != 0 { return Ok(true); }
+        Ok(entity.components.find_component(physics_base, [0x28, 0], |handle| {
+            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                flags: self.owner(handle)?.flags,
+                start_phases: self.declarations.get(&handle.packed()).map(|decl| decl.scheduling.start_phases),
+            })
+        })?.is_some())
+    }
+
     ///636b40 keeps world/entity result lists separate. Its closest-ray bank
     ///goes to world only for null/idWorldspawn, independently of query layers.
     pub(in crate::app) fn melee_contact_world(

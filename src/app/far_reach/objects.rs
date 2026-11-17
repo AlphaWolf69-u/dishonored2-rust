@@ -146,7 +146,7 @@ impl Runtime {
                             }
                             //8024d0 returns void;43f9b0 marks this handoff
                             //successful even if47's admission rejects the request.
-                            let _ = crate::app::physics_scene::grapple_catch::request_pickup(
+                            let _ = crate::app::pickups::request(
                                 world, &scene, &live, player, target,
                             )?;
                             Ok(true)

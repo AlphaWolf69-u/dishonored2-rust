@@ -837,7 +837,7 @@ pub(super) fn focus_and_interact(
                     }
                 };
                 match admits_candidate(definition, &context, |mode, state, _request| {
-                    Ok(player.carry_interaction_allowed(mode, state) == Some(true))
+                    Ok((if state==47 {player.loot_interaction_allowed(mode,state)} else {player.carry_interaction_allowed(mode,state)}) == Some(true))
                 }) {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -934,7 +934,7 @@ pub(super) fn focus_and_interact(
                     target_max_z: bounds[1][2],
                 };
                 match admits_candidate(definition, &context, |mode, state, _| {
-                    Ok(if carrying { player.carry_interaction_allowed(mode, state) }
+                    Ok(if carrying && state!=47 { player.carry_interaction_allowed(mode, state) }
                         else { player.loot_interaction_allowed(mode, state) } == Some(true))
                 }) {
                     Ok(true) => {}
@@ -1192,7 +1192,9 @@ pub(super) fn focus_and_interact(
         ) {
             match scene.interaction_pickable(live, id) {
                 Ok(Some((_, component))) => {
-                    super::carrying::request(player, id, component.definition.clone());
+                    if component.definition.pickup_interaction.player_state==47 {
+                        if let Err(error)=super::pickups::request_borrowed(&mut interactions,scene,live,player,id,false){warn!("Live hold pickup request: {error}");}
+                    } else {super::carrying::request(player, id, component.definition.clone());}
                 }
                 Ok(None) => {}
                 Err(error) => warn!("Live carry action identity: {error}"),
@@ -1210,7 +1212,9 @@ pub(super) fn focus_and_interact(
         };
         match scene.carry_pickable(&interactions.carrying[index].entity, live) {
             Ok(Some((id, definition))) => {
-                super::carrying::request(player, id, definition);
+                if definition.pickup_interaction.player_state==47 {
+                    if let Err(error)=super::pickups::request_borrowed(&mut interactions,scene,live,player,id,false){warn!("Hold pickup request: {error}");}
+                } else {super::carrying::request(player, id, definition);}
             }
             Ok(None) => {}
             Err(error) => warn!("Carry action identity: {error}"),

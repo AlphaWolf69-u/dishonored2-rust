@@ -41,6 +41,35 @@ impl ComponentInstance for BreakableComponent {
     }
 }
 impl PhysicsScene {
+    ///On-demand F8 observation. No per-frame history or resource retention.
+    pub(in crate::app) fn write_breakable_diagnostics(&self, eye: [f32;3], report: &mut String) {
+        use std::fmt::Write;
+        let mut rows = Vec::new();
+        for entity in &self.entities {
+            for &packed in entity.components.entries.values() {
+                let Ok(handle) = ComponentHandle::from_packed(packed) else { continue };
+                if handle.class_id != self.classes[11] { continue; }
+                let Some(component) = self.breakables.get(handle.slot) else { continue };
+                let distance = entity.frame.pose.position.iter().zip(eye).map(|(a,b)|(a-b)*(a-b)).sum::<f32>();
+                rows.push((component.runtime.pending().is_none(), distance, entity, handle, component));
+            }
+        }
+        rows.sort_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.total_cmp(&b.1)));
+        let _=writeln!(report,"\nBreakable current owners={} (nearest/pending first, at most32):",rows.len());
+        for (_, distance, entity, handle, component) in rows.into_iter().take(32) {
+            let runtime=&component.runtime;
+            let health=component.health.map(|checked| {
+                self.health_payload(checked.handle).map(|health|format!("handle={:?} expected_generation={} actual_generation={} flags={:#x} current={}/{} infinite={}",
+                    checked.handle,checked.generation,health.owner.generation,health.owner.flags,health.current,health.maximum,health.receiver.infinite_health))
+                    .unwrap_or_else(|error|format!("error={error}"))
+            });
+            let _=writeln!(report,"  name={} entity={:?} position={:?} distance={} retired={} handle={:?} generation={} flags={:#x} health={health:?} initialized={} started={} stopped={} step={}/{} thrown={} broken={} retained_chunks={} pending={:?}",
+                entity.name,entity.shared,entity.frame.pose.position,distance.sqrt(),entity.retired,handle,component.owner.generation,component.owner.flags,
+                runtime.initialized,runtime.started,runtime.stopped(),runtime.current_step,runtime.definition.steps.len(),runtime.thrown,runtime.broken,runtime.retained_chunks().count(),runtime.pending());
+            let _=writeln!(report,"    authored_fx={:?}",runtime.definition.fx_paths().collect::<Vec<_>>());
+        }
+    }
+
     pub(super) fn admit_breakable_components(
         &mut self,
         catalog: &archive::Catalog,

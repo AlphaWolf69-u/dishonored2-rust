@@ -64,6 +64,7 @@ mod resource_diagnostics;
 mod preparation_diagnostics;
 mod scene_acquisition_diagnostics;
 mod runtime_lifecycle_diagnostics;
+mod gameplay_action_diagnostics;
 mod fx_lifecycle_diagnostics;
 mod ui_lifecycle_diagnostics;
 pub use runtime_lifecycle_diagnostics::inspect_runtime_lifecycles;

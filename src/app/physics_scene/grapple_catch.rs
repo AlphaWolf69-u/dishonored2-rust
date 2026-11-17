@@ -353,58 +353,6 @@ impl PhysicsScene {
     }
 }
 
-///The actual47 transaction shared by43f9b0 arrival and691970 movable catch.
-pub(in crate::app) fn request_pickup(
-    world: &mut World,
-    scene: &PhysicsScene,
-    live: &LiveEntities,
-    player: &mut Player,
-    id: EntityId,
-) -> Result<bool, String> {
-    if !scene.grapple_pickup_available(live, player, id)? {
-        return Ok(false);
-    }
-    let interactions = world
-        .get_resource::<super::super::interactions::Interactions>()
-        .ok_or("GrappleCatch interaction owner absent")?;
-    if interactions.pending_pickup.is_some() {
-        return Ok(false);
-    }
-    let Some((reference, pickable)) = scene.grapple_pickable(live, id)? else {
-        return Ok(false);
-    };
-    if pickable.interaction_flags & 2 != 0 {
-        return Ok(false);
-    }
-    let definition = pickable.definition.clone();
-    let item = pickable.item.clone();
-    let maximum = item
-        .as_ref()
-        .map_or(0, |item| interactions.limits.maximum(&item.path));
-    let hold = player.loot_hold_target(id, definition.clone())?;
-    if !player.request_loot_object(id) {
-        return Ok(false);
-    }
-    world
-        .get_resource_mut::<super::super::interactions::Interactions>()
-        .unwrap()
-        .pending_pickup = Some(super::super::pickups::Pending {
-        entity: id,
-        reference,
-        definition,
-        item,
-        hold,
-        maximum,
-        phase: 0,
-        admitted: 0,
-        hud_notified: false,
-        from_grapple: true,
-        notice: Default::default(),
-        rejected_notice: false,
-        rejected_sound: None,
-    });
-    Ok(true)
-}
 
 fn drain(
     world: &mut World,
@@ -507,7 +455,7 @@ fn sample(
                 ) {
                     player.grapple_catch_runtime(mode).release();
                     drain(world, carry, scene, live, player, mode)?;
-                    request_pickup(world, scene, live, player, id)?;
+                    super::super::pickups::request(world, scene, live, player, id)?;
                     player.quit_grapple_catch();
                 }
             }

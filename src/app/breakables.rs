@@ -53,6 +53,19 @@ pub(super) fn install(app: &mut App) {
     app.init_resource::<Breakables>();
 }
 
+pub(super) fn write_diagnostics(world:&World,eye:[f32;3],report:&mut String) {
+    use std::fmt::Write;
+    if let Some(scene)=world.get_resource::<super::physics_scene::PhysicsScene>() {
+        scene.write_breakable_diagnostics(eye,report);
+    }
+    if let Some(owner)=world.get_resource::<Breakables>() {
+        let _=writeln!(report,"  Breakable destruction FX tails={} (actual tickets, at most32):",owner.tails.len());
+        for tail in owner.tails.iter().take(32) {
+            let _=writeln!(report,"    owner={:?} remove_owner={} {}",tail.owner,tail.remove_owner,super::usable_effects::debug_ticket(world,&tail.ticket));
+        }
+    }
+}
+
 ///All source operations use actual owners. The source front remains queued
 ///on an error; successful operations are acknowledged before the next one.
 pub(super) fn update(world: &mut World) -> Result<(), String> {

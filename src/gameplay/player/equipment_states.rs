@@ -102,6 +102,9 @@ impl Runtime {
     pub fn preferred(&self, side: usize) -> Option<&Equipment> {
         self.slots.get(side)?.current.as_ref().map(|target| &*target.equipment)
     }
+    pub(super) fn preferred_identity(&self, side: usize) -> Option<&str> {
+        self.slots.get(side)?.current.as_ref().map(|target| target.identity.as_str())
+    }
     pub fn instant_pending(&self, side: usize) -> bool {
         self.slots.get(side).is_some_and(|slot| slot.requested && slot.flags & 0x30 == 0x30
             && slot.phase == Phase::Idle && (slot.incoming.is_some() || slot.restore)

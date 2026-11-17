@@ -90,6 +90,11 @@ impl State {
     pub(super) fn blocks_input(&self) -> bool {
         self.open || self.input_owned || self.clear_requested || self.retired
     }
+    /// Read-only diagnostic: the existing worker has acknowledged this open's
+    /// actual frame, rather than merely accepting the player's open request.
+    pub(super) fn movie_frame_ready(&self) -> bool {
+        self.open && !self.closing && self.ready && self.snapshot.is_some() && !self.in_flight
+    }
 }
 
 fn command(world: &World, epoch: u64, operation: Operation) -> Result<(), String> {

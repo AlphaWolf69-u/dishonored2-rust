@@ -47,6 +47,18 @@ impl Definition {
 }
 
 struct Active { definition: usize, producer: EnvironmentBlendEffect, time: f32, stopping: bool }
+/// On-demand view of the actual producer; no copied definition, diagnostic
+/// clock, retained frame history, or work in ordinary gameplay updates.
+pub struct DiagnosticSnapshot<'a> {
+    pub definition: usize,
+    pub definition_identity: usize,
+    pub authored: &'a EnvironmentEffectDefinition,
+    pub parent_timing: &'a EffectTimingRanges,
+    pub producer: &'a EnvironmentBlendEffect,
+    pub time: f32,
+    pub stopping: bool,
+    pub targets: &'a [Option<f32>; 33],
+}
 pub struct Runtime {
     definition: Arc<Definition>,
     active: Vec<Active>,
@@ -54,6 +66,26 @@ pub struct Runtime {
     seed: u32,
 }
 impl Runtime {
+    pub fn focus_requested(&self) -> bool { self.was_active }
+
+    pub fn definition_sources(&self) -> &[String] { &self.definition._source.source_paths }
+
+    pub fn visit_diagnostics(&self, mut visit: impl FnMut(DiagnosticSnapshot<'_>)) {
+        for active in &self.active {
+            let definition = &self.definition.environments[active.definition];
+            visit(DiagnosticSnapshot {
+                definition: active.definition,
+                definition_identity: Arc::as_ptr(&definition.definition) as usize,
+                authored: &definition.definition,
+                parent_timing: &definition.offsets,
+                producer: &active.producer,
+                time: active.time,
+                stopping: active.stopping,
+                targets: &definition.values,
+            });
+        }
+    }
+
     pub fn new(definition: Arc<Definition>) -> Self {
         let active = Vec::with_capacity(definition.environments.len());
         Self { definition, active, was_active: false, seed: 0 }
@@ -77,10 +109,24 @@ impl Runtime {
         Ok(())
     }
     pub fn apply(&self, slot: usize, value: &mut f32) {
+        //21a190 ->806a00 ->890970 registers {blend, influence=1}.
+        //88e220 accumulates participating targets and blend weights, then
+        //normalizes both before ONE base-to-target interpolation. Retriggered
+        //focus can overlap the previous effect's authored fade-out; sequential
+        //lerps would compound those envelopes instead of averaging them.
+        let mut target_sum = 0.;
+        let mut blend_sum = 0.;
+        let mut influence = 0.;
         for active in &self.active {
             if let Some(target) = self.definition.environments[active.definition].values[slot] {
-                *value += (target - *value) * active.producer.blend.clamp(0., 1.);
+                target_sum += target;
+                blend_sum += active.producer.blend;
+                influence += 1.;
             }
+        }
+        if influence > 0. {
+            let inverse = 1. / influence;
+            *value += (target_sum * inverse - *value) * (blend_sum * inverse).clamp(0., 1.);
         }
     }
 }

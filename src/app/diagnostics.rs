@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    (display_capture, rendered_arms, arm_lighting, shader_buffers, melee, throwing, hearts, animation_events): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>, Option<Res<super::melee::Melee>>, Option<Res<super::weapon_throwing::Throwing>>, Option<Res<super::heart::Hearts>>, Option<Res<super::player_animation_events::Events>>),
+    (display_capture, rendered_arms, arm_lighting, shader_buffers, melee, throwing, hearts, animation_events, firing): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>, Option<Res<super::melee::Melee>>, Option<Res<super::weapon_throwing::Throwing>>, Option<Res<super::heart::Hearts>>, Option<Res<super::player_animation_events::Events>>, Option<Res<super::weapon_firing::Firing>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -481,6 +481,7 @@ pub(super) fn collision_report(
     if let Some(owner) = throwing.as_ref() { owner.write_diagnostics(&mut report); }
     if let Some(owner) = hearts.as_ref() { owner.write_diagnostics(&mut report); }
     if let Some(owner) = animation_events.as_ref() { owner.write_diagnostics(&mut report); }
+    if let Some(owner) = firing.as_ref() { owner.write_diagnostics(&mut report); }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
     report.push_str("\nLens CPU publication (not proof of GPU submission):\n");
@@ -573,6 +574,19 @@ pub(super) fn collision_report(
     }
     match fs::write(&report_path, report) {
         Ok(()) => {
+            //Borrow canonical owners only after this F8 report, without adding
+            //a per-frame observation system or retaining runtime snapshots.
+            let owner_report_path=report_path.clone();
+            let owner_eye=view_to_game(camera.translation);
+            commands.queue(move |world:&mut World| {
+                use std::io::Write;
+                let mut detail=String::new();
+                super::breakables::write_diagnostics(world,owner_eye,&mut detail);
+                match fs::OpenOptions::new().append(true).open(&owner_report_path) {
+                    Ok(mut file)=>{if let Err(error)=file.write_all(detail.as_bytes()){eprintln!("Breakable report append failed: {error}");}},
+                    Err(error)=>eprintln!("Breakable report open failed: {error}"),
+                }
+            });
             if let Some(capture) = display_capture {
                 capture.request(directory.join(format!("{stem}-display-gpu")));
             }
