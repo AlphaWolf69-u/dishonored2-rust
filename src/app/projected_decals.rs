@@ -44,6 +44,23 @@ pub(super) struct RuntimeDecalProxies {
     cube: Option<Handle<Mesh>>,
     owns_scene_geometry: bool,
     layout_revision: u64,
+    binding_revision: u64,
+}
+#[derive(Clone, Default)]
+pub(super) struct PreparedProxyBindings {
+    layout: u64,
+    entries: HashMap<(String, bool), (Vec<Entity>, AssetId<super::DecalMaterial>)>,
+}
+impl RuntimeDecalProxies {
+    pub(super) fn binding_revision(&self) -> u64 { self.binding_revision }
+    pub(super) fn capture_bindings<'a>(&self, keys: impl Iterator<Item = &'a (String, bool)>) -> PreparedProxyBindings {
+        PreparedProxyBindings { layout: self.layout_revision, entries: keys.filter_map(|key| self.owned.get(key)
+            .map(|value| (key.clone(), (value.entities.clone(), value._prepared.handle.id())))).collect() }
+    }
+    pub(super) fn binding_matches(&self, prepared: &PreparedProxyBindings, key: &(String, bool)) -> bool {
+        self.layout_revision == prepared.layout && prepared.entries.get(key).zip(self.owned.get(key))
+            .is_some_and(|((entities, material), current)| *entities == current.entities && *material == current._prepared.handle.id())
+    }
 }
 
 #[derive(Default)]
@@ -268,6 +285,7 @@ pub(super) fn publish_runtime(
         (request, state, scene_data, queue, materials) else { return };
     if state.revision == Some(request.prepared_revision) && state.layout_revision == layouts.revision { return; }
     let layouts_changed = state.layout_revision != layouts.revision;
+    let previous_binding_revision = state.binding_revision;
     let ready = request.prepared_generation == Some(request.generation);
     if !ready && state.owned.is_empty() { return; }
     if ready && !request.prepared.is_empty() && scene.tree.is_none() {
@@ -295,6 +313,7 @@ pub(super) fn publish_runtime(
     }
     for key in obsolete {
         if let Some(old) = state.owned.remove(&key) {
+            state.binding_revision = state.binding_revision.wrapping_add(1);
             for entity in old.entities { commands.entity(entity).try_despawn(); }
             if let Some(variants) = Arc::make_mut(&mut scene.programs).get_mut(&key.0) {
                 variants[usize::from(key.1)] = None;
@@ -345,6 +364,7 @@ pub(super) fn publish_runtime(
             [usize::from(item.world)] = Some(item.program.clone());
         expected.extend(entities.iter().copied());
         state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
+        state.binding_revision = state.binding_revision.wrapping_add(1);
     }
     // Only owned dynamic depth-box proxies use this cube. Static proxies have
     // their own setup mesh, and other dynamic projections borrow receivers.
@@ -365,6 +385,10 @@ pub(super) fn publish_runtime(
     }
     state.revision = Some(request.prepared_revision);
     state.layout_revision = layouts.revision;
+    if state.binding_revision != previous_binding_revision {
+        request.gpu_completed.store(0, std::sync::atomic::Ordering::Release);
+        request.completed.store(0, std::sync::atomic::Ordering::Release);
+    }
 }
 
 fn extract_receivers(

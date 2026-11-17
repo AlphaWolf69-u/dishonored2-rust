@@ -55,7 +55,21 @@ fn player(world: &World) -> Result<&Player, String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldSword, WorldCharge, WorldAim, WorldContact, PickObject, ThrowObject, ObjectMotion, Done }
+enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldSword, WorldCharge, WorldAim, WorldContact, WorldTail, PickObject, ThrowObject, ObjectMotion, Done }
+struct WorldEffectObservation {
+    ticket:super::usable_effects::EffectTicket,
+    identity:Option<(std::sync::Arc<str>,std::sync::Arc<str>)>,
+    publication:Option<(u32,u64)>,
+    started:Option<u32>,
+    started_app_frame:Option<u32>,
+    particles:bool,
+    retired:bool,
+    emitters:HashSet<String>,
+    expected_events:HashSet<u32>,
+    admissions:HashSet<u32>,
+    processed:HashSet<u32>,
+    last:Option<crate::rendering::bevy_backend::world_particle_state::OwnerSnapshot>,
+}
 pub(super) struct Observation {
     stage: Stage,
     since: Instant,
@@ -98,6 +112,8 @@ pub(super) struct Observation {
     world_poke: bool,
     world_crouch: Option<Input>,
     world_target: Option<crate::gameplay::collision_hit::ShapeHitInfo>,
+    world_contacts:u8,
+    world_effect:Option<WorldEffectObservation>,
     blink: Option<blink::Observation>,
 }
 impl Observation {
@@ -132,7 +148,7 @@ impl Observation {
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
-            world_only,world_poke,world_crouch:None,world_target:None,blink })
+            world_only,world_poke,world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -417,11 +433,79 @@ impl Observation {
         let scene=world.resource::<super::physics_scene::PhysicsScene>();
         let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"WORLD evidence query owner poisoned")?;
         let receipt=super::melee::world_action_receipt(world);
-        let material=receipt.and_then(|(_,hit,_,_,_,_)|queries.storage.materials.material_for_id(hit.material_id))
-            .map(|material|material.name.as_str());
+        let material=match receipt {
+            Some((_,hit,_,_,_,_))=>Some(queries.storage.materials.material_for_id(hit.material_id)
+                .map_err(|error|format!("WORLD evidence reason={reason} material={} hit={hit:?}: {error}",hit.material_id))?.name.as_str()),
+            None=>None,
+        };
         eprintln!("ACTION_SMOKE_WORLD reason={reason} charged={} fixture={:?} receipt={receipt:?} actual_target_material={material:?} authored_source_material={:?} authored_focused_material={:?} native_charge={:?} {}",
             self.world_poke,self.world_target,definition.material,definition.focused_material,p.machine.melee_focus_charge(),super::melee::debug_startup_pending(world));
         Ok(())
+    }
+    fn world_effect_progress(&mut self,world:&mut World)->Result<bool,String>{
+        let observation=self.world_effect.as_mut().ok_or("WORLD accepted callback lost its weak FX receipt")?;
+        if observation.retired{return Ok(true)}
+        if observation.identity.is_none(){observation.identity=super::usable_effects::ticket_request_identity(world,&observation.ticket);}
+        if let Some((raw,path))=&observation.identity{
+            let owner=format!("entity:{raw}");
+            if let Some(dynamic)=world.get_resource::<crate::rendering::bevy_backend::world_effects::DynamicEffects>(){
+                if let Some(entry)=dynamic.0.iter().find(|entry|entry.owner==owner){
+                    if observation.publication.is_none(){
+                        let frame=world.resource::<bevy::diagnostic::FrameCount>().0;
+                        observation.publication=Some((frame,entry.revision));
+                        eprintln!("ACTION_SMOKE_WORLD_FX_PUBLICATION contact={} owner={owner} actual_path={} publication_app_frame={frame} revision={} ticket={}",self.world_contacts+1,entry.effect,entry.revision,super::usable_effects::debug_ticket(world,&observation.ticket));
+                    }
+                    for (source,definition) in &entry.sources.effects{
+                        let definition=definition.as_ref().map_err(|error|format!("WORLD FX source {source}: {error}"))?;
+                        for sound in definition.groups.iter().flat_map(|group|&group.sounds){
+                            for event in [&sound.start,&sound.stop].into_iter().flatten(){observation.expected_events.insert(event.declaration.id);}
+                        }
+                    }
+                }
+            }
+            if let Some(simulation)=world.get_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>(){
+                let snapshot=simulation.observe_fx_owner(&owner);
+                if !snapshot.handles.is_empty()&&snapshot.pending_starts==0{
+                    if observation.started.is_none(){
+                        observation.started=snapshot.frame;
+                        observation.started_app_frame=world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0);
+                        eprintln!("ACTION_SMOKE_WORLD_FX_CPU_START contact={} owner={owner} path={path} FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} publication_app_frame_and_revision={:?}",self.world_contacts+1,snapshot.frame,observation.started_app_frame,observation.publication);
+                    }
+                    observation.particles|=snapshot.particles>0;
+                }
+                for object in simulation.observe_fx_owner_audio(&owner)?{observation.emitters.insert(format!("{object:?}"));}
+                if observation.last.as_ref()!=Some(&snapshot){
+                    eprintln!("ACTION_SMOKE_WORLD_FX_CHAINS contact={} owner={owner} path={path} actual={snapshot:?} actual_sound_objects={:?}",self.world_contacts+1,observation.emitters);
+                    observation.last=Some(snapshot);
+                }
+            }
+        }
+        // The observer receives copies of actual callbacks. It never changes
+        // the native mask or routes additional messages into mutable owners.
+        let audio=super::audio::observation::snapshot(world);
+        for admission in &audio.admissions{
+            if observation.emitters.contains(&admission.object)&&observation.expected_events.contains(&admission.event)
+                &&observation.admissions.insert(admission.playing_id){
+                eprintln!("ACTION_SMOKE_WORLD_SOUND_ADMITTED contact={} actual_event={} playing_id={} actual_object={} error={:?} publication={:?} CPU_start={:?}",self.world_contacts+1,admission.event,admission.playing_id,admission.object,admission.error,observation.publication,observation.started);
+                if let Some(error)=&admission.error{return Err(format!("WORLD sound admission {} on {}: {error}",admission.event,admission.object))}
+            }
+        }
+        for callback in &audio.callbacks{
+            if observation.emitters.contains(&callback.object){
+                eprintln!("ACTION_SMOKE_WORLD_SOUND_CALLBACK contact={} playing_id={} actual_declaration_reference={} object={} kind={} output_blocks={} not_audibility_proof=true",self.world_contacts+1,callback.playing_id,callback.declaration,callback.object,callback.kind,audio.output.blocks);
+                if callback.kind=="SourceReady"{observation.processed.insert(callback.playing_id);}
+            }
+        }
+        let complete=super::usable_effects::effect_completed(&observation.ticket);
+        let retired=super::usable_effects::entity_retired(world,&observation.ticket);
+        if !complete||!retired{return Ok(false)}
+        let started=observation.started.is_some();
+        if !started{
+            return Err(format!("WORLD FX retired without actual start: contact={} publication={:?} CPU_start={:?} particles={} authored_sound_events={:?} objects={:?} admissions={:?} processed={:?} ticket={}",self.world_contacts+1,observation.publication,observation.started,observation.particles,observation.expected_events,observation.emitters,observation.admissions,observation.processed,super::usable_effects::debug_ticket(world,&observation.ticket)))
+        }
+        eprintln!("ACTION_SMOKE_WORLD_FX_RETIRED contact={} publication_app_frame_and_revision={:?} CPU_start_FX_game_clock_frame={:?} observed_CPU_start_app_frame={:?} real_particle_chains_seen={} source_processed_playing_ids={:?} actual_sound_admissions={:?} visible_or_audible_output_not_claimed=true",self.world_contacts+1,observation.publication,observation.started,observation.started_app_frame,observation.particles,observation.processed,observation.admissions);
+        observation.retired=true;
+        Ok(true)
     }
     fn focus_curve(&mut self,world:&World)->Result<(bool,usize,bool),String>{
         // Bounded diagnostic output only; production retains no frame history.
@@ -507,7 +591,11 @@ impl Observation {
             }
             Stage::WorldAim => {
                 if let Some(hit)=Self::world_fixture(world)?{
-                    self.world_target=Some(hit);
+                    if let Some(fixture)=self.world_target{
+                        if hit.body_id!=fixture.body_id||hit.material_id!=fixture.material_id{
+                            return Err(format!("repeated WORLD fixture changed actual body/material: first={fixture:?} current={hit:?}"))
+                        }
+                    }else{self.world_target=Some(hit);}
                     self.contact_serial=super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);
                     self.contact_windows=super::melee::active_windows(world);
                     self.world_evidence(world,"before-physical-attack")?;
@@ -531,13 +619,30 @@ impl Observation {
                         if hit.body_id!=fixture.body_id{return Err(format!("WORLD callback hit a different real body: fixture={fixture:?} actual={hit:?}"))}
                         let scene=world.resource::<super::physics_scene::PhysicsScene>();
                         let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"WORLD receipt query owner poisoned")?;
-                        if queries.storage.materials.material_for_id(hit.material_id).is_none(){return Err(format!("WORLD callback material is not admitted: {hit:?}"))}
+                        queries.storage.materials.material_for_id(hit.material_id)
+                            .map_err(|error|format!("WORLD callback material={} serial={serial} hit={hit:?}: {error}",hit.material_id))?;
                         drop(queries);
                         self.world_evidence(world,"accepted-callback")?;
-                        eprintln!("ACTION_SMOKE_PASS check={} serial={serial} focused={focused} forward={forward} recoil_requested={recoil} actual_FX_ticket=true visible_or_audible_output_not_claimed=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"});
+                        let ticket=super::melee::world_effect_ticket(world).ok_or("WORLD callback lost actual weak FX ticket")?;
+                        eprintln!("ACTION_SMOKE_WORLD_CALLBACK contact={} serial={serial} focused={focused} forward={forward} recoil_requested={recoil} actual_FX_ticket=true acceptance_is_not_activation=true",self.world_contacts+1);
+                        self.world_effect=Some(WorldEffectObservation{ticket,identity:None,publication:None,started:None,started_app_frame:None,particles:false,retired:false,
+                            emitters:HashSet::new(),expected_events:HashSet::new(),admissions:HashSet::new(),processed:HashSet::new(),last:None});
+                        self.stage(Stage::WorldTail,world)?;
+                    }
+                }
+            }
+            Stage::WorldTail => {
+                let retired=self.world_effect_progress(world)?;
+                let p=player(world)?;
+                let animation_ready=p.equipment_action_status(1).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)
+                    &&!p.machine.is_active(StateId::SLASH)&&!p.machine.is_active(StateId::RECOIL);
+                if retired&&animation_ready{
+                    self.world_contacts+=1;self.world_effect=None;
+                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_real_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target);
+                    if self.world_contacts==3{
                         if let Some(input)=self.world_crouch.take(){send(world,input,false)?}
                         self.stage(Stage::Done,world)?;
-                    }
+                    }else{self.stage(if self.world_poke{Stage::WorldCharge}else{Stage::WorldAim},world)?;}
                 }
             }
             Stage::Begin if self.carry_only => {

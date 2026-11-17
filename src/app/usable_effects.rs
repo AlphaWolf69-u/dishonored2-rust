@@ -5,6 +5,7 @@
 //! gameplay frame. Dropping the level releases the owner's reference.
 use bevy::{prelude::Resource, tasks::{IoTaskPool, Task}};
 use std::{collections::HashMap, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, Ordering}}};
+mod prepared_resources;
 
 #[derive(Resource, Clone)]
 pub(super) struct ParticleResourceOwner(
@@ -96,6 +97,16 @@ pub(super) struct EntityPlacement {
 #[derive(Clone)]
 pub(super) struct EffectTicket { lifetime: Weak<Lifetime>, path: Arc<str> }
 
+/// Match the actual retained request identity, without extending its lifetime.
+pub(super) fn ticket_request_identity(world:&bevy::prelude::World,ticket:&EffectTicket)->Option<(Arc<str>,Arc<str>)>{
+    let lifetime=ticket.lifetime.upgrade()?;
+    let owner=world.get_resource::<UsableEffects>()?;
+    owner.wanted.iter().find_map(|(key,wanted)|{
+        if !Arc::ptr_eq(&wanted.retirement,&lifetime){return None}
+        match key{EffectOwner::Entity(name)=>Some((name.clone(),ticket.path.clone())),_=>None}
+    })
+}
+
 ///Borrow actual request/source/publication state only when F8 asks for it.
 pub(super) fn debug_ticket(world:&bevy::prelude::World,ticket:&EffectTicket)->String {
     let lifetime=ticket.lifetime.upgrade();
@@ -103,8 +114,9 @@ pub(super) fn debug_ticket(world:&bevy::prelude::World,ticket:&EffectTicket)->St
     let wanted=lifetime.as_ref().and_then(|lifetime|owner.wanted.iter().find(|(_,wanted)|Arc::ptr_eq(&wanted.retirement,lifetime)));
     let ready=wanted.and_then(|(key,_)|owner.ready.get(key));
     let errors=ready.into_iter().flat_map(|source|source.effects.values()).filter_map(|effect|effect.as_ref().err()).collect::<Vec<_>>();
-    format!("path={} lifetime={} completed={} wanted={} loading={} source_ready={} source_errors={errors:?} revision={} published={:?} active_publication={:?}",
-        ticket.path,lifetime.is_some(),effect_completed(ticket),wanted.is_some(),owner.loading.contains_key(ticket.path.as_ref()),ready.is_some(),owner.revision,owner.published_revision,owner.published_active_revision)
+    format!("path={} lifetime={} completed={} wanted={} loading={} source_ready={} source_errors={errors:?} revision={} published={:?} active_publication={:?} resource_generation={} resource_publications={} unchanged_resource_requests={}",
+        ticket.path,lifetime.is_some(),effect_completed(ticket),wanted.is_some(),owner.loading.contains_key(ticket.path.as_ref()),ready.is_some(),owner.revision,owner.published_revision,owner.published_active_revision,
+        owner.resources.generation,owner.resources.changed,owner.resources.reused)
 }
 
 pub(super) enum EffectRequest {
@@ -325,6 +337,7 @@ pub(super) fn begin_retirement(world: &mut bevy::prelude::World) -> Result<(), S
         owner.reservations.clear(); owner.reservations_ready.clear();
         owner.placements.clear(); owner.entity_placements.clear(); owner.world_placements.clear(); owner.beam_targets.clear();
         owner.completed.clear(); owner.cache.clear(); owner.base = None;
+        owner.resources = Default::default();
         owner.cancel_unwanted_acquisitions();
         if changed {
             owner.revision = owner.revision.wrapping_add(1);
@@ -368,6 +381,7 @@ pub(super) struct UsableEffects {
     seen_retired: u64,
     cleanup_dirty: bool,
     cleanup: Option<Mutex<Task<()>>>,
+    resources: prepared_resources::PreparedResources,
 }
 
 impl Drop for UsableEffects {
@@ -803,6 +817,8 @@ pub(super) fn publish(
     mut active: bevy::prelude::ResMut<crate::rendering::bevy_backend::world_effects::DynamicEffects>,
     images: bevy::prelude::Res<crate::rendering::bevy_backend::particle_images::SceneParticleImages>,
     sounds: bevy::prelude::Res<crate::rendering::bevy_backend::world_sounds::WorldSounds>,
+    coordinator: Option<bevy::prelude::Res<super::runtime_materials::RuntimeMaterialCoordinator>>,
+    decal_proxies: Option<bevy::prelude::Res<super::projected_decals::RuntimeDecalProxies>>,
 ) {
     use crate::gameplay::{event_graph::EntityReference, reference_frame::ReferenceFrame};
     use crate::rendering::bevy_backend::world_effects::DynamicEffect;
@@ -819,7 +835,10 @@ pub(super) fn publish(
         || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)
         && owner.published_revision == Some(owner.revision) {
         let failed: Vec<_> = owner.wanted.iter().filter_map(|(id, wanted)| {
-            (!active.0.iter().any(|entry| entry.owner == key(id) && entry.revision == wanted.revision)).then_some(id.clone())
+            (!active.0.iter().any(|entry| entry.owner == key(id) && entry.revision == wanted.revision)
+                && !owner.ready.get(id).is_some_and(|source| owner.resources.covers(source)
+                    && owner.resources.bindings_match(source, coordinator.as_deref(), decal_proxies.as_deref())))
+                .then_some(id.clone())
         }).collect();
         if !failed.is_empty() {
             for id in failed {
@@ -845,7 +864,18 @@ pub(super) fn publish(
         owner.published_active_revision = Some(0);
     }
     let base = owner.base.as_ref().unwrap().clone();
+    let mut resource_publication = None;
     if owner.published_revision != Some(owner.revision) {
+        //bevy_backend: playing-instance revisions do not invalidate already
+        //prepared immutable inputs. The source roster still owns all leases.
+        let force_reack = std::env::var_os("DH2_DEBUG_REACK_FX_ON_PLAY").is_some_and(|value| value == "1");
+        let roster_changed = {
+            let UsableEffects { resources, ready, .. } = &mut *owner;
+            resources.set_control(force_reack);
+            resources.sources_changed(ready.values())
+        };
+        let mut inputs_changed = false;
+        if force_reack || roster_changed {
         let combined = Sources::with_additions(&base, owner.ready.values().map(Arc::as_ref));
         let dynamic = Sources::with_additions(&Sources::default(), owner.ready.values()
             .filter(|source| !Arc::ptr_eq(source, &base)).map(Arc::as_ref));
@@ -853,22 +883,31 @@ pub(super) fn publish(
         let needs_world_materials = !dynamic.world_meshes().is_empty();
         let needs_decals = !dynamic.decal_materials().is_empty();
         world.0 = Arc::new(combined);
+        let UsableEffects { resources, ready, .. } = &mut *owner;
+        inputs_changed = resources.update(ready.values(), &dynamic, force_reack);
+        let generation = resources.generation;
         let dynamic = Arc::new(dynamic);
         let leases = Arc::new(owner.ready.values().map(Arc::downgrade).collect::<Vec<_>>());
+        //Membership is independent of resource-generation identity. A new
+        //source with equivalent inputs must acquire its true weak leases.
+        world_materials.leases = leases.clone();
+        decal_materials.leases = leases;
+        if inputs_changed {
         prewarm.sources = dynamic.clone();
-        prewarm.generation = owner.revision;
+        prewarm.generation = generation;
         prewarm.retirement = owner.retirement;
         if !needs_materials { prewarm.completed.store(prewarm.generation, Ordering::Release); }
         world_materials.sources = dynamic.clone();
-        world_materials.leases = leases.clone();
-        world_materials.generation = owner.revision;
+        world_materials.generation = generation;
         world_materials.retirement = owner.retirement;
         if !needs_world_materials { world_materials.completed.store(world_materials.generation, Ordering::Release); }
         decal_materials.sources = dynamic;
-        decal_materials.leases = leases;
-        decal_materials.generation = owner.revision;
+        decal_materials.generation = generation;
         decal_materials.retirement = owner.retirement;
         if !needs_decals { decal_materials.completed.store(decal_materials.generation, Ordering::Release); }
+        }
+        } else { owner.resources.reused += 1; }
+        resource_publication = Some((inputs_changed, force_reack));
         owner.published_revision = Some(owner.revision);
     }
     if owner.published_active_revision == Some(owner.revision)
@@ -879,10 +918,32 @@ pub(super) fn publish(
     }).cloned().collect();
     let prewarmed = (prewarm.generation == 0 || prewarm.completed.load(Ordering::Acquire) == prewarm.generation)
         && (world_materials.generation == 0 || world_materials.completed.load(Ordering::Acquire) == world_materials.generation)
-        && (decal_materials.generation == 0 || decal_materials.completed.load(Ordering::Acquire) == decal_materials.generation);
+        && (decal_materials.generation == 0 || decal_materials.completed.load(Ordering::Acquire) == decal_materials.generation)
+        && (!owner.resources.needs_world() || world_materials.gpu_completed.load(Ordering::Acquire) == world_materials.generation)
+        && (!owner.resources.needs_decals() || (decal_materials.gpu_completed.load(Ordering::Acquire) == decal_materials.generation
+            && decal_materials.prepared_generation == Some(decal_materials.generation)));
     if prewarmed {
+        owner.resources.acknowledge(coordinator.as_deref(), decal_proxies.as_deref());
+    }
+    if let Some((inputs_changed, control)) = resource_publication
+        .filter(|_| crate::rendering::bevy_backend::world_effects::trace_lifecycle()) {
+        eprintln!("FX_LIFECYCLE resource_publish actor_revision={} generation={} inputs_changed={inputs_changed} reack_control={control} publications={} reused={} prewarmed={prewarmed} wanted={} active={}",
+            owner.revision, owner.resources.generation, owner.resources.changed, owner.resources.reused,
+            owner.wanted.len(), active.0.len());
+        for (id, wanted) in owner.wanted.iter().filter(|(id, wanted)|
+            !active.0.iter().any(|entry| entry.owner == key(id) && entry.revision == wanted.revision)).take(8) {
+            let source = owner.ready.get(id);
+            eprintln!("FX_LIFECYCLE resource_pending owner={} effect={} request_revision={} source_ready={} covered={} binding_valid={}",
+                key(id), wanted.path, wanted.revision, source.is_some(),
+                source.is_some_and(|source| owner.resources.covers(source)),
+                source.is_some_and(|source| owner.resources.bindings_match(source, coordinator.as_deref(), decal_proxies.as_deref())));
+        }
+    }
+    {
         let audio = sounds.lock();
-        let source_prepared = |sources: &Arc<Sources>| {
+        let source_prepared = |sources: &Arc<Sources>, resources: &prepared_resources::PreparedResources| {
+            if !prewarmed && (!resources.covers(sources)
+                || !resources.bindings_match(sources, coordinator.as_deref(), decal_proxies.as_deref())) { return false; }
             if !sources.gameplay_ready() { return false; }
             if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
                 .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { return false; }
@@ -895,10 +956,10 @@ pub(super) fn publish(
         // Reservations participate in the same source/material/audio pipeline
         // but never enter DynamicEffects or create a playing instance.
         {
-            let UsableEffects { reservations, reservations_ready, ready, .. } = &mut *owner;
+            let UsableEffects { reservations, reservations_ready, ready, resources, .. } = &mut *owner;
             for (group, paths) in reservations {
                 let dependencies = || ready.iter().filter(|(key, _)| matches!(key, EffectOwner::Reservation(owner, _) if owner == group));
-                if dependencies().count() == paths.len() && dependencies().all(|(_, source)| source_prepared(source)) {
+                if dependencies().count() == paths.len() && dependencies().all(|(_, source)| source_prepared(source, resources)) {
                     reservations_ready.insert(group.clone());
                 } else { reservations_ready.remove(group); }
             }
@@ -908,7 +969,7 @@ pub(super) fn publish(
             let name = key(id);
             if entries.iter().any(|entry| entry.owner == name && entry.revision == wanted.revision) { continue; }
             let Some(sources) = owner.ready.get(id) else { continue };
-            if !source_prepared(sources) { continue; }
+            if !source_prepared(sources, &owner.resources) { continue; }
             let (target, tag, local, attached) = match id {
                 EffectOwner::Player(_) => (EntityReference::Player, String::new(), ReferenceFrame::default(), true),
                 EffectOwner::Entity(_) => {
@@ -941,10 +1002,7 @@ pub(super) fn publish(
     }
     owner.published_transform_revision = owner.transform_revision;
     let playing_wanted = owner.wanted.keys().filter(|key| !matches!(key, EffectOwner::Reservation(_, _))).count();
-    if (active.0.len() == playing_wanted && owner.reservations_ready.len() == owner.reservations.len())
-        || (prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
-            || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
-            || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {
+    if active.0.len() == playing_wanted && owner.reservations_ready.len() == owner.reservations.len() {
         owner.published_active_revision = Some(owner.revision);
     }
 }

@@ -86,6 +86,7 @@ impl PhysicsScene {
             .components
             .entries
             .values()
+            .iter()
             .any(|&packed| {
                 ComponentHandle::from_packed(packed)
                     .ok()
@@ -123,6 +124,7 @@ impl PhysicsScene {
                     .components
                     .entries
                     .values()
+                    .iter()
                     .filter_map(|&packed| ComponentHandle::from_packed(packed).ok())
                     .filter(|h| h.class_id == self.classes[52])
                     .nth(cursor);
@@ -152,6 +154,7 @@ impl PhysicsScene {
             .components
             .entries
             .values()
+            .iter()
             .any(|&packed| {
                 ComponentHandle::from_packed(packed)
                     .ok()
@@ -545,7 +548,17 @@ impl PhysicsScene {
             if let Some(surface) = self.entities[index].components.find_component(
                 [self.classes[52]; 2],
                 [0, 0],
-                |h| Ok(Some(self.owner(h)?.flags)),
+                |h| {
+                    Ok(
+                        crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                            flags: self.owner(h)?.flags,
+                            start_phases: self
+                                .declarations
+                                .get(&h.packed())
+                                .map(|decl| decl.scheduling.start_phases),
+                        },
+                    )
+                },
             )? {
                 self.flash_surfaces
                     .get_mut(surface.slot)
@@ -601,7 +614,17 @@ impl PhysicsScene {
         let range = [self.classes[52]; 2];
         let surface = self.entities[index]
             .components
-            .find_component(range, [0x28, 0], |h| Ok(Some(self.owner(h)?.flags)))?;
+            .find_component(range, [0x28, 0], |h| {
+                Ok(
+                    crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                        flags: self.owner(h)?.flags,
+                        start_phases: self
+                            .declarations
+                            .get(&h.packed())
+                            .map(|decl| decl.scheduling.start_phases),
+                    },
+                )
+            })?;
         if let Some(surface) = surface {
             let definition = self
                 .interactive_maps

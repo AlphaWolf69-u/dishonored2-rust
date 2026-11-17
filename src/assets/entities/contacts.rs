@@ -4,12 +4,30 @@
 use super::{declaration_name_hash, parse_declaration, Parser, Token, Value};
 use std::{collections::{HashMap, HashSet}, sync::Arc};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ContactDatabase {
     effects: HashMap<u32, String>,
+    //0041a0 stores a canonical idDeclFX descriptor for each registered row.
+    //Demand-only host admission retains the actual typed definition when the
+    //existing FX worker first acquires it. This never owns Sources, materials,
+    //PMODEL images, pipelines or mutable playback, and drops with this DB.
+    definitions: Arc<std::sync::Mutex<HashMap<u32, Arc<crate::assets::fx::definition::Definition>>>>,
 }
+impl std::fmt::Debug for ContactDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContactDatabase").field("effects", &self.effects).finish()
+    }
+}
+impl PartialEq for ContactDatabase { fn eq(&self, other: &Self) -> bool { self.effects == other.effects } }
+impl Eq for ContactDatabase {}
 
 impl ContactDatabase {
+    pub(crate) fn retain_definition(&self, path: &str, definition: Arc<crate::assets::fx::definition::Definition>) {
+        let hash = declaration_name_hash(path.to_ascii_lowercase().as_bytes());
+        if self.effects.get(&hash).is_some_and(|registered| registered.eq_ignore_ascii_case(path)) {
+            self.definitions.lock().unwrap_or_else(|error| error.into_inner()).insert(hash, definition);
+        }
+    }
     /// The installed common ContactSystemDB is a session resource (1400607f0).
     /// Runtime contact chains and effect instances remain per-level.
     pub(crate) fn acquire(catalog: &crate::archive::Catalog) -> Result<Arc<Self>, String> {
@@ -63,7 +81,7 @@ impl ContactDatabase {
         if records != count {
             return Err(format!("contact FX table declares {count} records, contains {records}"));
         }
-        Ok(Self { effects })
+        Ok(Self { effects, definitions: Default::default() })
     }
 
     /// Both chains start at the concrete material and end at its root.

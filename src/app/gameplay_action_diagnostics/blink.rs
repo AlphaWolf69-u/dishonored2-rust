@@ -139,7 +139,8 @@ impl Observation {
             let mut snapshot = String::new(); player(world)?.write_combat_diagnostics(&mut snapshot);
             return Err(format!("Blink actual-input timeout stage={:?} cancel74={} blink12={} spent={} snapshot={snapshot}", self.stage, self.cancel_seen, self.blink_seen, self.spent));
         }
-        match self.stage {
+        let stage = self.stage;
+        match stage {
             Stage::Select if player(world)?.selected_power_hud_status() == Some((2, true))
                 && player(world)?.equipment_action_status(0).is_some_and(|(_, equipped, transitioning)| equipped && !transitioning) => {
                 self.mana_before = player(world)?.mana();

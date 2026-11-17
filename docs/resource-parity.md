@@ -1,5 +1,37 @@
 # Resource parity ledger
 
+## Effect resource readiness and contact descriptors (2026-11-17)
+
+Owner: `app/usable_effects.rs` and its `prepared_resources` child, with the
+existing runtime material/decal owners. `host:` playing-instance revisions
+are separate from material preparation generations. A new instance can use
+an actual acknowledged resource set while an unrelated set prepares, only
+when its exact material/model identities and live proxy/material bindings
+remain covered. Its gameplay, images and audio still need their real owners'
+readiness. Certificates hold weak identities and value IDs, not GPU assets.
+Changed inputs, replaced proxies and receiver layouts require actual
+preparation/render acknowledgement. Source weak-lease membership refreshes
+independently; teardown drops the certificate with its existing level owner.
+
+Native contact descriptor lifetime: `1400041a0` resolves each registered
+`arkDeclDesc<idDeclFX>` through `14001e030`; `140002c60`/`140003cd0` return it.
+The session `ContactDatabase` now retains the same canonical typed definition
+when its actual registered row is acquired. Its drop releases those metadata
+leases. Prepared world bundles, images, materials and playback keep their
+existing independent lifetimes. No second decoder/cache or eager loading of
+all contact effects is introduced. Installed data confirms all 7,407 row
+hashes match their FX declaration paths; value equality is checked as well.
+Development overlay databases retain their existing fresh acquisition policy.
+
+Prediction before measurement: unchanged warm resource inputs cause zero
+material-generation changes, zero combined-source rebuilds and zero additional
+GPU preparation cycles for that request. New/cold inputs still prepare.
+`DH2_DEBUG_REACK_FX_ON_PLAY=1` is the same-build control for the old invalidation
+boundary; existing opt-in lifecycle logs expose actual revisions, preparation
+counts and source identities. No FPS, memory saving or millisecond claim is
+made before measurement. Status: implemented; coherent compilation, repeated
+real contacts, scoped A/B and production retirement validation pending.
+
 ## Fullscreen FX distortion consumer (2026-11-17)
 
 CPU owner: the existing `assets::fx::definition` resource generation holds the
@@ -24500,3 +24532,5 @@ WORLD sword action observations (2026-11-17): opt-in `world` and `world-poke` sc
 `ported`: map ProbeLightingSet owns381cd0/381730's eight-byte preorder spatial nodes, prepared using385a10's actual coordinate/tie ordering; query3856c0 visits/prunes without allocation. Canonical PNW RuntimeTetrahedron prepares382130's four unit normals once and retains them through3836c0/382bb0 queries. Load-only axis/scratch arrays drop after tree construction; map/source lease retirement drops tree and normals. No format conversion file, global cache, duplicate resource acquisition or GPU upload is added. Added retained backing is8 bytes per cell and48 bytes per runtime tetrahedron.
 
 `verified`: mapped original machine code matches156 sorting,52 packed-tree and932 nearest control cases. `acceptance pending`: actual compiled Rust map fixture/plane oracle, full shader-record comparison and same-build scoped walking A/B; this is not a performance acceptance claim. The concrete before-cost/prediction, controls and exact original source addresses are recorded in docs/optimization-opportunities.md. Normal gameplay enables no diagnostic timer, atomic counter or recorder. Original385da0's parent-query borrowing is not claimed ported without an actual parent accessor.
+
+WORLD repeated-contact observation (2026-11-17): the opt-in `world`/`world-poke` sequences now retain a weak ticket and wait for its actual DynamicEffects publication, CPU family start, natural completion and owner retirement before the next physical attack. Each case requires three accepted contacts against the same real body/material, waiting actual Slash/Recoil inactivity and equipment readiness between contacts. Canonical source identity is resolved by the same retirement Arc; read-only main/sub sound-chain traversal attributes actual emitter IDs to that specific FX owner. Existing audio observations report real middleware-event admissions and playing-ID/declaration-reference SourceReady/End callbacks separately; no callback mask or producer queue changes. Actual particle-chain presence is recorded, without imposing particles on an authored effect that has none. The observer keeps numeric/weak receipts only, never prolongs a source/FX lease, never advances a clock and never acknowledges a render/audio resource. Prediction: the scenarios expose cold-start versus repeated-contact resource latency instead of exiting when a ticket is merely requested. Visible dust and audible sound are not inferred from these CPU/source receipts. Root owns the pending same-build production-input validation; no build/run performed for this diagnostic change.

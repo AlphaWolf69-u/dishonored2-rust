@@ -107,6 +107,9 @@ impl FxSimulation {
     pub(crate) fn observe_fx_owner(&self, owner: &str) -> super::world_particle_state::OwnerSnapshot {
         self.world_particles.observe_owner(owner)
     }
+    pub(crate) fn observe_fx_owner_audio(&self,owner:&str)->Result<Vec<crate::gameplay::sound::Emitter>,String>{
+        self.world_particles.observe_owner_audio(owner)
+    }
     pub(crate) fn observe_fx_pools(&self) -> (usize, usize, u16, u16, u16) {
         let (instances, pending, sounds, decals) = self.world_particles.observe_pool_counts();
         (instances, pending, self.particle_systems.allocated_count(), sounds, decals)

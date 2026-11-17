@@ -73,6 +73,8 @@ struct WorldContact {
     window: u64,
     activation_player_time: f64,
     callback_entity_time: f64,
+    callback_frame: Option<u32>,
+    request_app_frame: Option<u32>,
     raw: (Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo),
     selected: (Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo),
     focused: bool,
@@ -205,6 +207,11 @@ pub(super) fn world_action_receipt(world: &World)
         receipt.recoil_requested, receipt.ticket.is_some()))
 }
 
+/// Clone only the weak request receipt; diagnostics cannot prolong its tail.
+pub(super) fn world_effect_ticket(world: &World) -> Option<super::usable_effects::EffectTicket> {
+    world.get_resource::<Melee>()?.world_contacts.last.as_ref()?.ticket.clone()
+}
+
 pub(super) fn request_owned(
     world: &mut World,
     identity: Arc<str>,
@@ -313,9 +320,9 @@ pub(super) fn debug_startup_pending(world:&World)->String {
     let mut report=String::new();owner.write_diagnostics(&mut report);
     if let Some(contact) = &owner.world_contacts.last {
         let _ = writeln!(report,
-            "    last_WORLD_contact serial={} equipment={:?} window={} activation_player_time={} callback_entity_time={} focused={} forward={} protected_target=None raw={:?} selected={:?} source_D2={:#04x} target_D3={:?} recoil_requested_before_FX={} result={}",
+            "    last_WORLD_contact serial={} equipment={:?} window={} activation_player_time={} callback_entity_time={} callback_app_frame={:?} request_app_frame={:?} focused={} forward={} protected_target=None raw={:?} selected={:?} source_D2={:#04x} target_D3={:?} recoil_requested_before_FX={} result={}",
             contact.serial, contact.equipment, contact.window, contact.activation_player_time,
-            contact.callback_entity_time, contact.focused, contact.forward, contact.raw,
+            contact.callback_entity_time, contact.callback_frame, contact.request_app_frame, contact.focused, contact.forward, contact.raw,
             contact.selected, (contact.source_flags >> 16) as u8,
             contact.target_flags.map(|flags| (flags >> 24) as u8),
             contact.recoil_requested, contact.result);
@@ -514,6 +521,8 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries,
                     activation_player_time: entry.activation_player_time,
                     callback_entity_time: world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
                         .entity_time(entry.entity).map_err(str::to_owned)?,
+                    callback_frame: world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),
+                    request_app_frame: None,
                     raw: (delivery.raw_target, delivery.raw_hit.target),
                     selected: (delivery.target, delivery.hit.target),
                     focused: delivery.focused, forward: delivery.frame.forward,
@@ -685,6 +694,7 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries,
                         if let Some(receipt) = world_contacts.last.as_mut()
                             .filter(|receipt| Some(receipt.serial) == delivery.world_receipt) {
                             receipt.result = "ContactFX requested";
+                            receipt.request_app_frame = world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0);
                             receipt.ticket = Some(ticket.clone());
                         }
                         entry.receipts.contact_tickets += 1;

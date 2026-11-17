@@ -472,6 +472,12 @@ impl WorldFxSources {
                     crate::assets::fx::definition::Consumer::World,
                     cancellation,
                 )?;
+                //0041a0's ContactSystemDB descriptor keeps the SAME canonical
+                //typed declaration. Only metadata is retained by that owner;
+                //this prepared world bundle and all GPU dependencies still
+                //follow their existing instance/tail weak-lease lifetimes.
+                let contacts = catalog.contact_database.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                if let Some(contacts) = contacts { contacts.retain_definition(name, source.clone()); }
                 let mut groups = Vec::new();
                 for (source_group, group) in source.groups.iter().enumerate() {
                     if cancelled() {

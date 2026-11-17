@@ -28,6 +28,24 @@ fn sub_chains(sub: &super::super::world_sub_effects::SubEffect, sample: &mut Own
     for child in &sub.children { sub_chains(child, sample); }
 }
 impl WorldParticleState {
+    /// Actual sound-object identities for one already admitted actor. This
+    /// borrows existing main/sub chains; it never posts or drains an event.
+    pub(crate) fn observe_owner_audio(&self,owner:&str)->Result<Vec<crate::gameplay::sound::Emitter>,String>{
+        fn children(state:&WorldParticleState,sub:&super::super::world_sub_effects::SubEffect,
+            result:&mut Vec<crate::gameplay::sound::Emitter>)->Result<(),String>{
+            state.sound_systems.visit_objects(sub.sound_head,|object|{if !result.contains(&object){result.push(object)}})?;
+            for child in &sub.children{children(state,child,result)?;}
+            Ok(())
+        }
+        let mut result=Vec::new();
+        for instance in self.slots.iter().flatten(){
+            if !self.entities.get(&instance.entity).is_some_and(|entity|
+                matches!(&entity.owner,FxEntityOwner::Actor{name,..} if name==owner)){continue}
+            self.sound_systems.visit_objects(instance.sound_head,|object|{if !result.contains(&object){result.push(object)}})?;
+            for sub in &instance.sub_effects{children(self,sub,&mut result)?;}
+        }
+        Ok(result)
+    }
     /// One-shot candidates from actual started chains, never declaration-only
     /// admission guesses. The returned text owns no source or material lease.
     pub(crate) fn observe_started_fx(&self) -> Vec<String> {
