@@ -255,7 +255,7 @@ impl PhysicsActorLinks {
             Ok(())
         })();
         path.pop();
-        result
+        result.map_err(|error| self.update_error(actor, "753c10 post traversal", error))
     }
 
     fn post_predicted_position(

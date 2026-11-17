@@ -10278,6 +10278,34 @@ builds or runtime exercise performed for this correction.
 
 
 Scheduled rigid post-physics publication correction (2026-11-17):
+Follow-up movement-interface correction: both `14080b9e0` (scheduled phase5)
+and `14080b7c0` (scheduled phase6) receive the component directly; neither
+selects a component by the actor's current interface or collision userData.
+Both now use the admitted pool entry's real body and collision velocity fields.
+Movement virtual callbacks (`140809ab0`, `14080a5f0`, `140808e30`) resolve their
+containing component from the actual selected movement-interface identity,
+independently of Havok collision userData. The shared actor worker dispatches
+all currently constructed interface families: embedded, Trigger (`1407792c0`),
+Projectile (`140627110`), and rigid/Throwable. Trigger and Projectile use the
+already ported BasicBody callbacks; this adds no new mechanics or substitute
+interface. Previously Trigger descendants could enter the rigid-only lookup
+after the new post-prefix queued a parent hierarchy. The actual ff559c1c run
+failed at this boundary. A breakpoint in the existing ff559c1c binary captured
+actual class271/slot212 at `PostPhysicsWorld::accepts_pose+0x199`, entity212.
+Installed ClassRegistry/ClassHierarchy reconstruction, anchored by captured
+rigid170, Throwable171 and Projectile56, identifies271 as `arkCpntTrigger`.
+The Trigger dispatch therefore covers the observed failure, rather than a
+guessed class. Evidence: local `rigid-dispatch-breakpoint.json` and
+`rigid-dispatch-class-resolution.json`. Host errors
+now retain the pre/post traversal actor, owning entity, selected/default
+interface and body identity; rigid-resolution failures additionally retain
+the exact callback caller and decoded collision userData. Prediction: a valid
+mixed-interface hierarchy completes its source callbacks rather than failing
+the rigid collision-owner class gate, and scheduled publication targets the
+passed component even during another movement-interface selection. No assets,
+per-frame allocations, second interface registry or private physics world are
+added. Source reviewed; parent owns compilation/runtime verification.
+
 `physics_scene::rigid_actor` now runs actual pool8/pool12 scheduled prefixes
 before snapshotting the post actor queue. Source `140951c80` calls
 `14080b9d0`/`14080b7c0` for ordinary rigid bodies; `140951cf0` calls

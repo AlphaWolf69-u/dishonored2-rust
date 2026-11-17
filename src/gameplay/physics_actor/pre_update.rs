@@ -125,7 +125,7 @@ impl PhysicsActorLinks {
             Ok(())
         })();
         path.pop();
-        result
+        result.map_err(|error| self.update_error(actor, "7551c0 pre traversal", error))
     }
 
     fn enqueue_enabled_pre_motion(

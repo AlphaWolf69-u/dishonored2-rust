@@ -49,6 +49,7 @@ struct RigidPostHost<'a> {
         &'a mut ComponentPool<crate::app::rigid_body::RigidBodyComponent>,
     ); 2],
     projectiles: (i32, &'a ComponentPool<crate::app::projectiles::Component>),
+    triggers: (i32, &'a ComponentPool<crate::gameplay::trigger_body::TriggerComponent>),
     placements: &'a HashMap<usize, usize>,
     initial: &'a HashMap<usize, ReferenceFrame>,
     poses: Option<&'a mut ModelPoseUpdates>,
@@ -63,14 +64,31 @@ struct RigidPostHost<'a> {
     commands: &'a crate::gameplay::physics_world::commands::PhysicsCommands,
 }
 impl RigidPostHost<'_> {
-    fn projectile_body(
+    fn basic_body(
         &self,
         actors: &PhysicsActorLinks,
         actor: usize,
-    ) -> Result<Option<usize>, String> {
+    ) -> Result<Option<BasicBody>, String> {
         let entity = self.actor_entity(actors, actor)?;
+        if actors.actors[actor].current_body == actors.actors[actor].default_body {
+            return Ok(Some(BasicBody::Embedded));
+        }
         for &packed in self.entities[entity].components.entries.values() {
             let handle = ComponentHandle::from_packed(packed)?;
+            // Trigger+20 and Projectile+20 have the same six movement
+            // callbacks as the embedded actor (7792c0/627110). Select the
+            // actual admitted interface, independently of a collision body.
+            if handle.class_id == self.triggers.0 {
+                let component = self.triggers.1.get(handle.slot)
+                    .ok_or("trigger movement component absent")?;
+                if component.owner.entity != Some(entity) {
+                    return Err("trigger movement owner differs".into());
+                }
+                if component.movement_body == actors.actors[actor].current_body {
+                    return Ok(Some(BasicBody::Trigger { body: component.movement_body }));
+                }
+                continue;
+            }
             if handle.class_id != self.projectiles.0 {
                 continue;
             }
@@ -83,7 +101,7 @@ impl RigidPostHost<'_> {
                 return Err("projectile movement owner differs".into());
             }
             if component.movement_body == Some(actors.actors[actor].current_body) {
-                return Ok(component.movement_body);
+                return Ok(component.movement_body.map(|body| BasicBody::Projectile { body }));
             }
         }
         Ok(None)
@@ -131,7 +149,31 @@ impl RigidPostHost<'_> {
         Ok(entity)
     }
 
+    #[track_caller]
     fn body<'a>(
+        &'a self,
+        actors: &PhysicsActorLinks,
+        actor: usize,
+    ) -> Result<(&'a crate::app::rigid_body::RigidBodyComponent,
+                 &'a crate::gameplay::collision_body::CollisionBody), String> {
+        let caller = std::panic::Location::caller();
+        self.resolve_body(actors, actor).map_err(|error| {
+            self.context_error(actors, actor, &format!("movement virtual at {caller}"), error)
+        })
+    }
+
+    fn context_error(&self, actors: &PhysicsActorLinks, actor: usize, operation: &str, error: String) -> String {
+        let record = actors.actors.get_at(actor);
+        let entity = record.and_then(|value| value.owner.entity).and_then(|index| self.entities.get(index));
+        let body = record.and_then(|value| actors.bodies.get(value.current_body));
+        let collision = body.and_then(|value| self.world.bodies.get(value.body_id));
+        format!("{operation}: actor={actor}, entity={:?}, current={:?}, default={:?}, interface_body={:?}, collision_owner={:?}: {error}",
+            entity.map(|value| (&value.name, value.shared)),
+            record.map(|value| value.current_body), record.map(|value| value.default_body),
+            body.map(|value| value.body_id), collision.map(|value| CollisionUserData::decode(value.user_data)))
+    }
+
+    fn resolve_body<'a>(
         &'a self,
         actors: &PhysicsActorLinks,
         actor: usize,
@@ -159,41 +201,67 @@ impl RigidPostHost<'_> {
             .bodies
             .get(link.body_id)
             .ok_or("rigid movement body generation is stale")?;
-        let handle = CollisionUserData::decode(body.user_data)?.component;
-        let pool = self
-            .rigid
-            .iter()
-            .find_map(|(class, pool)| (*class == handle.class_id).then_some(&**pool))
-            .ok_or("rigid collision owner class differs")?;
-        let component = pool.get(handle.slot).ok_or("rigid component is absent")?;
-        if component.owner.entity != Some(entity)
-            || component.body() != Some(body.id)
-            || component.movement_body()? != value.current_body
-        {
-            return Err("rigid collision and movement owners differ".into());
+        // Movement virtuals receive their containing component, not a
+        // collision-userdata pointer. Resolve the actual current interface
+        // against admitted component interfaces (80a5f0/809ab0/808e30).
+        for &packed in self.entities[entity].components.entries.values() {
+            let handle = ComponentHandle::from_packed(packed)?;
+            let Some((_, pool)) = self.rigid.iter().find(|(class, _)| *class == handle.class_id) else {
+                continue;
+            };
+            let component = pool.get(handle.slot).ok_or("rigid movement component absent")?;
+            if component.movement_body()? != value.current_body {
+                continue;
+            }
+            if component.owner.entity != Some(entity) || component.body() != Some(body.id) {
+                return Err("rigid movement component/body identity differs".into());
+            }
+            return Ok((component, body));
         }
-        Ok((component, body))
+        Err(format!("current movement interface has no admitted rigid owner: actor={actor}, entity={} {:?}, current={}, default={}, link_actor={:?}, body={:#x}, collision_owner={:?}",
+            self.entities[entity].name, self.entities[entity].shared,
+            value.current_body, value.default_body, link.actor, body.id,
+            CollisionUserData::decode(body.user_data)))
     }
 
     ///80b9e0 publishes actor desired origin velocities through the existing
     ///18d020 queued owner; cached collision velocities remain that body's owner.
     fn publish_motion(&mut self, actors: &PhysicsActorLinks, actor: usize) -> Result<(), String> {
+        let (component, body) = self.body(actors, actor)?;
+        let body_id = body.id;
+        let current = component.velocities;
+        self.publish_motion_data(actors, actor, body_id, current)
+    }
+
+    fn publish_component_motion(
+        &mut self,
+        actors: &PhysicsActorLinks,
+        actor: usize,
+        family: usize,
+        slot: u16,
+    ) -> Result<(), String> {
+        let (body_id, current) = self.component_body_data(actors, actor, family, slot)?;
+        self.publish_motion_data(actors, actor, body_id, current)
+    }
+
+    fn publish_motion_data(
+        &mut self,
+        actors: &PhysicsActorLinks,
+        actor: usize,
+        body_id: u32,
+        current: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
+    ) -> Result<(), String> {
         let entity = self.actor_entity(actors, actor)?;
-        if self
-            .clock
-            .entity_delta(self.entities[entity].timespace)
-            .ok_or("rigid timespace absent")?
-            <= 0.
-        {
+        if self.clock.entity_delta(self.entities[entity].timespace)
+            .ok_or("rigid timespace absent")? <= 0. {
             return Ok(());
         }
-        let (component, body) = self.body(actors, actor)?;
+        let body = self.world.bodies.get(body_id).ok_or("rigid motion body generation stale")?;
         if body.flags & 1 != 0 {
             return Ok(());
         }
         let id = body.id;
         let flags = body.flags;
-        let current = component.velocities;
         let motion = actors.actors[actor].motion;
         let mut angular = current.requested_angular;
         let mut linear = current.requested_linear;
@@ -307,6 +375,19 @@ impl RigidPostHost<'_> {
         family: usize,
         slot: u16,
     ) -> Result<(), String> {
+        let (body_id, current) = self.component_body_data(actors, actor, family, slot)?;
+        let linear = current.requested_linear[..3].try_into().unwrap();
+        let angular = current.requested_angular[..3].try_into().unwrap();
+        self.publish_body_data(actors, actor, body_id, linear, angular, true)
+    }
+
+    fn component_body_data(
+        &self,
+        actors: &PhysicsActorLinks,
+        actor: usize,
+        family: usize,
+        slot: u16,
+    ) -> Result<(u32, crate::gameplay::collision_user_data::velocity::CollisionVelocities), String> {
         let entity = self.actor_entity(actors, actor)?;
         let component = self.rigid[family].1.get(slot)
             .ok_or("scheduled rigid publication component absent")?;
@@ -319,9 +400,7 @@ impl RigidPostHost<'_> {
         if link.actor != Some(actor) || link.body_id != body_id {
             return Err("scheduled rigid publication interface identity differs".into());
         }
-        let linear = component.velocities.requested_linear[..3].try_into().unwrap();
-        let angular = component.velocities.requested_angular[..3].try_into().unwrap();
-        self.publish_body_data(actors, actor, body_id, linear, angular, true)
+        Ok((body_id, component.velocities))
     }
 
     fn publish_body_data(
@@ -420,19 +499,15 @@ impl crate::gameplay::collision_user_data::velocity::BodyVelocityWorld for Rigid
 impl ActorMotionBody for RigidPostHost<'_> {
     fn accepts(&mut self, actors: &mut PhysicsActorLinks, actor: usize) -> Result<bool, String> {
         self.actor_entity(actors, actor)?;
-        if let Some(body) = self.projectile_body(actors, actor)? {
-            return BasicBody::Projectile { body }.accepts(actors, actor);
+        if let Some(mut body) = self.basic_body(actors, actor)? {
+            return body.accepts(actors, actor);
         }
-        if actors.actors[actor].current_body == actors.actors[actor].default_body {
-            BasicBody::Embedded.accepts(actors, actor)
-        } else {
-            //8079d0 is the +8 motion predicate. +16 is the component's
-            //motion type; -20 is its bound parent physics interface, not Wind.
-            let body=self.body(actors,actor)?.1;
-            if body.flags&1!=0{return Ok(false);}
-            Ok(body.flags&4!=0||actors.actors[actor].binding.entity.is_none()
-                ||body.next_attached_body_id==body.id)
-        }
+        //8079d0 is the +8 motion predicate. +16 is the component's
+        //motion type; -20 is its bound parent physics interface, not Wind.
+        let body=self.body(actors,actor)?.1;
+        if body.flags&1!=0{return Ok(false);}
+        Ok(body.flags&4!=0||actors.actors[actor].binding.entity.is_none()
+            ||body.next_attached_body_id==body.id)
     }
     fn apply(
         &mut self,
@@ -441,11 +516,8 @@ impl ActorMotionBody for RigidPostHost<'_> {
         motion: ResolvedMotion,
     ) -> Result<u8, String> {
         self.actor_entity(actors, actor)?;
-        if let Some(body) = self.projectile_body(actors, actor)? {
-            return BasicBody::Projectile { body }.apply(actors, actor, motion);
-        }
-        if actors.actors[actor].current_body == actors.actors[actor].default_body {
-            return BasicBody::Embedded.apply(actors, actor, motion);
+        if let Some(mut body) = self.basic_body(actors, actor)? {
+            return body.apply(actors, actor, motion);
         }
         let (component, body) = self.body(actors, actor)?;
         //809ab0's normal-update branch needs no independent wake packet.
@@ -561,11 +633,8 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         actors: &mut PhysicsActorLinks,
         actor: usize,
     ) -> Result<bool, String> {
-        if let Some(body) = self.projectile_body(actors, actor)? {
-            return BasicBody::Projectile { body }.accepts_pose(actors, actor);
-        }
-        if actors.actors[actor].current_body==actors.actors[actor].default_body {
-            return BasicBody::Embedded.accepts_pose(actors,actor);
+        if let Some(body) = self.basic_body(actors, actor)? {
+            return body.accepts_pose(actors, actor);
         }
         //808e30 is the distinct +10 pose predicate, using body deactivation.
         Ok(self.body(actors,actor)?.1.flags&8!=0)
@@ -575,8 +644,8 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         actors: &mut PhysicsActorLinks,
         actor: usize,
     ) -> Result<(), String> {
-        if let Some(body) = self.projectile_body(actors, actor)? {
-            BasicBody::Projectile { body }.update_pose(actors, actor)?;
+        if let Some(body) = self.basic_body(actors, actor)? {
+            body.update_pose(actors, actor)?;
             return Ok(());
         }
         self.publish_body(actors, actor)
@@ -587,11 +656,8 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         actor: usize,
     ) -> Result<bool, String> {
         let entity = self.actor_entity(actors, actor)?;
-        if let Some(body) = self.projectile_body(actors, actor)? {
-            return BasicBody::Projectile { body }.handles_render_entity(actors, actor);
-        }
-        if actors.actors[actor].current_body == actors.actors[actor].default_body {
-            return BasicBody::Embedded.handles_render_entity(actors, actor);
+        if let Some(body) = self.basic_body(actors, actor)? {
+            return body.handles_render_entity(actors, actor);
         }
         self.body(actors, actor)?;
         // 808880 first tests 878c60/878d10. Either actual entity flag returns
@@ -909,6 +975,7 @@ impl PhysicsScene {
                 (self.classes[12], &mut self.throwables),
             ],
             projectiles: (self.classes[13], &self.projectiles),
+            triggers: (self.classes[0], &self.triggers),
             placements: &self.rigid_placements,
             initial: &self.initial_rigid_frames,
             poses: None,
@@ -949,7 +1016,9 @@ impl PhysicsScene {
                     .get(movement)
                     .and_then(|body| body.actor)
                     .ok_or("scheduled rigid actor absent")?;
-                host.publish_motion(&self.actors, actor)?;
+                host.publish_component_motion(&self.actors, actor, family, slot)
+                    .map_err(|error| host.context_error(&self.actors, actor,
+                        &format!("phase5 scheduled rigid class={} slot={slot}", host.rigid[family].0), error))?;
             }
         }
         self.rigid_pre_started = false;
@@ -1005,6 +1074,7 @@ impl PhysicsScene {
                 (self.classes[12], &mut self.throwables),
             ],
             projectiles: (self.classes[13], &self.projectiles),
+            triggers: (self.classes[0], &self.triggers),
             placements: &self.rigid_placements,
             initial: &self.initial_rigid_frames,
             poses: None,
@@ -1039,7 +1109,9 @@ impl PhysicsScene {
                         .get(movement)
                         .and_then(|body| body.actor)
                         .ok_or("scheduled rigid post actor absent")?;
-                    host.publish_component_body_frame(&mut self.actors, actor, family, slot)?;
+                    host.publish_component_body_frame(&mut self.actors, actor, family, slot)
+                        .map_err(|error| host.context_error(&self.actors, actor,
+                            &format!("phase6 scheduled rigid class={} slot={slot}", host.rigid[family].0), error))?;
                 }
                 self.rigid_post_publication_cursor[1] += 1;
             }
@@ -1088,6 +1160,7 @@ impl PhysicsScene {
                 (self.classes[12], &mut self.throwables),
             ],
             projectiles: (self.classes[13], &self.projectiles),
+            triggers: (self.classes[0], &self.triggers),
             placements: &self.rigid_placements,
             initial: &self.initial_rigid_frames,
             poses: Some(poses),

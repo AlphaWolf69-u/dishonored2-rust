@@ -146,6 +146,14 @@ pub trait ActorMotionBody {
 }
 
 impl PhysicsActorLinks {
+    pub(crate) fn update_error(&self, actor: usize, phase: &str, error: String) -> String {
+        let record = self.actors.get_at(actor);
+        let body = record.and_then(|value| self.bodies.get(value.current_body));
+        format!("{phase}: actor={actor}, entity={:?}, current={:?}, default={:?}, interface={:?}: {error}",
+            record.and_then(|value| value.owner.entity), record.map(|value| value.current_body),
+            record.map(|value| value.default_body), body.map(|value| (value.actor, value.body_id)))
+    }
+
     /// Complete753a90. A body accepting velocity requests is a required virtual
     /// boundary. A rejecting body skips application but retains resolved requests
     /// and completes caching, as the machine-code warning branch does.
