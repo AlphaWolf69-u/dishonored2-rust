@@ -209,6 +209,7 @@ mod player_arm_capture;
 mod player_animation_events;
 mod ai_world;
 mod heart;
+mod controller_feedback;
 mod heart_context;
 mod melee;
 mod power_wheel;

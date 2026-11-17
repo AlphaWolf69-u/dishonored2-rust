@@ -119,6 +119,7 @@ struct PhysicsEntity {
 
 #[derive(Resource)]
 pub(super) struct PhysicsScene {
+    pub(in crate::app) controller_feedback: Option<Arc<super::controller_feedback::Shared>>,
     owner_id: usize,
     contact_unbent_duration: Option<f32>,
     entity_flags_d4: Vec<u8>,
@@ -646,6 +647,7 @@ impl PhysicsScene {
         let faction_manager = Some(faction_session.snapshot()?.into_manager()?);
         let cvars = crate::platform::console::shared().read();
         let mut scene = Self {
+            controller_feedback: None,
             owner_id,
             contact_unbent_duration: entities::physics::world_contact_unbent_duration(document)?,
             entity_flags_d4: Vec::new(),

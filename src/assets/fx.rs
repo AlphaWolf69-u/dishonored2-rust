@@ -25,6 +25,7 @@ pub mod entity_def;
 pub mod explosion;
 pub mod light;
 pub mod screen_distortion;
+pub mod rumble;
 
 pub struct EnvironmentEffectAsset {
     pub name: String,

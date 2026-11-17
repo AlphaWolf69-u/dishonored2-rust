@@ -356,6 +356,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
     super::projectiles::install(&mut app);
+    super::controller_feedback::install(&mut app);
     super::explosions::install(&mut app);
     super::breakables::install(&mut app);
     super::entity_functions::install(&mut app);
@@ -451,6 +452,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::weapon_throwing::prepare,
                 super::carrying_resources::prepare,
                 super::player_actions::prepare_fx,
+                super::controller_feedback::prepare,
                 super::power_world::update,
                 gameplay_system(super::physics_scene::occluded_sensor::resolve_pending)
                     .run_if(super::pause_menu::game_not_paused)

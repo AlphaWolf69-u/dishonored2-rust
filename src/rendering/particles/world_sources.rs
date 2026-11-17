@@ -15,6 +15,7 @@ pub struct WorldEffectGroup {
     pub sounds: Vec<WorldSoundDefinition>,
     pub lights: Vec<Result<Arc<crate::assets::fx::light::LightAsset>, String>>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
+    pub(crate) rumbles: Vec<Result<Arc<crate::assets::fx::rumble::Asset>, String>>,
     pub(crate) screen_distortions: Vec<Result<Arc<crate::assets::fx::screen_distortion::Prepared>, String>>,
     pub(crate) entity_defs: Vec<Arc<WorldEntityDef>>,
     pub(crate) explosions: Vec<Arc<WorldExplosion>>,
@@ -631,6 +632,7 @@ impl WorldFxSources {
                             prepared: false.into(),
                         }));
                     }
+                    let rumbles = group.rumbles.get().ok_or("world rumble family not acquired")?.as_ref().map_err(Clone::clone)?.iter().cloned().collect();
                     let screen_distortions = group.screen_distortions.get()
                         .ok_or("world FSDisto family not acquired")?.as_ref().map_err(Clone::clone)?
                         .iter().map(|asset| asset.as_ref().map_err(Clone::clone)
@@ -644,6 +646,7 @@ impl WorldFxSources {
                         decals,
                         entity_defs,
                         screen_distortions,
+                        rumbles,
                         explosions,
                         source_group,
                     });

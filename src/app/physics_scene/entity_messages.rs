@@ -84,6 +84,10 @@ impl PhysicsScene {
         clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
         player: Option<&mut crate::gameplay::player::Player>,
     ) -> Result<(), String> {
+        if let Listener::ControllerFeedback { generation } = listener {
+            return self.controller_feedback.as_ref().ok_or("rumble callback owner absent")?
+                .message(generation, event, clock);
+        }
         if let Listener::PlayerChaos {player:identity}=listener {
             if event.id!=0xa5{return Err("PlayerChaos listener received a different message".into())}
             if live.get(identity).is_none(){return Err("PlayerChaos callback generation is stale".into())}

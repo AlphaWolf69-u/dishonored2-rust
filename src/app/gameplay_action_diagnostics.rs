@@ -420,8 +420,12 @@ impl Observation {
                 super::physics_scene::melee::Hit::Ray(hit)=>hit,
                 super::physics_scene::melee::Hit::Shape(_)=>return Err("WORLD fixture ray produced a non-ray witness".into()),
             };
-            return Ok(definition.world_focus.contains(p.physics.position(),eye,axis,definition.focus_step_back,Vec3::from_slice(&hit.position))
-                .then_some(hit.target));
+            let inside=definition.world_focus.contains(p.physics.position(),eye,axis,definition.focus_step_back,Vec3::from_slice(&hit.position));
+            if inside{
+                eprintln!("ACTION_SMOKE_WORLD_FIXTURE_RAY app_frame={:?} actual_hit={hit:?} actual_entity={:?} player_origin={:?} camera_eye={eye:?} camera_axis={axis:?} authored_blade_dimensions={:?} authored_shape_step_back={} authored_focus_step_back={} authored_WORLD_focus={:?} authored_NPC_focus={:?} ray_in_focus=true swept_packet_in_focus_not_inferred=true",
+                    world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),contact.entity,p.physics.position(),definition.dimensions,definition.shape_step_back,definition.focus_step_back,definition.world_focus,definition.npc_focus);
+            }
+            return Ok(inside.then_some(hit.target));
         }
         Ok(None)
     }

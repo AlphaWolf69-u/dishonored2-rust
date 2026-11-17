@@ -124,6 +124,17 @@ impl Hit {
 pub(in crate::app) struct Contact {
     pub hit: Hit,
     pub entity: Option<EntityId>,
+    collision_per_body: bool,
+}
+impl Contact {
+    ///633a70/633e50 compare the collision-data subobject, not its entity.
+    ///852560 allocates distinct0x80 data records for PhysicsWorld bodies;
+    ///ordinary components retain their actual embedded userdata identity.
+    pub fn same_collision_data(&self, other: &Self) -> bool {
+        let a = self.hit.target(); let b = other.hit.target();
+        a.user_data == b.user_data && self.collision_per_body == other.collision_per_body
+            && (!self.collision_per_body || a.body_id == b.body_id)
+    }
 }
 /// One manager-owned pool shared by all admitted weapons. Individual weapon
 /// instances retain only their four actual query IDs and source frame state.
@@ -608,8 +619,11 @@ impl PhysicsScene {
                     continue;
                 }
             }
-            let entity = if target.user_data != 0 {
-                let index = CollisionUserData::decode(target.user_data)?
+            let collision = (target.user_data != 0).then(|| CollisionUserData::decode(target.user_data)).transpose()?;
+            let collision_per_body = collision.is_some_and(|data| data.component.class_id == self.classes[14]);
+            if collision_per_body && target.body_id.is_none() { return Err("PhysicsWorld melee collision-data record has no actual body identity".into()); }
+            let entity = if let Some(collision) = collision {
+                let index = collision
                     .entity(|handle| self.owner(handle).ok())?;
                 let entity = self
                     .entities
@@ -619,7 +633,7 @@ impl PhysicsScene {
             } else {
                 None
             };
-            queries.contacts.push(Contact { hit, entity });
+            queries.contacts.push(Contact { hit, entity, collision_per_body });
         }
         Ok(())
     }

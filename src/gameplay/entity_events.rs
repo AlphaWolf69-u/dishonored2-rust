@@ -15,6 +15,8 @@ use super::{component_state::entity::ComponentHandle, entity_lifetime::EntityId}
 /// and its concrete handler, rather than by an entity name or placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Listener {
+    ///GameLocal rumble manager7b64e0's normal11a/11b callbacks.
+    ControllerFeedback { generation: u64 },
     ///458d00/58a560/608be0: actual AIWorld startup-manager receivers.
     AIWorldStartup { world: EntityId, handle: ComponentHandle, generation: u32, handler: u16 },
     AIStatistics { handle: ComponentHandle, generation:u32, handler:u16 },

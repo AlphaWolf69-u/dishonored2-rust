@@ -1,4 +1,5 @@
 pub mod game_clock;
+pub mod controller_feedback;
 pub mod effects;
 pub mod event_gate;
 pub mod event_graph;

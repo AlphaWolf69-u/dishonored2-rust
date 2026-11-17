@@ -120,6 +120,7 @@ impl LevelLifetime {
             super::water_impacts::begin_retirement(world);
             super::water_impacts::retire(world)?;
             super::fx_gameplay::begin_retirement(world);
+            super::controller_feedback::retire(world);
             super::explosions::shutdown(world);
             super::power_execution::retire_blinks(world)?;
             super::power_execution::begin_wind_retirement(world)?;

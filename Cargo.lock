@@ -888,8 +888,6 @@ dependencies = [
 [[package]]
 name = "bevy_gilrs"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8215d166d5c4a9f821713a1a549a57c5f8bdf404745c84f7a8b920b7b7d92b2"
 dependencies = [
  "bevy_app",
  "bevy_ecs",

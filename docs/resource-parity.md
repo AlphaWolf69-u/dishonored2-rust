@@ -1,5 +1,68 @@
 # Resource parity ledger
 
+Compiled probe-query verification (2026-11-17, debug `38bbe6af`): actual Edge
+of the World PNW tree bytes and all 261,924 runtime tetrahedron records passed
+the mapped-original oracle. Counts include 159 sorting controls, 53 tree cases
+and 966 nearest-result cases including the actual map. The real loading/walking
+run compared 1,575,094 object shader records with zero mismatches and matching
+signatures; 495,838 comparisons were between the exact walking boundaries.
+Executable SHA `D893077422DA20DA14AAB348504F785F002E575E3C907A58321C508DEEB51432`;
+local evidence: `analysis/gameplay-repair-20261116/probe-output-38bbe6af/`.
+This verifies numeric output, not visible FPS or release CPU cost. Release
+same-build linear/spatial timing remains the acceptance gate for a speed claim.
+
+## FX rumble family (2026-11-17)
+
+`ported:` the existing FX declaration owner now projects `arkFXRumbleDesc`
+(`2281f0`/`2282b0`) once per source generation, including all five scalar
+envelopes, timings, radius/distance modulation and impulse modulation. No
+second declaration cache or generic syntax copy is retained. Disabled rows
+stay disabled; enabled rows no longer reject the entire containing effect.
+Descriptor leases use the same parent FX acquisition/unload lifecycle.
+
+`ported:` `gameplay/effects/rumble.rs` owns `229ba0` initialization (private
+attenuation seed, four timing draws, five pairs of scalar draws, radius and
+impulse), `229ec0`/`228440` positive-delta admission, phase kernels
+`229870`/`229980`/`229a90`, looping and source fade-stop. The existing standard
+scalar envelope owner supplies the three-phase curves; attenuation uses
+`228550`/`228e30` Catmull key-value interpolation and its own two-draw
+modulation. `229710` copies the stored attenuation seed on each submission,
+so moving through the falloff does not invent fresh temporal random noise.
+Record impulse input is the actual contact-speed field at FX+`b8`, with
+`21dc10`'s zero constructor value when no contact context exists.
+The attenuation listener is the actual selected RenderView origin:
+`1a3390` selects the last callback from GameLocal's view stack, `806600`'s
+interface virtual20 (`486a50`) returns RenderView+`a8`, also read by
+`88e140`. The existing selected camera publication supplies this exact
+position; a Player actor/body position is not substituted.
+
+`ported:` `world_rumble.rs`, within `WorldParticleState`, owns the shared
+32-slot family (`19a650`/`19fa50`, `2220c0`), source-order group starts
+(`222f80` bit13), reverse-linked updates/next-tick release (`21fdc0`),
+ordinary and looping-only nested Stop, Clear and level shutdown. Live rumble
+tails retain the same effect instance and immutable declaration lease until
+they finish. No per-frame allocations, new images, GPU work, manager,
+timer, or independent scheduler were added. `229f10` merges four motor
+channels by source maximum comparisons; `229fb0` resets per frame. A fixed
+completed `(frame_id, [low, high, left_trigger, right_trigger])` publication
+is acknowledged only after successful FX frame completion and withdrawn on
+owner shutdown. Diagnostics count real rumble chain heads, including nested
+tails; they do not advance simulation.
+
+Controller eligibility and platform output remain in the canonical input
+feedback adapter (source `7b67a0`/`03b3e0`), independently of FX lifetime.
+Keyboard/mouse input, disabled vibration, pause, or absent hardware must not
+be implemented as rejection of an enabled FX descriptor.
+
+Prediction before validation: resource acquisition gains one small shared
+typed projection per used descriptor; playback adds at most32 bounded
+scalar/attenuation evaluations per FX frame, with reused slot/vector
+capacity, zero per-frame heap allocation and zero GPU passes. This is a
+fidelity addition, not a measured speedup. `blocked: validation` — sources
+were statically reviewed; parent owns the coherent build and actual Blink,
+stop/tail/shutdown execution. No tests or executable launches were performed
+by this family implementation.
+
 ## Effect resource readiness and contact descriptors (2026-11-17)
 
 Owner: `app/usable_effects.rs` and its `prepared_resources` child, with the
@@ -259,6 +322,59 @@ object's output acknowledgement, then removes numeric/spatial/player lookup
 state before generation reuse. One-shot AnimSet posts are not invented
 stop-on-interruption sounds; future crossings disappear with their source
 clips, while accepted audio tails retain their normal audio lifecycle.
+
+Controller feedback (2026-11-17): owner `gameplay::controller_feedback` is the
+single GameLocal7b5fa0/7b5ff0 impulse/max mixer; `app::controller_feedback` owns
+its normal11a/11b registration7b64e0, same-generation dispatch and Stop7b66b0.
+Source7b61f0 retains low/high and an absolute group1 deadline, using the actual
+ark_rumble_impulse_duration only when duration is zero;7b5ff0 removes expired
+entries in reverse with swap removal and combines them with completed WorldFX
+229f10 four-channel values. Source clamp0..1 and2^-16 dead-motor threshold are
+preserved. No archive/image/audio/GPU resource is acquired by this mixer.
+
+`ported` eligibility7b67a0: current gamepad input039d50, real playing state3,
+!paused, and current ark_rumble_enable. Input03b580's controller activity wins
+concurrent keyboard/mouse activity; independent readers preserve gameplay events.
+No-device/keyboard is a true output-policy branch, not a skipped enabled FX
+descriptor. False policy clears pending impulses and zeroes output once; it does
+not replay those impulses on resume. Stop unregisters both normal receivers and
+releases the same output lease before shared FX/physics retirement. A new Scene
+admits a new manager generation; an outgoing closed Scene cannot restart it.
+
+Bounded source confirmation:7b6760 obtains its time through actual idGameLocal
+vtable141c940a8 slot+d0 (ctor8a4830 assembly), target8a8a00→0596a0, explicitly
+passing group1. The application's time(1) is therefore the original provider;
+an earlier research message saying group0 was incorrect.03b580 tests processed
+event-queue nonemptiness, not a second magnitude threshold. XInput0e0220 applies
+its trigger/radial dead zones upstream;0e03d0 still emits a changed-to-zero
+record. Thus processed axis resets and button releases are activity, and any
+controller event wins concurrent keyboard/mouse. The host reuses Bevy's existing
+processed input events and adds no second dead zone. The native pause/disabled
+transition remains7b67a0's clear-and-zero branch. The vendored legacy weak Add
+branch now explicitly uses the requested Replay duration like Strong; Gilrs'
+default one-tick Replay wraps continuously, and outer Repeat::For bounds total
+duration, so no previous truncation claim is made. Persistent motor output uses
+its separate infinite Replay/gain path and is unchanged by this clarification.
+
+`host` persistent motor output: native03b3e0→0e0e30 writes the two Windows XInput
+motor amplitudes; original PC output likewise has no trigger motors. Existing
+Bevy/Gilrs owns controller identities and hardware support. The focused vendored
+bevy_gilrs0.19.1 adapter creates two infinite FF effects only at first nonzero
+output, then changes independent gains, avoiding per-frame Add allocations or
+overlapping queued effects. Identical numeric output sends no command. Policy
+false, controller change/disconnect, producer Stop and backend owner drop release
+the FF handles; a weak producer lease also prevents a dropped gameplay owner
+from retaining vibration. Upstream licenses/provenance are retained. The upstream
+weak-channel Strong typo is corrected to Weak. Devices with no FF support retain
+no effect and report the genuine capability branch rather than skipping CPU FX.
+
+Prediction for validation: keyboard/no-device creates zero FF effects and no
+impulse backing allocations; an active controller output ownership period creates
+exactly two FF effects total, not two per frame. Steady identical output has no
+backend allocation/command. Numeric FX/mixer work is constant per frame plus the
+actual retained impulse count; no rendering passes or GPU work is added by this
+adapter. Syntax/whitespace checks passed; hardware verification and scoped CPU/
+allocation timing await the coordinated build, so no measured gain is claimed.
 
 MotionBlur bridge prediction (2026-11-17, before implementation): the always-on
 PlayerFXMotionBlur constructor684680 and Start6846b0 request the already acquired
@@ -24305,7 +24421,41 @@ gain or complete visual fix is claimed. Normal CombatFocus additionally needs
 81f7e0/5bf310's real NPC combat facts; unimplemented camera FSDisto motion blur
 is a separate class and is not replaced by invented regular-swing DoF.
 
-Full631020/635140 pass closure (2026-11-17): nearest selection633a70
+Collector collision-data identity correction (2026-11-17, after38bbe6af):
+the two real WORLD attempts reached authored windows and completed queries,
+but accepted no contact; ordinary had42 raw/4 focus rejects and charged15
+raw/3 rejects. The fixture's separate ray was not treated as proof that the
+source sweep selected an in-focus packet. Source633a70 and633e50 compare
+packet+8 weapon component AND packet+20 collision-data identity, not entity.
+852560 allocates one0x80 collision-data record per actual PhysicsWorld body;
+694c20 sets each record+8 to its shared component, and18cc90 writes the distinct
+record address into that body's+90 userdata. The compact rewrite owner token
+represents the shared component, so melee now distinguishes that class's
+actual full body generation as well; ordinary embedded component records use
+their actual userdata identity. This also stops merging distinct collision
+components on the same entity. No second owner/table or collider is created.
+
+The source-complete list operation replaces a matching packet with a closer
+one AND appends that packet while its fixed0x2040 list has room (32 slots).
+Original633a70 assembly140633acc→140633ad4→62e400 and633e50's same tail prove
+this is not a decompiler artifact. The rewrite previously retained only one
+nearest packet and used an unbounded shared Vec. It now preserves source list
+capacity and retained witnesses, with O(1) per-list counts.631020 retains a
+qualified hard packet until the WORLD scan ends; a later in-focus nonblocking
+entity follows635140 instead of premature recoil. The .09-second dwell,
+forward exception, query shape, range and source focus predicates are unchanged.
+
+Prediction: stop erasing valid packets merely because other bodies share
+worldspawn, preserve source witness/dwell selection, and admit only contacts
+the real source lists/focus allow. No timing gain or guaranteed WORLD fixture
+pass is claimed; more valid body records can require more actual source work,
+bounded by32 per list. On-demand diagnostics retain only the last pre-focus
+WORLD witness and last rejected witness (including after player118 retarget),
+with actual point/normal/body/material, previous/current weapon frame, entity
+delta, player/camera and authored focus. They introduce no queries or history.
+Combined type/action/appearance checks remain coordinating-worker owned.
+
+Full631020/635140 pass closure (2026-11-17): source collector preparation
 remains before focus admission. Original ENTITY packets get NPC focus;
 ordinary non-arkNPC/non-mode2-Grenade packets also get WORLD focus and are
 visited in reverse extraction order, followed by remaining NPC/Grenade
