@@ -31,6 +31,12 @@ struct SkinSurface {
 var<private> skin_surface:SkinSurface;
 var<private> skin_light_diffuse:vec3<f32>;
 var<private> skin_direct_diffuse:vec3<f32>;
+// arkDefaultHelpers::ComputeGlassTransmittance for $isAlpha surfaces: .x
+// scales accumDiffuse/accumAmbient (refraction exit), .y accumSpecular
+// (1/alpha). Each Ward light's diffuse leaves through glass_light_diffuse.
+var<private> glass_scale:vec2<f32>=vec2(1.0);
+var<private> glass_light_diffuse:vec3<f32>;
+var<private> glass_direct_diffuse:vec3<f32>;
 // ward::CreateWardContext.
 fn ward_inverse_roughness_squared(roughness:f32)->f32 {
     let inverse=1.0/(1e-5+max(0.01,roughness*roughness));

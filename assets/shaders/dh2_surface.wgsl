@@ -40,8 +40,11 @@ struct SurfaceUniform {
     vegetation_translucency:vec4<f32>,
     vegetation_options:vec4<f32>,
     particle_instances:vec4<u32>,
-    hair:array<vec4<f32>,6>,
+    hair:array<vec4<f32>,5>,
     hair_flags:vec4<u32>,
+    oit:array<vec4<f32>,2>,
+    oit_mode:vec4<u32>,
+    glass_transmittance:vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 

@@ -16,7 +16,7 @@ impl TransparencyParameters {
         (source == 4 || source == 1) && state[0] & 0x1e0 == 0x20
     }
 
-    fn resolve(cvars: &CVars, additive: bool, particle: bool) -> Result<Self, String> {
+    pub fn resolve(cvars: &CVars, additive: bool, particle: bool) -> Result<Self, String> {
         let mode = cvars.int("r_OIT").ok_or("r_OIT is not registered")?;
         if !(0..=2).contains(&mode) {
             return Err("particle transparency debug resolve is not connected".into());

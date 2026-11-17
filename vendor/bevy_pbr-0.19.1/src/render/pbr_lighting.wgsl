@@ -2,7 +2,7 @@
 
 #ifdef DH2_SURFACE_ENABLED
 #import dh2_ward::{WardSurface,WardLight,ward_direct}
-#import dh2_direct::{skin_direct,skin_light_diffuse,hair_direct}
+#import dh2_direct::{skin_direct,skin_light_diffuse,hair_direct,glass_light_diffuse}
 #import dh2_area_light_opaque::opaque_area_lighting
 #endif
 
@@ -715,7 +715,8 @@ fn point_light(
         // idLight updater 140881640 publishes the authored specular attenuation.
         let r=ward_direct((*input).direct_surface,WardLight(L,
             rangeAttenuation*half_point_attenuation,(*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
-        return select(vec3(0.0),r.diffuse,enable_diffuse)+r.specular;
+        glass_light_diffuse=select(vec3(0.0),r.diffuse,enable_diffuse);
+        return glass_light_diffuse+r.specular;
     }
 #endif
     // Base layer
@@ -902,6 +903,9 @@ fn spot_light(
 #ifdef DH2_SKIN
     skin_light_diffuse *= spot_attenuation * texture_sample;
 #endif
+#ifdef DH2_SURFACE_ENABLED
+    glass_light_diffuse *= spot_attenuation * texture_sample;
+#endif
     return point_light * spot_attenuation * texture_sample;
 }
 
@@ -929,7 +933,8 @@ fn directional_light(
 #ifdef DH2_SURFACE_ENABLED
     if (#{DH2_ALPHA_FLAGS}u & 128u)!=0u {
         let r=ward_direct((*input).direct_surface,WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));
-        return select(vec3(0.0),r.diffuse,enable_diffuse)+r.specular;
+        glass_light_diffuse=select(vec3(0.0),r.diffuse,enable_diffuse);
+        return glass_light_diffuse+r.specular;
     }
 #endif
     var derived_input = derive_lighting_input(N, V, L);

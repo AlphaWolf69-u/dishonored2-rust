@@ -1,4 +1,6 @@
-//! 36d0c0's retained particle accumulation targets and31dce0's resolve.
+//! 31dce0's weighted-blended resolve of the alpha list. The accumulation and
+//! revealage targets are the ALPHA_LIT owner's (alpha_depth_scene), shared by
+//! the dynamicAlpha/worldAlpha model draws and the particle draws.
 use super::super::water_hdr::WaterHdr;
 use bevy::{
     prelude::*,
@@ -14,15 +16,11 @@ struct Parameters {
 }
 
 pub(super) struct TransparencyPass {
-    accumulation: Texture,
-    opacity: Texture,
-    pub accumulation_view: TextureView,
-    pub opacity_view: TextureView,
     hdr: WaterHdr,
     parameters: UniformBuffer<Parameters>,
     layout: BindGroupLayout,
     pipeline: RenderPipeline,
-    binding: Option<(BufferId, BindGroup)>,
+    binding: Option<((BufferId, TextureViewId, TextureViewId), BindGroup)>,
     extent: [u32; 2],
     compressed: bool,
     resolve_state: crate::render_state::RenderState,
@@ -45,29 +43,6 @@ impl TransparencyPass {
         depth_format: TextureFormat,
         resolve_state: crate::render_state::RenderState,
     ) -> Result<Self, String> {
-        let texture = |label, format| {
-            device.create_texture(&TextureDescriptor {
-                label: Some(label),
-                size: Extent3d {
-                    width: extent[0],
-                    height: extent[1],
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format,
-                usage: TextureUsages::RENDER_ATTACHMENT
-                    | TextureUsages::TEXTURE_BINDING
-                    | TextureUsages::COPY_SRC,
-                view_formats: &[],
-            })
-        };
-        // 36d0c0 writes packed5cb (DXGI10) and5c5 (DXGI34), both selector7.
-        let accumulation = texture("particle accumulation", TextureFormat::Rgba16Float);
-        let opacity = texture("particle revealage", TextureFormat::Rg16Float);
-        let accumulation_view = accumulation.create_view(&default());
-        let opacity_view = opacity.create_view(&default());
         let mut parameters = UniformBuffer::from(Parameters { limits: Vec4::ZERO });
         parameters.write_buffer(device, queue);
         let texture_binding = |binding| BindGroupLayoutEntry {
@@ -161,10 +136,6 @@ impl TransparencyPass {
             cache: None,
         });
         Ok(Self {
-            accumulation,
-            opacity,
-            accumulation_view,
-            opacity_view,
             hdr: WaterHdr::new(device, queue, extent, compressed, host_format)?,
             parameters,
             layout,
@@ -181,6 +152,7 @@ impl TransparencyPass {
         queue: &RenderQueue,
         encoder: &mut CommandEncoder,
         input: &super::ParticleViewInputs<'_>,
+        targets: &super::AlphaListTargets<'_>,
     ) -> Result<(), String> {
         self.parameters.set(Parameters {
             limits: Vec4::new(
@@ -191,24 +163,21 @@ impl TransparencyPass {
             ),
         });
         self.parameters.write_buffer(device, queue);
-        if self
-            .binding
-            .as_ref()
-            .is_none_or(|b| b.0 != input.adaptation.id())
-        {
+        let key = (input.adaptation.id(), targets.accumulation.id(), targets.opacity.id());
+        if self.binding.as_ref().is_none_or(|b| b.0 != key) {
             self.binding = Some((
-                input.adaptation.id(),
+                key,
                 device.create_bind_group(
                     Some("particle resolve"),
                     &self.layout,
                     &[
                         BindGroupEntry {
                             binding: 0,
-                            resource: BindingResource::TextureView(&self.accumulation_view),
+                            resource: BindingResource::TextureView(targets.accumulation),
                         },
                         BindGroupEntry {
                             binding: 1,
-                            resource: BindingResource::TextureView(&self.opacity_view),
+                            resource: BindingResource::TextureView(targets.opacity),
                         },
                         BindGroupEntry {
                             binding: 2,
@@ -261,11 +230,5 @@ impl TransparencyPass {
         }
         hdr.finish(encoder);
         Ok(())
-    }
-    pub fn capture_planes(&self) -> [(&'static str, &Texture); 2] {
-        [
-            ("particle_accumulation", &self.accumulation),
-            ("particle_revealage", &self.opacity),
-        ]
     }
 }

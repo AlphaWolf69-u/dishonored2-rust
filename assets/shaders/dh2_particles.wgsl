@@ -880,32 +880,9 @@ struct ParticleAccumulation {@location(0) colour:vec4<f32>,@location(1) opacity:
     // Weighted transparency operates in the game's lighting units. The host
     // HDR transport's camera exposure and luminance scale are applied later.
     let colour=vec4(source.colour.rgb/particle_view.exposure_extent.x,source.colour.a);
-    let weights=input.transparency_weights;
-    let parameters=input.transparency_parameters;
-    if input.transparency_mode==2u {
-        let lum=mix(1.0,clamp(colour.g,0.0,1.0),parameters.y);
-        let alpha=colour.a*lum;
-        var weight=pow(1e-2+alpha,weights.x)*clamp(parameters.z/
-            (1e-5+pow(input.position.w/weights.y,weights.z)),1e-2,3e3);
-        weight*=weights.w;
-        return ParticleAccumulation(min(vec4(6000.0),vec4(colour.rgb,parameters.w)*(weight*alpha)),
-            vec4(alpha*parameters.w,0.0,0.0,0.0));
-    }
-    let albedo_luminance=dot(source.albedo,vec3(0.2126,0.7152,0.0722));
-    var additive_luminance=1.0;
-    if parameters.w<1.0 && albedo_luminance<colour.a {
-        additive_luminance=smoothstep(0.0,parameters.w,albedo_luminance);
-    }
-    let opacity=parameters.w*additive_luminance;
-    let colour_length=length(colour);
-    var colour_normal=1.0;
-    if colour_length>0.0 {colour_normal=1.0-dot(colour/colour_length,vec4(0.25));}
-    colour_normal*=mix(1.0,parameters.z,colour.a);
-    colour_normal*=mix(1.0,colour.a,parameters.y);
-    let a=pow(1e-2+colour_normal,weights.x);
-    let b=pow(min(0.02245,input.position.z)*weights.y,weights.z);
-    let weight=clamp(a*b,1e-2,3e3)*weights.w;
-    return ParticleAccumulation(vec4(colour.rgb,opacity)*(weight*colour.a),vec4(colour.a*opacity,0.0,0.0,0.0));
+    let pixel=oit_write_pixel(colour.rgb,source.albedo,colour.a,input.position,
+        input.transparency_weights,input.transparency_parameters,input.transparency_mode);
+    return ParticleAccumulation(pixel.colour,pixel.opacity);
 }
 
 // particle/dist_blur: accumulate tangent-space distortion and blur vectors.

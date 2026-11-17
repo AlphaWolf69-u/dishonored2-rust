@@ -469,7 +469,7 @@ pub(super) fn register(app: &mut App) {
             render_particles
                 .in_set(Core3dSystems::MainPass)
                 .after(super::fog_scene::AtmospherePass)
-                .after(super::alpha_depth_scene::HairPass)
+                .after(super::alpha_depth_scene::AlphaLitPass)
                 .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
         );
         // FX simulation and publication precede every pass that draws their
@@ -500,6 +500,8 @@ pub(crate) struct FxUpdate;
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    /// ALPHA_LIT's shared accumulation targets (alpha_depth_scene).
+    alpha: Res<'w, super::alpha_depth_scene::AlphaGpu>,
     publication: Res<'w, FxPublication>,
     scene_images: Res<'w, super::particle_images::SceneParticleImages>,
     upload_budget: Res<'w, bevy::render::render_asset::RenderAssetBytesPerFrameLimiter>,
@@ -761,8 +763,10 @@ fn render_particles(
                 [target.main_texture().width(), target.main_texture().height()], &mut manager);
         }
         // Prepare the shared particle pipeline once the live pool exists,
-        // independently of whether this frame sees any of its sprites.
-        if draws.is_empty() {
+        // independently of whether this frame sees any of its sprites. The
+        // alpha list still resolves when only its model draws accumulated.
+        let alpha_list = lighting_scene.alpha.alpha_list_targets(view.retained_view_entity);
+        if draws.is_empty() && !alpha_list.as_ref().is_some_and(|targets| targets.drawn) {
             return Ok(());
         }
         let shared = shared.as_deref().ok_or("particle fog resource owner unavailable")?;
@@ -771,8 +775,8 @@ fn render_particles(
             .ok_or("particle adaptation awaits preparation")?;
         let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
             lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
-            &depth.alpha.full_attachment, target.main_texture_view())?;
-        let CameraGpu { particles, particle_images, screen_quads, .. } = &mut *gpu;
+            &depth.alpha.full_attachment, target.main_texture_view(), alpha_list)?;
+        let CameraGpu { particles, particle_images, .. } = &mut *gpu;
         particles.as_mut().unwrap().pass.record(
             particle_images, &device,
             &queue,
@@ -820,6 +824,7 @@ fn particle_view_inputs<'a>(
     adaptation: &'a bevy::render::render_resource::Buffer,
     depth: &'a TextureView,
     colour: &'a TextureView,
+    alpha_list: Option<super::particle_pass::AlphaListTargets<'a>>,
 ) -> Result<super::particle_pass::ParticleViewInputs<'a>, String> {
     let parameters = buffers
         .get(&shared.parameters)
@@ -901,6 +906,7 @@ fn particle_view_inputs<'a>(
         } else {None},
         compressed_hdr,
         white_level,
+        alpha_list,
         resolve_state: *sources
             .transparency_resolve_state
             .as_ref()
@@ -1058,7 +1064,7 @@ fn render_opaque_particles(
         let adaptation = buffers.get(&exposure.0).ok_or("particle adaptation awaits preparation")?;
         let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
             lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
-            depth.view(), target.main_texture_view())?;
+            depth.view(), target.main_texture_view(), None)?;
         let CameraGpu { opaque_particles, particle_images, .. } = &mut *gpu;
         opaque_particles.as_mut().unwrap().pass.record_opaque(particle_images, &device, &queue,
             context.command_encoder(), inputs, draws)?;
