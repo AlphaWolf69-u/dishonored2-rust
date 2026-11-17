@@ -571,8 +571,8 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                             //Penetration distance and cast fraction have
                             //different units and cannot be compared together.
                             let origin = Vec3::from_array(current.position);
-                            let candidate = Vec3::from_array(witness(hit.hit).position).distance_squared(origin);
-                            let previous = Vec3::from_array(witness(existing.0.hit).position).distance_squared(origin);
+                            let candidate = Vec3::from_slice(&witness(hit.hit).position).distance_squared(origin);
+                            let previous = Vec3::from_slice(&witness(existing.0.hit).position).distance_squared(origin);
                             if candidate < previous {
                                 existing.0 = *hit;
                             }
