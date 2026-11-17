@@ -222,6 +222,13 @@ impl PhysicsScene {
         }
         super::super::usable_effects::reservation_ready(world, &resources.scope)
     }
+    pub(in crate::app) fn debug_grenade_resources(&self,world:&World,handle:ComponentHandle)->String {
+        match self.grenade_key(handle).and_then(|key|self.grenade_resources.get(&key).ok_or("scope=absent".into())) {
+            Ok(resources)=>format!("Grenade {handle:?} closing={} armed={} stopped={} explosion={}\n    {}",resources.closing,resources.armed.is_some(),resources.stopped.len(),resources.explosion.is_some(),
+                super::super::usable_effects::debug_reservation(world,&resources.scope)),
+            Err(error)=>format!("Grenade {handle:?} {error}"),
+        }
+    }
     pub(super) fn initialize_grenade(
         &mut self,
         handle: ComponentHandle,

@@ -80,6 +80,10 @@ pub(super) fn prepare_contact_owned(
         owner.effects.prepare_contact(world, scope, source)
     })
 }
+pub(super) fn debug_owned(world:&World,key:&str)->String {
+    world.get_resource::<Explosions>().map_or_else(||format!("contact[{key}] manager=absent"),
+        |owner|owner.effects.debug_scope(world,key))
+}
 pub(super) fn ready_contact_owned(
     world: &World,
     scope: &str,

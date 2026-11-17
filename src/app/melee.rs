@@ -178,6 +178,14 @@ pub(super) fn ready_owned(world: &World, identity: &str) -> Result<bool, String>
         })
         .is_some_and(|entry| entry.ready && !entry.retiring))
 }
+pub(super) fn debug_startup_pending(world:&World)->String {
+    use std::fmt::Write;
+    let Some(owner)=world.get_resource::<Melee>()else{return "melee owner=absent".into();};
+    let mut report=String::new();owner.write_diagnostics(&mut report);
+    for entry in owner.owned.values(){for scope in &entry.scopes{
+        let _=writeln!(report,"    identity={} {}",entry.identity,super::explosions::debug_owned(world,&scope.key));
+    }}report
+}
 pub(super) fn remove_owned(world: &mut World, identity: &str) {
     if let Some(mut owner) = world.get_resource_mut::<Melee>() {
         for entry in owner

@@ -466,11 +466,20 @@ pub(in crate::app) fn debug_startup_pending(world: &World) -> String {
         lease.strong_count()!=0&&!admitted(world,**id)).count());
     let attachments = coordinator.map_or(0, |owner|owner.equipment.attachments.iter().filter(|(id,lease)|
         lease.strong_count()!=0&&!attachment_admitted(world,**id)).count());
-    format!("attachments={} throwable={} melee={} Heart={} models_pending={} attachment_models_pending={}",
+    let mut report=format!("attachments={} throwable={} melee={} Heart={} models_pending={} attachment_models_pending={}",
         super::super::equipment_attachment_admission::startup_pending(world),
         super::super::weapon_throwing::startup_pending(world),
         super::super::melee::startup_pending(world),
-        super::super::heart::startup_pending(world),models,attachments)
+        super::super::heart::startup_pending(world),models,attachments);
+    if let (Some(actions),Some(player))=(world.get_resource::<super::super::player_actions::PlayerActions>(),
+        world.get_resource::<super::super::player::PlayerState>().and_then(|state|state.player.as_ref())) {
+        report.push_str("\n  ");report.push_str(&actions.debug_ready_targets(player));
+    }
+    for details in [super::super::equipment_attachment_admission::debug_startup_pending(world),
+        super::super::weapon_throwing::debug_startup_pending(world),super::super::melee::debug_startup_pending(world)] {
+        report.push('\n');report.push_str(&details);
+    }
+    report
 }
 
 pub(in crate::app) fn startup_error(world: &World) -> Option<String> {

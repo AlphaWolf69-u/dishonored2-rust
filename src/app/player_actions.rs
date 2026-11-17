@@ -638,6 +638,12 @@ impl PlayerActions {
             || !self.prepared_owned_metadata.is_empty()
             || !self.owned_targets.is_empty()
     }
+    pub(in crate::app) fn debug_ready_targets(&self,player:&Player)->String {
+        self.ready.iter().map(|ready|format!("ready[{}] side={} can_apply={} current={} visual={} Heart={} melee={} throwable={} wanted={}",
+            ready.item.path,ready.side(),ready.can_apply(player),ready.is_current(player),ready.descriptor.visual.is_some(),
+            ready.descriptor.heart.is_some(),ready.descriptor.melee.is_some(),ready.descriptor.throwable.is_some(),
+            self.wanted(ready.descriptor.equipment.slot,&ready.item.path))).collect::<Vec<_>>().join("\n  ")
+    }
 
     /// Keep tasks alive until their synchronous archive reads have returned.
     /// Merely dropping a task does not acknowledge Catalog scope retirement.

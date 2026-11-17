@@ -321,6 +321,23 @@ fn prune(world:&mut World,owner:&mut Throwing)->Result<(),String>{
 pub(in crate::app) fn startup_pending(world:&World)->bool{
     world.get_resource::<Throwing>().is_some_and(|owner|owner.owned.values().any(|entry|!entry.retired&&!entry.ready))
 }
+pub(in crate::app) fn debug_startup_pending(world:&World)->String {
+    use std::fmt::Write;
+    let Some(owner)=world.get_resource::<Throwing>()else{return "throwable owner=absent".into();};
+    let mut report=String::new();owner.write_diagnostics(&mut report);
+    for entry in owner.owned.values(){
+        let _=writeln!(report,"    identity={} upgrades={:?} audio={:?}",entry.identity,
+            super::equipment_attachment_admission::upgrade_definitions(world,entry.id).map(|upgrades|upgrades.len()),
+            super::audio::events_ready(world,&entry.scope));
+        if let (Some(scene),Some(live))=(world.get_resource::<super::physics_scene::PhysicsScene>(),world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()) {
+            match scene.grenade_component(live,entry.id){
+                Ok(Some(handle))=>{let _=writeln!(report,"    {}",scene.debug_grenade_resources(world,handle.handle));},
+                result=>{let _=writeln!(report,"    Grenade component={result:?}");},
+            }
+        }
+        if let Some(source)=&entry.prepared[entry.selected]{let _=writeln!(report,"    {}",super::runtime_entities::debug_readiness(world,source));}
+    }report
+}
 pub(in crate::app) fn ready_owned(world:&World,identity:&str)->Result<bool,String>{
     let Some(owner)=world.get_resource::<Throwing>()else{return Ok(false);};
     if let Some(error)=&owner.error{return Err(error.clone());}

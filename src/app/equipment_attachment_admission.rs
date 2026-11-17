@@ -483,6 +483,19 @@ pub(super) fn startup_pending(world: &World) -> bool {
                 })
         })
 }
+pub(super) fn debug_startup_pending(world:&World)->String {
+    use std::fmt::Write;
+    let Some(owner)=world.get_resource::<Attachments>()else{return "attachments owner=absent".into();};
+    let mut report=format!("attachments closing={} cancelled={} cancelled_upgrades={}\n",owner.closing,owner.cancelled.len(),owner.cancelled_upgrades.len());
+    for (id,upgrade) in &owner.upgrades{
+        let _=writeln!(report,"    upgrade={id:?} pending={} definitions={:?} installed={} failed={:?} paths={:?}",
+            upgrade.pending.is_some(),upgrade.definitions.as_ref().map(Vec::len),upgrade.installed,upgrade.failed,upgrade.paths);
+    }
+    for entry in owner.live.values(){
+        let _=writeln!(report,"    path={} child={:?} task={} admitted={} visible={}",entry.path,entry.child,entry.pending.is_some(),
+            entry.child.is_some_and(|id|world.get_resource::<super::player_arms::PlayerArms>().is_some_and(|arms|arms.attachments.has(id))),entry.visible);
+    }report
+}
 
 pub(super) fn startup_error(world: &World) -> Option<String> {
     let owner = world.get_resource::<Attachments>()?;

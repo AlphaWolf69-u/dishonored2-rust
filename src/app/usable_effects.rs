@@ -192,10 +192,81 @@ pub(super) fn entity_retired(world: &bevy::prelude::World, ticket: &EffectTicket
 pub(super) fn reservation_ready(world: &bevy::prelude::World, key: &str) -> Result<bool, String> {
     let Some(owner) = world.get_resource::<UsableEffects>() else { return Ok(false) };
     let Some(paths) = owner.reservations.get(key) else { return Ok(false) };
+    //A registered empty dependency set owns no source, material, image, sound
+    //or gameplay work. Unrelated world FX preparation cannot delay it.
+    if paths.is_empty() { return Ok(true); }
     if paths.iter().any(|path| !owner.wanted.keys().any(|wanted| matches!(wanted, EffectOwner::Reservation(group, dependency) if group.as_ref() == key && dependency == path))) {
         return Err(format!("FX dependency reservation {key} failed acquisition or material publication"));
     }
     Ok(owner.reservations_ready.contains(key))
+}
+
+///The existing opt-in loading report borrows all actual admission witnesses;
+///it neither publishes readiness nor keeps resource leases after returning.
+pub(super) fn debug_reservation(world:&bevy::prelude::World,key:&str)->String {
+    use std::fmt::Write;
+    use crate::rendering::bevy_backend::{world_effects::DynamicMaterialPrewarm,
+        particle_images::SceneParticleImages,world_sounds::WorldSounds};
+    let Some(owner)=world.get_resource::<UsableEffects>()else{return format!("FX[{key}] owner=absent");};
+    let mut output=format!("FX[{key}] registered={} ready={:?} revision={} published={:?} active={:?} loading={} retiring={}",
+        owner.reservations.contains_key(key),reservation_ready(world,key),owner.revision,
+        owner.published_revision,owner.published_active_revision,owner.loading.len(),owner.retiring.len());
+    if let Some(prewarm)=world.get_resource::<DynamicMaterialPrewarm>() {
+        let _=write!(output," particle_gen={}/{}/{}",prewarm.generation,
+            prewarm.completed.load(Ordering::Acquire),prewarm.failed.load(Ordering::Acquire));
+    }
+    if let Some(materials)=world.get_resource::<DynamicWorldMaterials>() {
+        let _=write!(output," world_gen={}/{}/{}/{} images={}/{}",materials.generation,
+            materials.completed.load(Ordering::Acquire),materials.gpu_completed.load(Ordering::Acquire),
+            materials.failed.load(Ordering::Acquire),materials.images_ready,materials.image_revision);
+    }
+    if let Some(decals)=world.get_resource::<DynamicDecalMaterials>() {
+        let _=write!(output," decal_gen={}/{}/{}/{}",decals.generation,
+            decals.completed.load(Ordering::Acquire),decals.gpu_completed.load(Ordering::Acquire),
+            decals.failed.load(Ordering::Acquire));
+    }
+    let audio=world.get_resource::<WorldSounds>().map(|sounds|sounds.lock());
+    let images=world.get_resource::<SceneParticleImages>();
+    let _=write!(output," audio_bridge={:?}",audio.as_ref().map(|audio|audio.ready));
+    for path in owner.reservations.get(key).into_iter().flatten() {
+        let source=owner.ready.get(&EffectOwner::Reservation(Arc::from(key),path.clone()));
+        let _=write!(output,"\n      path={path} source={} loading={} ",source.is_some(),owner.loading.contains_key(path));
+        if let Some(source)=source {
+            let missing_images=source.particle_materials().flat_map(|material|material.images.values())
+                .filter(|image|image.scene_owned&&!images.is_some_and(|images|images.handles.contains_key(&image.path)))
+                .map(|image|image.path.as_ref()).collect::<Vec<_>>();
+            let mut missing_sounds=Vec::new();
+            let mut errors=Vec::new();
+            for (name,effect) in &source.effects {
+                match effect {
+                    Err(error)=>errors.push(format!("{name}:{error}")),
+                    Ok(effect)=>for event in effect.groups.iter().flat_map(|group|&group.sounds)
+                        .flat_map(|sound|[&sound.start,&sound.stop]).flatten() {
+                        match audio.as_ref().and_then(|audio|audio.events.get(&event.name)) {
+                            Some(Ok(_))=>{},Some(Err(error))=>errors.push(format!("{}:{error}",event.name)),
+                            None=>missing_sounds.push(event.name.as_str()),
+                        }
+                    },
+                }
+            }
+            let _=write!(output,"gameplay={} missing_images={missing_images:?} missing_sounds={missing_sounds:?} errors={errors:?}",source.gameplay_ready());
+            for (name,effect) in &source.effects {
+                let Ok(effect)=effect else{continue;};
+                for (group_index,group) in effect.groups.iter().enumerate() {
+                    for entry in &group.entity_defs {
+                        let _=write!(output," entity[{name}:{group_index}:{}]={}/{}",entry.index,
+                            entry.prepared.load(Ordering::Acquire),entry.declarations.iter().flatten()
+                                .map(|definition|definition.entity.as_str()).collect::<Vec<_>>().join(","));
+                    }
+                    for entry in &group.explosions {
+                        let _=write!(output," explosion[{name}:{group_index}:{}]={}",entry.index,
+                            entry.prepared.load(Ordering::Acquire));
+                    }
+                }
+            }
+        }
+    }
+    output
 }
 
 /// Whole-level close bypasses the ordinary scene-publication gate. This
@@ -557,6 +628,7 @@ pub(super) fn prepare_requests(
                         owner.request(EffectOwner::Reservation(key.clone(), path.clone()), path.clone(),
                             catalog.clone(), &programs, &resources, &world.0);
                     }
+                    if paths.is_empty() { owner.reservations_ready.insert(key.clone()); }
                     owner.reservations.insert(key, paths);
                     owner.revision = owner.revision.wrapping_add(1);
                 }

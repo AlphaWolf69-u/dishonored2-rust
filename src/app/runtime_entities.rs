@@ -460,6 +460,19 @@ fn request_inner(
 pub(super) fn ready(world: &World, definition: &Definition) -> Result<bool, String> {
     ready_inner(world, definition, None)
 }
+pub(super) fn debug_readiness(world:&World,definition:&Definition)->String {
+    let Some(owner)=world.get_resource::<RuntimeEntities>()else{return format!("entity[{}] owner=absent",definition.entity);};
+    let key=scaled_key(definition,Some(entity_scale(definition,None)));
+    let Some(prototype)=owner.prototypes.get(&key)else{return format!("entity[{}] demand=absent",definition.entity);};
+    format!("entity[{}] ready={:?} resources={} task={} queued={} error={:?} audio={:?} model={:?} stick_model={:?} children={:?}\n    {}\n    {}",
+        definition.entity,ready(world,definition),prototype.resources.is_some(),owner.pending.as_ref().is_some_and(|pending|pending.key==key),owner.queue.contains(&key),
+        prototype.error,super::audio::events_ready(world,&prototype.fx_key),
+        prototype.model.as_ref().map(|model|super::world_models::prototype_ready(world,model)),
+        prototype.stick_model.as_ref().map(|model|super::world_models::prototype_ready(world,model)),
+        definition.chunks.iter().chain(&definition.stick_chunks).map(|chunk|(&chunk.definition.entity,ready_inner(world,&chunk.definition,Some(entity_scale(definition,None))))).collect::<Vec<_>>(),
+        super::usable_effects::debug_reservation(world,&prototype.fx_key),
+        super::explosions::debug_owned(world,&prototype.contact_key))
+}
 pub(super) fn ready_scaled(
     world: &World,
     definition: &Definition,

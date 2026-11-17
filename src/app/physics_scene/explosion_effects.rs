@@ -159,6 +159,14 @@ fn contact_path(prepared:&Prepared,contact:&Contact)->Result<Option<String>,Stri
 }
 
 impl Owner {
+    pub(in crate::app) fn debug_scope(&self,world:&World,key:&str)->String {
+        let Some(scope)=self.scopes.get(key)else{return format!("contact[{key}] absent");};
+        format!("contact[{key}] source={:?} ground={:?} target={:?} water={:?} task={} prepared={} rows={} source_materials={:?} error={:?}\n    {}",
+            scope.spec.contact,scope.spec.ground,scope.spec.contact_target,scope.spec.water,
+            scope.task.is_some(),scope.prepared.is_some(),scope.prepared.as_ref().map_or(0,|prepared|prepared.rows.len()),
+            scope.prepared.as_ref().map(|prepared|prepared._materials.iter().map(|material|material.name.as_str()).collect::<Vec<_>>()),
+            scope.error,super::super::usable_effects::debug_reservation(world,&scope.fx_key))
+    }
     pub(in crate::app) fn prepare(
         &mut self,
         world: &World,
