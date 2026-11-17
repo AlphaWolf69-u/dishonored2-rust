@@ -1162,16 +1162,11 @@ impl PhysicsScene {
     }
     pub(super) fn throwable_binding_changed(
         &mut self,
-        live: &LiveEntities,
         handle: ComponentHandle,
+        bound: bool,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let component = self.rigid_component(handle)?;
-        let index = component
-            .owner
-            .entity
-            .ok_or("Throwable component is unlinked")?;
-        let bound = live.parent(self.entities[index].shared)?.is_some();
         let state = component.throwable()?;
         if !state.stuck() && !state.collision_update_pending() {
             return Ok(());

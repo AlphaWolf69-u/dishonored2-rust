@@ -151,7 +151,8 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
     objects: Res<super::objects::EffectObjects>,
     mix: Res<super::AudioMix>,
     mut output: MessageWriter<SoundEvent>, clock: Res<ClockRuntime>, paused: Res<GamePaused>, playing: Query<&AudioTarget>,
-    mut physics: Option<ResMut<crate::app::physics_scene::PhysicsScene>>)
+    mut physics: Option<ResMut<crate::app::physics_scene::PhysicsScene>>,
+    observer: Option<Res<super::observation::Observation>>)
 {
     if paused.0 || !clock.advanced() { return; }
     let Some(energy) = mix.physics_scale else { return };
@@ -162,10 +163,19 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
     state.active.retain(|active| active.sound.is_alive(emitters.contains(&active.emitter)));
     for active in &mut state.active { active.age += dt; }
     for ContactSound(contact) in contacts.read() {
+        if observer.is_some() {
+            eprintln!("CONTACT_SOUND_PACKET source={:?} target={:?} position={:?} normal={:?} direction={:?} speed={} mass={}",
+                contact.source, contact.target, contact.position, contact.normal, contact.direction, contact.speed, contact.mass);
+        }
         let prepared = (|| {
             let definitions = state.definitions.as_mut().ok_or("contact definitions have not been acquired")?
                 .as_mut().map_err(|error| error.clone())?;
             let groups = definitions.resolve(contact)?;
+            if observer.is_some() {
+                let effect = definitions.effects.iter().find_map(|(name, cached)| Arc::ptr_eq(cached, &groups).then_some(name.as_str()));
+                eprintln!("CONTACT_SOUND_RESOLVED source={:?} target={:?} effect={effect:?} groups={} events={:?}",
+                    contact.source, contact.target, groups.len(), groups.iter().flat_map(|group| group.sounds.iter().filter_map(|sound| sound.start.event)).collect::<Vec<_>>());
+            }
             let value = energy.clamp(contact.speed * contact.speed * contact.mass);
             Ok::<_, String>((groups, (energy.id, value)))
         })();
@@ -206,6 +216,9 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
     for active in &mut state.active {
         let update = active.sound.update(active.age, active.origin, active.axis);
         if let Some(event) = update.event {
+            if observer.is_some() {
+                eprintln!("CONTACT_SOUND_POST event={event:#010x} object={:?} position={:?} age={}", active.emitter, update.position, active.age);
+            }
             output.write(SoundEvent(Request::PostAt { event, emitter: active.emitter, position: update.position,
                 // 230310 -> 22fe30 publishes the effect frame's first axis
                 // as well as its transformed sound position.

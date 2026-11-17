@@ -1393,7 +1393,10 @@ impl WorldParticleState {
                     .ok_or("dynamic FX target pose is unavailable")?;
                 crate::gameplay::reference_frame::compose(parent, entry.local)
             };
-            let has_parent = entry.initial_world.is_none() || entry.entity_context.is_some();
+            //87cb90's explicit matrix is a detached placement. Context keeps
+            //the real owner, clock, velocities and callbacks; it does not turn
+            //that owner into a transform parent (or bind an Invalid target).
+            let has_parent = entry.initial_world.is_none();
             let location = has_parent.then(|| entry.target.clone());
             let local = has_parent.then_some(entry.local);
             if let Some(&(id, _)) = self.dynamic.get(&entry.owner) {

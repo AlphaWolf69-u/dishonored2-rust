@@ -1005,20 +1005,22 @@ impl ComponentReleaseWorld for Host<'_> {
         if let Some(world)=self.world.as_deref_mut() {
             let mut ai_worlds = world.remove_resource::<crate::gameplay::ai_world::Worlds>();
             let mut hearts=world.remove_resource::<super::super::heart::Hearts>();
+            let mut statistics=world.remove_resource::<super::super::player_statistics::PlayerStatistics>();
             let result = if world.contains_resource::<super::super::player::PlayerState>() {
                 world.resource_scope(|world,mut player:bevy::prelude::Mut<super::super::player::PlayerState>| {
                     scene.pump_entity_messages_with_registry(live,events,registry,
-                        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),player.player.as_mut(), ai_worlds.as_mut(),hearts.as_mut())
+                        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),player.player.as_mut(), ai_worlds.as_mut(),hearts.as_mut(),statistics.as_mut())
                 })
             } else {
                 scene.pump_entity_messages_with_registry(live,events,registry,
-                    world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),None, ai_worlds.as_mut(),hearts.as_mut())
+                    world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>(),None, ai_worlds.as_mut(),hearts.as_mut(),statistics.as_mut())
             };
             if let Some(owner) = ai_worlds { world.insert_resource(owner); }
             if let Some(owner)=hearts {world.insert_resource(owner);}
+            if let Some(owner)=statistics {world.insert_resource(owner);}
             return result;
         }
-        scene.pump_entity_messages_with_registry(live,events,registry,None,None,None,None)
+        scene.pump_entity_messages_with_registry(live,events,registry,None,None,None,None,None)
     }
 
     fn stop(

@@ -293,7 +293,16 @@ impl PhysicsActorLinks {
             ActorUpdatePhase::PrePhysics => self.actors[actor].last_queued_frame = frame,
             ActorUpdatePhase::PostPhysics => self.actors[actor].last_post_frame = frame,
         }
-        enqueue(self, actor)?;
+        if let Err(error) = enqueue(self, actor) {
+            // A host queue allocation/admission can fail, unlike the native
+            // infallible queue. Keep this request eligible for the retained
+            // accepted-frame cursor's retry rather than silently losing it.
+            match phase {
+                ActorUpdatePhase::PrePhysics => self.actors[actor].last_queued_frame = previous,
+                ActorUpdatePhase::PostPhysics => self.actors[actor].last_post_frame = previous,
+            }
+            return Err(error);
+        }
         Ok(true)
     }
 

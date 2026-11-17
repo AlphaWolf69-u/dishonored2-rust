@@ -15,12 +15,13 @@ impl PhysicsScene {
         player: Option<&mut crate::gameplay::player::Player>,
         ai_worlds: Option<&mut crate::gameplay::ai_world::Worlds>,
         hearts:Option<&mut crate::app::heart::Hearts>,
+        statistics:Option<&mut crate::app::player_statistics::PlayerStatistics>,
     ) -> Result<(), String> {
         let mut registry = self
             .registry
             .take()
             .ok_or("entity messages have no component registry")?;
-        let result = self.pump_entity_messages_with_registry(live, events, &mut registry, clock, player, ai_worlds,hearts);
+        let result = self.pump_entity_messages_with_registry(live, events, &mut registry, clock, player, ai_worlds,hearts,statistics);
         self.registry = Some(registry);
         result
     }
@@ -34,8 +35,15 @@ impl PhysicsScene {
         mut player: Option<&mut crate::gameplay::player::Player>,
         mut ai_worlds: Option<&mut crate::gameplay::ai_world::Worlds>,
         mut hearts:Option<&mut crate::app::heart::Hearts>,
+        mut statistics:Option<&mut crate::app::player_statistics::PlayerStatistics>,
     ) -> Result<(), String> {
         let errors = events.pump(|listener, event, _commands| {
+            if let Listener::AIStatistics { handle, generation, handler } = listener {
+                if handler != event.id {
+                    return Err("AIStatistics message differs from its registered handler".into());
+                }
+                return self.ai_statistics_event(statistics.as_deref_mut(),live,handle,generation,event);
+            }
             if let Listener::HeartComponent{entity}=listener {
                 let owner=hearts.as_deref_mut().ok_or("Heart DE callback owner absent")?;
                 owner.speech_finished(live,entity,event)?;
@@ -162,6 +170,17 @@ impl PhysicsScene {
         }
         let body = component.body().ok_or("entity message body is absent")?;
         match handler {
+            //4c7fc0 registers125 ->4c9980 ->4c7570. The retained
+            //binding packet determines this transition, not a later parent
+            //lookup after another queued bind/unbind may have occurred.
+            0x125 => {
+                let bound = match &event.payload {
+                    Payload::Entity(_) => true,
+                    Payload::None => false,
+                    _ => return Err("Throwable125 has no actual binding notification".into()),
+                };
+                self.throwable_binding_changed(handle, bound, registry)
+            }
             //80bc00/80bc30 ->851a70: keep the same real body and translate
             // its existing derived motion profile between spaces0 and1.
             0xad => self.rigid_message_timespace(handle, body, 0, 1, registry),

@@ -739,6 +739,8 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             PostUpdate,
             super::particle_view::publish
                 .after(super::water_scene::publish_water_frame)
+                .after(super::usable_effects::publish)
+                .after(super::world_models::publish_poses)
                 .after(super::visibility_queries::stream_visible_models),
         )
         .add_systems(

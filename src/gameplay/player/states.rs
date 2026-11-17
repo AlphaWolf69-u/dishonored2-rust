@@ -1419,6 +1419,15 @@ impl StateMachine {
         self.state(StateId::SLASH).is_some_and(|state| state.active && state.slash.focus_active)
     }
 
+    ///86bec0 qualifies a focused release against the real Action+38 clock
+    ///and Slash declaration+a0, independently of the focus FX envelope.
+    pub fn melee_focus_charge(&self) -> Option<(f32, f32)> {
+        let state = self.state(StateId::SLASH)
+            .filter(|state| state.active && state.slash.focus_active)?;
+        let Kind::Slash(declaration) = &state.decl.kind else { return None; };
+        Some((state.slash.action.elapsed(), declaration.focus_hold_duration))
+    }
+
     pub(super) fn write_combat_diagnostics(&self, report: &mut String, owner: &str) {
         use std::fmt::Write;
         let _ = write!(report, "  {owner} active_ids({})=", self.active.len());

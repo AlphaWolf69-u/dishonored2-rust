@@ -80,6 +80,10 @@ struct Receipts {
     last_damage_serial: u64,
     last_damage_accepted: bool,
     last_health_damage: f32,
+    last_damage_amount: f32,
+    last_damage_factor: f32,
+    last_damage_focused: bool,
+    last_damage_forward: bool,
 }
 struct Owned {
     identity: Arc<str>,
@@ -125,6 +129,11 @@ impl Melee {
         for entry in self.owned.values().take(4) {
             let _ = writeln!(report, "    entity={:?} ready={} requested={} retiring={} active={} stop_pending={} forward={} heavy_block={} damage_factor={} previous_frame={} hit_count={} seen_count={} contact_callbacks={} tails={} world_hit_duration={}", entry.entity, entry.ready, entry.requested, entry.retiring, entry.active, entry.stop_after_update, entry.forward_attack, entry.heavy_block, entry.factor, entry.previous.is_some(), entry.hits.len(), entry.seen.len(), entry.deliveries.len(), entry.tails.len(), entry.world_hit_duration);
             let _ = writeln!(report, "      receipts={:?} last_sweep={:?}", entry.receipts, entry.last_sweep);
+            let _ = writeln!(report, "      damage_input amount={} sword_factor={} target={:?} accepted={} health_damage={} focused={} forward={}",
+                entry.receipts.last_damage_amount, entry.receipts.last_damage_factor,
+                entry.receipts.last_damage_target, entry.receipts.last_damage_accepted,
+                entry.receipts.last_health_damage, entry.receipts.last_damage_focused,
+                entry.receipts.last_damage_forward);
             if let Some(delivery) = entry.deliveries.front() {
                 let _ = writeln!(report, "      front_contact target={:?} phase={} focused={} recoil={} velocity={:?}", delivery.target, delivery.phase, delivery.focused, delivery.recoil, delivery.velocity);
             }
@@ -142,6 +151,15 @@ pub(super) fn action_receipt(world: &World, target: EntityId) -> Option<(u64, bo
         let receipt = &entry.receipts;
         (receipt.last_damage_target == Some(target)).then_some((receipt.last_damage_serial,
             receipt.last_damage_accepted, receipt.last_health_damage))
+    })
+}
+pub(super) fn focused_action_receipt(world: &World, target: EntityId)
+    -> Option<(u64, bool, f32, bool, bool)> {
+    world.get_resource::<Melee>()?.owned.values().find_map(|entry| {
+        let receipt = &entry.receipts;
+        (receipt.last_damage_target == Some(target)).then_some((receipt.last_damage_serial,
+            receipt.last_damage_accepted, receipt.last_health_damage,
+            receipt.last_damage_focused, receipt.last_damage_forward))
     })
 }
 
@@ -465,7 +483,11 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
                         player
                             .attributes
                             .0
-                            .get("ARK_ATTRIBUTE_PLAYER_MELEE_WEAPON_DAMAGE_TO_HEALTH_FACTOR")
+                            //6360a0 binds component+70 through143988130;
+                            //initializer141386ec0 names SWORD_DAMAGE_FACTOR.
+                            //The similarly named MELEE_TO_HEALTH attribute is
+                            //a different provider and can legitimately be0.
+                            .get("ARK_ATTRIBUTE_SWORD_DAMAGE_FACTOR")
                             .copied()
                     })
                     .unwrap_or(1.);
@@ -474,6 +496,8 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
                     delivery.factor * factor * declaration.maximum,
                     false,
                 );
+                entry.receipts.last_damage_amount = parameters.amount;
+                entry.receipts.last_damage_factor = factor;
                 parameters.hit_location = Some(Vec3::new(
                     delivery.hit.position[0],
                     delivery.hit.position[1],
@@ -508,6 +532,8 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
                     entry.receipts.last_damage_serial = entry.receipts.damage;
                     entry.receipts.last_damage_accepted = result.accepted;
                     entry.receipts.last_health_damage = result.health_damage;
+                    entry.receipts.last_damage_focused = delivery.focused;
+                    entry.receipts.last_damage_forward = delivery.frame.forward;
                 }
                 //634320 records the returned target;635140 also retains
                 //the raw body's target, already journaled at acceptance.

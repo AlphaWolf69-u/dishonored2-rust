@@ -279,6 +279,17 @@ impl RigidPostHost<'_> {
         Ok(BoundFrame { pose, velocities })
     }
     fn publish_body(&mut self, actors: &mut PhysicsActorLinks, actor: usize) -> Result<(), String> {
+        self.publish_body_frame(actors, actor, false)
+    }
+}
+
+impl RigidPostHost<'_> {
+    fn publish_body_frame(
+        &mut self,
+        actors: &mut PhysicsActorLinks,
+        actor: usize,
+        notify_entity: bool,
+    ) -> Result<(), String> {
         let (component, body) = self.body(actors, actor)?;
         let pose = ReferenceFrame {
             position: body.transform[3][..3].try_into().unwrap(),
@@ -301,9 +312,9 @@ impl RigidPostHost<'_> {
                 .try_into()
                 .unwrap(),
         );
-        // 80a5f0 calls 80b7c0 with notify=false: this is already inside the
-        // admitted 753c10 task, rather than a second independent queue producer.
-        actors.publish_body_frame(actor, pose, velocities, false, self)
+        // 80a5f0 supplies false inside an admitted 753c10 task; phase6's
+        // 951c80/4c9560 supply true to produce that task when the body moved.
+        actors.publish_body_frame(actor, pose, velocities, notify_entity, self)
     }
 }
 
@@ -932,6 +943,73 @@ impl PhysicsScene {
         )
     }
 
+    /// 951c80 and 4c9560 publish every scheduled rigid/Throwable body after
+    /// physics, including Throwables with no pending contacts. 754ea0 then
+    /// requests the ordinary actor traversal only when its entity differs.
+    fn publish_scheduled_rigid_frames(
+        &mut self,
+        clock: &GameClock,
+        live: &LiveEntities,
+        joint_frames: Option<&super::super::joint_frames::JointFrames>,
+    ) -> Result<(), String> {
+        let world = self
+            .world
+            .read()
+            .map_err(|_| "rigid post publication world owner is poisoned")?;
+        let mut host = RigidPostHost {
+            entities: &mut self.entities,
+            live,
+            world: &world.storage,
+            rigid: [
+                (self.classes[8], &mut self.rigid_bodies),
+                (self.classes[12], &mut self.throwables),
+            ],
+            projectiles: (self.classes[13], &self.projectiles),
+            placements: &self.rigid_placements,
+            initial: &self.initial_rigid_frames,
+            poses: None,
+            clock,
+            post: &self.post_updates,
+            post_frame: self.post_frame,
+            indices: &self.shared_indices,
+            hierarchy: &self.document_hierarchy,
+            joint_frames,
+            pre: &self.pre_updates,
+            pre_frame: self.pre_frame,
+            commands: &self.body_commands,
+        };
+        // The accepted frame owns this cursor: a fallible queue admission
+        // cannot replay acknowledged components or lose the failed component.
+        while self.rigid_post_publication_cursor[0] < host.rigid.len() {
+            let family = self.rigid_post_publication_cursor[0];
+            let count = usize::try_from(host.rigid[family].1.roster.sorted_start)
+                .map_err(|_| "negative rigid post update prefix")?;
+            while self.rigid_post_publication_cursor[1] < count {
+                let at = self.rigid_post_publication_cursor[1];
+                let slot = host.rigid[family].1.roster.indices[at];
+                let component = host.rigid[family]
+                    .1
+                    .get(slot)
+                    .ok_or("scheduled rigid post component absent")?;
+                if component.owner.flags & 0xf == 0xa {
+                    let movement = component.movement_body()?;
+                    let actor = self
+                        .actors
+                        .bodies
+                        .get(movement)
+                        .and_then(|body| body.actor)
+                        .ok_or("scheduled rigid post actor absent")?;
+                    host.publish_body_frame(&mut self.actors, actor, true)?;
+                }
+                self.rigid_post_publication_cursor[1] += 1;
+            }
+            self.rigid_post_publication_cursor[0] += 1;
+            self.rigid_post_publication_cursor[1] = 0;
+        }
+        self.rigid_post_publication_cursor = [0; 2];
+        Ok(())
+    }
+
     pub(super) fn advance_rigid_actors(
         &mut self,
         clock: &GameClock,
@@ -942,6 +1020,7 @@ impl PhysicsScene {
         // 8af6a0: one actual host worker, snapshot enqueue frame then advance
         // by two before it can enqueue further post requests during traversal.
         if !self.rigid_post_started {
+            self.publish_scheduled_rigid_frames(clock, live, joint_frames)?;
             self.post_updates.frame = self.post_frame;
             self.post_updates.stamp = self.post_frame.wrapping_add(1);
             self.post_frame = self.post_frame.wrapping_add(2);
@@ -951,7 +1030,7 @@ impl PhysicsScene {
             self.rigid_post_started = true;
         }
         // Host: an empty single-worker batch has no work or sentinel to drain.
-        // Preserve its phase stamps without taking the physics-world lock.
+        // Preserve its phase stamps without taking another physics-world lock.
         if self.post_updates.queue_is_empty() {
             self.rigid_post_started = false;
             return Ok(());

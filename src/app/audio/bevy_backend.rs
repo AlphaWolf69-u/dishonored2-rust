@@ -329,6 +329,9 @@ impl Engine {
             shared.pending_plays.push(PendingPlay { tick, serial, control: control.clone(), paused_at: None });
         }
         *shared.object_voices.entry(audio.emitter()).or_default() += 1;
+        if shared.trace_retirement {
+            eprintln!("AUDIO_VOICE_ADMITTED event={event:#010x} playing_id={playing_id} object={:?} delay_quanta={quanta} output_tick={}", audio.emitter(), shared.tick);
+        }
         shared.voices.push(Voice { audio, control: control.clone(), event });
         Ok(VoiceHandle(control))
     }

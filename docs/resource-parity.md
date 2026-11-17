@@ -10277,6 +10277,26 @@ builds or runtime exercise performed for this correction.
 
 
 
+Scheduled rigid post-physics publication correction (2026-11-17):
+`physics_scene::rigid_actor` now runs actual pool8/pool12 scheduled prefixes
+before snapshotting the post actor queue. Source `140951c80` calls
+`14080b9d0`/`14080b7c0` for ordinary rigid bodies; `140951cf0` calls
+`1404c9560`, which unconditionally calls `14080b7c0(...,1)` after its contact
+queue, including when that queue was empty. `140754ea0` publishes the real
+body-origin frame and requests `1407521f0` only when the owning entity differs.
+The previous adapter only read a body after an actor task was already queued;
+one-evaluation carry velocity could therefore move a keyframed physical body
+without publishing its new entity frame. The corrected path uses the same
+generation-checked body, collision velocity payload and existing actor/render
+publisher. A two-index Scene-owned cursor preserves acknowledged prefix work
+across errors; failed actor queue admission restores its phase marker for retry.
+Expected result: scheduled moving bodies, including ordinary carried bottles,
+publish their current physical pose each accepted frame without relying on a
+new activation/contact event. There are no new assets, caches, allocations or
+GPU passes; CPU work now includes the source-required scheduled component
+prefix and queues only changed entities. Status: ported; source review only,
+no runtime or performance verification claimed. No tests or builds run here.
+
 Ordinary rigid actor publication prediction (2026-11-14). The installed
 
 `140806de0` movement vtable at `141c74798` selects `140808e30` (active-body
@@ -23788,6 +23808,16 @@ Signed inventory health damage code resource (2026-11-17): `assets::damage::Decl
 `host:` the existing canonical ModelShaderData owns the small local/depth state for placed/first-person model keys; runtime wrapper defaults and effective flags live with WorldModels' full-generation entries. The existing individual model removal, replaced-model and level teardown paths release these fields. Mesh preparation retains the source shadow vertex ABI once even when a model initially does not cast, so later enabling uses the same mesh/template without a rebuild or clone. This may add the existing shadow-position/skin attributes to an initially disabled template; no measured RAM/VRAM or performance saving is claimed. Source syntax parsed successfully; this worker ran no compilation, tests, game launch or visual check. Coordinated build/loading/gameplay verification remains with the parent.
 
 
+### Admitted numeric-listener dispatch sweep (2026-11-17)
+
+`ported`: Throwable4c7fc0's actual125 subscription now reaches the existing `throwable_binding_changed` receiver (4c9980→4c7570) after shared component owner/generation/target checks. The retained125 packet's actual nonnull parent/NULL branch selects attached collision restoration or detach; re-reading the latest Live parent would lose an earlier queued bind/unbind transition. Existing real body/filter publication and Throwable sticky-bit cleanup remain the same owner.4c8140 still withdraws125 before body/component release. Prediction: eliminate the otherwise guaranteed missing-handler failure on an admitted Throwable binding change, with no normal-frame scan, new resources or behavior approximations.
+
+Read-only coverage sweep: all seven Listener variants actually constructed by current production startup have numeric-pump receivers: AIWorldStartup, AIStatistics, AIWorldDanger, Component, HeartState, HeartComponent, PlayerChaos. Component routing covers real Audio4, Breakable11, Projectile13, Grenade19, CrewCore/Decision29/32, collector33..37, module38..47, Observable48, smart-spot50/51 and RigidBody8/Throwable12 callbacks; the sole additional missing registered handler found was Throwable125 above. The other eleven enum-only listener variants have no current production construction/registration and are not claimed implemented by this sweep. This is dispatch coverage, not runtime validation of every handler or NPC-dependent branch. Coordinated builds/actions remain with the parent; no build/test/game run occurred here.
+
+### AIStatistics registered callback delivery (2026-11-17)
+
+`ported`: AIStatistics431df0 registers117/A5/3B/2B and431ee0 unregisters those same actual generation-bound subscriptions. The numeric message pump now dispatches `Listener::AIStatistics` to its existing concrete `ai_statistics_event` receiver instead of falling through the generic Component-listener adapter. It verifies the registered handler, concrete factory, component generation/started state and actual live manager generation. Native431960 requires actual started AIDecisionCivilian and AIKnowledge; ordinary Breakable/projectile victims take its genuine absent-component return without changing a statistic. Existing unsupported NPC reader boundaries remain explicit.431c90/431d60's successful body-found branch borrows the existing PlayerStatistics owner for increment10; normal, borrowed-Scene and teardown pumps restore that same owner on every result, with no replacement registry, new statistic cache, listener removal or actor-resource acquisition. Prediction: eliminate the demonstrated bottle-incapacitation dispatch failure while preserving authored callback predicates, counters and Stop/unsubscribe lifetime. Coordinated compilation and actual contact/exit verification remain with the parent; this worker ran no build/test/game.
+
 ### Audio object return for initialized inactive components (2026-11-17)
 
 `host:` Audio708620 returns the component's actual joint/default objects;709020 invokes it from Stop, but the actual base lifecycle also destroys initialized components which never Started (notably hidden cue pools). The previous host Deinitialize treated an absent prior Stop receipt as a fatal error immediately after submitting its own asynchronous return. Ordinary/global and entity-scoped release now retain their actual reverse-order cursor through a polled Deinitialize boundary, and the Audio host waits for real backend/object/playing-cookie acknowledgements before invoking the existing Deinitialize callback. Existing acknowledged-Stop and pool-release checks remain intact; no receipt is manufactured or ignored. Canceled, uninitialized registrations similarly retain their existing immediate-release journal until the polled pool-release boundary completes, covering constructor rollback without replaying unlink/shutdown. Other component families keep synchronous default callbacks. Prediction: remove the demonstrated placed-physics exit error without changing playing behavior or adding normal-frame work. Compilation and actual exit/rollback validation remain with the coordinating worker; no builds or runtime checks were run by this worker.
@@ -23919,6 +23949,35 @@ Far Reach cancels an unaccepted aim independently of the last-released target in
 Prediction: repairs lost notifications and stale canceled aim; no steady-frame cost or CPU/GPU/memory gain claimed. Source review and whitespace checks only; these edits are beyond the separately compiled766603d4 and await the next coherent build/production observation. No tests or visible launches performed.
 ### Accepted ranged callback retirement and melee collector identity (2026-11-17)
 
+Attached FX frame correction (2026-11-17): the accepted source paths already
+retain actual managed projectile/equipment identities through FX completion,
+but WorldEffectFrames previously published only Windblast temporary names.
+The existing ephemeral snapshot now receives only demanded DynamicEffects
+named references, using the actual identity/reference frame and the same
+published equipment or AnimBase joint palette used by rendering. Tags on
+authored animated targets use that same demand path; missing tags are rejected
+explicitly, never replaced by an origin. Source removal withdraws its snapshot
+entry; one retiring/invalid demand cannot withhold later independent demands.
+Stable names/tag keys reuse storage, and no new resource cache, pose evaluation,
+asset read or whole-level entity scan is added. The publisher runs after this
+frame's accepted FX requests and model pose publication, before FX simulation.
+
+87cb90's explicit-world matrix also remains detached when entity_context is
+present. Ownership, callback, clock and velocity metadata are retained
+independently; they no longer manufacture Some(Invalid) as a transform parent.
+This repairs the demonstrated sword-contact and projectile/equipment FX
+location rejection, without forcing a projectile visible or treating an owner
+as its binding parent. The loaded bolt's separate actual child identity,
+accepted visibility and draw pose have a bounded action-diagnostic witness.
+No second source-backed loaded-child reset omission was established after
+the preceding unequip/default-alias fixes; appearance remains user validation.
+Prediction: allow accepted attached trail/muzzle starts to resolve actual
+live references and preserve explicit-world contact placement. New work is
+proportional to attached FX demands plus the existing snapshot extraction;
+per-extraction tag-map copy cost is recorded in optimization-opportunities.
+Only source/syntax/static checks were performed by this worker; coordinating
+worker owns the combined build/action validation and any performance claim.
+
 Equipment default-input correction (2026-11-17):61b3a0 resolves the actual
 equipment component's own AnimEvolved;53f4f0→1cb780→1c7030 leaves its input
 unchanged when the model alias has no typed clip. The rewrite now applies
@@ -23963,6 +24022,25 @@ allocation is introduced. Source review/syntax only; real slash/poke action
 validation remains pending. Small read-only smoke accessors expose actual
 accepted active windows and exact-target DamageResult serial/accepted/health
 amount, rather than accepting readiness or unrelated ambient damage.
+
+Actual81fab action evidence (2026-11-17): normal and focused runs reached
+the intended live bottle through actual active windows, completed queries,
+accepted damage callbacks and a real ContactFX ticket, but DamageResult
+health_damage was0. Source634320 reads component+70;6360a0 binds that
+attribute through143988130, whose initializer141386ec0 resolves string
+141afa0b8, ARK_ATTRIBUTE_SWORD_DAMAGE_FACTOR. The rewrite incorrectly read
+ARK_ATTRIBUTE_PLAYER_MELEE_WEAPON_DAMAGE_TO_HEALTH_FACTOR. The exact source
+attribute identity is now used, with the same source fallback1 when absent.
+Both installed normal player_sword.damage and sword_focused.damage have
+m_maxDamage10. Existing numeric receipts retain actual computed amount
+and factor; Health/Breakable receivers, hit range and query geometry are
+unchanged. Prediction: that same intended-target callback now applies the
+authored sword amount through the actual Health owner. No timing/memory
+claim; next combined action run must verify the resulting Health decrease.
+The same logs expose a separate explicit-world ContactFX parenting defect
+(entity_context caused locationSome(Invalid)); its renderer owner handles
+that independently rather than equating a posted ticket with rendered or
+heard output.
 
 Melee action follow-up (2026-11-17): `ported:` MeleePlayer vtable
 141b9d508+118 is630890, not the base636630 rejection policy. The player
@@ -24093,3 +24171,5 @@ e10ccc1f debug evidence: game typecheck/dev compilation/shared-core check passed
 Actual bottle admission follow-up (2026-11-17): after the canonical placed Throwable alias repair, source sphere casts0/1/2 and occlusion all reached the same admitted bottle. State48 still failed because the player's separate partial state-name decoder omitted carrying IDs47..51: authored GRAB_MOVABLE_OBJECT48 became GrabDecl's fallback47 and was classified LootObject47; authored TWO_HAND50 likewise became49. Player declaration/state-rule decoding now uses the existing complete142391a90 interaction enum owner, preserving all actual authored IDs and removing the duplicated incomplete table. No state availability or body-lock rule is bypassed, and no fallback state is synthesized to make input succeed. The change also restores exact carried-body/two-hand/equipment state identities in both actual modes and their installed rule references. Syntax parsing passed; root owns the combined build and real-input hold/throw verification.
 
 8827857c debug evidence: compilation/core check passed; the independent Heart+wheel sequence and actual ordinary ExitDrain now exited0 with real resource acknowledgements. This closes the reproduced Heart-use and Audio teardown failures in that debug path. The full sequence stopped at the strengthened projectile gate: the real bolt and CPU drawable pose/bounds moved together, but the native camera culler hid the sampled draw; the diagnostic had conflated that culling decision with transform publication. The gate now separates exact drawable translation from camera visibility and explicitly leaves visible/GPU output unverified. It does not force visibility or alter the native25-pixel rule. The bottle now has a real Throwable body, Health/Breakable and cached physics reference, and production/raw casts hit it. Its remaining failure was state admission: gameplay::player::decls::state_id had a duplicate incomplete enum table and decoded authored grab48 as fallback47 (and two-hand hold50 as49). It now delegates to the existing complete native142391a90 enum reader. These final enum/diagnostic changes await the next bounded actual action run; pickup/throw/melee and normal-release appearance are not claimed passed yet.
+
+Contact-audio diagnostic coverage (2026-11-17): opt-in production-output observation now correlates the received material contact, resolved authored FX and delayed sound Post with the existing shared-output voice admission and actual source-processing witness (1410fdd60 -> 1411287f0). It does not change callback masks, synthesize notifications, acquire media separately, or create another audio consumer/cache. Normal playback/resource retirement is unchanged; the existing diagnostic flag gates source/voice logging and the existing windowless observation resource gates contact logging. Prediction: diagnostic-only attribution of a real processed voice; no performance improvement or heard-sound proof is claimed. Combined debug validation is pending.

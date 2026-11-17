@@ -1522,6 +1522,28 @@ impl Player {
         Some((position + rotation * local_position, rotation * local_rotation))
     }
 
+    ///879890/53dac0 resolves the named equipment actor's actual model, even
+    ///after a hand switch. Its retained palette also drives rendering/audio.
+    pub fn equipment_entity_tag_world(&self, entity: crate::gameplay::entity_lifetime::EntityId,
+        tag: &str) -> Result<Option<crate::gameplay::reference_frame::ReferenceFrame>, String> {
+        let Some(tree) = self.body.equipment.iter().flatten()
+            .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
+            .find(|tree| tree.managed_entity == Some(entity)) else { return Ok(None); };
+        let (joint, offset, orientation) = tree.rig.tag(tag)?;
+        let rows = self.arm_render.iter()
+            .find(|render| render.managed_entity == Some(entity) && render.model == tree.model)
+            .and_then(|render| render.joints.get(joint))
+            .ok_or_else(|| format!("equipment FX tag {tag} has no actual published joint pose"))?;
+        let joint = crate::gameplay::reference_frame::ReferenceFrame {
+            position: [rows[0][3], rows[1][3], rows[2][3]],
+            basis: std::array::from_fn(|column| std::array::from_fn(|row| rows[row][column])),
+        };
+        Ok(Some(crate::gameplay::reference_frame::compose(joint,
+            crate::gameplay::reference_frame::ReferenceFrame {
+                position: offset.to_array(), basis: orientation.to_cols_array_2d(),
+            })))
+    }
+
     /// 752900's bone-only binding fallback reads the same retained world
     /// palette as tagged attachments. It never evaluates another pose.
     pub fn equipment_joint_world(&self, entity: crate::gameplay::entity_lifetime::EntityId, joint: usize) -> Option<(Vec3, Mat3)> {

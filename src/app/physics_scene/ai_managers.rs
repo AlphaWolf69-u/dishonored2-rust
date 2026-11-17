@@ -95,10 +95,12 @@ impl PhysicsScene{
     ///All four431df0 subscriptions are real. Non-NPC subjects exit the same
     ///native predicate; an admitted NPC with an unported knowledge/decision
     ///reader is an explicit dependency error, never a fabricated statistic.
-    pub(in crate::app) fn ai_statistics_event(&mut self,world:&mut World,live:&LiveEntities,handle:ComponentHandle,generation:u32,event:&Event)->Result<(),String>{
+    pub(in crate::app) fn ai_statistics_event(&mut self,statistics:Option<&mut super::super::player_statistics::PlayerStatistics>,live:&LiveEntities,handle:ComponentHandle,generation:u32,event:&Event)->Result<(),String>{
         if handle.class_id!=self.classes[21]{return Err("AIStatistics listener class differs".into());}
         let component=self.statistics.get(handle.slot).ok_or("AIStatistics payload absent")?;
         if component.owner.generation!=generation||!component.started{return Ok(());}
+        let manager=self.manager_entity(handle)?;
+        if live.get(manager).is_none(){return Err("AIStatistics registered manager generation is stale".into());}
         let Some(subject)=event.target.filter(|&id|live.get(id).is_some())else{return Ok(());};
         match event.id{
             0x117|0x2b=>{
@@ -130,7 +132,7 @@ impl PhysicsScene{
                 let Some(attacker)=self.health_payload(health)?.attacker.filter(|&id|live.get(id).is_some())else{return Ok(());};
                 if !self.throwable_class_is(live.get(attacker).unwrap().1,b"arkPlayer")?{return Ok(());}
                 if self.statistics.get(handle.slot).unwrap().recorded.contains(&body){return Ok(());}
-                world.get_resource_mut::<super::super::player_statistics::PlayerStatistics>().ok_or("body-found statistic owner absent")?.increment(10)?;
+                statistics.ok_or("body-found statistic owner absent")?.increment(10)?;
                 self.statistics.get_mut(handle.slot).unwrap().record(body);Ok(())
             }
             _=>Err(format!("AIStatistics has no source subscription {:x}",event.id)),

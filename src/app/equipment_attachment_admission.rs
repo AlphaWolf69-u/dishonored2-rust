@@ -463,6 +463,13 @@ pub(super) fn visible(world: &World, weapon: EntityId) -> bool {
         .is_some_and(|arms| arms.attachments.visible(child))
 }
 
+/// Read the real selected ammo child and its accepted callback visibility;
+/// diagnostics can compare its actual renderer pose without replaying C8.
+pub(super) fn ammo_child(world: &World, weapon: EntityId) -> Option<(EntityId, bool)> {
+    let entry = world.get_resource::<Attachments>()?.live.get(&Key::ammo(weapon))?;
+    Some((entry.child?, entry.visible))
+}
+
 /// Startup observes the complete selected-child path, including source IO
 /// before it reaches the shared material worker. No animation completion is
 /// required to enter gameplay.

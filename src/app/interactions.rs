@@ -1291,6 +1291,10 @@ pub(super) fn describe_carry_fixture(world:&World,id:crate::gameplay::entity_lif
         let def=&p.definition.pickup_interaction;
         let resolved_mode=if def.player_mode==14{i32::from(player.is_swimming())}else{def.player_mode};
         writeln!(out,"admission ref={reference:?} authoredState={} mode={} resolvedMode={resolved_mode} loot={:?} legacyCarry={:?} capability={:?}",def.player_state,def.player_mode,player.loot_interaction_allowed(resolved_mode,def.player_state),player.carry_interaction_allowed(resolved_mode,def.player_state),scene.grapple_pickup_available(live,player,id)).unwrap();
+        if let Some(props)=&p.definition.hold {
+            let tag=player.reference_tag_binding(&props.attach_tag).and_then(|(joint,offset,orientation)|player.reference_local_joint(joint).map(|frame|(joint,frame,offset,orientation)));
+            writeln!(out,"carry_tag tag={} binding={tag:?} hold={:?} grab={:?} body_forward={:?}",props.attach_tag,player.carrying_hold_decl_for_hands(props.both_hands),player.carrying_grab_decl(),player.physics.axis().x_axis).unwrap();
+        }
     }
     writeln!(out,"carry={}",super::physics_scene::carrying_host::describe_fixture_progress(world,id)).unwrap();
     for (group,hits) in interactions.casts.hits.iter().enumerate(){writeln!(out,"production_cast group={group} count={} hits={:?}",hits.len(),&hits[..hits.len().min(64)]).unwrap();}

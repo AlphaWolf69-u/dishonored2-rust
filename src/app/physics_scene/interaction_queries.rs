@@ -104,6 +104,14 @@ impl PhysicsScene {
                 let body_id=self.rigid_component(h)?.body();
                 let world=self.world.read().map_err(|_|"fixture world poisoned")?;
                 writeln!(out,"rigid={h:?} body={body_id:?} record={:?}",body_id.and_then(|id|world.storage.bodies.get(id)).map(|b|(b.flags,b.filter_info,b.broadphase_id,b.user_data,b.motion_id))).unwrap();
+                if let Some(motion)=body_id.and_then(|id|world.storage.bodies.get(id)).and_then(|b|world.storage.motions.get(b.motion_id)) {
+                    writeln!(out,"actual_motion center={:?} linear={:?} angular={:?}",motion.pose.center,motion.linear_velocity,motion.angular_velocity).unwrap();
+                }
+            }
+            if let Some(h)=entity.components.reference_actor {
+                if let Some(actor)=self.actors.actors.get(h.slot) {
+                    writeln!(out,"reference_actor={h:?} flags={:#x} current_body={} default_body={} parent={:?} frame={:?} desired={:?} linear_requests={:?} angular_requests={:?}",actor.flags,actor.current_body,actor.default_body,actor.binding.entity,actor.frame.current,actor.motion,actor.requests[0],actor.requests[1]).unwrap();
+                }
             }
         }
         writeln!(out,"production_pickable={:?} simple_reference={:?} interactable={:?}",self.interaction_pickable(live,target).map(|p|p.map(|(r,_)|r)),self.grapple_pickable(live,target).map(|p|p.map(|(r,_)|r)),self.grapple_has_interactable(live,target)).unwrap();

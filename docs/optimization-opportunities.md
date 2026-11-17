@@ -2517,3 +2517,18 @@ Audiograph/objective integration sweep (2026-11-15):
 - The earlier walking-only borrowing report remains historical evidence at analysis/gameplay-repair-20261116/borrowing-ab-analysis.json. The final retirement result and corrected attribution are recorded above; neither supports a resident-memory, steady-play CPU or FPS claim.
 
 - Valid walking profile (2026-11-17): main thread105.25CPUms/s and audio-output callback197.125CPUms/s, recorded separately over8seconds. The source-global pending_breakable_effect scan costs5.875exclusiveCPUms/s; world_models::update5.125; wgpu Queue::submit6.625. The unnamed string-keyed lookup atRVA3e8c5d0 costs8.25exclusiveCPUms/s but has no proved source name. These are targeted CPU measurements, not whole-frame/FPS or GPU bottleneck claims. No new optimization was implemented from them. Evidence: analysis/gameplay-repair-20261116/walking-live-valid-hotspots.json.
+
+### Attached FX snapshot extraction (2026-11-17)
+
+`WorldEffectFrames::clone` already clones its mutable pose maps during render
+extraction. Publishing demanded managed equipment/projectile references adds
+entries and, for actual tagged attachments, small per-target tag maps. The
+main-world snapshot reuses stable name/tag allocations across frames and
+prunes withdrawn demands, but extraction still clones those maps/strings
+each frame. The incremental allocation/copy work is proportional to current
+named targets and demanded tags; it is not zero, and no timing, memory-saving
+or FPS improvement is claimed. No whole-level scan or second rig/palette cache
+was introduced. Measure this existing clone boundary after the functional FX
+validation; possible `clone_from` reuse must preserve snapshot separation and
+generation withdrawal. Do not replace it with a new Arc/cache owner without
+evidence of meaningful cost and a verified extraction/lifetime design.
