@@ -83,6 +83,8 @@ impl<'w> Facts<'w> {
                     .get_resource::<crate::gameplay::entity_lifetime::WorldspawnEntity>()
                     .ok_or("Heart story provider actual worldspawn absent")?
                     .0;
+                self.world.resource::<LiveEntities>().get(worldspawn)
+                    .ok_or("Heart story provider worldspawn generation is stale")?;
                 Ok(effects
                     .story_boolean(worldspawn, qualified)?
                     .unwrap_or(false))

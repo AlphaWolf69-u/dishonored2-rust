@@ -20,6 +20,28 @@ pub(in crate::app) struct PreparedLevelBodies {
 }
 
 impl PhysicsScene {
+    ///7bf3e0 selects the graph through gameLocal's actual worldspawn pointer.
+    ///Publish its existing managed generation, never an assumed entity name.
+    pub(in crate::app) fn worldspawn_identity(&self,document:&entities::Document,
+        live:&crate::gameplay::entity_lifetime::LiveEntities)
+        ->Result<crate::gameplay::entity_lifetime::WorldspawnEntity,String> {
+        let mut authored=document.definitions.iter().filter(|definition|definition.kind=="entity"
+            && entities::scene_motion::atom(&definition.fields,"class")==Some("idWorldspawn"));
+        let definition=authored.next().ok_or("authored worldspawn is absent")?;
+        if authored.next().is_some(){return Err("multiple authored worldspawn entities".into());}
+        let id=live.find(&definition.id).ok_or("authored worldspawn has no admitted managed generation")?;
+        let (_,class)=live.get(id).ok_or("worldspawn managed generation is stale")?;
+        let metadata=self.types.classes().metadata(class).ok_or("worldspawn class metadata absent")?;
+        if self.types.classes().name_text(metadata.name)!=Some(b"idWorldspawn".as_slice()) {
+            return Err("authored and managed worldspawn classes differ".into());
+        }
+        let index=*self.shared_indices.get(&id).ok_or("worldspawn has no canonical scene header")?;
+        let header=self.entities.get(index).ok_or("worldspawn scene header absent")?;
+        if header.shared!=id || header.class!=class || header.retired || header.external {
+            return Err("worldspawn scene generation is not the actual admitted map owner".into());
+        }
+        Ok(crate::gameplay::entity_lifetime::WorldspawnEntity(id))
+    }
     /// 882300's real worldspawn header and 852100's material table precede
     /// 852560's ordinary shared component initialization/body publication.
     pub(super) fn admit_level_bodies(

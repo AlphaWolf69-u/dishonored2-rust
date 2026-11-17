@@ -47,7 +47,7 @@ impl Equivalent<Name> for NameQuery<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityId(u64);
 
-/// The identity created for map entry zero, before the layer entity batch.
+/// The map's actual constructed worldspawn identity for global game services.
 #[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
 #[derive(Clone, Copy, Debug)]
 pub struct WorldspawnEntity(pub EntityId);

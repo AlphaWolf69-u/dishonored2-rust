@@ -192,6 +192,9 @@ impl LevelLifetime {
         }
         // Pending/errors preserve the sole registry, pools and body world.
         self.retirement_phase = "placed physics components";
+        //Heart/story producers have retired; withdraw the global projection
+        //before its actual managed worldspawn can leave the shared scene.
+        world.remove_resource::<crate::gameplay::entity_lifetime::WorldspawnEntity>();
         if !self.physics_retired {
             if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
             self.physics_retired = true;

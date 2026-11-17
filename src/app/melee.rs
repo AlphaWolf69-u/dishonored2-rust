@@ -26,6 +26,22 @@ struct ContactScope {
     material: String,
     key: Arc<str>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContactPass {
+    World,
+    Entity,
+    ///631020 temporary entity list: reverse extraction, second focus pass.
+    EntityWorldFocus,
+}
+#[derive(Clone, Copy)]
+struct ContactFrame {
+    weapon: ReferenceFrame,
+    length: f32,
+    origin: Vec3,
+    eye: Vec3,
+    camera: Mat3,
+    forward: bool,
+}
 struct Delivery {
     hit: ShapeRayContact,
     target: Option<EntityId>,
@@ -35,6 +51,10 @@ struct Delivery {
     focused: bool,
     factor: f32,
     recoil: bool,
+    damageable: bool,
+    frame: ContactFrame,
+    effect_hit: Option<ShapeRayContact>,
+    contact_enabled: bool,
     phase: u8,
     contact: Option<super::physics_scene::explosion_effects::Contact>,
 }
@@ -56,6 +76,10 @@ struct Receipts {
     health_damage: f32,
     contact_fx: u64,
     contact_tickets: u64,
+    last_damage_target: Option<EntityId>,
+    last_damage_serial: u64,
+    last_damage_accepted: bool,
+    last_health_damage: f32,
 }
 struct Owned {
     identity: Arc<str>,
@@ -74,7 +98,7 @@ struct Owned {
     previous: Option<ReferenceFrame>,
     queries: [QueryId; 4],
     shape: Option<Arc<Shape>>,
-    hits: Vec<(Contact, bool)>,
+    hits: Vec<(Contact, ContactPass)>,
     seen: Vec<Option<EntityId>>,
     deliveries: VecDeque<Delivery>,
     tails: Vec<super::usable_effects::EffectTicket>,
@@ -83,6 +107,7 @@ struct Owned {
     receipts: Receipts,
     last_sweep: Option<([f32; 3], [f32; 3], [f32; 3], f32)>,
     physics_base: [i32; 2],
+    npc_range: [i32; 2],
 }
 #[derive(Resource, Default)]
 pub(super) struct Melee {
@@ -107,6 +132,19 @@ impl Melee {
     }
 }
 
+/// Actual action-smoke receipts: no synthesized attack, collision or health.
+pub(super) fn active_windows(world: &World) -> u64 {
+    world.get_resource::<Melee>().map_or(0, |owner|
+        owner.owned.values().map(|entry| entry.receipts.windows).sum())
+}
+pub(super) fn action_receipt(world: &World, target: EntityId) -> Option<(u64, bool, f32)> {
+    world.get_resource::<Melee>()?.owned.values().find_map(|entry| {
+        let receipt = &entry.receipts;
+        (receipt.last_damage_target == Some(target)).then_some((receipt.last_damage_serial,
+            receipt.last_damage_accepted, receipt.last_health_damage))
+    })
+}
+
 pub(super) fn request_owned(
     world: &mut World,
     identity: Arc<str>,
@@ -124,6 +162,7 @@ pub(super) fn request_owned(
         world.init_resource::<Melee>();
     }
     let physics_base = world.resource::<PhysicsScene>().melee_physics_base_range()?;
+    let npc_range = world.resource::<PhysicsScene>().melee_npc_range()?;
     let mut owner = world.resource_mut::<Melee>();
     let mut shape = None;
     super::physics_scene::melee::prepare_shape(&mut shape, definition.dimensions)?;
@@ -175,6 +214,7 @@ pub(super) fn request_owned(
             receipts: Receipts::default(),
             last_sweep: None,
             physics_base,
+            npc_range,
         },
     );
     Ok(())
@@ -359,10 +399,14 @@ fn player_contact(
     Ok(selected)
 }
 
-fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
+fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> Result<(), String> {
     while let Some(delivery) = entry.deliveries.front_mut() {
         let attacker = delivery.attacker;
         if delivery.phase == 0 {
+            if !world.resource::<PhysicsScene>().melee_contact_current(delivery.hit.target)? {
+                entry.deliveries.pop_front();
+                continue;
+            }
             //635140 ->8519d0: the actual contact witness receives a point
             //impulse; its vertical component uses the source absolute value.
             if !delivery.recoil
@@ -370,11 +414,12 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                     .resource::<PhysicsScene>()
                     .melee_body_dynamic(delivery.hit.target)?
             {
-                let mut impulse = delivery.velocity.normalize_or_zero() * entry.definition.impulse;
-                impulse.z = impulse.z.abs();
+                let impulse = world.resource::<PhysicsScene>().melee_point_impulse(
+                    world.resource::<LiveEntities>(), delivery.target, delivery.hit.position,
+                    delivery.frame.origin.to_array(), delivery.velocity.to_array(), entry.definition.impulse)?;
                 world
                     .resource_mut::<PhysicsScene>()
-                    .projectile_contact_impulse(delivery.hit, impulse)?;
+                    .projectile_contact_impulse(delivery.hit, Vec3::from_array(impulse))?;
             }
             delivery.phase = 1;
         }
@@ -388,7 +433,26 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
             } else {
                 entry.definition.damage.as_ref()
             };
-            if let Some(declaration) = declaration.filter(|_| !delivery.recoil) {
+            if !delivery.recoil && delivery.damageable && declaration.is_none() {
+                //634320 returns before118/110 when the actual damage
+                //declaration is null; it does not invent a contact callback.
+                delivery.contact_enabled = false;
+            }
+            if let Some(declaration) = declaration.filter(|_| !delivery.recoil && delivery.damageable) {
+                //635140's point impulse above uses the original packet.
+                //634320 invokes player118 on a COPY for target/FX only;
+                //damage position, direction and region retain the original.
+                if delivery.effect_hit.is_none() {
+                    let frame = delivery.frame;
+                    let (copy, target) = player_contact(world, queries, entry.entity,
+                        attacker, frame.weapon, frame.length, delivery.target, delivery.hit,
+                        frame.origin, frame.eye, frame.camera, frame.forward, entry.physics_base)?;
+                    if target != delivery.target { entry.receipts.retargeted += 1; }
+                    delivery.target = target;
+                    delivery.effect_hit = Some(copy);
+                }
+                let copy = delivery.effect_hit.expect("accepted damage callback packet retained");
+                let target = delivery.target;
                 let region = world
                     .resource::<PhysicsScene>()
                     .melee_hit_region(delivery.hit.target)?;
@@ -431,7 +495,7 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                             .damage_collision_target(
                                 &mut live,
                                 &mut world.resource_mut::<EntityEvents>(),
-                                delivery.hit.target.user_data,
+                                copy.target.user_data,
                                 &parameters,
                             )
                     })
@@ -440,7 +504,14 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                 if let Some(result) = result {
                     entry.receipts.damage_accepted += u64::from(result.accepted);
                     entry.receipts.health_damage += result.health_damage;
+                    entry.receipts.last_damage_target = target;
+                    entry.receipts.last_damage_serial = entry.receipts.damage;
+                    entry.receipts.last_damage_accepted = result.accepted;
+                    entry.receipts.last_health_damage = result.health_damage;
                 }
+                //634320 records the returned target;635140 also retains
+                //the raw body's target, already journaled at acceptance.
+                if !entry.seen.contains(&target) { entry.seen.push(target); }
             }
             delivery.phase = 2;
         }
@@ -454,7 +525,7 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
             } else {
                 entry.definition.material.as_ref()
             };
-            if let Some(material) = material {
+            if let Some(material) = material.filter(|_| delivery.contact_enabled) {
                 let scope = entry
                     .scopes
                     .iter()
@@ -478,7 +549,7 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                     &scope.key,
                     &mut delivery.contact,
                     material,
-                    &delivery.hit,
+                    delivery.effect_hit.as_ref().unwrap_or(&delivery.hit),
                     delivery.velocity.normalize_or_zero(),
                     context,
                 )? {
@@ -513,7 +584,7 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
 pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
     let Some(mut owner)=world.remove_resource::<Melee>() else{return Ok(true);};
     let result=(||{
-        for entry in owner.owned.values_mut(){deliver(world,entry)?;}
+        for entry in owner.owned.values_mut(){deliver(world,entry,&mut owner.queries)?;}
         Ok(owner.owned.values().all(|entry|entry.deliveries.is_empty()))
     })();
     world.insert_resource(owner);result
@@ -548,7 +619,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 let id = &mut entry.queries[bank];
                 owner.queries.cancel(id)?;
             }
-            deliver(world, entry)?;
+            deliver(world, entry, &mut owner.queries)?;
             continue;
         }
         if !entry.requested {
@@ -620,21 +691,11 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         }
                         entry.receipts.eligible_contacts += 1;
                         let world_hit = scene.melee_contact_world(live, hit, bank)?;
-                        //631020/62ee20 first admit each original collector
-                        //against its own declared focus shape. The entity
-                        //collector uses NPC focus even for ordinary props.
-                        let focus = if world_hit { entry.definition.world_focus }
-                            else { entry.definition.npc_focus };
-                        if !focus.contains(origin, eye, camera,
-                            entry.definition.focus_step_back,
-                            Vec3::from_slice(&witness(hit.hit).position)) {
-                            entry.receipts.outside_focus += 1;
-                            continue;
-                        }
+                        let pass = if world_hit { ContactPass::World } else { ContactPass::Entity };
                         if let Some(existing) = entry
                             .hits
                             .iter_mut()
-                            .find(|(existing, category)| *category == world_hit && existing.entity == hit.entity)
+                            .find(|(existing, category)| *category == pass && existing.entity == hit.entity)
                         {
                             //633a70/633e50 compare packet+54: squared distance
                             //from the real weapon origin to the prepared point.
@@ -650,20 +711,51 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                             //633a70/633e50 select a packet inside its source
                             //list. Replacing it must retain that destination,
                             //not turn a prop ray into a world-bank contact.
-                            entry.hits.push((*hit, world_hit));
+                            entry.hits.push((*hit, pass));
                         }
                     }
                 }
             }
+            //636b40/633a70 select nearest packets before631020 filters.
+            //Rejecting raw packets before dedup can choose a farther hit.
+            let mut index = 0;
+            while index < entry.hits.len() {
+                let (hit, pass) = entry.hits[index];
+                let point = Vec3::from_slice(&witness(hit.hit).position);
+                let contains = |focus: crate::gameplay::player::melee::FocusShape|
+                    focus.contains(origin, eye, camera, entry.definition.focus_step_back, point);
+                let mut keep = contains(if pass == ContactPass::World {
+                    entry.definition.world_focus
+                } else { entry.definition.npc_focus });
+                if keep && pass == ContactPass::Entity
+                    && world.resource::<PhysicsScene>().melee_entity_needs_world_focus(
+                        world.resource::<LiveEntities>(), hit.entity, entry.npc_range)? {
+                    keep = contains(entry.definition.world_focus);
+                    entry.hits[index].1 = ContactPass::EntityWorldFocus;
+                }
+                if keep { index += 1; } else {
+                    entry.receipts.outside_focus += 1;
+                    entry.hits.remove(index);
+                }
+            }
             if entry.active {
-                for (hit, world_hit) in &entry.hits {
+                //631020 extracts ordinary props backwards with ordered
+                //RemoveIndex62d0f0, appends remaining NPC/Grenade records
+                //with62e200, then635140 processes that ENTITY list before
+                //the separate world-impact pass. Iterator order preserves
+                //this without copying packets or allocating another list.
+                let contacts = entry.hits.iter().rev().filter(|(_, pass)| *pass == ContactPass::EntityWorldFocus)
+                    .chain(entry.hits.iter().filter(|(_, pass)| *pass == ContactPass::Entity))
+                    .chain(entry.hits.iter().filter(|(_, pass)| *pass == ContactPass::World));
+                for (hit, pass) in contacts {
+                    let world_hit = *pass == ContactPass::World;
                     //631020 damages entity-bank contacts before considering
                     //a hard world impact; an admitted entity hit suppresses it.
-                    if *world_hit && !entry.seen.is_empty() {
+                    if world_hit && !entry.seen.is_empty() {
                         continue;
                     }
                     let raw_witness = witness(hit.hit);
-                    let (witness, target) = player_contact(
+                    let (witness, target) = if world_hit { player_contact(
                         world,
                         &mut owner.queries,
                         entry.entity,
@@ -677,7 +769,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         camera,
                         entry.forward_attack,
                         entry.physics_base,
-                    )?;
+                    )? } else { (raw_witness, hit.entity) };
                     if target != hit.entity { entry.receipts.retargeted += 1; }
                     if entry.seen.contains(&target) { continue; }
                     let point = Vec3::new(
@@ -687,7 +779,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     );
                     //World impacts are checked again after630890 has
                     //replaced their packet; entity damage follows634320.
-                    if *world_hit && !entry.definition.world_focus.contains(
+                    if world_hit && !entry.definition.world_focus.contains(
                         origin,
                         eye,
                         camera,
@@ -706,7 +798,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     } else {
                         entry.definition.damage.as_deref()
                     };
-                    let recoil = world.resource::<PhysicsScene>().melee_world_blocks(
+                    let recoil = world_hit && world.resource::<PhysicsScene>().melee_world_blocks(
                         world.resource::<LiveEntities>(),
                         witness.target,
                         target,
@@ -731,8 +823,16 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         velocity,
                         direction: (Vec3::from_array(current.position) - point).normalize_or_zero(),
                         focused,
-                        factor: entry.factor,
+                        //635140's ordinary entity damage virtual138 passes1.
+                        //3424 belongs to the separate NPC combat branches.
+                        factor: 1.,
                         recoil,
+                        damageable: world.resource::<PhysicsScene>().melee_damageable(
+                            world.resource::<LiveEntities>(), target)?,
+                        frame: ContactFrame { weapon: current, length: entry.shape_length,
+                            origin, eye, camera, forward: entry.forward_attack },
+                        effect_hit: None,
+                        contact_enabled: true,
                         phase: 0,
                         contact: None,
                     });
@@ -747,7 +847,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     }
                 }
             }
-            deliver(world, entry)?;
+            deliver(world, entry, &mut owner.queries)?;
             if entry.stop_after_update {
                 entry.active = false;
                 entry.stop_after_update = false;

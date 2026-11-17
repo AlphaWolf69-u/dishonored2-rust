@@ -179,6 +179,83 @@ impl MeleeQueries {
     }
 }
 impl PhysicsScene {
+    ///635140 chooses damage virtual138 only for actual target+d7 bit2.
+    ///A non-damageable entity receives the raw contact virtual110 instead.
+    pub(in crate::app) fn melee_damageable(&self, live: &LiveEntities,
+        target: Option<EntityId>) -> Result<bool, String> {
+        let Some(target) = target else { return Ok(false); };
+        if live.get(target).is_none() { return Ok(false); }
+        let Some(&index) = self.shared_indices.get(&target) else { return Ok(false); };
+        let entity = self.entities.get(index).ok_or("melee damage target header absent")?;
+        Ok(!entity.retired && entity.shared == target && entity.entity_flags_d7 & 2 != 0)
+    }
+
+    ///631020 compares actual arkNPC type interval1439ce2c0/4.
+    ///Registration1413c5f60 uses DAT1439ce260 (chunk988:2148).
+    pub(in crate::app) fn melee_npc_range(&self) -> Result<[i32; 2], String> {
+        let classes = self.types.classes();
+        let class = classes.hierarchy().registration_order().iter().copied().find(|&class|
+            classes.metadata(class).is_some_and(|metadata|
+                classes.name_text(metadata.name) == Some(b"arkNPC")))
+            .ok_or("melee NPC class metadata absent")?;
+        classes.hierarchy().type_range(class)
+    }
+
+    ///631020's entity-list split: only real NPCs and mode2 Grenade owners
+    ///bypass the additional WORLD focus pass. Health does not select this.
+    pub(in crate::app) fn melee_entity_needs_world_focus(&self, live: &LiveEntities,
+        target: Option<EntityId>, npc_range: [i32; 2]) -> Result<bool, String> {
+        let Some(target) = target else { return Ok(true); };
+        let Some((_, class)) = live.get(target) else { return Ok(true); };
+        let class = self.types.classes().hierarchy().type_id(class)?;
+        if (npc_range[0]..=npc_range[1]).contains(&class) { return Ok(false); }
+        let Some(&index) = self.shared_indices.get(&target) else { return Ok(true); };
+        let entity = self.entities.get(index).ok_or("melee entity focus header absent")?;
+        if entity.retired || entity.shared != target { return Ok(true); }
+        Ok(self.melee_grenade_component(index)?.is_none())
+    }
+
+    fn melee_grenade_component(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
+        let grenade_range = self.types.classes().hierarchy()
+            .type_range(self.types.factory(self.factories[19])?.class)?;
+        self.entities[index].components.find_component(grenade_range, [0x28, 0], |handle| {
+            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                flags: self.owner(handle)?.flags,
+                start_phases: self.declarations.get(&handle.packed()).map(|decl| decl.scheduling.start_phases),
+            })
+        })
+    }
+
+    ///635140 uses the raw packet's velocity for ordinary bodies. A real
+    ///Started Grenade instead uses its OWN authored melee impulse and the
+    ///direction from the attacker to hit+[0,0,.2] (141ab3818).
+    pub(in crate::app) fn melee_point_impulse(&self, live: &LiveEntities,
+        target: Option<EntityId>, position: [f32; 4], source: [f32; 3],
+        velocity: [f32; 3], force: f32) -> Result<[f32; 3], String> {
+        let mut vector = velocity;
+        let mut magnitude = force;
+        let mut grenade = false;
+        if let Some(target) = target.filter(|target| live.get(*target).is_some()) {
+            if let Some(&index) = self.shared_indices.get(&target) {
+                if let Some(handle) = self.melee_grenade_component(index)? {
+                    if handle.class_id != self.classes[19] {
+                        return Err("melee Grenade subclass has no admitted payload owner".into());
+                    }
+                    let component = self.grenades.get(handle.slot).ok_or("melee Grenade payload absent")?;
+                    magnitude = component.definition.melee_impulse;
+                    vector = [position[0] - source[0], position[1] - source[1],
+                        (position[2] + f32::from_bits(0x3e4c_cccd)) - source[2]];
+                    grenade = true;
+                }
+            }
+        }
+        let square = vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2];
+        let inverse = 1. / square.max(f32::from_bits(0x0080_0000)).sqrt();
+        let mut impulse = vector.map(|value| value * inverse * magnitude);
+        if !grenade { impulse[2] = impulse[2].abs(); }
+        Ok(impulse)
+    }
+
     ///630890's final condition is the real PhysicsBase family, not just
     ///RigidBody. Resolve this immutable class identity at weapon admission.
     pub(in crate::app) fn melee_physics_base_range(&self) -> Result<[i32; 2], String> {
@@ -279,6 +356,14 @@ impl PhysicsScene {
             .flags
             & 5
             == 0)
+    }
+
+    ///635140 validates the full body generation before its accepted callback.
+    ///An object retired while an earlier FX post was pending is skipped.
+    pub(in crate::app) fn melee_contact_current(&self, hit: ShapeHitInfo) -> Result<bool, String> {
+        let Some(id) = hit.body_id else { return Ok(false); };
+        let world = self.world.read().map_err(|_| "melee contact world poisoned")?;
+        Ok(world.storage.bodies.get(id).is_some_and(|body| body.user_data == hit.user_data))
     }
     ///635b00/39eed0: static world is blocking; a real damageable entity
     ///is not, except a HealthDoor which the actual attacker cannot break.

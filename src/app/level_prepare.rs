@@ -1042,6 +1042,7 @@ pub(super) fn prepare_level(
             physics.publish_navigation_ownership(&mut navigation.0).map_err(std::io::Error::other)?;
             app.insert_resource(navigation);
         }
+        app.insert_resource(physics.worldspawn_identity(document,&live).map_err(std::io::Error::other)?);
         app.insert_resource(live);
         app.insert_resource(entity_events);
         app.insert_resource(physics);

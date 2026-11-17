@@ -1563,6 +1563,14 @@ impl WorldParticleState {
             return Ok(());
         }
         if !self.actors_initialized {
+            //bevy_backend:87e8e0 starts placed actors with loaded declarations.
+            //Our asynchronous EntityDef/Explosion acquisition must acknowledge
+            //those actual dependencies before the one-shot actor admission.
+            //Do not consume pending_actor_starts while that host preparation
+            //is incomplete; this is not a retry of a native pool refusal.
+            if !sources.gameplay_ready() {
+                return Ok(());
+            }
             let audio = sounds.lock();
             for effect in sources
                 .effects

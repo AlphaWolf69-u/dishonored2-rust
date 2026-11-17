@@ -243,6 +243,10 @@ timing/appearance claims accompanied this source batch.
 
 ### Production AI manager startup dispatch repair (2026-11-17)
 
+Heart animation/dependency follow-up:6ba's `heart_use.midnightscene was not prepared for this player` warning came from an existing scene with missing current-equipment clip banks, not an absent declaration. Initial player setup prepared state scenes with no Heart model cast. Heart inventory acquisition now includes the compact authored land/swim UseHeart beat and PlayHeartBark action/use scene references in the existing equipment worker, which resolves those clips, authored animation sounds and scene SFX against the actual body/arms/Heart MD6 snapshots before admission. It uses the same Midnight/Rig/clip/sound owners, cancellation and inventory source generation; no action-time read, fallback animation or synthetic duration is added. The actual default Heart DEVICE handler was also swept: all nineteen distinct condition-provider names are covered, every serialized game-properties reference is NULL and every followup tag is empty. Actual BB history, Speech set/voice/selected line, selected-media demand, EntityEvents50/DE completion and entity-local beat clock owners remain unchanged. No additional default-handler missing provider was found. Nondefault NPC/Delilah-soul/AIIdentity/AreaLocator or actual nonempty game-properties/followup consumers remain separate explicit families. Compact source-identity evidence is local-only at analysis/gameplay-repair-20261116/heart-use-dependency-sweep.json. Runtime acceptance remains pending the coordinator's production Heart/full-action smoke.
+
+Heart story-global bridge follow-up: the actual6ba action smoke passed CoordinationBB access and then failed because WorldspawnEntity had no producer anywhere in the rewrite. The canonical map preparation now publishes the existing managed identity of the unique authored idWorldspawn, validating exact resident class metadata and the matching live Scene header; declaration/template records and actor names are not substituted.7bf3e0 selects its Kiscule manager entry from the native global worldspawn managed ID, which5134e0 uses for named declaration/variable lookup. Heart validates that generation before borrowing the same current GraphVariables. A genuinely absent graph/variable still follows6cbf20's shared-zero branch; an uninitialized graph manager remains an error. The scalar projection is withdrawn after Heart/story producers retire and before scene identity destruction, so map transitions cannot retain a stale world-global ID. No extra actor, graph, source read or per-rule class scan is added. Expected effect is correct actual world-global lookup during Heart use; no speedup is claimed. Source syntax review passed; root owns build/action/retirement validation.
+
 Audio restart follow-up: production Startup now calls the existing resume_component_object before actual708fc0 Start, matching the existing lifecycle host.708620 Stop retains its real object-return acknowledgement on the same live component generation. Without this call, a later native708340 object recreation is incorrectly suppressed by the host's retained Complete marker and subsequent sound posts are dropped. Only an acknowledged receipt is withdrawn; pending object return remains an error/retry, with no generation change, replacement emitter, duplicate object owner or forced completion. First startup, which has no retirement receipt, is unchanged. Prediction: Enable/Start can reuse its actual Audio component after Stop and emit authored sounds again; no normal-frame CPU/RAM/GPU gain is claimed. The dispatch change is awaiting coordinated loading/action/retirement validation; this worker ran no builds/tests/launches.
 
 The reported Heart squeeze crash (`session-1794901578239-24988.log:531`) exposed a missing production lifecycle dispatch, not a nullable blackboard. Native5dbd90 calls4e52a0, which dereferences the selected AIWorld's actual+370 CoordinationBB before417140 obtains its Heart-bark history. The existing typed Coordination payload/pool/binding and teardown were already implemented, but `interaction_components::Startup` omitted the concrete Initialize and Start callbacks for all six AIStartup manager classes23–28 and Statistics21/Timers22. Generic header initialization falsely completed admission without registering the real AIWorld slots, manager listeners, source-owned Cue/Crew children or DSM sources. The separate lifecycle-drain host already dispatched those actual callbacks.
@@ -23886,6 +23890,36 @@ Far Reach cancels an unaccepted aim independently of the last-released target in
 Prediction: repairs lost notifications and stale canceled aim; no steady-frame cost or CPU/GPU/memory gain claimed. Source review and whitespace checks only; these edits are beyond the separately compiled766603d4 and await the next coherent build/production observation. No tests or visible launches performed.
 ### Accepted ranged callback retirement and melee collector identity (2026-11-17)
 
+Full631020/635140 pass closure (2026-11-17): nearest selection633a70
+remains before focus admission. Original ENTITY packets get NPC focus;
+ordinary non-arkNPC/non-mode2-Grenade packets also get WORLD focus and are
+visited in reverse extraction order, followed by remaining NPC/Grenade
+packets. They remain ENTITY packets and precede the separate WORLD pass.
+Only that WORLD pass uses hard-contact dwell/recoil. arkNPC registration
+1413c5f60 supplies interval1439ce2c0/4;1439e28e0 is arkCpntGrenade,
+proved by1413ddf20→factory91fc30→constructor490430, not Health.
+
+The nested callback boundary is preserved:635140 applies impulse to the
+RAW entity witness; target+d7 bit2 clear calls contact110 on that packet.
+Bit2 set calls damage138→634320, which invokes player118→630890 on a
+COPY after the impulse, damages its returned target with ORIGINAL position,
+direction and region, then posts110 FX using the COPY. WORLD631020 still
+calls118 earlier before checking blocking/focus. The accepted journal
+retains those separate witnesses/source context and once-only phases;
+a failed/pending host post cannot repeat the impulse or target query.
+Grenade impulses now use the same actual Started Grenade declaration's
+m_meleeImpulse and source direction toward hit+[0,0,.2]; ordinary bodies
+retain the weapon impulse and absolute vertical component. Retired full
+body generations are rejected before an accepted callback begins.
+
+Prediction: restore ordinary static prop contact/damage/FX previously
+subjected to WORLD dwell and eliminate incorrect pre-impulse retargeting.
+No widened shape, mask or range, new query pool, resource cache or frame
+allocation is introduced. Source review/syntax only; real slash/poke action
+validation remains pending. Small read-only smoke accessors expose actual
+accepted active windows and exact-target DamageResult serial/accepted/health
+amount, rather than accepting readiness or unrelated ambient damage.
+
 Melee action follow-up (2026-11-17): `ported:` MeleePlayer vtable
 141b9d508+118 is630890, not the base636630 rejection policy. The player
 callback uses636630's first non-owner ray hit to replace the complete
@@ -23968,3 +24002,22 @@ Coordinated f7a7a242 acceptance (2026-11-17): the completed usable-audio, HUD, m
 Normal main release acceptance (d68acadb, 2026-11-17): the actual DH2/target/release/dishonored2-rust.exe passed release compilation and all four production observations: gameplay+clean retirement on EotW/DD/Institute and actual pause-menu exit. Final result finished05:56:14UTC, executable SHA2564fc5a0f73d1b838c7b453ea555434a0cb4c253a424ec397e7ad61190b871547d. Evidence: DH2/analysis/gameplay-repair-20261116/gameplay-release-cycle-result.json and gameplay-release-runtime-result.json. Main source stayed at the expected commit throughout compilation. No tests, visible launches, focus changes or bin copies were performed. This proves normal-release loading/readiness/retirement; the user's pending gameplay report remains necessary for the reported inputs, heard sounds, action-dependent crash/tails and FPS. No original CPU timing or FPS recovery claim is made.
 
 Ordinary holdable interaction correction (2026-11-17): the installed Pickable default state is47, and841500 chooses real holdAndThrow metadata to request49/50 after physical pull. Normal placed and runtime holdable focus previously required GrabObject48 solely because hold props existed, rejecting authored47 before input could start the bottle transaction. Focus now uses the authored state's existing admission owner; actual47 requests share app::pickups' existing optional-item/checked-component/real-Hold journal with Far Reach, with fromGrapple=false for ordinary interaction. Explicit48 declarations retain their original carry route. No declaration state, input mapping, pull completion, body pose or throw velocity is fabricated. Same source/resource leases and ACK cleanup are reused; no new cache or update scan. The downstream51→8451e0 source still uses actual19/22 edges and default possession14 to select throw/drop, then the existing149/body release path. Expected outcome is restored reachability of ordinary bottle pickup/hold/throw, not a claimed CPU or memory gain. Source syntax and whitespace were reviewed; combined build and bounded actual-action diagnostics are root-owned.
+
+## Placed FX startup admission (2026-11-17)
+
+Placed FX actor admission — host async gameplay-resource prerequisite
+
+Owner: rendering/bevy_backend/world_particle_state.rs, canonical app/fx_gameplay.rs preparation; existing RuntimeEntities/Explosion/UsableEffects resource owners are unchanged.
+
+Native:87e8e0 placed idEntityFx::Spawn starts its actual declaration through87e9e0→19d100 when startOff is false. This source path is not a generic retry queue and does not equate a refused effect-pool allocation with an async gameplay-resource wait.
+
+host: WorldEntityDef/WorldExplosion descriptors have prepared=false until fx_gameplay::prepare acknowledges the existing async entity prototypes/explosion resources. The first placed-actor admission now waits for actual sources.gameplay_ready before initialize sets actors_initialized or consumes pending_actor_starts. Source startOff, pool refusal, playback, restart and tail/removal acknowledgements remain unchanged.
+
+Source-code call-order evidence: launch.rs Update fx_gameplay::prepare precedes PostUpdate camera_scene::simulate_effects, but prepare may retain unready requests across frames. camera_scene simulation is not gated on loading completion; water_scene publishes initial paused/inactive-camera inputs. WorldParticleState::advance previously checked sounds only, initialized all placed actors, then drained startup once. InstanceHost::play returned None for unready gameplay resources and the request was lost. Dynamic UsableEffects already gates publication on this same gameplay_ready prerequisite.
+
+Dependency review: fx_gameplay::prepare reads immutable source metadata, queues RuntimeEntities::request_for and Explosions::prepare_owned, then polls ready. It never reads FxSimulation startup, playing instances, actor-start queue, graph events or gameplay-event delivery. RuntimeEntities::ready polls prototype CPU/audio/model/FX reservation readiness; Explosions::ready_owned polls canonical declaration/effect dependencies and actual query pool readiness. Those admissions do not require a placed FX actor to play. FxSimulation-dependent gameplay requests are consumed separately after simulation and are not prerequisites of source.prepared. Therefore this gate does not block the preparation that releases it.
+
+Prediction: placed declarations with pending actual EntityDef/Explosion dependencies retain their original single startup until ready, rather than silently losing that startup. No steady-frame CPU/FPS gain claimed. No generic pool retry, new owner, cache, listener, resource conversion or permanent per-frame history. Read-only analysis plus ignored staged patch only; no rendering source was edited and no build/test/launch performed by this worker. Runtime timing/order was not traced, so this is a reachable source-code ordering defect, not a claim that the user's dynamic destruction effect followed this placed-actor path.
+
+
+Debug action evidence (6ba7deb3, 2026-11-17): dev game compilation and shared-core feature check passed. Actual windowless production inputs produced a real crossbow bolt matching the live attacker and declaration, movement from[-31.58743,187.84184,2.7844193] to[-32.668144,171.25404,2.8365514], then stopped flight on world contact. Six gun trigger events consumed the actual six-round loadout, the actual empty-fire scene completed, both equipment sides finished sheathing, attack redrew the sword, and focused-attack producer/camera values advanced through fade-in and fade-out. These are action/owner receipts, not visual, heard-sound or FPS claims. Both independent Heart and full scenarios then failed at real Heart use with `Heart story provider actual worldspawn absent`; no wheel, action-sequence completion or post-action teardown pass is claimed. Runtime also reported contactsystem/pr.ar.regular_stone.fx rejected because enabled m_lights is unimplemented, despite initial placed actors355/355 admitted. The readiness repair above addresses a source-reachable startup loss, not this measured impact-family rejection. Evidence is under analysis/gameplay-repair-20261116/gameplay-actions-{heart,full}.log and gameplay-actions-result.json. No release was compiled from this failed action batch.

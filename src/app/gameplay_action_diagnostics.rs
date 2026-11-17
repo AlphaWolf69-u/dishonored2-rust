@@ -54,7 +54,7 @@ fn player(world: &World) -> Result<&Player, String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelClose, PickObject, ThrowObject, ObjectMotion, Done }
+enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactFocus, ContactDamage, PickObject, ThrowObject, ObjectMotion, Done }
 pub(super) struct Observation {
     stage: Stage,
     since: Instant,
@@ -75,12 +75,21 @@ pub(super) struct Observation {
     expected_bolt: Option<(EntityId,String)>,
     gun_trigger_pending: bool,
     heart_only: bool,
+    carry_only: bool,
+    contact_only: bool,
+    melee_only: bool,
+    poke_only: bool,
+    contact_serial: u64,
+    contact_windows: u64,
+    contact_damage_seen: bool,
+    contact_health: Option<f32>,
+    approach_move: Option<Input>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full or heart")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee or poke")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -88,7 +97,11 @@ impl Observation {
         if super::player::debug_benchmark_walk_enabled() {
             return Err("action smoke requires benchmark walking disabled; it must not steer or teleport while firing".into());
         }
-        if !heart_only {
+        let melee_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("melee");
+        let poke_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("poke");
+        let contact_only=melee_only || poke_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("contact");
+        let carry_only=contact_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("carry");
+        if !heart_only && !carry_only {
             for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
                 if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
             }
@@ -97,7 +110,8 @@ impl Observation {
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
-            focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only })
+            focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
+            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -127,6 +141,34 @@ impl Observation {
         let Some((_,equipped,transitioning))=p.equipment_action_status(0)else{return Ok(false)};
         Ok(equipped && !transitioning && weapon.scene_handle()==0
             && !p.machine.is_active(StateId::FIRE_WEAPON) && !p.machine.is_active(StateId::CANCEL_FIRE_WEAPON))
+    }
+    fn melee_fixture_reached(world:&World,point:Vec3)->Result<bool,String>{
+        let p=player(world)?;
+        let (identity,_,_)=p.equipment_action_status(1).ok_or("sword fixture has no retained right-hand identity")?;
+        let definition=world.resource::<super::player_actions::PlayerActions>().equipment_metadata(identity)
+            .and_then(|metadata|metadata.melee.as_deref()).ok_or("sword fixture lacks actual retained Melee declaration")?;
+        // Debug approach goal uses the installed blade/focus dimensions, not a
+        // made-up interaction range. This does not admit a hit: the later real
+        // sweep/DamageResult and Health change remain mandatory.
+        // Place the debug actor well inside that authored bound; this only
+        // chooses ordinary walking inputs, never the attack's admission range.
+        let bound=0.5*definition.world_focus.extents.x.min(definition.dimensions.x-definition.shape_step_back);
+        if bound<=0.{return Err("sword source has no positive fixture approach bound".into())}
+        let (eye,axis)=p.published_camera_frame();
+        Ok((point-p.physics.position()).truncate().length()<=bound
+            && definition.world_focus.contains(p.physics.position(),eye,axis,definition.focus_step_back,point))
+    }
+    fn contact_baseline(&mut self,world:&World)->Result<(),String>{
+        let id=self.object.ok_or("contact target absent")?.0;
+        let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+        let scene=world.resource::<super::physics_scene::PhysicsScene>();
+        self.contact_health=Some(scene.entity_health(live,id)?.ok_or("contact fixture has no source Health component")?.0);
+        if self.contact_health.is_some_and(|health|health<=0.){return Err("contact fixture is already dead before attack input".into())}
+        if scene.breakable_component(live,id)?.is_none(){return Err("contact fixture lacks actual Started Breakable component".into())}
+        self.contact_serial=super::melee::action_receipt(world,id).map_or(0,|receipt|receipt.0);
+        self.contact_windows=super::melee::active_windows(world);
+        eprintln!("ACTION_SMOKE_CONTACT_BEFORE entity={id:?} source_health={:?} source_expected_health=2 melee_receipt_serial={} active_windows={}",self.contact_health,self.contact_serial,self.contact_windows);
+        Ok(())
     }
     fn projectiles(&mut self, world: &World, collect_existing: bool) -> Result<bool,String> {
         let scene=world.get_resource::<super::physics_scene::PhysicsScene>().ok_or("actual PhysicsScene absent")?;
@@ -172,22 +214,43 @@ impl Observation {
         let combine=camera.settings.combine(camera.far_clip);
         eprintln!("ACTION_SMOKE_FOCUS_CAMERA frame={} clock={} requested={} producer_count={} near_sharp={} far_sharp={} autofocus={} near_dof={} opaque_enabled={} words={:?} player_states={:?}",
             self.focus_samples,clock,fx.focus_requested(),count,camera.settings.near_sharp_distance(),camera.settings.far_sharp_distance(),camera.settings.autofocus_enabled(),combine.options[5],camera.opaque_enabled,camera.settings.words(),p.active_player_states());
-        if self.stage==Stage::FocusFade{self.focus_release_attack |= p.machine.is_active(StateId::SLASH);}
+        if self.stage==Stage::FocusFade || self.poke_only&&self.stage==Stage::ContactDamage{self.focus_release_attack |= p.machine.is_active(StateId::SLASH);}
         Ok((fx.focus_requested(),count,count>0&&full))
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
         // Sample every actual app frame across hold/release, including the
         // input-release frame, so endpoint-only evidence cannot hide a snap.
-        let focus=if matches!(self.stage,Stage::Focus|Stage::FocusFade){Some(self.focus_curve(world)?)}else{None};
+        let focus=if matches!(self.stage,Stage::Focus|Stage::FocusFade|Stage::ContactFocus)||self.poke_only&&self.stage==Stage::ContactDamage{Some(self.focus_curve(world)?)}else{None};
         if let Some(input)=self.release.take(){send(world,input,false)?;return Ok(false)}
         if let Some(error)=super::weapon_firing::startup_error(world){return Err(format!("actual firing owner failed during {:?}: {error}",self.stage))}
         if let Some(error)=super::heart::startup_error(world){return Err(format!("actual Heart owner failed during {:?}: {error}",self.stage))}
         if self.since.elapsed()>Duration::from_secs(90) {
             let mut snapshot=String::new();player(world)?.write_combat_diagnostics(&mut snapshot);
             super::weapon_firing::write_diagnostics(world,&mut snapshot);
+            if self.melee_only||self.poke_only {
+                snapshot.push_str(&super::melee::debug_startup_pending(world));
+            }
+            if matches!(self.stage,Stage::CarryApproach|Stage::ContactAim) {
+                eprintln!("ACTION_SMOKE_FIXTURE_INCOMPLETE stage={:?} no_range_or_hit_override=true intended_actor={:?}",self.stage,self.object.map(|(id,_)|id));
+            }
             return Err(format!("action smoke timeout stage={:?} shots={} projectile_seen={} snapshot={snapshot}",self.stage,self.shot_count,self.projectile_seen));
         }
         match self.stage {
+            Stage::Begin if self.carry_only => {
+                // Debug fixture is the normal authored player spawn. The bottle
+                // is only looked up, never moved or marked reached/admitted.
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let id=live.find("env_mulberry_mead_01_18").ok_or("carry fixture bottle is not live on this level")?;
+                let frame=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(live,id)?
+                    .ok_or("carry fixture bottle lacks actual physical frame")?;
+                self.object=Some((id,frame.position));
+                eprintln!("ACTION_SMOKE_SCENARIO name=carry source=installed_env_mulberry_mead_01_18 entity={id:?} physical_position={:?} player_feet={:?} setup=normal_authored_spawn no_teleport=true",frame.position,player(world)?.feet());
+                // Ordinary left click gives the virtual Window its normal mouse
+                // capture through camera_controls; there is no native window.
+                if binding(Input::Mouse(MouseButton::Left))!=Some(19){return Err("carry fixture setup requires normal LMB/MELEE mouse capture binding".into())}
+                send(world,Input::Mouse(MouseButton::Left),true)?;self.release=Some(Input::Mouse(MouseButton::Left));
+                self.stage(Stage::CarryApproach,world)?;
+            }
             Stage::Begin => {
                 if self.heart_only{
                     eprintln!("ACTION_SMOKE_SCENARIO name=heart coverage=Heart_real_use+wheel+ordinary_exit ranged_not_claimed=true");
@@ -306,6 +369,113 @@ impl Observation {
                     self.stage(Stage::Done,world)?;
                 }
             }
+            Stage::CarryApproach => {
+                let id=self.object.ok_or("carry fixture generation absent")?.0;
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let name=live.get(id).ok_or("carry fixture bottle retired during approach")?.0;
+                let focused=world.get_resource::<super::interaction_focus::FocusedInteraction>()
+                    .and_then(|focus|focus.current.as_ref()).is_some_and(|prompt|!prompt.locked&&prompt.entity.eq_ignore_ascii_case(name));
+                let physical=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(live,id)?.ok_or("carry fixture actual frame disappeared")?.position;
+                let bounds=super::world_models::entity_bounds(world,live,id)?;
+                let center=bounds.map_or(Vec3::from(physical),|bounds|(Vec3::from(bounds[0])+Vec3::from(bounds[1]))*0.5);
+                let close=if self.melee_only||self.poke_only{Self::melee_fixture_reached(world,center)?}else{true};
+                if focused&&close {
+                    if let Some(input)=self.approach_move.take(){send(world,input,false)?}
+                    eprintln!("ACTION_SMOKE_PASS check=fixture_real_focus entity={id:?}");
+                    if self.melee_only||self.poke_only{self.stage(Stage::ContactSword,world)?;}
+                    else if self.contact_only{self.select(world,KeyCode::Digit3)?;self.stage(Stage::ContactGun,world)?;}
+                    else{self.tap(world,22)?;self.stage(Stage::PickObject,world)?;}
+                }else{
+                    let transform=*world.query_filtered::<&Transform,With<Camera3d>>().single(world).map_err(|error|error.to_string())?;
+                    let eye=Vec3::from(super::view_to_game(transform.translation));
+                    let forward=Vec3::from(super::view_to_game(transform.forward().as_vec3()));
+                    let to=center-eye;
+                    let yaw=(to.y.atan2(to.x)-forward.y.atan2(forward.x));
+                    let yaw=yaw.sin().atan2(yaw.cos());
+                    let pitch=-to.z.atan2(to.truncate().length())+forward.z.atan2(forward.truncate().length());
+                    // Host test steering produces ordinary relative mouse
+                    // motion. These bounds are controller increments, never a
+                    // gameplay interaction-distance/range admission override.
+                    let delta=Vec2::new((-yaw*100.).clamp(-8.,8.),(pitch*100.).clamp(-8.,8.));
+                    world.write_message(bevy::input::mouse::MouseMotion{delta});
+                    if yaw.abs()<0.05 && pitch.abs()<0.05 {
+                        if self.approach_move.is_none(){let input=input_for(2)?;send(world,input,true)?;self.approach_move=Some(input);}
+                    }else if let Some(input)=self.approach_move.take(){send(world,input,false)?}
+                    // Only the real focus above can admit pickup. Blocked
+                    // movement/occlusion ends at the existing stage timeout.
+                }
+            }
+            Stage::ContactGun if Self::ranged_ready(world,RangedFamily::Gun)? => {
+                self.contact_baseline(world)?;
+                self.stage(Stage::ContactAim,world)?;
+            }
+            Stage::ContactSword if player(world)?.equipment_action_status(1).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)
+                && !player(world)?.machine.is_active(StateId::SLASH) => {
+                self.contact_baseline(world)?;self.stage(Stage::ContactAim,world)?;
+            }
+            Stage::ContactAim => {
+                let id=self.object.unwrap().0;
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let scene=world.resource::<super::physics_scene::PhysicsScene>();
+                let bounds=super::world_models::entity_bounds(world,live,id)?.ok_or("contact target has no actual model bounds")?;
+                let center=(Vec3::from(bounds[0])+Vec3::from(bounds[1]))*0.5;
+                let transform=*world.query_filtered::<&Transform,With<Camera3d>>().single(world).map_err(|error|error.to_string())?;
+                let eye=Vec3::from(super::view_to_game(transform.translation));
+                let forward=Vec3::from(super::view_to_game(transform.forward().as_vec3()));
+                // A fresh canonical physics ray along the actual camera ray is
+                // mandatory. Target bounds guide only relative mouse inputs.
+                let scene=world.resource::<super::physics_scene::PhysicsScene>();
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"contact query owner poisoned")?;
+                let mut ray=crate::gameplay::world_ray_query::WorldRayQuery::default();let mut hits=Vec::new();
+                queries.ray_hits(&mut ray,&crate::gameplay::world_ray_query::WorldRayRequest{
+                    origin:eye.to_array(),direction:(forward*100.).to_array(),maximum_fraction:1.,
+                    hit:crate::gameplay::collision_hit::ShapeHitInfo{body_id:None,material_id:u16::MAX,shape_key:u32::MAX,filter_info:0,user_data:0},
+                    filter:Some(crate::gameplay::collision_filter::CollisionQueryFilter{layers:0x1ffff,required_flags:0x800}),
+                },0,&mut hits)?;
+                let hit=hits.iter().min_by(|a,b|a.fraction.total_cmp(&b.fraction));
+                let target=hit.map(|hit|scene.collision_entity(live,&hit.target)).transpose()?.flatten();
+                eprintln!("ACTION_SMOKE_CONTACT_RAY intended={id:?} actual={target:?} actual_origin={eye:?} actual_forward={forward:?} model_center={center:?}");
+                drop(queries);
+                if target==Some(id){
+                    if self.poke_only{
+                        let input=input_for(19)?;send(world,input,true)?;self.held=Some(input);self.stage(Stage::ContactFocus,world)?;
+                    }else if self.melee_only{
+                        self.tap(world,19)?;self.stage(Stage::ContactDamage,world)?;
+                    }else{
+                        self.before_ammo=player(world)?.weapon.as_ref().ok_or("actual gun absent")?.total_ammo;
+                        self.tap(world,20)?;self.stage(Stage::ContactDamage,world)?;
+                    }
+                }else{
+                    let to=center-eye;let yaw=to.y.atan2(to.x)-forward.y.atan2(forward.x);let yaw=yaw.sin().atan2(yaw.cos());
+                    let pitch=-to.z.atan2(to.truncate().length())+forward.z.atan2(forward.truncate().length());
+                    world.write_message(bevy::input::mouse::MouseMotion{delta:Vec2::new((-yaw*100.).clamp(-8.,8.),(pitch*100.).clamp(-8.,8.))});
+                }
+            }
+            Stage::ContactFocus if focus.is_some_and(|(requested,_,full)|requested&&full) => {
+                eprintln!("ACTION_SMOKE_PASS check=fixture_poke_actual_full_focus");
+                if let Some(input)=self.held.take(){send(world,input,false)?}
+                self.stage(Stage::ContactDamage,world)?;
+            }
+            Stage::ContactDamage => {
+                let id=self.object.unwrap().0;let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let scene=world.resource::<super::physics_scene::PhysicsScene>();
+                let receipt=super::melee::action_receipt(world,id);
+                let melee_callback=receipt.is_some_and(|(serial,accepted,damage)|serial>self.contact_serial&&accepted&&damage>0.)
+                    && super::melee::active_windows(world)>self.contact_windows;
+                let consumed=if self.melee_only||self.poke_only{melee_callback}else{player(world)?.weapon.as_ref().is_some_and(|weapon|weapon.total_ammo<self.before_ammo)};
+                let health=if live.get(id).is_some(){scene.entity_health(live,id)?}else{None};
+                let retired=live.get(id).is_none();
+                self.contact_damage_seen |= consumed && (retired || health.is_some_and(|(current,_)|current<self.contact_health.unwrap()));
+                let fade_done=!self.poke_only||focus.is_some_and(|(requested,count,_)|!requested&&count==0);
+                if self.contact_damage_seen&&fade_done {
+                    let mut details=String::new();scene.write_breakable_diagnostics(player(world)?.feet().to_array(),&mut details);
+                    let check=if self.poke_only{"actual_poke_bottle_damage"}else if self.melee_only{"actual_melee_bottle_damage"}else{"actual_gun_bottle_damage"};
+                    eprintln!("ACTION_SMOKE_PASS check={check} entity={id:?} before={:?} after={health:?} retired={retired} melee_receipt={receipt:?} active_windows={} breakable_state={details}",self.contact_health,super::melee::active_windows(world));
+                    eprintln!("ACTION_SMOKE_NOT_COVERED check=contact_particles_and_sound reason=health_breakable_state_is_not_output_receipt");
+                    self.stage(Stage::Done,world)?;
+                }
+            }
             Stage::PickObject if player(world)?.carrying.has_held() => {
                 let held=player(world)?.carrying.held.as_ref().unwrap().entity;
                 if self.object.map(|(id,_)|id)!=Some(held){return Err("carry input picked a different entity generation".into())}
@@ -323,8 +493,8 @@ impl Observation {
                 let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
                 if live.get(id).is_none(){return Err("thrown object retired before a physical motion observation".into())}
                 if let Some(frame)=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(live,id)? {
-                    if frame.position!=before{
-                        eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion entity={id:?} before={before:?} after={:?}",frame.position);
+                    if frame.position!=before && live.parent(id)?.is_none(){
+                        eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion unparented=true entity={id:?} before={before:?} after={:?}",frame.position);
                         self.stage(Stage::Done,world)?;
                     }
                 }

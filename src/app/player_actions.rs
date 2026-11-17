@@ -408,6 +408,7 @@ pub(super) struct PlayerActions {
     retiring_far_reaches: Vec<FarReachOwner>,
     cached_far_reaches: HashMap<Arc<str>, FarReachOwner>,
     slash_scene_paths: Arc<[String]>,
+    heart_scene_paths: Arc<[String]>,
     power_activations: HashMap<String, PowerActivation>,
     power_reservations: HashMap<String, Arc<str>>,
     power_dependency_ids: HashMap<String, i32>,
@@ -513,6 +514,23 @@ impl PlayerActions {
         slash_scene_paths.sort();
         slash_scene_paths.dedup();
         let slash_scene_paths = Arc::from(slash_scene_paths);
+        //844750's use scene and UseHeart's beat cast the actual owned Heart
+        //model. Startup's empty equipment cast cannot prepare those tracks.
+        let mut heart_scene_paths=Vec::new();
+        for (kind,fields) in declarations.states.iter().chain(&declarations.swimming_states) {
+            let names:&[&str]=match kind.as_str() {
+                "playerstateuseheart"=>&["m_beat"],
+                "playerstateplayheartbark"=>&["m_midnight","m_useMidnight"],
+                _=>continue,
+            };
+            for name in names {
+                if let Some(path)=crate::entities::scene_motion::atom(fields,name)
+                    .filter(|path|!path.is_empty()&&!path.eq_ignore_ascii_case("NULL")) {
+                    if !heart_scene_paths.iter().any(|existing|existing==path) {heart_scene_paths.push(path.to_owned());}
+                }
+            }
+        }
+        let heart_scene_paths=Arc::from(heart_scene_paths);
         let blink_player = declarations
             .states
             .iter()
@@ -581,6 +599,7 @@ impl PlayerActions {
             retiring_far_reaches: Vec::new(),
             cached_far_reaches: Default::default(),
             slash_scene_paths,
+            heart_scene_paths,
             power_activations: Default::default(),
             power_reservations: Default::default(),
             power_dependency_ids: Default::default(),
@@ -1611,6 +1630,7 @@ impl PlayerActions {
             .map(|arm| arm.equipment().to_owned())
             .collect::<Vec<_>>();
         let slash_scene_paths = self.slash_scene_paths.clone();
+        let heart_scene_paths = self.heart_scene_paths.clone();
         let arm_rigs = self.arms.clone();
         let closed = self.cancelled.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1690,6 +1710,9 @@ impl PlayerActions {
             paths.extend(descriptor.equipment.slash_midnights.iter().flatten().cloned());
             if descriptor.equipment.archetype == 1 {
                 paths.extend(slash_scene_paths.iter().cloned());
+            }
+            if descriptor.heart.is_some() {
+                paths.extend(heart_scene_paths.iter().cloned());
             }
             paths.sort();
             paths.dedup();
