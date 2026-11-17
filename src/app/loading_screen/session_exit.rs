@@ -13,6 +13,7 @@ pub(in crate::app) struct ExitState {
     started: bool,
     emitted: bool,
     render_owner: bool,
+    render_retirement_started: bool,
     phase: &'static str,
     reported_phase: &'static str,
     window_close: bevy::ecs::message::MessageCursor<WindowCloseRequested>,
@@ -77,10 +78,10 @@ fn request(exit: &mut ExitState, next: AppExit) {
 }
 
 fn begin(world: &mut World, exit: &mut ExitState) {
-    super::super::audio::close_session_admission();
-    super::super::level_lifetime::close_level_acquisitions(world);
+    super::super::level_lifetime::close_map_preparation(world);
     {
         let mut state = world.resource_mut::<Acquisition>();
+        cancel_map_worker(&mut state);
         // Dropping the result receiver makes unpublished prepared resources
         // retire in their existing owner; the worker handle still fences exit.
         state.result = None;
@@ -89,12 +90,11 @@ fn begin(world: &mut World, exit: &mut ExitState) {
         state.movie = None;
         state.finished = false;
         state.debug_sequence_active = false;
-        state.gpu.0.store(if exit.render_owner { 3 } else { 4 }, std::sync::atomic::Ordering::Release);
     }
-    world.resource_mut::<ScenePublished>().0 = false;
     if let Some(mut paused) = world.get_resource_mut::<crate::gameplay::game_clock_runtime::GamePaused>() { paused.0 = true; }
     if let Some(mut menu) = world.get_non_send_resource_mut::<super::super::pause_menu::PauseMenu>() { menu.begin_level(); }
-    for mut camera in world.query::<&mut Camera>().iter_mut(world) { camera.is_active = false; }
+    //The actual view still acknowledges pending component material uploads.
+    //Hide the user's window now; withdraw cameras only after that fence.
     // A real quit closes the user's view immediately without destroying the
     // window/device whose outstanding render publication still has to retire.
     for (mut window, mut cursor) in world.query::<(&mut Window, &mut CursorOptions)>().iter_mut(world) {
@@ -118,8 +118,19 @@ fn advance(world: &mut World, exit: &mut ExitState) -> Result<bool, String> {
     let worker = retire_map_worker(&mut state);
     world.insert_resource(state);
     if !worker? { return Ok(false); }
-    exit.phase = "level acquisition owners";
-    if !super::super::level_lifetime::retire_level_acquisitions(world) { return Ok(false); }
+    if !exit.render_retirement_started {
+        let mut state = world.remove_resource::<Acquisition>().ok_or("exit lost its component producer fence")?;
+        let finished = state.lifetime.finish_producers(world);
+        exit.phase = state.lifetime.retirement_phase();
+        world.insert_resource(state);
+        if !finished? { return Ok(false); }
+        //ScenePublished also gates the real render preparation schedules.
+        //Input/gameplay was stopped at begin; withdraw publication only now.
+        world.resource_mut::<ScenePublished>().0 = false;
+        for mut camera in world.query::<&mut Camera>().iter_mut(world) { camera.is_active = false; }
+        world.resource::<Acquisition>().gpu.0.store(if exit.render_owner { 3 } else { 4 }, std::sync::atomic::Ordering::Release);
+        exit.render_retirement_started = true;
+    }
     exit.phase = "outgoing render publication";
     if world.resource::<Acquisition>().gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 { return Ok(false); }
     exit.phase = "component, FX and sound retirement";
@@ -127,6 +138,11 @@ fn advance(world: &mut World, exit: &mut ExitState) -> Result<bool, String> {
     let cleared = state.lifetime.clear(world);
     exit.phase = state.lifetime.retirement_phase();
     world.insert_resource(state);
+    if matches!(cleared, Ok(true)) {
+        //Keep accepted component decoding open until the actual level fence.
+        //The session's outstanding-work join still precedes cache destruction.
+        super::super::audio::close_session_admission();
+    }
     cleared
 }
 

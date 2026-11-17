@@ -351,15 +351,8 @@ pub(in crate::app) fn shutdown(world:&mut World)->Result<bool,String>{
     super::runtime_entities::advance(world)?;
     publish(world);
     if world.get_resource::<Throwing>().is_some_and(|owner|!owner.deliveries.is_empty()) {
-        //Host exit suppresses the normal scene-published PostUpdate chain.
-        //Progress that same resource owner pipeline while an accepted birth
-        //still owns its Init/Start transaction; never synthesize GPU readiness.
-        world.run_system_cached(super::usable_effects::prepare_requests).map_err(|error|error.to_string())?;
-        world.run_system_cached(super::runtime_fx_images::synchronize).map_err(|error|error.to_string())?;
-        world.run_system_cached(super::runtime_materials::coordinate).map_err(|error|error.to_string())?;
-        world.run_system_cached(super::projected_decals::publish_runtime).map_err(|error|error.to_string())?;
-        world.run_system_cached(super::usable_effects::publish).map_err(|error|error.to_string())?;
-        super::world_models::advance_after_materials(world);
+        //LevelLifetime retains ordinary resource preparation and its actual
+        //GPU view until this accepted-operation fence completes.
         publish(world);
         if let Some(owner)=world.get_resource::<Throwing>() {
             if let Some(error)=&owner.error{return Err(error.clone());}

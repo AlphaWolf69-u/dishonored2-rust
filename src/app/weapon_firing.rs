@@ -627,6 +627,16 @@ pub(super) fn publish(world: &mut World) {
     world.insert_resource(state);
     world.insert_resource(owner);
 }
+///Finish accepted44e0c0/63b3c0 callbacks before source retirement. Each
+///effect retains its actual burst sample and phase; no weapon/input/animation
+///advance or dispersion RNG draw is performed by this owner drain.
+pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
+    publish(world);
+    let Some(owner) = world.get_resource::<Firing>() else { return Ok(true); };
+    if let Some(error) = &owner.error { return Err(error.clone()); }
+    Ok(owner.deliveries.is_empty())
+}
+
 fn dispatch(
     world: &mut World,
     owner: &mut Firing,

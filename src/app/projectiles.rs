@@ -148,14 +148,14 @@ pub(super) fn shutdown(world: &mut World) -> bool {
         && owner
             .contacts
             .iter()
-            .all(|(_, ticket)| super::usable_effects::entity_retired(world, ticket));
+            .all(|(_, ticket)| super::usable_effects::entity_retired(world, ticket))
+        && owner.deliveries.is_empty();
     if done {
         owner.trails.clear();
         owner.impacts.clear();
         owner.trail_tails.clear();
         owner.contacts.clear();
         owner.completed.clear();
-        owner.deliveries.clear();
         owner.batch.clear();
         owner.effect_stops.clear();
         owner.hull.clear();
@@ -273,6 +273,29 @@ fn overlaps_player(
 ///single tick. A fallible host callback resumes at its delivery cursor rather
 ///than simulating flight, damage, or RNG twice.
 pub(super) fn update(world: &mut World) -> Result<(), String> {
+    advance(world, true)
+}
+
+///627f60/628... accepted hit/handoff callbacks retain their own cursors
+///independently of finite flight. Do not snapshot another live flight batch
+///or integrate gravity/collision while completing these during exit.
+pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
+    advance(world, false)?;
+    //Phase9 has forwarded accepted gameplay operations. A final trail tail
+    //retains its real journal until FXshutdown acknowledges it; waiting for
+    //that tail here would prevent the shutdown which ends the same tail.
+    Ok(world.get_resource::<Projectiles>().is_none_or(|owner|
+        owner.deliveries.values().all(|delivery|delivery.phase >= 9)))
+}
+
+///After actual FX shutdown, acknowledge terminal trails and enqueue their
+///ordinary removals before component and managed identity destruction.
+pub(super) fn finish_retirement(world: &mut World) -> Result<bool, String> {
+    advance(world, false)?;
+    Ok(world.get_resource::<Projectiles>().is_none_or(|owner|owner.deliveries.is_empty()))
+}
+
+fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
     use super::{physics_scene::PhysicsScene, player::PlayerState, usable_effects::EffectRequests};
     use crate::gameplay::{
         entity_events::EntityEvents,
@@ -305,9 +328,12 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             }
             owner.impacts.get_mut(&id).unwrap().stopped = true;
         }
-        world
-            .resource::<PhysicsScene>()
-            .projectile_batch(&mut owner.batch, &mut owner.effect_stops)?;
+        owner.batch.clear();
+        owner.effect_stops.clear();
+        if simulate {
+            world.resource::<PhysicsScene>()
+                .projectile_batch(&mut owner.batch, &mut owner.effect_stops)?;
+        }
         for &(handle, id) in &owner.effect_stops {
             if let Some(trail) = owner.trails.get_mut(&id) {
                 if !trail.stopped {
@@ -348,6 +374,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         for index in 0..owner.batch.len() {
             let (handle, id) = owner.batch[index];
             if !owner.deliveries.contains_key(&id) {
+                if !simulate { return Err("accepted projectile drain admitted a new flight tick".into()); }
                 if world.resource::<LiveEntities>().stage(id)
                     != Some(crate::gameplay::entity_lifetime::Stage::Spawned)
                 {

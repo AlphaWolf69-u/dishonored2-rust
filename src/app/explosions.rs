@@ -153,6 +153,14 @@ fn enqueue_inner(
         });
     Ok(())
 }
+///44e0c0 forwards accepted spread damage here before projectile birth.
+///7b3830/7b4ab0 consume that retained request without a physical time step;
+///finish before Breakable callbacks and their actual FX/source scopes close.
+pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
+    update(world)?;
+    Ok(world.get_resource::<Explosions>().is_none_or(|owner|owner.pending.is_empty()))
+}
+
 pub(super) fn shutdown(world: &mut World) {
     if world.contains_resource::<Explosions>() {
         world.resource_scope(|world, mut owner: Mut<Explosions>| {

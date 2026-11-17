@@ -18,6 +18,7 @@ pub(super) struct LevelLifetime {
     producers_retired: bool,
     heart_retired: bool,
     throwing_retired: bool,
+    acquisitions_retired: bool,
     animation_events_retired: bool,
     ai_worlds_retired: bool,
     equipment_retired: bool,
@@ -57,8 +58,14 @@ impl LevelLifetime {
 
     pub(super) fn retirement_phase(&self) -> &'static str { self.retirement_phase }
 
-    pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
+    /// Complete accepted component operations while the actual camera and
+    /// GPU preparation still exist.1408a4830 destroys their resource scopes
+    /// only after the component operations have returned.
+    pub(super) fn finish_producers(&mut self, world: &mut World) -> Result<bool, String> {
         if self.cleared { return Ok(true); }
+        //Scene publication stays alive until this fence. Its ordinary resource
+        //preparation and render schedules run once per frame; do not duplicate
+        //them here or advance another gameplay/physics/animation tick.
         // SourceReady/EventPlaying cookies can keep an actual projectile ID
         // alive after FX shutdown. Pump their real audio owner and immediately
         // deliver resulting C6/29 messages before any actor can lose that ID.
@@ -91,6 +98,22 @@ impl LevelLifetime {
             if super::water_impacts::accepted_pending(world) { return Ok(false); }
             super::physics_scene::water_publication::release_queries(world)?;
             super::physics_scene::carrying_host::retire(world)?;
+            self.retirement_phase = "accepted throwable births";
+            if !self.throwing_retired {
+                if !super::weapon_throwing::shutdown(world)? { return Ok(false); }
+                self.throwing_retired = true;
+            }
+            self.retirement_phase = "Heart speech and sensor";
+            if !self.heart_retired {
+                if !super::heart::shutdown(world)? { return Ok(false); }
+                self.heart_retired = true;
+            }
+            self.retirement_phase = "accepted weapon and impact callbacks";
+            if !super::weapon_firing::finish_accepted(world)? { return Ok(false); }
+            if !super::projectiles::finish_accepted(world)? { return Ok(false); }
+            if !super::explosions::finish_accepted(world)? { return Ok(false); }
+            super::entity_messages::finish_accepted(world)?;
+            super::entity_functions::update(world)?;
             if !super::breakables::finish_accepted(world)? { return Ok(false); }
             super::breakables::begin_retirement(world);
             super::water_impacts::begin_retirement(world);
@@ -102,18 +125,18 @@ impl LevelLifetime {
             super::power_world::retire(world)?;
             self.producers_retired = true;
         }
-        self.retirement_phase = "Heart speech and sensor";
-        if !self.heart_retired {
-            if !super::heart::shutdown(world)? { return Ok(false); }
-            self.heart_retired = true;
+        self.retirement_phase = "level acquisition owners";
+        if !self.acquisitions_retired {
+            close_level_acquisitions(world);
+            if !retire_level_acquisitions(world) { return Ok(false); }
+            self.acquisitions_retired = true;
         }
-        self.retirement_phase = "accepted throwable births";
-        if !self.throwing_retired {
-            // Accepted Fire callbacks may still require real FX reservations
-            // and runtime construction. Join them before closing that owner.
-            if !super::weapon_throwing::shutdown(world)? { return Ok(false); }
-            self.throwing_retired = true;
-        }
+        Ok(true)
+    }
+
+    pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
+        if self.cleared { return Ok(true); }
+        if !self.finish_producers(world)? { return Ok(false); }
         // The FX manager acknowledges producer tickets before the equipment
         // and entity resource scopes which prepared those effects can close.
         // Keep physics, player and audio callback owners throughout this drain.
@@ -146,6 +169,7 @@ impl LevelLifetime {
         // waiting for it above would prevent that acknowledgement forever.
         // finish_accepted never admits another ordinary removal snapshot.
         self.retirement_phase = "accepted entity removals";
+        if !super::projectiles::finish_retirement(world)? { return Ok(false); }
         if !super::entity_removal::finish_accepted(world)? { return Ok(false); }
         self.retirement_phase = "equipment and weapon scopes";
         if !self.equipment_retired {
@@ -312,11 +336,10 @@ impl LevelLifetime {
 }
 
 pub(super) fn close_level_acquisitions(world: &mut World) {
+    close_map_preparation(world);
     if let Some(actions) = world.get_resource::<super::player_actions::PlayerActions>() {
         actions.close_acquisitions();
     }
-    // Release a blocked base-image handoff before joining the map reader.
-    world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
     if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
         effects.close_acquisitions();
     }
@@ -329,6 +352,13 @@ pub(super) fn close_level_acquisitions(world: &mut World) {
     if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
         mailbox.retire();
     }
+}
+
+///Release the unpublished map reader's blocked handoff. The shared image
+///mailbox also serves accepted runtime FX uploads and stays alive until the
+///published world's component producer fence, alongside its actual camera.
+pub(super) fn close_map_preparation(world: &mut World) {
+    world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
 }
 
 /// Called while the loading screen is active, before purging map identities.

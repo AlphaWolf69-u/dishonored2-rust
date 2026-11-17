@@ -405,6 +405,10 @@ pub(in crate::app) fn startup_pending(world: &World) -> bool {
 /// Closing cancels workers but retains them until their archive reads return.
 /// Actual projectile instances and effect tails retire with their own owners.
 pub(in crate::app) fn shutdown(world: &mut World) -> Result<bool, String> {
+    //A retained C8/weapon callback owns its actual component until its
+    //projectile/spread/muzzle forwarding acknowledges. The early producer
+    //fence completes this before the shared FX/source admission closes.
+    if !super::finish_accepted(world)? { return Ok(false); }
     let Some(mut owner) = world.remove_resource::<Firing>() else {
         return Ok(true);
     };

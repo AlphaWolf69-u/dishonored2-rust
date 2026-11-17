@@ -32,9 +32,26 @@ GPU regression audit, 2026-11-17 (read-only renderer review):
   intervals and gaps describe the instrumented submission stream; neither its
   observed FPS nor its busy/gap split proves a normal-game GPU bottleneck or
   reproduces the user's FPS loss without an otherwise identical
-  timeline-disabled control. That control remains pending. `RUNTIME_VIEW`
+  timeline-disabled control. `RUNTIME_VIEW`
   counters advance three times per image frame in the observed run and must
   not be used as FPS counters.
+- One same-executable timeline-disabled control completed at
+  `analysis/gameplay-repair-20261116/gpu-disabled-control.log` (SHA256
+  D33D552654F9087E8EC528661D23F7BCBEC56DF7CE9FBA1FD804F74966F67256).
+  Existing timeline-on application benchmark: 317 frames / 9.00 s, 35.2 FPS;
+  disabled: 324 / 9.02 s, 35.9 FPS. Median/p95/p99 frame times changed from
+  27.220/35.002/40.883 ms to 26.715/33.854/38.405 ms. This one control did not
+  restore high application throughput; it does not quantify normal GPU busy
+  time or prove a particular bottleneck. Both used the same 1920x1080 walking
+  route, 6-second warmup and 15-second total timer (about 9 measured seconds).
+  Final camera Y differed (188.853 vs 189.902) and visible instances differed
+  (4,606 vs 4,773), limiting a fine-grained overhead estimate. The disabled log
+  has zero timestamps/resolves/readbacks and a completed benchmark without an
+  invalid-rendering report. The result helper retained an unavailable/null
+  process exit code and incorrectly rejected the expected zero-sample timeline
+  summary; its raw `valid_control: false` is preserved rather than relabeled as
+  a verified clean exit. Helper bookkeeping was corrected afterward without
+  another run. This is not a comparison with the original game.
 - No excessive fog sample count or resolution was established: the active
   downsample default is 1 (half-size world fog), projected shadow sampling is
   eight taps, local scattering traverses actual tile lists capped at 32 lights
