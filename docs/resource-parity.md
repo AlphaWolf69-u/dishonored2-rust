@@ -23844,3 +23844,33 @@ State84/READ52 integration review correction: the canonical carrying host's firs
 Far Reach cancels an unaccepted aim independently of the last-released target interval: the service caller now uses the same has_cast_activity gate as Runtime::cancel. Accepted movement/pull and the separate released-target lease remain retained. Source selection/reset distinction is the power target+dc versus Sensor27+1c4 and lastReleased+168.
 
 Prediction: repairs lost notifications and stale canceled aim; no steady-frame cost or CPU/GPU/memory gain claimed. Source review and whitespace checks only; these edits are beyond the separately compiled766603d4 and await the next coherent build/production observation. No tests or visible launches performed.
+### Accepted ranged callback retirement and melee collector identity (2026-11-17)
+
+`ported:`636b40's closest ray enters the world result list only for a null
+target or the actual registered idWorldspawn ancestry range1439b8470. A ray
+hitting an ordinary prop enters the entity list even though the ray mask
+overlaps both shape masks. Melee retains one existing vector, keyed by its
+source world/entity destination plus target; replacing the selected packet
+does not change that destination. Component class14 is CpntPhysicsWorld and
+is not substituted for the entity type check. The enemy collector merges
+into the entity list only for actual entity+d1 bit3 (0x800); live-enemy
+callbacks still require their unhosted NPC owner instead of a fake prop path.
+The separate635c90 target1aa receiver remains unproven/unimplemented; this
+change does not invent a receiver or acknowledge unknown gameplay callbacks.
+Prediction: one borrowed type/flag check per returned ray/enemy contact and
+one boolean in the existing dedup key; no new queues, resource acquisition,
+recording, physics queries or per-frame allocations. No timing gain is claimed.
+No builds, tests or visible launches were performed for this correction.
+
+`ported:`619380 assigns equipment+ac to the actual inventory owner before registration; ammo8ae9b0 keeps its separate constructor owner. Melee6364c0 retains distinct main2/initial4 source policies:633e50 rejects same-owner initial contacts, while6340f0 allows the original arkProjectile/arkGrenade exception for main contacts. Ownership comes from LiveEntities::owner, independently of reference binding. Initial81aa80 witnesses use point+normal*distance; main81b1a0 witnesses retain the raw point. Same-target selection compares the prepared contact's squared distance from the actual weapon frame (source packet+54), rather than mixing cast fractions and penetration lengths.
+
+`host:` ordinary619640 equipment removal now forwards active and holstered runtime callbacks into the existing Firing FIFO before retiring that runtime. The actual equipment identity, component children and canonical prepared resource scopes remain until every accepted callback and FX tail finishes. Attached44f2a0 smoke Stop follows the last accepted delivery, so a retained Fire cannot recreate an attachment after shutdown. There is no new queue, prototype copy, actor or forced update; visible equipment removal keeps the existing timing. Level retirement continues using its existing accepted-operation fence.
+
+Prediction: correct contacts and callbacks previously lost during removal, with no CPU/FPS or memory-gain claim. No new idle scans, per-frame allocation or queries; pending-delivery scans run only for actual retiring entries. Source/patch applicability and whitespace review only. This source is beyond compiled766603d4 and awaits the next coherent game/core/production validation. Grenade C8 readiness and generic usable audio are separate in-progress scopes; no invented1aa receiver is claimed.
+### Grenade birth dependency reservation reuse (2026-11-17)
+
+`host:`632f70 must complete490f70's actual armed ticket/fuse/flags transfer before C8 returns and target4911b0 Start. A runtime grenade now borrows the canonical FX dependency reservation already acknowledged by its exact retained prototype before spawn. The source helper validates the actual actor journal, prototype key and matching typed Grenade declaration Arc. Live instance FX scopes remain distinct; readiness still comes from reservation_ready. Held/placed components retain their own dependency reservation and release it on Deinit. Runtime components never release a borrowed prototype reservation; the actual actor prevents prototype pruning until component and FX-ticket retirement completes. All five authored armed/in-hand/underwater/explosion/failed-explosion paths are included in the existing prototype preparation. No private cache, duplicate actor, synchronous archive load, fake readiness or clock change is introduced.
+
+Prediction: removes one redundant dependency reservation and its asynchronous readiness gap per runtime grenade birth, preserving original callback/transfer ordering. No GPU-load, frame-time, or resident-memory gain is claimed. Source/ownership and whitespace review only; the edited birth path awaits the next coherent build and production observation.
+
+Coordinated766603d4 acceptance: game build and shared-core check passed; actual windowless gameplay and clean retirement on Edge of the World, Dust District and Institute, plus pause-menu exit, all exited0. Evidence: analysis/gameplay-repair-20261116/gameplay-cycle-result.json and gameplay-runtime-result.json (finished2026-11-17T04:33:51Z). This covers the compiled Far Reach loading/readiness/retirement batch only. It does not verify pulling/catching appearance or input, FPS, the later HUD/melee/ranged/grenade corrections, or in-progress generic usable audio. No visible instance or test suite was launched.

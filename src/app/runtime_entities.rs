@@ -599,6 +599,25 @@ pub(super) fn contact_scope(world: &World, definition: &Definition) -> Option<Ar
             .clone(),
     )
 }
+///The actual born actor retains this prototype until component Stop/Deinit
+///and its FX tickets retire. Its already acknowledged dependency reservation
+///can therefore serve that same Grenade without another asynchronous Reserve.
+pub(super) fn grenade_dependency_scope(world: &World, id: EntityId,
+    grenade: &Arc<crate::assets::grenades::Definition>) -> Result<Option<Arc<str>>, String> {
+    let Some(owner) = world.get_resource::<RuntimeEntities>() else { return Ok(None); };
+    let Some(actor) = owner.actors.get(&id) else { return Ok(None); };
+    //Placed actors can have a removal-only journal with no runtime prototype.
+    //Their actual component still owns its ordinary dependency reservation.
+    if actor.prototype.is_none() && actor.definition.is_none() { return Ok(None); }
+    let definition = actor.definition.as_ref().ok_or("Grenade actor has no actual source definition")?;
+    if !definition.components.iter().chain(&definition.stick_components)
+        .any(|component|matches!(&component.kind, Kind::Grenade(source) if Arc::ptr_eq(source, grenade))) {
+        return Err("Grenade payload differs from its actual runtime prototype source".into());
+    }
+    let key = actor.prototype.ok_or("Grenade actor has no retained source prototype")?;
+    let prototype = owner.prototypes.get(&key).ok_or("Grenade actor's retained source prototype is absent")?;
+    Ok(Some(prototype.fx_key.clone()))
+}
 pub(super) fn fired_sound(
     world: &World,
     definition: &Definition,

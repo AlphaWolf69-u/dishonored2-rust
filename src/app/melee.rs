@@ -258,7 +258,11 @@ fn witness(hit: Hit) -> ShapeRayContact {
         Hit::Shape(hit) => ShapeRayContact {
             target: hit.target,
             fraction: hit.fraction,
-            position: hit.position,
+            //633e50 calls81aa80(...,true): initial penetration4 uses
+            //point+normal*distance.6340f0/81b1a0 uses the raw point for2.
+            position: if hit.flags == 4 {
+                std::array::from_fn(|axis| hit.position[axis] + hit.normal[axis] * hit.distance)
+            } else { hit.position },
             normal: hit.normal,
             flags: hit.flags,
         },
@@ -553,16 +557,30 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         {
                             continue;
                         }
+                        if !scene.melee_contact_allowed(live, entry.entity, hit)? {
+                            continue;
+                        }
+                        let world_hit = scene.melee_contact_world(live, hit, bank)?;
                         if let Some(existing) = entry
                             .hits
                             .iter_mut()
-                            .find(|(existing, _)| existing.entity == hit.entity)
+                            .find(|(existing, category)| *category == world_hit && existing.entity == hit.entity)
                         {
-                            if hit.hit.distance_parameter() < existing.0.hit.distance_parameter() {
+                            //633a70/633e50 compare packet+54: squared distance
+                            //from the real weapon origin to the prepared point.
+                            //Penetration distance and cast fraction have
+                            //different units and cannot be compared together.
+                            let origin = Vec3::from_array(current.position);
+                            let candidate = Vec3::from_array(witness(hit.hit).position).distance_squared(origin);
+                            let previous = Vec3::from_array(witness(existing.0.hit).position).distance_squared(origin);
+                            if candidate < previous {
                                 existing.0 = *hit;
                             }
                         } else {
-                            entry.hits.push((*hit, bank == 0 || bank == 3));
+                            //633a70/633e50 select a packet inside its source
+                            //list. Replacing it must retain that destination,
+                            //not turn a prop ray into a world-bank contact.
+                            entry.hits.push((*hit, world_hit));
                         }
                     }
                 }

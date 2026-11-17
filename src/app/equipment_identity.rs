@@ -226,7 +226,10 @@ fn admit(
     let runtime_flags = constructor_flags | if ammo { 0 } else { 8 };
     let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
-        .initialized(id)
+        //619380 writes the actual inventory owner's ID at equipment+ac
+        //before8aecc0 registration. Ammo8ae9b0 leaves its own owner unset.
+        .set_owner(id, (!ammo).then_some(parent))
+        .and_then(|()| live.initialized(id))
         .and_then(|()| live.spawned(id))
         .and_then(|()| live.publish_spawn_tag(id, "MAIN"));
     if let Err(error) = publication {

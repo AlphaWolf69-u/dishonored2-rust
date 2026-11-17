@@ -224,7 +224,8 @@ pub(super) fn advance(
         entry
             .effects
             .retain(|effect| !super::super::usable_effects::entity_retired(world, &effect.ticket));
-        if entry.retired && !entry.stopping {
+        if entry.retired && !entry.stopping
+            && !owner.deliveries.iter().any(|delivery| delivery.message.entity == Some(entry.entity)) {
             //44f2a0 stops the gun's retained barrel-smoke actors. Independent
             //world muzzle one-shots retain their ordinary finite tail.
             for effect in entry.effects.iter().filter(|effect| effect.attached) {
@@ -356,8 +357,15 @@ pub(super) fn advance(
         }
     }
     let mut retirement_error = None;
+    let deliveries = &owner.deliveries;
     owner.owned.retain(|_, entry| {
         if !entry.retired || entry.pending.is_some() || !entry.effects.is_empty() {
+            return true;
+        }
+        //Only an actual removal scans accepted callbacks. Keep both the
+        //prototype leases and source identity while a retained Fire can still
+        //publish a projectile or an attached/world muzzle actor.
+        if deliveries.iter().any(|delivery| delivery.message.entity == Some(entry.entity)) {
             return true;
         }
         if entry.requested {

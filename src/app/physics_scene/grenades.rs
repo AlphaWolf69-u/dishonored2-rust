@@ -15,6 +15,11 @@ use bevy::prelude::World;
 
 pub(super) struct Resources {
     scope: Arc<str>,
+    ///Dependency ownership is separate from the live FX instance's scope.
+    ///Born runtime actors borrow their own prewarmed prototype reservation;
+    ///held/placed components own the existing per-component reservation.
+    dependency_scope: Arc<str>,
+    owns_reservation: bool,
     armed: Option<(Arc<str>, EffectTicket)>,
     stopped: Vec<EffectTicket>,
     explosion: Option<EffectTicket>,
@@ -188,14 +193,22 @@ impl PhysicsScene {
         paths.sort();
         paths.dedup();
         let scope: Arc<str> = Arc::from(format!("grenade:{:016x}:{}", key.0, key.1));
-        world
-            .get_resource_mut::<EffectRequests>()
-            .ok_or("Grenade FX source owner absent")?
-            .reserve(scope.clone(), paths);
+        let id = self.entities[self.grenade_index(handle)?].shared;
+        let prepared = super::super::runtime_entities::grenade_dependency_scope(world,id,&component.definition)?;
+        let owns_reservation = prepared.is_none();
+        let dependency_scope = prepared.unwrap_or_else(||scope.clone());
+        if owns_reservation {
+            world
+                .get_resource_mut::<EffectRequests>()
+                .ok_or("Grenade FX source owner absent")?
+                .reserve(scope.clone(), paths);
+        }
         self.grenade_resources.insert(
             key,
             Resources {
                 scope,
+                dependency_scope,
+                owns_reservation,
                 armed: None,
                 stopped: Vec::new(),
                 explosion: None,
@@ -220,12 +233,12 @@ impl PhysicsScene {
         if resources.closing {
             return Ok(false);
         }
-        super::super::usable_effects::reservation_ready(world, &resources.scope)
+        super::super::usable_effects::reservation_ready(world, &resources.dependency_scope)
     }
     pub(in crate::app) fn debug_grenade_resources(&self,world:&World,handle:ComponentHandle)->String {
         match self.grenade_key(handle).and_then(|key|self.grenade_resources.get(&key).ok_or("scope=absent".into())) {
             Ok(resources)=>format!("Grenade {handle:?} closing={} armed={} stopped={} explosion={}\n    {}",resources.closing,resources.armed.is_some(),resources.stopped.len(),resources.explosion.is_some(),
-                super::super::usable_effects::debug_reservation(world,&resources.scope)),
+                super::super::usable_effects::debug_reservation(world,&resources.dependency_scope)),
             Err(error)=>format!("Grenade {handle:?} {error}"),
         }
     }
@@ -896,11 +909,13 @@ impl PhysicsScene {
         }
         let key = self.grenade_key(handle)?;
         if let Some(resources) = self.grenade_resources.remove(&key) {
-            world
-                .ok_or("Grenade dependency release owner absent")?
-                .get_resource_mut::<EffectRequests>()
-                .ok_or("Grenade FX dependency release absent")?
-                .release_reservation(resources.scope);
+            if resources.owns_reservation {
+                world
+                    .ok_or("Grenade dependency release owner absent")?
+                    .get_resource_mut::<EffectRequests>()
+                    .ok_or("Grenade FX dependency release absent")?
+                    .release_reservation(resources.dependency_scope);
+            }
         }
         let component = self.grenades.get_mut(handle.slot).unwrap();
         component.pickable = None;

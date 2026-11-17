@@ -365,7 +365,11 @@ impl Player {
     /// The inventory's actual destruction notification retires the component.
     pub fn retire_ranged(&mut self, identity: &str) {
         if self.weapon_identity.as_deref() == Some(identity) { self.unequip_ranged(); }
-        self.holstered_weapons.remove(identity);
+        if let Some(mut runtime) = self.holstered_weapons.remove(identity) {
+            //619640 removes this component, not its already accepted source
+            //callbacks. Preserve holstered effects in the same owner FIFO.
+            self.weapon_effects.extend(runtime.drain_effects());
+        }
     }
     pub fn drain_weapon_effects(&mut self) -> std::vec::Drain<'_, weapons::WeaponMessage> {
         if let Some(weapon) = &mut self.weapon { self.weapon_effects.extend(weapon.drain_effects()); }

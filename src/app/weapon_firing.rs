@@ -637,6 +637,31 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
     Ok(owner.deliveries.is_empty())
 }
 
+/// Ordinary619640 removal must retain the real component identity and its
+/// prepared sources until every already accepted C8 callback acknowledges.
+/// The caller currently borrows PlayerState out: collect its existing queue,
+/// but leave dispatch to the normal publisher after that owner is restored.
+pub(super) fn begin_retirement(world: &mut World, player: &mut Player, identity: &str) -> Result<(), String> {
+    let owns = world.get_resource::<Firing>().is_some_and(|owner|
+        owner.owned.values().any(|entry| entry.identity.as_ref() == identity));
+    if !owns { return Ok(()); }
+    //Stop this actual scene/component before another input can spend ammo.
+    //unequip_ranged forwards its remaining runtime effects to Player's FIFO.
+    player.retire_ranged(identity);
+    {
+        let mut owner = world.resource_mut::<Firing>();
+        owner.deliveries.extend(player.drain_weapon_effects().map(|message| Delivery { message, phase: 0 }));
+    }
+    remove_owned(world, identity);
+    if let Some(error) = startup_error(world) { return Err(error.to_owned()); }
+    Ok(())
+}
+
+pub(super) fn retired(world: &World, identity: &str) -> bool {
+    world.get_resource::<Firing>().is_none_or(|owner|
+        !owner.owned.values().any(|entry| entry.identity.as_ref() == identity))
+}
+
 fn dispatch(
     world: &mut World,
     owner: &mut Firing,

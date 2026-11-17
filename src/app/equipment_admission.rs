@@ -225,6 +225,7 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<bool, String> {
     }
     if let Some(id) = id {
         if super::super::player_animation_events::blocks_retirement(world, id) { return Ok(false); }
+        if !super::super::weapon_firing::retired(world, identity) { return Ok(false); }
         super::super::weapon_throwing::remove_owned(world, identity);
         super::super::melee::remove_owned(world, identity);
         if !super::super::weapon_throwing::retired(world, identity)
@@ -693,7 +694,16 @@ pub(in crate::app) fn advance(world: &mut World) {
             if !removals.contains(identity) { removals.push(identity.clone()); }
         }
         for path in removals {
-            super::super::weapon_firing::remove_owned(world, &path);
+            //Collect already accepted runtime messages before removing the
+            //runtime. Normalpublish drains them after PlayerState is restored.
+            if let Err(error) = super::super::weapon_firing::begin_retirement(world, player, &path) {
+                actions.removed_equipment.push(path);
+                world.resource_mut::<RuntimeMaterialCoordinator>().equipment.load_error.get_or_insert(error);
+                continue;
+            }
+            //Remove the player's presentation immediately, as before. The
+            //retire_owned fence below retains the actual actor/children and
+            //prepared scopes through accepted callbacks and their tails.
             player.retire_equipment(&path);
             player.retire_ranged(&path);
             player.retire_throwable(&path);

@@ -179,6 +179,61 @@ impl MeleeQueries {
     }
 }
 impl PhysicsScene {
+    ///636b40 keeps world/entity result lists separate. Its closest-ray bank
+    ///goes to world only for null/idWorldspawn, independently of query layers.
+    pub(in crate::app) fn melee_contact_world(
+        &self, live: &LiveEntities, contact: &Contact, bank: usize,
+    ) -> Result<bool, String> {
+        match bank {
+            0 => Ok(true),
+            2 => Ok(false),
+            //The same registered idWorldspawn range1439b8470 is used by
+            //6123e0's existing typed check. classes[14] is a component class
+            //(CpntPhysicsWorld), so it cannot replace this entity type check.
+            3 => Ok(self.heart_context_target(live, contact.entity)?.is_none()),
+            1 => {
+                let target = contact.entity.ok_or("melee enemy collector target identity absent")?;
+                //636b40 merges +2298 into +1188 only for entity+d1 bit3.
+                //The remaining live-enemy list needs actual NPC callbacks;
+                //do not silently treat that unhosted owner as a plain prop.
+                if self.heart_context_target_alive(live, Some(target))? {
+                    return Err("melee live-enemy collector requires its actual NPC callback owner".into());
+                }
+                Ok(false)
+            }
+            _ => Err("melee collector bank is outside the source four tickets".into()),
+        }
+    }
+    ///6364c0 routes the two actual collectors separately.633e50(initial4)
+    ///rejects every same-owner target;6340f0(main2) retains the explicit
+    ///arkProjectile/arkGrenade exception. Ownership is entity+ac, not binding.
+    pub(in crate::app) fn melee_contact_allowed(
+        &self, live: &LiveEntities, equipment: EntityId, contact: &Contact,
+    ) -> Result<bool, String> {
+        let flags = match contact.hit {
+            //636b40 sends its separate closest-ray result directly to633a70.
+            Hit::Ray(_) => return Ok(true),
+            Hit::Shape(hit) => hit.flags,
+        };
+        if !matches!(flags, 2 | 4) { return Ok(false); }
+        let Some(source) = live.owner(equipment)? else { return Ok(true); };
+        let Some(target) = contact.entity else { return Ok(true); };
+        if target == source { return Ok(false); }
+        if live.owner(target)? != Some(source) { return Ok(true); }
+        if flags == 4 { return Ok(false); }
+        //TypeInfo registrations988/990: ranges1439cbec0/1439d46b0 are
+        //arkGrenade/arkProjectile. Walk the existing real class hierarchy.
+        let Some((_, mut class)) = live.get(target) else { return Ok(false); };
+        let classes = self.types.classes();
+        loop {
+            let metadata = classes.metadata(class).ok_or("melee target class metadata absent")?;
+            if matches!(classes.name_text(metadata.name), Some(b"arkProjectile" | b"arkGrenade")) {
+                return Ok(true);
+            }
+            let Some(base) = classes.hierarchy().node(class).and_then(|node|node.base) else { return Ok(false); };
+            class = base;
+        }
+    }
     pub(in crate::app) fn melee_body_dynamic(&self, hit: ShapeHitInfo) -> Result<bool, String> {
         let Some(body) = hit.body_id else {
             return Ok(false);
