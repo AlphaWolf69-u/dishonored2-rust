@@ -280,6 +280,7 @@ impl PhysicsScene {
         self.shared_indices.remove(&id);
         self.entities[index].retired = true;
         self.entities[index].name = String::new();
+        if let Some(presence)=self.removal_tampering.get_mut(index){*presence=None;}
         self.free_entities.push(index);
         Ok(())
     }

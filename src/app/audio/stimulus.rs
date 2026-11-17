@@ -44,7 +44,8 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             world
                 .get_resource::<super::super::physics_scene::PhysicsScene>()
                 .ok_or("sound stimulus scene owner absent")?
-                .contact_sound_distance(live, owner, &descriptor, distance)?
+                .contact_sound_distance(live, owner, &descriptor, distance)
+                .map_err(|error|format!("{error}; object={object:?} position={position:?} descriptor={descriptor:?}"))?
         };
         if let Some((distance, emit_general)) = distance {
             let payload = Payload::SoundStimulus {

@@ -512,6 +512,12 @@ pub(super) fn focus_and_interact(
         && player.as_deref().filter(|state| !state.debug_free_fly)
             .and_then(|state| state.player.as_ref())
             .is_some_and(|player| player.controller.pressed(22));
+    if let Some(player)=player.as_deref_mut().and_then(|state|state.player.as_mut()) {
+        if player.carrying.tracing_enabled() && player.controller.pressed(22) {
+            let target=focused.current.as_ref().and_then(|prompt|live.as_deref()?.find(&prompt.entity));
+            player.carrying.trace("frontend-input22",target,22,pressed);
+        }
+    }
     if pressed {
         super::pause_menu::trace_readable_ui(|| {
             format!(
@@ -1194,7 +1200,10 @@ pub(super) fn focus_and_interact(
                 Ok(Some((_, component))) => {
                     if component.definition.pickup_interaction.player_state==47 {
                         if let Err(error)=super::pickups::request_borrowed(&mut interactions,scene,live,player,id,false){warn!("Live hold pickup request: {error}");}
-                    } else {super::carrying::request(player, id, component.definition.clone());}
+                } else {
+                    let accepted=super::carrying::request(player, id, component.definition.clone());
+                    player.carrying.trace("frontend-live-carry",Some(id),component.definition.pickup_interaction.player_state,accepted);
+                }
                 }
                 Ok(None) => {}
                 Err(error) => warn!("Live carry action identity: {error}"),
@@ -1214,7 +1223,11 @@ pub(super) fn focus_and_interact(
             Ok(Some((id, definition))) => {
                 if definition.pickup_interaction.player_state==47 {
                     if let Err(error)=super::pickups::request_borrowed(&mut interactions,scene,live,player,id,false){warn!("Hold pickup request: {error}");}
-                } else {super::carrying::request(player, id, definition);}
+                } else {
+                    let state=definition.pickup_interaction.player_state;
+                    let accepted=super::carrying::request(player, id, definition);
+                    player.carrying.trace("frontend-placed-carry",Some(id),state,accepted);
+                }
             }
             Ok(None) => {}
             Err(error) => warn!("Carry action identity: {error}"),
@@ -1297,6 +1310,7 @@ pub(super) fn describe_carry_fixture(world:&World,id:crate::gameplay::entity_lif
         }
     }
     writeln!(out,"carry={}",super::physics_scene::carrying_host::describe_fixture_progress(world,id)).unwrap();
+    player.carrying.write_trace(&mut out);
     for (group,hits) in interactions.casts.hits.iter().enumerate(){writeln!(out,"production_cast group={group} count={} hits={:?}",hits.len(),&hits[..hits.len().min(64)]).unwrap();}
     writeln!(out,"physics={}",scene.describe_interaction_fixture(live,id,eye,axis.x_axis,interactions.sensor)?).unwrap();
     Ok(out)

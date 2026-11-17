@@ -196,7 +196,6 @@ pub(crate) enum Change {
 
 /// Only accepted state callbacks change ownership. The host drains these
 /// commands into the same rigid-body and parent-binding owners as the source.
-#[derive(Default)]
 pub struct Runtime {
     pending: Option<Target>,
     pub(crate) held: Option<Target>,
@@ -204,8 +203,28 @@ pub struct Runtime {
     pub(crate) release: super::combat::ActionRuntime,
     released: bool,
     pulling_started: bool,
+    debug_trace: Option<std::collections::VecDeque<(&'static str, Option<EntityId>, i32, bool)>>,
+}
+impl Default for Runtime {
+    fn default()->Self {
+        Self{pending:None,held:None,changes:Vec::new(),release:Default::default(),released:false,pulling_started:false,
+            debug_trace:(cfg!(debug_assertions)&&std::env::var_os("DH2_DEBUG_ACTION_SCENARIO").is_some()).then(std::collections::VecDeque::new)}
+    }
 }
 impl Runtime {
+    pub(crate) fn tracing_enabled(&self)->bool {self.debug_trace.is_some()}
+    ///Debug action evidence only. Disabled gameplay retains no history or
+    ///allocations; the enabled fixture keeps at most64 transition receipts.
+    pub(crate) fn trace(&mut self,event:&'static str,target:Option<EntityId>,state:i32,accepted:bool){
+        if let Some(rows)=&mut self.debug_trace {
+            if rows.len()==64{rows.pop_front();}
+            rows.push_back((event,target,state,accepted));
+        }
+    }
+    pub(crate) fn write_trace(&self,out:&mut String){
+        use std::fmt::Write;
+        writeln!(out,"carry_runtime pending={:?} held={:?} pulling_started={} queued_changes={} trace={:?}",self.pending.as_ref().map(|t|t.entity),self.held.as_ref().map(|t|t.entity),self.pulling_started,self.changes.len(),self.debug_trace).unwrap();
+    }
     pub(crate) fn has_work(&self) -> bool {
         self.pending.is_some() || self.held.is_some() || !self.changes.is_empty()
     }
@@ -213,7 +232,9 @@ impl Runtime {
         self.pending.is_some() || !self.changes.is_empty()
     }
     pub(crate) fn request(&mut self, target: Target) -> bool {
-        if self.pending.is_some() || self.held.is_some() || target.definition.hold.is_none() {
+        let accepted=!(self.pending.is_some() || self.held.is_some() || target.definition.hold.is_none());
+        self.trace("request",Some(target.entity),target.definition.pickup_interaction.player_state,accepted);
+        if !accepted {
             return false;
         }
         self.pending = Some(target);
@@ -232,6 +253,7 @@ impl Runtime {
         self.held.is_some()
     }
     pub(crate) fn begin_grab(&mut self) {
+        self.trace("activate-grab",self.pending.as_ref().map(|t|t.entity),48,self.pending.is_some());
         if let Some(target) = &self.pending {
             if !self.pulling_started {
                 self.changes.push(Change::Grab(target.clone()));
@@ -242,6 +264,7 @@ impl Runtime {
     /// 140841500 requests Hold only after the pull has actually reached its
     /// source acceptance test. A host frame count never completes a grab.
     pub(crate) fn reached(&mut self, entity: EntityId) -> Option<StateId> {
+        self.trace("physical-reached",Some(entity),48,self.pending.as_ref().is_some_and(|t|t.entity==entity));
         let target = self.pending.take_if(|target| target.entity == entity)?;
         let state = target.hold_state();
         self.held = Some(target);
@@ -249,6 +272,7 @@ impl Runtime {
         Some(state)
     }
     pub(crate) fn attach(&mut self) {
+        self.trace("activate-hold",self.held.as_ref().map(|t|t.entity),self.held.as_ref().map_or(-1,|t|t.hold_state().0),self.held.is_some());
         self.released = false;
         if let Some(target) = &self.held {
             self.changes.push(Change::Attach(target.clone()));
@@ -306,6 +330,7 @@ impl Runtime {
         self.released = false;
     }
     pub(crate) fn cancel_grab(&mut self) {
+        self.trace("cancel-grab",self.pending.as_ref().map(|t|t.entity),48,self.pulling_started);
         if let Some(target) = self.pending.take() {
             if self.pulling_started {
                 self.changes.push(Change::Release {

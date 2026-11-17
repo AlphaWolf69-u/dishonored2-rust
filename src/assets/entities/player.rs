@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default)]
 pub struct PlayerDeclarations {
+    pub ai_tampering_declared: bool,
     pub physics: Vec<(String, Value)>,
     pub audio: Vec<(String, Value)>,
     /// Optional listener resolved in the same ordered entity/source pass.
@@ -268,6 +269,8 @@ fn player_declarations_with_listener(
     let chain = entity_chain(&entity, &mut read)?;
     let entries = component_entries(&chain)?;
     let mut body_model = String::new();
+    let ai_tampering_declared = entries.iter().any(|(_, entry)|
+        atom(entry, "inheritedDecl").is_some_and(|name| kind_of(name) == Some("cpntaitampering")));
     for fields in &chain {
         let Some(edit) = scope(field(fields, "edit")) else { continue };
         if let Some(model) = scope(field(edit, "renderModelInfo")).and_then(|info| atom(info, "model")) {
@@ -362,7 +365,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { ai_tampering_declared, physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

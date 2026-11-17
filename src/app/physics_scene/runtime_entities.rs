@@ -483,6 +483,8 @@ impl PhysicsScene {
             self.entity_flags_d4[index] = flags;
         }
         self.shared_indices.insert(id, index);
+        self.removal_tampering.resize(self.entities.len(), None);
+        self.removal_tampering[index]=None;
         if removal_certified { self.certify_runtime_removal_absence(index); }
         Ok(id)
     }

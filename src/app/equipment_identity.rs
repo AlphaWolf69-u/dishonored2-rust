@@ -79,6 +79,7 @@ pub(super) fn admit_equipment(
     identity: &str,
     declaration: &str,
     class: &str,
+    ai_tampering_declared: bool,
 ) -> Result<EntityId, String> {
     // The native callback host temporarily borrows PlayerState out of World;
     // its constructed actor and this same managed generation remain alive.
@@ -101,6 +102,7 @@ pub(super) fn admit_equipment(
         class,
         parent,
         false,
+        ai_tampering_declared,
     )
 }
 
@@ -146,6 +148,9 @@ pub(super) fn admit_attachment(
         &descriptor.class,
         weapon,
         true,
+        //The canonical attachment reader admits only an actual AnimBasic
+        //component or a source component-less static-model constructor.
+        false,
     )?;
     world
         .resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
@@ -161,6 +166,7 @@ fn admit(
     class: &str,
     parent: EntityId,
     ammo: bool,
+    ai_tampering_declared: bool,
 ) -> Result<EntityId, String> {
     let key = Key {
         parent,
@@ -262,6 +268,7 @@ fn admit(
     );
     let admitted = super::runtime_entities::with_scene(world, |_, scene, live, events| {
         scene.admit_equipment_reference(live, events, id, birth_frame, timespace)?;
+        scene.publish_external_tampering_presence(live, id, ai_tampering_declared)?;
         scene.publish_equipment_runtime_flags(live, id, if ammo { constructor_flags | 0x10 } else { runtime_flags })?;
         scene.bind_equipment_reference(live, events, id, parent)
     });

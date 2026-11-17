@@ -2286,7 +2286,23 @@ impl StateMachine {
                     loot_requested |= id == StateId::LOOT_OBJECT;
                     grab_requested |= matches!(self.state(id).map(|state|&state.decl.kind),Some(Kind::GrabObject(_)));
                     grapple_requested |= id == StateId::GRAPPLE;
+                    if id==StateId::GRAB_OBJECT && frame.carrying.tracing_enabled() {
+                        //One bounded diagnostic receipt, not a replacement
+                        //admission decision. Bits name all actual48 gates.
+                        let gates=self.state(id).map_or(0,|state| {
+                            1 | (u32::from(frame.carrying.pending())<<1)
+                                | (u32::from(frame.carrying.grab_state()==Some(id))<<2)
+                                | (u32::from(frame.body_parts.can_activate(state.decl.flags.body_parts,state.decl.flags.unlocks_code_locked_body_parts))<<3)
+                                | (u32::from(match &state.decl.kind{Kind::GrabObject(d)=>frame.carrying.release.can_activate(frame.action_time,&d.action),_=>false})<<4)
+                                | (u32::from(snapshot.iter().all(|&from|self.rule(from,id).allow))<<5)
+                                | (u32::from(accepted.iter().all(|&(from,_)|self.rule(from,id).allow))<<6)
+                        });
+                        frame.carrying.trace("state48-gates(exists,pending,id,parts,cooldown,oldrules,newrules)",None,gates as i32,gates==127);
+                    }
                     self.accept(id, None, &snapshot, &mut accepted, frame);
+                    if id==StateId::GRAB_OBJECT && frame.carrying.tracing_enabled() {
+                        frame.carrying.trace("state-request48",None,id.0,accepted.iter().any(|(state,_)|*state==id));
+                    }
                 },
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
                 Command::RequestCatFall(damage) => self.accept(StateId::CATFALL, Some(damage), &snapshot, &mut accepted, frame),
@@ -2340,7 +2356,11 @@ impl StateMachine {
         }
         if read_note_requested { self.read_note.reject(); }
         if loot_requested && !self.is_active(StateId::LOOT_OBJECT) { self.world_pickup.reject(); }
-        if grab_requested && !self.active.iter().any(|id|matches!(self.state(*id).map(|state|&state.decl.kind),Some(Kind::GrabObject(_)))) {frame.carrying.cancel_grab();}
+        if grab_requested {
+            let active=self.active.iter().any(|id|matches!(self.state(*id).map(|state|&state.decl.kind),Some(Kind::GrabObject(_))));
+            frame.carrying.trace("state-request48-finished",None,48,active);
+            if !active {frame.carrying.cancel_grab();}
+        }
         if grapple_requested && !self.is_active(StateId::GRAPPLE) {
             frame.powers.grapple_pending = false;
             if let Some(run) = frame.powers.grapple.as_mut() { run.finished = true; run.aborted = true; }

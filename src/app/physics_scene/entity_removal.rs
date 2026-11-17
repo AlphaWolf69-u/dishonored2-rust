@@ -108,6 +108,21 @@ impl PhysicsScene {
         self.removal_tampering.resize(self.entities.len(), None);
         self.removal_tampering[index] = Some(false);
     }
+    ///External Player/equipment hosts supply the same complete source-list
+    ///presence projection while retaining their actual typed component owners.
+    pub(in crate::app) fn publish_external_tampering_presence(
+        &mut self, live:&LiveEntities, id:EntityId, declared:bool,
+    )->Result<(),String>{
+        let (_,class)=live.get(id).ok_or("external tampering projection generation is stale")?;
+        let index=*self.shared_indices.get(&id).ok_or("external tampering projection Scene owner absent")?;
+        let entity=self.entities.get(index).ok_or("external tampering projection header absent")?;
+        if entity.retired || !entity.external || entity.shared!=id || entity.class!=class {
+            return Err("external tampering projection has a different actual owner".into());
+        }
+        self.removal_tampering.resize(self.entities.len(),None);
+        self.removal_tampering[index]=Some(declared);
+        Ok(())
+    }
     ///876ff0 does nothing when lookup877720(mode2) finds actual AITampering;
     ///otherwise it invokes Remove. Source-declared but unhosted is an error,
     ///never a fabricated absent component or replacement ghost effect.

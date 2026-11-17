@@ -120,6 +120,7 @@ pub enum EntityEvent {
 }
 
 pub struct Player {
+    pub(crate) ai_tampering_declared: bool,
     pub physics: PlayerPhysics,
     pub controller: Controller,
     pub machine: StateMachine,
@@ -221,6 +222,7 @@ pub struct Player {
 
 /// Everything `Player::new` reads from the installed declarations.
 pub struct PlayerSetup {
+    pub ai_tampering_declared: bool,
     pub chaos: chaos::Definition,
     pub combat_fx: Option<std::sync::Arc<combat_fx::Definition>>,
     pub physics: physics::PhysicsDecl,
@@ -670,6 +672,7 @@ impl Player {
         let camera_axis = camera.view_axis(&pose, &physics, &camera_controls);
         Ok(Self {
             physics,
+            ai_tampering_declared: setup.ai_tampering_declared,
             controller,
             machine,
             swimming_machine: StateMachine::new(swimming_decls, &setup.swimming_rules, setup.swimming_default_state),

@@ -93,6 +93,7 @@ impl Carrying {
                         continue;
                     }
                     host.begin_pull(&target)?;
+                    player.carrying.trace("begin-owner-ack",Some(target.entity),target.grab.id.0,true);
                     self.pulling = Some(target);
                 }
                 Change::Attach(target) => {

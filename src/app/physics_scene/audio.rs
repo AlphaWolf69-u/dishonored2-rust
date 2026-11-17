@@ -148,6 +148,7 @@ impl PhysicsScene {
         descriptor:&crate::assets::wwise::game_properties::GameSoundProperties,
         distance:f32,
     )->Result<Option<(f32,bool)>,String>{
+        let result=(||{
         if distance<=0. || live.get(owner).is_none(){return Ok(None);}
         let npc=|id|->Result<bool,String>{
             let Some((_,mut class))=live.get(id) else{return Ok(false)};
@@ -178,6 +179,17 @@ impl PhysicsScene {
             }
         }else{true};
         Ok(Some((distance,emit_general)))
+        })();
+        result.map_err(|error:String|{
+            let identity=live.get(owner);
+            let class=identity.and_then(|(_,class)|self.types.classes().metadata(class))
+                .and_then(|metadata|self.types.classes().name_text(metadata.name))
+                .map(String::from_utf8_lossy);
+            let header=self.shared_indices.get(&owner).and_then(|&index|self.entities.get(index)
+                .map(|entity|(index,entity.external,entity.retired,
+                    self.removal_tampering.get(index).copied().flatten(),entity.components.entries.values())));
+            format!("sound stimulus owner={owner:?} source={identity:?} class={class:?} header={header:?} context={} distance={distance}: {error}",descriptor.context)
+        })
     }
     pub(in crate::app) fn audio_instance_context(
         &self,

@@ -520,6 +520,7 @@ fn retain_metadata(
         identity,
         &metadata.entity,
         &metadata.class_name,
+        metadata.ai_tampering_declared,
     )?;
     // Own the declaration before fallible component registration, so Stop can
     // unwind the exact managed generation even if audio registration fails.

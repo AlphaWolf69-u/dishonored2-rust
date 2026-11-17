@@ -26,6 +26,8 @@ mod firing;
 pub struct Metadata {
     pub entity: String,
     pub class_name: String,
+    /// Complete inherited component admission, used by6dfa50's mode1 lookup.
+    pub ai_tampering_declared: bool,
     pub model: Option<String>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     pub component_kind: String,
@@ -244,7 +246,10 @@ impl Sources {
         };
         let mut class_name = None;
         let mut entity_model = None;
-        for layer in entities::player::entity_chain(&key, &mut |path| sources.read(path))? {
+        let chain = entities::player::entity_chain(&key, &mut |path| sources.read(path))?;
+        let ai_tampering_declared = entities::player::entity_component_from_chain(
+            &chain, "cpntaitampering", |path| sources.read(path))?.is_some();
+        for layer in chain {
             if let Some(class) = entities::scene_motion::atom(&layer, "class") {
                 class_name = Some(class.to_owned());
             }
@@ -354,6 +359,7 @@ impl Sources {
         let metadata = Arc::new(Metadata {
             entity: key.clone(),
             class_name,
+            ai_tampering_declared,
             model: entity_model,
             sound_settings,
             component_kind: kind.clone(),

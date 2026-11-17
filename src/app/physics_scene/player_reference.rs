@@ -62,6 +62,7 @@ impl PhysicsScene {
             });
             self.entity_flags_d4.push(0);
             self.shared_indices.insert(id, index);
+            self.publish_external_tampering_presence(live, id, player.ai_tampering_declared)?;
             index
         };
         let mut registry = self
