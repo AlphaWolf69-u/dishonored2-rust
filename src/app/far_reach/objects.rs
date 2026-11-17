@@ -136,7 +136,7 @@ impl Runtime {
             if request.phase == 1 && request.target.kind == ObjectKind::Pickup {
                 request.success = world.resource_scope(
                     |world, scene: Mut<crate::app::physics_scene::PhysicsScene>| {
-                        world.resource_scope(|world, live: Mut<LiveEntities>| {
+                        world.resource_scope(|world, live: Mut<LiveEntities>| -> Result<bool, String> {
                             let eligible = scene
                                 .grapple_pickable(&live, target)?
                                 .is_some_and(|(_, pickable)| pickable.interaction_flags & 2 == 0)

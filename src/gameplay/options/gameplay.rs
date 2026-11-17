@@ -348,7 +348,7 @@ impl Manager {
     }
 
     ///647ee0 reads the current preset's ammo level, then declaration+174.
-    pub fn ammo_quantity_offset(&self, difficulty: i32) -> Result<i32, String> {
+    pub fn ammo_quantity_offset(&self, difficulty: i32) -> Result<i32> {
         self.ammo_quantity_offsets.get(self.preset(difficulty)[8] as usize).copied()
             .ok_or_else(|| "ammo difficulty level is outside the reflected three levels".into())
     }

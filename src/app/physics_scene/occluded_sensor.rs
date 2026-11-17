@@ -362,7 +362,7 @@ impl PhysicsScene {
                 } else { None }
             } else { None };
             nearest = Some(Acquired {surface: TargetHit {
-                hit: WorldHit {body_flags: body.flags, user_data: body.user_data,
+                hit: WorldHit {body_flags: body.flags as u8, user_data: body.user_data,
                     material_id: Some(contact.target.material_id), position, normal,
                     value: contact.fraction, body: if level_body {0} else {hit.body_id}, key: contact.target.shape_key},
                 position: object.map_or(position + normal * radius, |target| target.origin),

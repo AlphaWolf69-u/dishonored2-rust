@@ -31,7 +31,7 @@ pub enum Change {
     Restore(EntityId),
     ReleaseBeam,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Tick {
     pub dt: f32,
     pub origin: Vec3,
@@ -39,7 +39,7 @@ pub(crate) struct Tick {
     pub targets: Targets,
     pub phase: u8,
 }
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Runtime {
     pub targets: Targets,
     pub active: bool,
