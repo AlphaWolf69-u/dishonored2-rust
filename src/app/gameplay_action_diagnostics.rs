@@ -715,6 +715,14 @@ impl Observation {
                 self.stage(Stage::ThrowObject,world)?;
             }
             Stage::ThrowObject if player(world)?.possession_state()==Some(14) => {
+                // Pickup aimed down at the real bottle. Aim level/up through
+                // ordinary input before throwing, so a valid immediate impact
+                // cannot retire it before the physical-motion observation.
+                let (_,camera)=player(world)?.published_camera_frame();
+                if camera.x_axis.z<0. {
+                    world.write_message(bevy::input::mouse::MouseMotion{delta:Vec2::new(0.,-8.)});
+                    return Ok(false);
+                }
                 let id=self.object.unwrap().0;
                 let frame=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),id)?
                     .ok_or("held object's actual frame absent")?;

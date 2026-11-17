@@ -291,6 +291,50 @@ impl RigidPostHost<'_> {
         notify_entity: bool,
     ) -> Result<(), String> {
         let (component, body) = self.body(actors, actor)?;
+        let body_id = body.id;
+        let linear = component.velocities.requested_linear[..3].try_into().unwrap();
+        let angular = component.velocities.requested_angular[..3].try_into().unwrap();
+        self.publish_body_data(actors, actor, body_id, linear, angular, notify_entity)
+    }
+
+    // Unlike the movement virtual 80a5f0, scheduled 80b7c0 receives a
+    // component directly. Its interface may remain linked to an actor whose
+    // current movement interface has since changed (751050 retains that link).
+    fn publish_component_body_frame(
+        &mut self,
+        actors: &mut PhysicsActorLinks,
+        actor: usize,
+        family: usize,
+        slot: u16,
+    ) -> Result<(), String> {
+        let entity = self.actor_entity(actors, actor)?;
+        let component = self.rigid[family].1.get(slot)
+            .ok_or("scheduled rigid publication component absent")?;
+        if component.owner.entity != Some(entity) {
+            return Err("scheduled rigid publication entity differs".into());
+        }
+        let body_id = component.body().ok_or("scheduled rigid publication body absent")?;
+        let link = actors.bodies.get(component.movement_body()?)
+            .ok_or("scheduled rigid publication interface absent")?;
+        if link.actor != Some(actor) || link.body_id != body_id {
+            return Err("scheduled rigid publication interface identity differs".into());
+        }
+        let linear = component.velocities.requested_linear[..3].try_into().unwrap();
+        let angular = component.velocities.requested_angular[..3].try_into().unwrap();
+        self.publish_body_data(actors, actor, body_id, linear, angular, true)
+    }
+
+    fn publish_body_data(
+        &mut self,
+        actors: &mut PhysicsActorLinks,
+        actor: usize,
+        body_id: u32,
+        linear: [f32; 3],
+        angular: [f32; 3],
+        notify_entity: bool,
+    ) -> Result<(), String> {
+        let body = self.world.bodies.get(body_id)
+            .ok_or("rigid publication body generation stale")?;
         let pose = ReferenceFrame {
             position: body.transform[3][..3].try_into().unwrap(),
             basis: std::array::from_fn(|axis| body.transform[axis][..3].try_into().unwrap()),
@@ -305,12 +349,8 @@ impl RigidPostHost<'_> {
         let velocities = body_origin_velocities(
             pose.position,
             motion.pose.center[..3].try_into().unwrap(),
-            component.velocities.requested_linear[..3]
-                .try_into()
-                .unwrap(),
-            component.velocities.requested_angular[..3]
-                .try_into()
-                .unwrap(),
+            linear,
+            angular,
         );
         // 80a5f0 supplies false inside an admitted 753c10 task; phase6's
         // 951c80/4c9560 supply true to produce that task when the body moved.
@@ -999,7 +1039,7 @@ impl PhysicsScene {
                         .get(movement)
                         .and_then(|body| body.actor)
                         .ok_or("scheduled rigid post actor absent")?;
-                    host.publish_body_frame(&mut self.actors, actor, true)?;
+                    host.publish_component_body_frame(&mut self.actors, actor, family, slot)?;
                 }
                 self.rigid_post_publication_cursor[1] += 1;
             }
