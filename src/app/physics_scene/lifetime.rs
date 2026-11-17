@@ -884,6 +884,16 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[4] {
+            if let Some(world) = self.world.as_deref_mut() {
+                super::super::audio::resume_component_object(world, crate::gameplay::sound::Emitter::Component {
+                    handle: handle.packed(), generation: self.scene.audios.get(handle.slot)
+                        .ok_or("audio Start component absent")?.owner.generation,
+                })?;
+            }
+            self.scene.start(handle, registry)?;
+            return self.scene.start_audio_events(self.live, self.events, handle);
+        }
         if self.scene.is_smart_object_class(handle.class_id) {
             self.scene.start(handle,registry)?;
             return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);
@@ -1070,11 +1080,14 @@ impl ComponentReleaseWorld for Host<'_> {
                 return Err("water exit publication requires its model owner".into());
             }
         } else if handle.class_id == scene.classes[4] {
-            scene
-                .audios
-                .get_mut(handle.slot)
-                .ok_or("audio component absent")?
-                .started = false;
+            let component = scene.audios.get_mut(handle.slot).ok_or("audio component absent")?;
+            if let Some(world) = self.world.as_deref_mut() {
+                super::super::audio::drain_component_posts(world, handle, component.owner.generation, component)?;
+                super::super::audio::retire_component_joints(world, handle.packed(), component.owner.generation, component)?;
+            } else if !component.posts.is_empty() {
+                return Err("audio Stop requires the accepted animation post backend".into());
+            }
+            scene.stop_audio_events(self.events, handle)?;
         } else if handle.class_id == scene.classes[5] {
             let actor = scene
                 .usables
@@ -1171,6 +1184,17 @@ impl ComponentReleaseWorld for Host<'_> {
         }
         if handle.class_id == self.scene.classes[4] && self.world.is_some() {
             let generation = self.owner(handle)?.generation;
+            {
+                let component = self.scene.audios.get_mut(handle.slot).ok_or("audio component absent")?;
+                super::super::audio::drain_component_posts(
+                    self.world.as_deref_mut().ok_or("published audio owner absent")?,
+                    handle, generation, component,
+                )?;
+                super::super::audio::retire_component_joints(
+                    self.world.as_deref_mut().ok_or("published audio owner absent")?,
+                    handle.packed(), generation, component,
+                )?;
+            }
             if !super::super::audio::retire_component_object(
                 self.world
                     .as_deref_mut()
@@ -1182,6 +1206,9 @@ impl ComponentReleaseWorld for Host<'_> {
             )? {
                 return Ok(ReleaseStatus::Pending);
             }
+            let component=self.scene.audios.get_mut(handle.slot).ok_or("audio Stop component absent")?;
+            component.allocated=false;
+            for joint in &mut component.joints { joint.allocated=false; }
         }
         if handle.class_id==self.scene.classes[19]&&!self.scene.grenade_stop_complete(self.world.as_deref(),handle)?{
             return Ok(ReleaseStatus::Pending);
@@ -1304,6 +1331,17 @@ impl ComponentReleaseWorld for Host<'_> {
         }
         if handle.class_id == self.scene.classes[4] && self.world.is_some() {
             let generation = self.owner(handle)?.generation;
+            {
+                let component = self.scene.audios.get_mut(handle.slot).ok_or("audio component absent")?;
+                super::super::audio::drain_component_posts(
+                    self.world.as_deref_mut().ok_or("published audio owner absent")?,
+                    handle, generation, component,
+                )?;
+                super::super::audio::retire_component_joints(
+                    self.world.as_deref_mut().ok_or("published audio owner absent")?,
+                    handle.packed(), generation, component,
+                )?;
+            }
             if !super::super::audio::retire_component_object(
                 self.world
                     .as_deref_mut()
@@ -1320,8 +1358,17 @@ impl ComponentReleaseWorld for Host<'_> {
                 .audios
                 .get_mut(handle.slot)
                 .ok_or("audio component absent")?;
+            super::super::audio::release_component_animation(
+                self.world.as_deref_mut().ok_or("published audio owner absent")?, component,
+            )?;
             component.allocated = false;
             component.started = false;
+        }
+        if handle.class_id == self.scene.classes[4] {
+            let component=self.scene.audios.get(handle.slot).ok_or("audio component absent")?;
+            if !component.posts.is_empty() || !component.animation_scopes.is_empty() {
+                return Err("audio Deinitialize retains unacknowledged animation resources".into());
+            }
         }
         self.shutdown(handle, registry)
     }

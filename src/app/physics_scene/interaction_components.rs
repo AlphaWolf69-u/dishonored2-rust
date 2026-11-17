@@ -673,6 +673,10 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if handle.class_id == self.scene.classes[4] {
+                self.scene.start(handle, registry)?;
+                return self.scene.start_audio_events(self.live, self.events, handle);
+            }
             if self.scene.is_smart_object_class(handle.class_id) {
                 self.scene.start(handle,registry)?;
                 return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);

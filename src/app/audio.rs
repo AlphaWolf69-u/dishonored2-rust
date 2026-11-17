@@ -19,6 +19,8 @@ pub(super) mod observation;
 use crate::assets::declaration_texts;
 mod effects;
 mod stimulus;
+mod animation;
+pub(super) use animation::{prepare_usable_animation_audio, drain_component_posts, release_component_animation};
 mod spatial;
 mod session;
 pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
@@ -112,8 +114,19 @@ pub(super) struct SoundCompletions {
     decode_failures: std::collections::HashMap<u32, String>,
     dynamic_sources: std::collections::HashSet<u32>,
     retired_sources: Vec<u32>,
+    ///709110 host handoff keyed by the SAME SoundEvent message identity.
+    component_posts: std::collections::HashMap<usize, animation::Cookie>,
+    component_cookies: std::collections::HashMap<crate::gameplay::sound::playing::PlayingId, animation::Cookie>,
+    notifications: std::collections::VecDeque<crate::gameplay::sound::playing::Notification>,
 }
 impl SoundCompletions {
+    /// c47a0 range belongs to actual retained posts/playing cookies, never all
+    ///possible keys of an AnimSet. This borrows the existing ticket owner.
+    fn component_range(&self, emitter: Emitter) -> Option<f32> {
+        self.component_posts.values().chain(self.component_cookies.values())
+            .filter(|cookie| cookie.emitter == emitter).map(|cookie| cookie.event.max_distance)
+            .reduce(f32::max)
+    }
     pub fn watch(&mut self, event: u32, emitter: Emitter) {
         self.completed.remove(&(event, emitter));
         self.next_watch = self.next_watch.checked_add(1).expect("sound watch identity exhausted");
@@ -147,9 +160,28 @@ impl SoundCompletions {
             self.retired_sources.push(event);
         }
     }
-    fn pump(&mut self) {
+    fn pump(&mut self, scene: &spatial::Scene, sounds: Option<&crate::rendering::bevy_backend::world_sounds::WorldSounds>) -> Result<(), String> {
         use crate::gameplay::sound::playing::NotificationKind;
-        for note in self.playing.take_notifications() {
+        self.notifications.extend(self.playing.take_notifications());
+        while let Some(note) = self.notifications.front().copied() {
+            if matches!(note.kind, NotificationKind::SourceReady | NotificationKind::EventPlaying) {
+                if let Some(cookie) = self.component_cookies.get(&note.id) {
+                    if let Some(descriptor) = cookie.event.game_descriptor.as_ref().filter(|_| !cookie.stimulus_sent) {
+                        let sounds = sounds.ok_or("Audio A9 stimulus owner absent")?;
+                        let position = scene.emitter(note.event.object).map_or(cookie.position, |frame| frame.position);
+                        sounds.lock().stimuli.push_back(crate::rendering::bevy_backend::world_sounds::Stimulus {
+                            owner: cookie.owner, object: note.event.object, position,
+                            distance: if cookie.event.game_defined { descriptor.propagation_distance } else { cookie.event.max_distance },
+                            descriptor: descriptor.clone(),
+                        });
+                    }
+                    // Keep the declaration lease through End, consume the actual
+                    //8000 callback once even if Duration follows EventPlaying.
+                    self.component_cookies.get_mut(&note.id).unwrap().stimulus_sent = true;
+                }
+            }
+            if matches!(note.kind, NotificationKind::End) { self.component_cookies.remove(&note.id); }
+            self.notifications.pop_front();
             // Unwatched posts still own a real object cookie and source ticket,
             // but cannot complete a separate watched post with the same key.
             if note.event.callbacks & 8 == 0 { continue; }
@@ -167,6 +199,7 @@ impl SoundCompletions {
                 NotificationKind::EventPlaying => {},
             }
         }
+        Ok(())
     }
 }
 #[derive(Resource, Default)]
@@ -458,6 +491,7 @@ struct PendingSound {
     watched: Option<u64>,
     // c4550/c6030 admit the playing ID and object cookie before source preparation.
     ticket: Option<crate::gameplay::sound::playing::Ticket>,
+    component: Option<animation::Cookie>,
 }
 
 fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut SoundCompletions,
@@ -474,6 +508,19 @@ fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut Sound
     });
 }
 
+///708620 enumerates the component's actual joint+1 slots, including a
+///game-defined object which never allocated a middleware voice. Engine voice
+///discovery alone cannot find an idle retained acoustic/joint object.
+pub(super) fn retire_component_joints(world: &mut World, handle: u64, generation: u32,
+    component: &crate::gameplay::sound::component::AudioComponent) -> Result<(), String> {
+    if component.owner.generation != generation { return Err("retiring Audio joint generation differs".into()); }
+    if !component.posts.is_empty() { return Err("retiring Audio joints retain accepted posts".into()); }
+    for joint in component.joints.iter().filter(|joint| joint.allocated) {
+        request_object_retirement(world, Emitter::ComponentJoint { handle, generation, joint: joint.joint })?;
+    }
+    Ok(())
+}
+
 /// Retire one actual component object before its generation can be recycled.
 /// Decode jobs remain shared with their other admitted clients.
 pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Result<bool, String> {
@@ -482,6 +529,8 @@ pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Re
     let mut joints = world.resource::<bevy_backend::Engine>().level_emitters();
     joints.extend(world.resource::<PendingSounds>().0.iter().map(|queued| request_emitter(&queued.request)));
     joints.extend(world.resource::<RetiringSounds>().0.keys().copied());
+    joints.extend(world.resource::<SoundCompletions>().component_posts.values().map(|cookie| cookie.emitter));
+    joints.extend(world.resource::<SoundCompletions>().component_cookies.values().map(|cookie| cookie.emitter));
     joints.retain(|joint| *joint != emitter && joint.player_owner() == emitter);
     for joint in &joints { request_object_retirement(world, *joint)?; }
     request_object_retirement(world, emitter)?;
@@ -505,6 +554,16 @@ pub(super) fn forget_retired_component_object(world: &mut World, emitter: Emitte
     Ok(())
 }
 
+///708340 can allocate new objects after a completed708620 Stop on the
+///same component generation. Remove only the acknowledged host FIFO marker.
+pub(super) fn resume_component_object(world: &mut World, emitter: Emitter) -> Result<(), String> {
+    match world.resource::<RetiringSounds>().0.get(&emitter).copied() {
+        None => Ok(()),
+        Some(ObjectRetirement::Complete) => forget_retired_component_object(world, emitter),
+        Some(_) => Err("Audio Start precedes acknowledged object return".into()),
+    }
+}
+
 /// Advance the existing consumer after exclusive callers restore scene owners.
 /// The output callback progresses independently; never spin waiting for it.
 pub(in crate::app) fn has_output(world: &World) -> bool { world.resource::<bevy_backend::Engine>().has_output() }
@@ -525,6 +584,7 @@ pub(in crate::app) fn poll_accepted_effects(world: &mut World) -> Result<(), Str
 pub(in crate::app) fn poll_object_retirements(world: &mut World) -> Result<(), String> {
     world.run_system_cached(bevy_backend::retire).map_err(|error| error.to_string())?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    stimulus::update(world)?;
     world.run_system_cached(reap_retiring_objects).map_err(|error| error.to_string())?;
     if let Some(error) = world.resource::<RetiringSounds>().0.iter().find_map(|(&emitter, &state)|
         (state != ObjectRetirement::Complete).then(|| world.resource::<bevy_backend::Engine>().object_retirement_pending(emitter).err()).flatten()) {
@@ -545,7 +605,9 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
         if *state != ObjectRetirement::Submitted { continue; }
         if !matches!(engine.object_retirement_pending(emitter), Ok(false)) { continue; }
         if completions.playing.references_object(emitter) { continue; }
-        if sounds.as_ref().is_some_and(|sounds| sounds.lock().playing.references_object(emitter)) { continue; }
+        if sounds.as_ref().is_some_and(|sounds| { let sounds = sounds.lock();
+            sounds.playing.references_object(emitter) || sounds.stimuli.iter().any(|packet|packet.object == emitter)
+        }) { continue; }
         let events: std::collections::HashSet<_> = completions.waiting.keys().chain(completions.active.keys())
             .filter_map(|&(event, object)| (object == emitter).then_some(event)).collect();
         completions.waiting.retain(|(_, object), _| *object != emitter);
@@ -562,7 +624,7 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
     // Actual component/equipment generations retain acknowledgement until
     // their owner releases them; a later request must not restart retirement.
     retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete
-        || matches!(emitter, Emitter::Component { .. } | Emitter::Equipment { .. } | Emitter::PlayerJoint { .. }));
+        || matches!(emitter, Emitter::Component { .. } | Emitter::ComponentJoint { .. } | Emitter::Equipment { .. } | Emitter::PlayerJoint { .. }));
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
@@ -697,8 +759,8 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, reservations::advance, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, stimulus::scheduled, update_playing_volume, play_events, reap_retiring_objects)
-                .chain().after(super::model_motion::publish_model_poses));
+            .add_systems(PostUpdate, (animation::prepare, super::entity_messages::update, bevy_backend::retire, spatial::update, reservations::advance, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, stimulus::scheduled, update_playing_volume, play_events, reap_retiring_objects)
+                .chain().after(super::model_motion::publish_model_poses).after(super::model_motion::publish_bound_model_poses).after(super::machinery::pose_scene_systems));
     }
 }
 
@@ -1059,9 +1121,14 @@ fn play_events(
     mut decodes: ResMut<SoundDecodeQueue>,
     mut retiring: ResMut<RetiringSounds>,
     observer: Option<Res<observation::Observation>>,
+    sounds: Option<Res<crate::rendering::bevy_backend::world_sounds::WorldSounds>>,
     (loading, exit): (Option<Res<super::loading_screen::Acquisition>>, Option<Res<super::loading_screen::ExitState>>),
 ) {
-    completions.pump();
+    if let Err(error) = completions.pump(&scene, sounds.as_deref()) {
+        error!("Audio component callback failed: {error}");
+        commands.write_message(AppExit::error());
+        return;
+    }
     for event in std::mem::take(&mut completions.retired_sources) { registry.release_dynamic_source(event, DecodeClient::Watched); }
     let wanted_decodes: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
     decodes.retain_client(DecodeClient::Watched, &wanted_decodes);
@@ -1094,7 +1161,8 @@ fn play_events(
                 _ => {},
             }
         }
-        for message in event_cursor.0.read(&events) {
+        for (message, message_id) in event_cursor.0.read_with_id(&events) {
+            completions.component_posts.remove(&message_id.id);
             match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } => completions.failed(event, emitter),
@@ -1104,7 +1172,7 @@ fn play_events(
                         Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
                         Err(error) => {
                             warn!("Sound object retirement failed: {error}");
-                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None, message_id: None });
+                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None, message_id: None, component: None });
                         },
                     }
                 },
@@ -1121,14 +1189,14 @@ fn play_events(
                     | Request::PostAt { event, emitter, .. } => completions.waiting.get(&(event, emitter)).copied(),
                 Request::Stop { .. } | Request::Retire { .. } => None,
             };
-            PendingSound { request: message.0, message_id: Some(message_id.id), media: Vec::new(), watched, ticket: None }
+            PendingSound { request: message.0, message_id: Some(message_id.id), media: Vec::new(), watched, ticket: None, component: completions.component_posts.remove(&message_id.id) }
         })).collect();
     let mut waiting = Vec::new();
     for mut queued in requests {
         let emitter = request_emitter(&queued.request);
         let is_retire = matches!(queued.request, Request::Retire { .. });
         let state = retiring.0.get(&emitter).copied();
-        let stale_component = matches!(emitter, Emitter::Component { handle, generation }
+        let stale_component = matches!(emitter.player_owner(), Emitter::Component { handle, generation }
             if state != Some(ObjectRetirement::Queued)
                 && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
         let stale_equipment = matches!(emitter.player_owner(), Emitter::Equipment { entity, .. }
@@ -1182,14 +1250,20 @@ fn play_events(
         if queued.ticket.is_none() {
             let playing_id = engine.playing_id();
             let admitted = completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
-                declaration: event, object: emitter, callbacks: if queued.watched.is_some() { 8 } else { 0 },
+                declaration: event, object: emitter, callbacks: if queued.component.is_some() { 0x8009 } else if queued.watched.is_some() { 8 } else { 0 },
             });
             if let Some(observer) = &observer {
                 observer.record_admission(queued.message_id, playing_id, event, emitter,
                     completions.playing.object_count(emitter), admitted.as_ref().err());
             }
             match admitted {
-                Ok(ticket) => queued.ticket = Some(ticket),
+                Ok(ticket) => {
+                    if let Some(cookie) = queued.component.take() {
+                        if cookie.event.game_defined { ticket.source_ready(); }
+                        completions.component_cookies.insert(ticket.id(), cookie);
+                    }
+                    queued.ticket = Some(ticket);
+                },
                 Err(error) => {
                     warn!("Wwise event registration failed: {error}");
                     completions.failed_watch(event, emitter, queued.watched);
@@ -1197,6 +1271,8 @@ fn play_events(
                 },
             }
         }
+        if completions.component_cookies.get(&queued.ticket.as_ref().expect("admitted post").id())
+            .is_some_and(|cookie| cookie.event.game_defined) { continue; }
         if waiting.contains(&emitter) { pending.0.push(queued); continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
@@ -1244,7 +1320,7 @@ fn play_events(
             }
             if loading {
                 waiting.push(emitter);
-                pending.0.push(PendingSound { request, message_id: queued.message_id, media: holds, watched: queued.watched, ticket: queued.ticket });
+                pending.0.push(PendingSound { request, message_id: queued.message_id, media: holds, watched: queued.watched, ticket: queued.ticket, component: queued.component });
                 continue;
             }
             let tracked = queued.ticket.take();

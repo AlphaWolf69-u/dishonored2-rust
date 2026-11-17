@@ -1501,7 +1501,7 @@ impl Player {
             Emitter::Equipment { entity, .. } => self.body.equipment.iter().flatten()
                 .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
                 .find(|tree| tree.managed_entity == Some(entity))?.sound_settings?,
-            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::PlayerJoint { .. } => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::ComponentJoint { .. } | Emitter::PlayerJoint { .. } => return None,
         };
         Some(settings.rate(clock_rate))
     }
@@ -1569,7 +1569,7 @@ impl Player {
             Emitter::Equipment { entity, .. } => return self.equipment_entity_frames.iter()
                 .find(|(emitter, ..)| matches!(emitter, Emitter::Equipment { entity: owner, .. } if *owner == entity))
                 .map(|(_, p, r, _)| (*p, *r)),
-            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::PlayerJoint { .. } => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } | Emitter::ComponentJoint { .. } | Emitter::PlayerJoint { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
         let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);

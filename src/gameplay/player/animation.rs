@@ -572,7 +572,44 @@ impl Clone for AnimBasicNode {
 /// EPS_END (DAT_14231c520).
 const END_MARGIN: f32 = 0.001;
 
+/// Evaluated clip identity/frame/weight, bounded by AnimBasic's four leaves.
+/// Kept on the caller's stack across the actual update, never a second clock.
+#[derive(Clone, Copy, Debug)]
+pub struct BasicSoundWitness {
+    clip: usize,
+    frame: f32,
+    weight: f32,
+}
+
 impl AnimBasicNode {
+    pub fn sound_witnesses(&self, animations: &[EdgeAnimation]) -> [Option<BasicSoundWitness>; 4] {
+        std::array::from_fn(|index| self.clips.get(index).map(|clip| {
+            let animation = &animations[self.items[clip.item].clip];
+            BasicSoundWitness { clip: self.items[clip.item].clip,
+                frame: clip.time * animation.frame_rate.ceil(), weight: clip.weight }
+        }))
+    }
+
+    /// 6ff7a0/242bb0: only an actual positive predecessor of the same
+    /// animation, not ahead of this frame, can produce6ee650 callbacks.
+    /// A restart/seek/wrap with no eligible witness has no catch-up interval.
+    pub fn visit_sound_crossings(&self, previous: &[Option<BasicSoundWitness>; 4],
+        animations: &[EdgeAnimation], mut visit: impl FnMut(usize, i32, i32)) {
+        let current = self.sound_witnesses(animations);
+        for (index, witness) in current.iter().enumerate().rev() {
+            let Some(current) = witness else { continue; };
+            if current.weight <= 0.0 { continue; }
+            let mut selected: Option<&BasicSoundWitness> = None;
+            for old in previous.iter().rev().flatten().filter(|old|
+                old.weight > 0.0 && old.clip == current.clip && old.frame <= current.frame) {
+                if selected.is_none_or(|selected| selected.frame < old.frame) { selected = Some(old); }
+            }
+            let Some(old) = selected else { continue; };
+            let (old, new) = (old.frame as i32, current.frame as i32);
+            if old != new { visit(self.clips[index].item, old, new); }
+        }
+    }
+
     pub fn from_items(items: Vec<AnimBasicItem>, stop_blend_out: f32) -> Self {
         Self { items: items.into(), stop_blend_out, clips: Vec::new(), deferred: None }
     }

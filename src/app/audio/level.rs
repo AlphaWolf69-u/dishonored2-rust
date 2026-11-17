@@ -109,6 +109,8 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    joints: Option<Res<super::super::joint_frames::JointFrames>>,
+    mut completions: ResMut<super::SoundCompletions>,
     engine: Res<super::bevy_backend::Engine>,
     playing: Query<&super::AudioTarget>, mut events: MessageWriter<super::SoundEvent>)
 {
@@ -124,7 +126,37 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
         }
     }
     let result = physics.visit_audio_instances(&live, clock, |handle, binding, audio, frame, rate| {
-        if !audio.startup.deferred && !audio.allocated { return Ok(()); }
+        //709f70 joint objects use this SAME propagation/settings owner, not
+        //the default entity object or a second acoustic world.
+        for joint in audio.joints.iter().filter(|joint| joint.allocated) {
+            let emitter = Emitter::ComponentJoint { handle: handle.packed(), generation: audio.owner.generation, joint: joint.joint };
+            let frame = joints.as_ref().ok_or("Audio joint pose owner absent")?
+                .bound_frame(joint.placement, joint.joint, 3, [0.;3], [0.,0.,0.,1.], frame)?
+                .ok_or("Audio joint actual sampled frame absent")?;
+            let position = Vec3::from_array(frame.position);
+            let front = Vec3::from_array(frame.basis[0]);
+            scene.set_rate(emitter, binding.settings.rate(rate), rate == 0.0);
+            let range = completions.component_range(emitter).into_iter()
+                .chain(audio.posts.iter().filter(|post|post.joint==joint.joint)
+                    .map(|post|post.event.max_distance)).reduce(f32::max);
+            let Some(range) = range else {
+                scene.publish_frame(emitter, Position { position, front: Some(front) });
+                continue;
+            };
+            let evaluation = level.evaluate(emitter, position, front, range,
+                binding.propagation, binding.settings, true, false, &scene, detail)?;
+            let propagated = evaluation.propagated.unwrap_or(Propagated {
+                positions: Vec::new(), levels: Default::default(), auxiliary: Vec::new(),
+            });
+            scene.publish(emitter, Position { position, front: Some(front) }, propagated,
+                binding.settings.rate(rate), rate == 0.0);
+        }
+        if !audio.startup.deferred && !audio.allocated {
+            // A real joint slot does not allocate the default slot. Its A9
+            //posts still transfer immediately after the joint publication.
+            return super::animation::drain_published_posts(handle, audio, joints.as_deref(), &mut scene,
+                &mut events, &mut completions);
+        }
         let emitter = Emitter::Component { handle: handle.packed(), generation: audio.owner.generation };
         scene.set_rate(emitter, binding.settings.rate(rate), rate == 0.0);
         let dynamic = audio.runtime_definition.is_some();
@@ -138,7 +170,11 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
             front = rotate(front);
         }
         let result = (|| -> Result<(), String> {
-            let evaluation = level.evaluate(emitter, position, front, audio.startup.max_distance,
+            let callback_range = completions.component_range(emitter).into_iter()
+                .chain(audio.posts.iter().filter(|post|post.joint<0).map(|post|post.event.max_distance))
+                .reduce(f32::max);
+            let range = callback_range.map_or(audio.startup.max_distance, |range| range.max(audio.startup.max_distance));
+            let evaluation = level.evaluate(emitter, position, front, range,
                 binding.propagation, binding.settings, audio.allocated, false, &scene, detail)?;
             // A zero owner clock freezes the component update (8abb10).
             if rate != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {
@@ -176,7 +212,11 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
         })();
         let object = level.objects.entry(emitter).or_default();
         match result {
-            Ok(()) => object.error = None,
+            Ok(()) => {
+                object.error = None;
+                super::animation::drain_published_posts(handle, audio, joints.as_deref(), &mut scene,
+                    &mut events, &mut completions)?;
+            },
             Err(error) => {
                 if object.error.as_ref() != Some(&error) {
                     error!("Audio component {} {}: {error}", binding.entity_id, binding.slot);

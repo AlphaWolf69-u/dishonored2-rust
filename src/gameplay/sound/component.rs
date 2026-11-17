@@ -41,6 +41,23 @@ pub enum StartupAction { None, Stop, Post }
 /// Common ownership and default-slot state of arkCpntAudio. The host audio
 /// backend owns voice storage; this component retains the sound object after
 /// its voices stop, until the component's shutdown releases it (140708620).
+/// Accepted 875ba0 A9 delivery retained until the canonical audio FIFO accepts it.
+pub struct AnimationPost {
+    pub entity: crate::gameplay::entity_lifetime::EntityId,
+    pub frame: crate::gameplay::reference_frame::ReferenceFrame,
+    pub joint: i16,
+    pub placement: usize,
+    pub event: std::sync::Arc<SoundEventDeclaration>,
+}
+
+/// 708340 lazy joint slot; native default slot remains `allocated` below.
+pub struct JointObject {
+    pub allocated: bool,
+    pub joint: i16,
+    pub placement: usize,
+    pub max_distance: f32,
+}
+
 pub struct AudioComponent {
     pub owner: crate::gameplay::component_state::ComponentOwner,
     /// Runtime definitions belong to their actual component, rather than the
@@ -49,10 +66,14 @@ pub struct AudioComponent {
     pub startup: Startup,
     pub allocated: bool,
     pub started: bool,
+    pub audio_events_registered: bool,
+    pub posts: std::collections::VecDeque<AnimationPost>,
+    pub joints: Vec<JointObject>,
+    pub animation_scopes: Vec<std::sync::Arc<str>>,
 }
 impl Default for AudioComponent {
     fn default() -> Self {
-        Self { owner: Default::default(), runtime_definition: None, startup: Startup::default(), allocated: false, started: false }
+        Self { owner: Default::default(), runtime_definition: None, startup: Startup::default(), allocated: false, started: false, audio_events_registered: false, posts: Default::default(), joints: Vec::new(), animation_scopes: Vec::new() }
     }
 }
 impl crate::gameplay::component_state::ComponentInstance for AudioComponent {

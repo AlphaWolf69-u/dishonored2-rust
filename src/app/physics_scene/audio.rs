@@ -6,6 +6,141 @@ use crate::gameplay::{
 };
 
 impl PhysicsScene {
+    /// 708fc0 -> 7096b0: A9 belongs to Start, not resource initialization.
+    pub(in crate::app) fn start_audio_events(
+        &mut self, live:&LiveEntities,
+        events:&mut crate::gameplay::entity_events::EntityEvents, handle:ComponentHandle,
+    )->Result<(),String>{
+        let id=self.audio_message_identity(live,handle)?;
+        let component=self.audios.get_mut(handle.slot).ok_or("audio Start payload absent")?;
+        if !component.started{return Err("audio subscriptions require accepted Start".into());}
+        if !component.audio_events_registered {
+            events.register(0xa9,Some(id),crate::gameplay::entity_events::Listener::Component{
+                owner:self.owner_id,handle,generation:component.owner.generation,handler:0xa9,
+            });
+            component.audio_events_registered=true;
+        }
+        Ok(())
+    }
+
+    /// 709020 -> 709c00. Accepted posts are drained by the host before this call.
+    pub(in crate::app) fn stop_audio_events(
+        &mut self,events:&mut crate::gameplay::entity_events::EntityEvents,handle:ComponentHandle,
+    )->Result<(),String>{
+        if handle.class_id!=self.classes[4]{return Err("audio Stop class differs".into());}
+        let component=self.audios.get_mut(handle.slot).ok_or("audio Stop payload absent")?;
+        if !component.posts.is_empty(){return Err("audio Stop has unacknowledged animation posts".into());}
+        if component.audio_events_registered {
+            let index=component.owner.entity.ok_or("audio Stop owner absent")?;
+            let id=self.entities.get(index).ok_or("audio Stop entity absent")?.shared;
+            events.unregister(0xa9,Some(id),crate::gameplay::entity_events::Listener::Component{
+                owner:self.owner_id,handle,generation:component.owner.generation,handler:0xa9,
+            });
+            component.audio_events_registered=false;
+        }
+        component.started=false;
+        Ok(())
+    }
+
+    fn audio_message_identity(&self,live:&LiveEntities,handle:ComponentHandle)
+        ->Result<crate::gameplay::entity_lifetime::EntityId,String>{
+        if handle.class_id!=self.classes[4]{return Err("audio message class differs".into());}
+        let component=self.audios.get(handle.slot).ok_or("audio message component absent")?;
+        let index=component.owner.entity.ok_or("audio message owner absent")?;
+        let entity=self.entities.get(index).ok_or("audio message entity absent")?;
+        if entity.retired || live.get(entity.shared).is_none()
+            || self.shared_indices.get(&entity.shared)!=Some(&index)
+            || !entity.components.entries.values().contains(&handle.packed()) {
+            return Err("audio message owner is not the live linked component".into());
+        }
+        Ok(entity.shared)
+    }
+
+    /// Reserve against the actual A9 receiver; no receiver is a native no-op.
+    pub(in crate::app) fn admit_animation_audio(
+        &mut self,live:&LiveEntities,entity:&str,scope:std::sync::Arc<str>,
+    )->Result<Option<(ComponentHandle,u32)>,String>{
+        let Some(id)=live.find(entity) else{return Ok(None)};
+        let Some(&index)=self.shared_indices.get(&id) else{return Ok(None)};
+        let mut selected=None;
+        for &packed in self.entities[index].components.entries.values() {
+            let handle=ComponentHandle::from_packed(packed)?;
+            if handle.class_id==self.classes[4] {selected=Some(handle);break;}
+        }
+        let Some(handle)=selected else{return Ok(None)};
+        self.audio_message_identity(live,handle)?;
+        let component=self.audios.get_mut(handle.slot).ok_or("animation audio component absent")?;
+        if !component.started || !component.audio_events_registered{return Ok(None)};
+        if !component.animation_scopes.iter().any(|existing|existing==&scope){
+            component.animation_scopes.push(scope);
+        }
+        Ok(Some((handle,component.owner.generation)))
+    }
+
+    /// Register the demanded native joint slot before any event can fire.
+    pub(in crate::app) fn admit_animation_audio_joint(
+        &mut self,handle:ComponentHandle,generation:u32,joint:i16,placement:usize,max_distance:f32,
+    )->Result<(),String>{
+        if handle.class_id!=self.classes[4]{return Err("animation joint audio class differs".into());}
+        let component=self.audios.get_mut(handle.slot).ok_or("animation joint audio component absent")?;
+        if component.owner.generation!=generation || !component.started {
+            return Err("animation joint audio generation or Start differs".into());
+        }
+        if joint < -1{return Err("animation sound joint is below default slot".into());}
+        if !max_distance.is_finite() || max_distance<0. {return Err("animation sound distance is invalid".into());}
+        if joint==-1{return Ok(())}
+        if let Some(existing)=component.joints.iter_mut().find(|existing|existing.joint==joint){
+            if existing.placement!=placement{return Err("animation sound joint belongs to another placement".into());}
+            existing.max_distance=existing.max_distance.max(max_distance);
+        } else {
+            component.joints.push(crate::gameplay::sound::component::JointObject{joint,placement,max_distance,allocated:false});
+        }
+        Ok(())
+    }
+
+    /// A9 posts already accepted by the message owner remain drainable during Stop.
+    pub(in crate::app) fn drain_audio_posts(&mut self,world:&mut bevy::prelude::World)->Result<(),String>{
+        for index in 0..self.audios.chunk_count()*self.audios.items_per_chunk {
+            let Some(component)=self.audios.get_at_mut(index) else {continue};
+            if component.posts.is_empty(){continue;}
+            let handle=ComponentHandle{class_id:self.classes[4],slot:u16::try_from(index)
+                .map_err(|_|"audio post slot exceeds pool identity")?};
+            super::super::audio::drain_component_posts(world,handle,component.owner.generation,component)?;
+        }
+        Ok(())
+    }
+
+    /// 875ba0 -> 70a030 retains the real declaration through 708810 dispatch.
+    pub(super) fn audio_message(&mut self,live:&LiveEntities,
+        listener:crate::gameplay::entity_events::Listener,
+        event:&crate::gameplay::entity_events::Event,
+    )->Result<(),String>{
+        use crate::gameplay::entity_events::{Listener,Payload};
+        let Listener::Component{owner,handle,generation,handler}=listener
+            else{return Err("audio message listener differs".into())};
+        if owner!=self.owner_id || handler!=0xa9 || event.id!=handler {
+            return Err("audio message subscription differs".into());
+        }
+        let id=self.audio_message_identity(live,handle)?;
+        if event.target!=Some(id){return Err("audio message target differs".into());}
+        let frame=self.entity_frame(live,id)?.ok_or("audio message reference frame absent")?;
+        let component=self.audios.get_mut(handle.slot).ok_or("audio message payload absent")?;
+        if component.owner.generation!=generation || !component.started || !component.audio_events_registered {
+            return Err("audio message generation or Start ownership differs".into());
+        }
+        let Payload::AnimationSound{joint,event,placement}=&event.payload
+            else{return Err("A9 has no animation sound payload".into())};
+        if *joint >= 0 {
+            let slot=component.joints.iter_mut().find(|slot|slot.joint==*joint&&slot.placement==*placement)
+                .ok_or("A9 actual joint was not admitted by its animator")?;
+            slot.allocated=true;
+            slot.max_distance=slot.max_distance.max(event.max_distance);
+        } else { component.allocated=true; }
+        component.posts.push_back(crate::gameplay::sound::component::AnimationPost{
+            entity:id,frame,joint:*joint,event:event.clone(),placement:*placement,
+        });
+        Ok(())
+    }
     ///6dfb40/6dfa50: derive game-side hearing distance from the actual
     ///source identity/class and component admission, never an emitter name.
     pub(in crate::app) fn contact_sound_distance(

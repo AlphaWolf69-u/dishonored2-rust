@@ -112,6 +112,9 @@ impl PhysicsScene {
                 "registered entity listener has no admitted callback owner: {listener:?}"
             ));
         };
+        if handle.class_id == self.classes[4] {
+            return self.audio_message(live, listener, event);
+        }
         //7ed9f0's A2/A5/1A6 subscribers belong to the actual Breakable
         //pool, never the RigidBody/Throwable payload projection.
         if handle.class_id == self.classes[11] {

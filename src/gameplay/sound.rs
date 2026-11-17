@@ -63,13 +63,15 @@ pub enum Emitter {
     PlayerJoint { entity: Option<crate::gameplay::entity_lifetime::EntityId>, part: u8, joint: u16 },
     Effect(u64),
     Component { handle: u64, generation: u32 },
+    ///708340: actual component-generation slot joint+1, retained until708620.
+    ComponentJoint { handle: u64, generation: u32, joint: i16 },
 }
 
 impl Emitter {
     /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
     pub fn player_part(self) -> u8 {
         match self {
-            Self::Menu | Self::Effect(_) | Self::Component { .. } => 0,
+            Self::Menu | Self::Effect(_) | Self::Component { .. } | Self::ComponentJoint { .. } => 0,
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,
@@ -82,6 +84,7 @@ impl Emitter {
 
     pub fn player_owner(self) -> Self {
         match self {
+            Self::ComponentJoint { handle, generation, .. } => Self::Component { handle, generation },
             Self::PlayerJoint { entity: Some(entity), part, .. } => Self::Equipment { entity, part },
             Self::PlayerJoint { part: 1, .. } => Self::PlayerBody,
             Self::PlayerJoint { part: 2, .. } => Self::PlayerLeftArm,

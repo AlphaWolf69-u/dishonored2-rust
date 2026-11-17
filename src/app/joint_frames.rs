@@ -15,6 +15,8 @@ pub(super) struct JointBinding {
 struct Frames {
     initial: ReferenceFrame,
     current: ReferenceFrame,
+    /// Host demand ownership: attachment1, actual Audio joint slot2.
+    owners: u8,
 }
 
 struct PlacementFrames {
@@ -91,7 +93,7 @@ impl JointFrames {
                 let matrix = *usize::try_from(binding.joint).ok().and_then(|joint| matrices.get(joint))
                     .ok_or("bound joint is outside initialized pose bank")?;
                 let initial = matrix_frame(matrix);
-                entry.insert(Frames { initial, current: initial });
+                entry.insert(Frames { initial, current: initial, owners: 1 });
             }
             frames.bindings.insert((group.clone(), name.clone()), binding);
         }
@@ -135,10 +137,33 @@ impl JointFrames {
             let frames = self.placements.entry(*placement).or_insert_with(|| PlacementFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
-            frames.joints.entry(joint).or_insert(Frames { initial, current: initial });
+            frames.joints.entry(joint).and_modify(|frame| frame.owners |= 1)
+                .or_insert(Frames { initial, current: initial, owners: 1 });
             frames.bindings.insert((None, name.clone()), JointBinding { joint, offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true });
         }
         Ok(())
+    }
+
+    ///709f70 borrows the animator bank. Admit only actual sound-joint demands;
+    ///the existing final-pose publisher updates this same retained frame.
+    pub(super) fn admit_audio(&mut self, placement: usize, scale: [f32; 3], joint: i16,
+        initial: super::physics_skinning::Affine) -> Result<(), String> {
+        if joint < 0 { return Err("default audio object is not a skeleton demand".into()); }
+        let entry = self.placements.entry(placement).or_insert_with(|| PlacementFrames {
+            scale, bindings: HashMap::new(), joints: HashMap::new(),
+        });
+        if entry.scale != scale { return Err("audio and attachment placement scales differ".into()); }
+        let initial = matrix_frame(initial);
+        entry.joints.entry(joint).and_modify(|frame| frame.owners |= 2)
+            .or_insert(Frames { initial, current: initial, owners: 2 });
+        Ok(())
+    }
+
+    pub(super) fn release_audio(&mut self, placement: usize, joint: i16) {
+        let Some(entry) = self.placements.get_mut(&placement) else { return; };
+        if let Some(frame) = entry.joints.get_mut(&joint) { frame.owners &= !2; }
+        entry.joints.retain(|_, frame| frame.owners != 0);
+        if entry.joints.is_empty() && entry.bindings.is_empty() { self.placements.remove(&placement); }
     }
 
     /// `group` is the bound child's model (879890's property selector).
