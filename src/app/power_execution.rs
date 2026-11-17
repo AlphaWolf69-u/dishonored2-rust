@@ -395,7 +395,7 @@ fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Pl
                     world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
                         far.cancel_acquisition(&mut scene, world.resource::<LiveEntities>(), player)
                     })?;
-                    if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+                    if !far.has_cast_activity() && !player.power_cast_active(6) { far.cancel(player); }
                 }
             }
         }

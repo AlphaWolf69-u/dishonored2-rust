@@ -294,7 +294,8 @@ pub(super) fn update(
         //actual acquisition; ordinary inventory messages are not a log.
         if device.pickup_log_pending {
             match hud.as_ref().map(|hud| hud.queue_pickup(device.declaration.clone(), 1)).transpose() {
-                Ok(_) => device.pickup_log_pending = false,
+                Ok(Some(())) => device.pickup_log_pending = false,
+                Ok(None) => {},
                 Err(error) => error!("Audiograph pickup log delivery failed: {error}"),
             }
         }

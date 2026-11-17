@@ -419,14 +419,15 @@ impl PauseMenu {
     ///496760/841030 request a pickup log explicitly after actual admission.
     ///A loadout or silent scripted inventory change does not call this API.
     pub(super) fn queue_pickup(&self, item: Arc<crate::assets::inventory_item::PickableItem>, count: u32) -> Result<(), String> {
-        if !self.hud_started || self.hud_failed { return Ok(()); }
+        if self.hud_failed { return Err("HUD pickup delivery owner failed".into()); }
+        // Keep this epoch's accepted notice until the existing HUD-ready drain.
         self.hud_notifications.lock().map_err(|_| "HUD pickup mailbox poisoned")?
             .pending.push_back(super::hud_movie::notifications::Pickup::Item { item, count });
         Ok(())
     }
     ///6733c0 uses HUD-owned currency labels/image, not an inventory item.
     pub(super) fn queue_currency(&self,count:i32)->Result<(),String> {
-        if !self.hud_started || self.hud_failed {return Ok(());}
+        if self.hud_failed {return Err("HUD currency delivery owner failed".into());}
         self.hud_notifications.lock().map_err(|_|"HUD pickup mailbox poisoned")?
             .pending.push_back(super::hud_movie::notifications::Pickup::Currency {count});
         Ok(())

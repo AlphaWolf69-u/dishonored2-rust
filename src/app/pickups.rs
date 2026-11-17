@@ -285,7 +285,9 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
         //is independent of9B; silent loadout/script additions do not log.
         if !pending.hud_notified {
             if let Some(item) = &pending.item {
-                if let Some(hud) = world.get_non_send_resource::<super::pause_menu::PauseMenu>() {
+                if matches!(item.type_number, 1 | 15) || (pending.admitted > 0 && item.type_number != 6) {
+                    let hud = world.get_non_send_resource::<super::pause_menu::PauseMenu>()
+                        .ok_or("pickup HUD delivery owner absent")?;
                     if matches!(item.type_number, 1 | 15) {
                         hud.queue_currency(pending.definition.quantity)?;
                     } else if pending.admitted > 0 && item.type_number != 6 {
