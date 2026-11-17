@@ -212,6 +212,26 @@ pub(super) fn reservation_ready(world: &bevy::prelude::World, key: &str) -> Resu
     Ok(owner.reservations_ready.contains(key))
 }
 
+///The same actual playing publication used by WorldFX, after its source,
+///descriptor, material, image and sound admission. No diagnostic snapshot or
+///extra resource acquisition is needed by persistent PlayerFX startup.
+pub(super) fn player_published(world: &bevy::prelude::World, name: &str, path: &str) -> Result<bool, String> {
+    let Some(owner) = world.get_resource::<UsableEffects>() else { return Ok(false) };
+    let Some((key, wanted)) = owner.wanted.iter().find(|(key, _)|
+        matches!(key, EffectOwner::Player(player) if player == name)) else {
+        let queued = world.get_resource::<EffectRequests>().is_some_and(|requests|
+            requests.0.iter().any(|request| matches!(request,
+                EffectRequest::StartPlayer { owner, path: requested } if owner == name && requested == path)));
+        return if queued { Ok(false) } else { Err(format!("Player FX {name} lost its accepted request for {path}")) };
+    };
+    if wanted.path != path { return Err(format!("Player FX {name} changed its requested source")); }
+    if !owner.ready.contains_key(key) { return Ok(false); }
+    Ok(world.get_resource::<crate::rendering::bevy_backend::world_effects::DynamicEffects>()
+        .is_some_and(|active| active.0.iter().any(|entry|
+            entry.owner.strip_prefix("player:") == Some(name)
+                && entry.effect == path && entry.revision == wanted.revision)))
+}
+
 ///A merged render snapshot keeps one effect per name. Gameplay preparation
 ///must also visit the actual acquired bundles whose equal-named sub-effects
 ///were shadowed there: their entity/explosion receipts belong to those leases.

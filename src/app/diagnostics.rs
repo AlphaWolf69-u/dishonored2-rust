@@ -582,6 +582,13 @@ pub(super) fn collision_report(
                 use std::io::Write;
                 let mut detail=String::new();
                 super::breakables::write_diagnostics(world,owner_eye,&mut detail);
+                super::flash_surfaces::write_diagnostics(world,&mut detail);
+                let last_hit=world.get_resource::<super::melee::Melee>()
+                    .and_then(|owner| owner.diagnostic_last_contact());
+                if let Some(scene)=world.get_resource::<super::physics_scene::PhysicsScene>() {
+                    scene.write_rigid_diagnostics(world,owner_eye,last_hit,&mut detail);
+                }
+                detail.push_str(&super::melee::debug_startup_pending(world));
                 match fs::OpenOptions::new().append(true).open(&owner_report_path) {
                     Ok(mut file)=>{if let Err(error)=file.write_all(detail.as_bytes()){eprintln!("Breakable report append failed: {error}");}},
                     Err(error)=>eprintln!("Breakable report open failed: {error}"),

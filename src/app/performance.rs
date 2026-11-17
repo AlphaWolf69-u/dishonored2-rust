@@ -235,6 +235,8 @@ pub(super) fn benchmark_frames(
         Option<Res<super::local_shadow_updates::LocalShadowOwner>>,
         Res<super::shadow_pass::LocalShadowCompletion>,
         Res<super::ViewSettings>,
+        Option<Res<super::SceneData>>,
+        Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     ),
     mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>, bool)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
@@ -245,7 +247,15 @@ pub(super) fn benchmark_frames(
     };
     // Async compilation must not produce an apparent speedup by omitting the
     // forward depth or either native shadow owner. Warm up complete rendering.
-    let (forward, directional, sun, local, local_done, view_settings) = render_ready;
+    let (forward, directional, sun, local, local_done, view_settings, scene, clock) = render_ready;
+    let probe_boundary = |phase: &str, elapsed: f32| {
+        if scene.as_ref().and_then(|scene| scene.environment_probes.as_ref())
+            .is_some_and(|probes| probes.write_query_diagnostics(phase)) {
+            println!("PROBE_QUERY_WALK_BOUNDARY phase={phase} elapsed={elapsed} clock_frame={:?} player_time={:?}",
+                clock.as_ref().and_then(|clock| clock.clock().ok()).map(|clock| clock.frame_marker()),
+                clock.as_ref().and_then(|clock| clock.player_time().ok()));
+        }
+    };
     if let Err(error) = &view_settings.0 {
         eprintln!("BENCHMARK INVALID: view settings unavailable: {error}; no FPS result");
         exit.write(AppExit::error());
@@ -293,6 +303,7 @@ pub(super) fn benchmark_frames(
     // DH2_BENCHMARK_SCREENSHOT=<png>: the first measured frame, for
     // comparing rendering before and after a change at a fixed view.
     if previous_elapsed < target.1 && *elapsed >= target.1 {
+        probe_boundary("walk_start", *elapsed);
         bevy::render::renderer::reset_gpu_timeline();
         // Visibility timing likewise covers the measured frames, not loading.
         if let Some(timing) = visibility_timing.as_deref_mut() {
@@ -352,6 +363,7 @@ pub(super) fn benchmark_frames(
         }
     }
     if *elapsed >= target.0 {
+        probe_boundary("walk_end", *elapsed);
         if let Some((view, transform)) = camera.iter().next() {
             println!(
                 "BENCHMARK_INPUT viewport={:?} direction_game_xyz={:?} up_game_xyz={:?}",

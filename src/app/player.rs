@@ -436,6 +436,10 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         inventory_health_damage: crate::assets::damage::Declaration::acquire_inventory_health(catalog)?,
         slash_rules,
         mana: decls::mana(&declarations.mana)?,
+        mana_regen_sound: crate::assets::entities::scene_motion::atom(&declarations.mana,"m_beginRegenSoundEvent")
+            .filter(|name|!name.is_empty()&&!name.eq_ignore_ascii_case("NULL"))
+            .map(|name|crate::assets::wwise::event_resources::acquire_with(catalog,name,|path|
+                crate::assets::declaration_texts::read_common_or_catalog(catalog,path))).transpose()?,
         adrenaline: decls::adrenaline(&declarations.adrenaline)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,

@@ -4,6 +4,10 @@ use crate::{archive, bprobe, pnetwork};
 
 #[path = "probe_lighting/query.rs"]
 mod query;
+#[path = "probe_lighting/tree.rs"]
+mod tree;
+#[path = "probe_lighting/query_diagnostics.rs"]
+mod query_diagnostics;
 #[path = "probe_lighting/update.rs"]
 mod update;
 pub use query::ProbeQuery;
@@ -226,6 +230,8 @@ pub struct ProbeLightingSet {
     pub spatial: pnetwork::SpatialData,
     pub vertex_references: pnetwork::VertexReferences,
     pub cell_geometry: Vec<query::CellGeometry>,
+    cell_tree: tree::CellTree,
+    query_diagnostics: Option<std::sync::Arc<query_diagnostics::Diagnostics>>,
     // Last field: release the history after the owned probe data drops.
     _lease: std::sync::Arc<ProbeLease>,
 }
@@ -455,6 +461,11 @@ fn load_world_probes(
         eprintln!("MEMORY probe network stream: phase=after_probes path={network_resource} source_bytes={expected_size} peak_input_buffer_bytes=65536 primary={} secondary={} cells={} tetrahedra={} vertex_indices={} instance_offsets={} identity_crc={:08x}",
             probes.len(), reflection_probes.len(), spatial.cells.len(), spatial.tetrahedra.len(), vertex_references.tetrahedron_indices.len(), vertex_references.instance_offsets.len(), crc.sum());
     }
+    let cell_tree = tree::CellTree::build(&cell_geometry)?;
+    let query_diagnostics = query_diagnostics::Diagnostics::from_environment()?;
+    if let Some(path) = std::env::var_os("DH2_DEBUG_PROBE_QUERY_FIXTURE") {
+        cell_tree.write_fixture(std::path::Path::new(&path), &cell_geometry, &spatial.runtime_tetrahedra)?;
+    }
     Ok(Some(ProbeLightingSet {
         network_resource,
         probes,
@@ -464,6 +475,8 @@ fn load_world_probes(
         spatial,
         vertex_references,
         cell_geometry,
+        cell_tree,
+        query_diagnostics,
         _lease: lease,
     }))
 }
@@ -482,6 +495,11 @@ fn shader_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u8]> {
 }
 
 impl ProbeLightingSet {
+    /// Optional phase snapshots permit walking-only counter deltas; loading
+    /// and retirement must not be included in a walking CPU claim.
+    pub fn write_query_diagnostics(&self, phase: &str) -> bool {
+        if let Some(diagnostics) = &self.query_diagnostics { diagnostics.report(phase); true } else { false }
+    }
     /// Reflection preparation has consumed the secondary records. Runtime
     /// queries still use primary probes and the spatial reflection indices.
     #[cfg(feature = "game")]
@@ -684,6 +702,19 @@ impl ProbeLightingSet {
         position: [f32; 3],
         query: &mut ProbeQuery,
     ) -> Option<InterpolatedProbeLighting> {
+        let before = *query;
+        let selected = query.select(self, position);
+        let result = selected.and_then(|selected| self.interpolate_selected_sh(position, selected));
+        if let Some(diagnostics) = self.query_diagnostics.as_ref().filter(|diagnostics|
+            diagnostics.strategy() == query_diagnostics::Strategy::Verify) {
+            let mut control = before;
+            let selected = control.select_strategy(self, position, false);
+            let control = selected.and_then(|selected| self.interpolate_selected_sh(position, selected));
+            diagnostics.compare(position, result.as_ref(), control.as_ref());
+        }
+        result
+    }
+    fn interpolate_selected_sh(&self, position: [f32; 3], selected: usize) -> Option<InterpolatedProbeLighting> {
         let barycentric = |points: [[f32; 3]; 4]| {
             let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
             let cross = |a: [f32; 3], b: [f32; 3]| {
@@ -711,7 +742,6 @@ impl ProbeLightingSet {
             [first, second, third, 1.0 - first - second - third]
         };
 
-        let selected = query.select(self, position)?;
         let runtime = &self.spatial.runtime_tetrahedra[selected];
         'tetrahedron: for tetrahedron_index in [runtime.shader_index] {
             let tetrahedron = &self.spatial.tetrahedra[tetrahedron_index];

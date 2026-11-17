@@ -26,6 +26,7 @@ struct Progress {
     planned: bool,
     position: Option<Vec3>,
     velocity: Option<Vec3>,
+    angular: Option<Vec3>,
     positioned: bool,
     impulse_posted: bool,
 }
@@ -690,30 +691,10 @@ impl super::super::carrying::Host for CarryHost<'_> {
         let mut offset = Vec3::from_array(props.center_offset);
         offset.x += hold.distance;
         let rotation = Mat3::from_cols_array_2d(&props.angle_offset);
-        //83d770 corrects the entity-origin offset by its actual rigid COM.
-        if let Some(handle) = self.scene.document_rigid(index)? {
-            let body = self
-                .scene
-                .rigid_component(handle)?
-                .body()
-                .ok_or("attached body absent")?;
-            let shared = self.scene.world.clone();
-            let queries = shared.read().map_err(|_| "carry COM world poisoned")?;
-            let body = queries
-                .storage
-                .bodies
-                .get(body)
-                .ok_or("attached body stale")?;
-            let motion = queries
-                .storage
-                .motions
-                .get(body.motion_id)
-                .ok_or("attached body motion absent")?;
-            let frame = self.frame(target)?;
-            let local = Mat3::from_cols_array_2d(&frame.basis).transpose()
-                * (Vec3::from_array(frame.position)
-                    - Vec3::from_array(motion.pose.center[..3].try_into().unwrap()));
-            offset += rotation * local;
+        //83d770 ->731470 corrects only an actual PhysicsSystemEvolved
+        //center. An ordinary RigidBody COM is a different source owner.
+        if self.scene.grapple_dependency(index,4,[0x28,0])?.is_some() {
+            return Err("held PhysicsSystemEvolved requires its actual731470 center provider".into());
         }
         self.scene.bind_to_player(
             self.live,
@@ -775,7 +756,13 @@ impl super::super::carrying::Host for CarryHost<'_> {
                 .as_ref()
                 .ok_or("thrown target has no hold properties")?;
             let frame = self.frame(target)?;
-            let mut origin = self.center(index, frame)?;
+            //83de90/8c3cb0 uses731470 only for a real PhysicsSystem subtype.
+            //Ordinary rigid props launch from the entity origin, not render
+            //bounds or the Havok motion center.
+            if self.scene.grapple_dependency(index,4,[0x28,0])?.is_some() {
+                return Err("throw PhysicsSystem requires its actual731470 origin provider".into());
+            }
+            let mut origin = Vec3::from_array(frame.position);
             let (eye, axis) = player.published_camera_frame();
             let greater = player.carrying_greater_throw();
             let settings = if greater {
@@ -813,7 +800,17 @@ impl super::super::carrying::Host for CarryHost<'_> {
             let mut velocity = settings
                 .velocity(origin, destination, gravity, player.physics.velocity)
                 .ok_or("invalid authored throw speed or target")?;
-            //83de90 subtracts the actual current point velocity before149.
+            //83de90's spin axis is cross(normalized launch,-camera up).
+            let direction=velocity/velocity.length_squared().max(f32::MIN_POSITIVE).sqrt();
+            let spin_axis=direction.cross(-axis.z_axis);
+            let remove_spin=crate::platform::console::shared().read().cvars
+                .int("ark_throw_shifting_removeAngularVelocity").unwrap_or(0)!=0;
+            let angular=if safe.is_none()&&remove_spin {Vec3::ZERO} else {
+                spin_axis/spin_axis.length_squared().max(f32::MIN_POSITIVE).sqrt()*10.
+            };
+            //8086a0 returns the COM-offset displacement caused by this angular
+            //step divided by the actual entity delta. It does not read the
+            //body's current linear velocity.
             if let Some(handle) = self.scene.document_rigid(index)? {
                 let body = self
                     .scene
@@ -830,7 +827,17 @@ impl super::super::carrying::Host for CarryHost<'_> {
                     .motions
                     .get(body.motion_id)
                     .ok_or("thrown motion absent")?;
-                velocity -= Vec3::from_array(motion.linear_velocity[..3].try_into().unwrap());
+                let speed=angular.length();
+                if speed*speed>f32::from_bits(0x00800000) {
+                    let delta=self.clock.entity_delta(self.scene.entities[index].timespace)
+                        .ok_or("throw entity timespace absent")?;
+                    let r=Vec3::from_array(motion.pose.center[..3].try_into().unwrap())
+                        -Vec3::from_array(body.transform[3][..3].try_into().unwrap());
+                    let turn=crate::gameplay::shape_transform::rotation::axis_angle_basis(
+                        (angular/speed).extend(0.).to_array(),speed*delta);
+                    let turn=Mat3::from_cols_array_2d(&turn.map(|v|[v[0],v[1],v[2]]));
+                    velocity-=(turn*r-r)/delta;
+                }
             }
             drop(queries);
             if safe.is_some() {
@@ -840,6 +847,7 @@ impl super::super::carrying::Host for CarryHost<'_> {
             let progress = self.state.progress.get_mut(&target.entity).unwrap();
             progress.position = Some(position);
             progress.velocity = Some(velocity);
+            progress.angular = Some(angular);
             progress.planned = true;
         }
         if !self.state.progress[&target.entity].positioned {
@@ -861,7 +869,8 @@ impl super::super::carrying::Host for CarryHost<'_> {
                 .ok_or("throw velocity was not planned")?;
             // Native149 has six floats, flagbyte then source-defined padding.
             let mut payload = Vec::with_capacity(28);
-            for value in [velocity.x, velocity.y, velocity.z, 0., 0., 0.] {
+            let angular=self.state.progress[&target.entity].angular.ok_or("throw angular velocity was not planned")?;
+            for value in [velocity.x, velocity.y, velocity.z, angular.x, angular.y, angular.z] {
                 payload.extend_from_slice(&value.to_le_bytes());
             }
             payload.extend_from_slice(&[0; 4]);

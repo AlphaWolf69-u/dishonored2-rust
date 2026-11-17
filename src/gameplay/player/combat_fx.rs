@@ -6,6 +6,14 @@ use crate::{archive::Catalog, entities::{Value, scene_motion::{atom, child}},
         groups::sample_offsets, timing::EffectTimingRanges}};
 use std::sync::Arc;
 
+///684680/6846b0: this is a shared attached FX, separate from the focused
+///environment producer below. The shared FX owner decodes its FSDisto tracks.
+pub(crate) fn motion_blur_source(fields: &[(String, Value)]) -> Option<Arc<str>> {
+    atom(child(fields, "m_motionBlur"), "m_screenFX")
+        .filter(|path| !path.is_empty() && *path != "NULL")
+        .map(Arc::from)
+}
+
 struct Environment {
     definition: Arc<EnvironmentEffectDefinition>,
     offsets: EffectTimingRanges,

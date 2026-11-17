@@ -203,14 +203,17 @@ impl Blink {
             if distance >= 0.0 { (candidate, shape, needs_clearance, bottom) = self.clearance(world, input, candidate + direction * distance); }
         }
         let mantle = world.mantle(candidate, input.player_axis);
-        let cover = mantle.is_some_and(|target| {
+        // 1406205e0: the clearance result gates the cover-height exclusion,
+        // not the ledge admission itself. A fitting destination can still
+        // require the actual BlinkToMantle transition.
+        let cover = needs_clearance && mantle.is_some_and(|target| {
             let height = target.position.z - candidate.z;
             let ratio = if matches!(input.current_shape, 1 | 2) { self.settings.cover_ratio_sneak } else { self.settings.cover_ratio_stand };
             height >= self.settings.cover_min_height && height <= self.settings.cover_max_height
                 && (height - (target.position.z - hit_position.z)) / height < ratio
         });
         let mut selected_mantle = None;
-        if needs_clearance && wall && mantle.is_some() && !cover {
+        if wall && mantle.is_some() && !cover {
             let destination = mantle.unwrap();
             self.lock = Some(MantleLock { destination, origin: candidate, direction: d, position: input.camera_position });
             selected_mantle = Some(destination);

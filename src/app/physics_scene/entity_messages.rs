@@ -38,6 +38,9 @@ impl PhysicsScene {
         mut statistics:Option<&mut crate::app::player_statistics::PlayerStatistics>,
     ) -> Result<(), String> {
         let errors = events.pump(|listener, event, _commands| {
+            if matches!(listener,Listener::Component{handle,..} if handle.class_id==self.classes[53]) {
+                return self.dispatch_interactive_map(live,listener,event);
+            }
             if let Listener::AIStatistics { handle, generation, handler } = listener {
                 if handler != event.id {
                     return Err("AIStatistics message differs from its registered handler".into());

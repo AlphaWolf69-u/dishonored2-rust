@@ -58,6 +58,8 @@ struct PendingAction {
     event: u32,
     emitter: crate::gameplay::sound::Emitter,
     world_paused: bool,
+    clock_frozen: bool,
+    clock_paused: bool,
     paused_at: Option<u64>,
     _ticket: Option<crate::gameplay::sound::playing::Ticket>,
 }
@@ -231,27 +233,27 @@ impl Engine {
     pub(super) fn playing_ids(&self) -> crate::gameplay::sound::playing::PlayingIds { self.playing_ids.clone() }
 
     pub fn post_state(&self, action: crate::assets::wwise::StateAction, target_path: ActionTarget, event: u32,
-        emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
-        self.post_state_with_ticket(action, target_path, event, emitter, None)
+        emitter: crate::gameplay::sound::Emitter, clock_frozen: bool) -> Result<(), String> {
+        self.post_state_with_ticket(action, target_path, event, emitter, None, clock_frozen)
     }
 
     pub fn post_stop(&self, action: crate::assets::wwise::StopAction, target_path: ActionTarget, event: u32,
-        emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
-        self.post_stop_with_ticket(action, target_path, event, emitter, None)
+        emitter: crate::gameplay::sound::Emitter, clock_frozen: bool) -> Result<(), String> {
+        self.post_stop_with_ticket(action, target_path, event, emitter, None, clock_frozen)
     }
 
     pub fn post_state_with_ticket(&self, action: crate::assets::wwise::StateAction, target_path: ActionTarget, event: u32,
-        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>) -> Result<(), String> {
-        self.post_action(Action::State(action), target_path, event, emitter, ticket)
+        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>, clock_frozen: bool) -> Result<(), String> {
+        self.post_action(Action::State(action), target_path, event, emitter, ticket, clock_frozen)
     }
 
     pub fn post_stop_with_ticket(&self, action: crate::assets::wwise::StopAction, target_path: ActionTarget, event: u32,
-        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>) -> Result<(), String> {
-        self.post_action(Action::Stop(action), target_path, event, emitter, ticket)
+        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>, clock_frozen: bool) -> Result<(), String> {
+        self.post_action(Action::Stop(action), target_path, event, emitter, ticket, clock_frozen)
     }
 
     fn post_action(&self, action: Action, target_path: ActionTarget, event: u32,
-        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>) -> Result<(), String> {
+        emitter: crate::gameplay::sound::Emitter, ticket: Option<crate::gameplay::sound::playing::Ticket>, clock_frozen: bool) -> Result<(), String> {
         let shared = self.shared.as_ref().ok_or("shared audio action clock is unavailable")?;
         let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
         if shared.failed { return Err("shared audio action clock stopped after a processing error".into()); }
@@ -260,7 +262,8 @@ impl Engine {
         // (141127000) and Set State (14113c610) execute at the quotient tick.
         let tick = shared.tick.wrapping_add(u64::from(delay) / FRAMES as u64);
         let serial = shared.next_action();
-        let pending = PendingAction { tick, serial, action, target_path, event, emitter, world_paused: false, paused_at: None, _ticket: ticket };
+        let pending = PendingAction { tick, serial, action, target_path, event, emitter, world_paused: false,
+            clock_frozen, clock_paused: false, paused_at: None, _ticket: ticket };
         if delay < FRAMES as u32 { shared.execute(pending)?; }
         else { shared.pending_actions.push(pending); }
         Ok(())
@@ -301,10 +304,15 @@ impl Engine {
             let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
             let tick = shared.tick;
             for pending in &mut shared.pending_actions {
-                // Pause snapshots existing playing IDs. Later UI posts keep
-                // running; an owner's stopped clock remains an independent pause.
+                //709050 snapshots existing IDs only on entry to stopped time.
+                //A later accepted action starts outside that older snapshot.
                 if let Some(paused) = world_change { pending.world_paused = paused; }
-                if pending.world_paused || frozen(pending.emitter) {
+                let clock_frozen = frozen(pending.emitter);
+                if clock_frozen != pending.clock_frozen {
+                    pending.clock_frozen = clock_frozen;
+                    pending.clock_paused = clock_frozen;
+                }
+                if pending.world_paused || pending.clock_paused {
                     if pending.paused_at.is_none() { pending.paused_at = Some(tick); }
                 } else if let Some(start) = pending.paused_at.take() {
                     // Resume shifts the due tick by the paused interval

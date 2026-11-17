@@ -17,6 +17,7 @@ pub(super) struct Chains<'a> {
     pub(super) systems: &'a mut ParticleSystems,
     pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
+    pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
     pub(super) sound_systems: &'a mut SoundSystems,
     pub(super) sounds: &'a WorldSounds,
 }
@@ -44,6 +45,7 @@ pub(super) struct SubEffect {
     pub(super) light_head: u16,
     pub(super) sound_head: u16,
     pub(super) decal_head: u16,
+    pub(super) distortion_head: u16,
     pub(super) children: Vec<SubEffect>,
 }
 
@@ -109,6 +111,7 @@ impl SubEffect {
             light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
+            distortion_head: u16::MAX,
             children: Vec::new(),
             owner,
             group,
@@ -159,6 +162,7 @@ impl SubEffect {
         }
         context.systems.stop(self.head, now);
         context.lights.stop(self.light_head, now, true)?;
+        context.distortion.stop(self.distortion_head, now, true)?;
         context.decals.stop(self.decal_head, now);
         context
             .sound_systems
@@ -174,6 +178,7 @@ impl SubEffect {
         self.gameplay_events.clear();
         context.systems.clear(&mut self.head)?;
         context.lights.clear(&mut self.light_head)?;
+        context.distortion.clear(&mut self.distortion_head)?;
         context.decals.clear(&mut self.decal_head, |_| {})?;
         if self.sound_head != u16::MAX {
             let mut sounds = context.sounds.clone();
@@ -235,6 +240,7 @@ impl SubEffect {
                     &mut self.light_head,
                     &mut self.sound_head,
                     &mut self.decal_head,
+                    &mut self.distortion_head,
                     &mut self.gameplay_events,
                     &mut self.children,
                     context,

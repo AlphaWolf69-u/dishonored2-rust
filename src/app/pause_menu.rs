@@ -42,6 +42,7 @@ pub(super) use journal::presentation as readable_presentation;
 enum Command {
     Modal(journal::Command),
     PowerWheel(super::power_wheel_movie::Command),
+    Surface(super::flash_surface_movie::Command),
     Shutdown,
     StartHud { screen: (i32, i32), epoch: u64 },
     HudTick(f64, bool),
@@ -192,6 +193,11 @@ pub(super) fn state_movie_info(catalog: &Catalog, kind: &str, state: &str) -> Re
     //The descriptor's identity need not match its compiled movie. For
     //example powerwheel.iggyfile names quick_access_wheel.swf.1414fc810
     //reflects the actual m_flashFileName at descriptor+58.
+    iggy_movie_info(catalog, reference)
+}
+
+/// The same installed descriptor owner for screen and world movies.
+pub(super) fn iggy_movie_info(catalog: &Catalog, reference: &str) -> Result<(String, crate::gameplay::options::decl::Fields), String> {
     let descriptor = crate::assets::entities::player::resolved_decl("iggyfile", reference, |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
             .map(crate::assets::entities::owned_declaration_text))
@@ -434,6 +440,9 @@ impl PauseMenu {
     }
     pub(super) fn power_wheel_command(&self, command: super::power_wheel_movie::Command) -> Result<(), String> {
         self.commands.send(Command::PowerWheel(command)).map_err(|error| error.to_string())
+    }
+    pub(super) fn surface_command(&self, command: super::flash_surface_movie::Command) -> Result<(), String> {
+        self.commands.send(Command::Surface(command)).map_err(|error| error.to_string())
     }
     pub(super) fn hud_ready_for_wheel(&self) -> bool {
         self.hud_started && !self.hud_failed && self.hud_interval > 0.0 && !self.open && self.modal.active.is_none()
@@ -679,6 +688,7 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut modal = journal::Worker::default();
     let mut wheel = super::power_wheel_movie::Worker::default();
+    let mut surfaces = super::flash_surface_movie::Worker::default();
     let mut loaded: Option<Loaded> = None;
     let mut hud: Option<super::hud_movie::HudMovie> = None;
     let mut hud_epoch = 0u64;
@@ -698,6 +708,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       for command in commands {
         match command {
             Command::PowerWheel(command) => wheel.command(command, &mut generation),
+            Command::Surface(command) => surfaces.command(command, &mut generation),
             Command::Modal(command) => {
                 let cleared = matches!(&command.operation, journal::Operation::Clear);
                 let epoch = command.epoch;

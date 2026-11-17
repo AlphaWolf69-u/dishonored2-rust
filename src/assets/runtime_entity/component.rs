@@ -44,6 +44,8 @@ pub(super) fn from_resolved(
     if kind=="cpntaisearchspotdynamic" { defaults.add_updates(1); }
     let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
     let (native, payload) = match kind {
+        "cpntflashsurface" => ("arkCpntFlashSurface",Kind::FlashSurface(Arc::new(assets::flash_surface::Definition::read(fields)?))),
+        "cpntinteractivemap" => ("arkCpntInteractiveMap",Kind::InteractiveMap(Arc::new(assets::flash_surface::MapDefinition::read(fields)?))),
         "cpntrigidbody" => (
             "arkCpntRigidBody",
             Kind::Rigid(Arc::new(entities::rigid_body::Definition {

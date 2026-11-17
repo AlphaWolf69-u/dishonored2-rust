@@ -110,7 +110,7 @@ impl PhysicsScene {
         let Some((_, pickable)) = self.grapple_pickable(live, id)? else {
             return Ok(false);
         };
-        if pickable.interaction_flags & 2 != 0 {
+        if pickable.interaction_flags & 0xa != 0 {
             return Ok(false);
         }
         if !pickable.definition.item.is_empty() && pickable.item.is_none() {

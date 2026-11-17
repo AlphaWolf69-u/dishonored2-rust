@@ -1,5 +1,5 @@
 //! ScreenDisto vector accumulation and 326930's two colour resolves.
-use super::{sources::ScreenEffectSources, QuadDraw};
+use super::{sources::ScreenEffectSources, QuadDraw, FullscreenInputs, fullscreen::FullscreenDistortion};
 use bevy::{
     prelude::default,
     render::{
@@ -30,8 +30,9 @@ pub struct DistortionPasses {
     resolve: RenderPipeline,
     resolve_uniform: [Buffer; 2],
     resolve_binding: Option<([TextureViewId; 2], [BindGroup; 2])>,
+    fullscreen: Option<FullscreenDistortion>,
 }
-fn pipeline(
+pub(super) fn pipeline(
     device: &RenderDevice,
     module: &ShaderModule,
     layout: Option<&PipelineLayout>,
@@ -289,6 +290,7 @@ impl DistortionPasses {
             resolve,
             resolve_uniform,
             resolve_binding: None,
+            fullscreen: None,
         })
     }
     pub fn record_vectors(
@@ -298,6 +300,7 @@ impl DistortionPasses {
         encoder: &mut CommandEncoder,
         sources: &ScreenEffectSources,
         draws: &[QuadDraw],
+        fullscreen: Option<FullscreenInputs<'_>>,
         time: f32,
         depth: &TextureView,
         unproject: [f32; 3],
@@ -387,6 +390,14 @@ impl DistortionPasses {
         if !bytes.is_empty() {
             queue.write_buffer(&self.uniform, 0, &bytes);
         }
+        let draw_fullscreen = fullscreen.is_some_and(FullscreenInputs::active);
+        if draw_fullscreen {
+            if self.fullscreen.is_none() {
+                self.fullscreen = Some(FullscreenDistortion::new(device, &sources.fullscreen_state)?);
+            }
+            self.fullscreen.as_mut().unwrap().prepare(device, queue, fullscreen.unwrap(),
+                self.vector_extent, depth, &self.clamp, unproject)?;
+        }
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("screen distortion vectors"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -400,15 +411,26 @@ impl DistortionPasses {
             })],
             ..default()
         });
-        for (index, draw) in draws.iter().enumerate() {
-            let material = &self.materials[draw.material];
-            pass.set_pipeline(&self.pipelines[material.pipeline]);
-            pass.set_bind_group(
-                0,
-                &material.binding.as_ref().unwrap().1,
-                &[(index * self.stride) as u32],
-            );
-            pass.draw(0..3, 0..1);
+        for stage in [crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorBegin,
+            crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorEnd] {
+            // 3222f0 draws stage1 quads, scene perturbers, the view's
+            // UberMV program, then stage2 quads into the same attachment.
+            if stage == crate::assets::fx::screen_quad::ScreenQuadStage::MotionVectorEnd && draw_fullscreen {
+                let fullscreen = self.fullscreen.as_ref().unwrap();
+                pass.set_pipeline(&fullscreen.pipeline);
+                pass.set_bind_group(0, &fullscreen.binding.as_ref().unwrap().1, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            for (index, draw) in draws.iter().enumerate().filter(|(_, draw)| draw.stage == stage) {
+                let material = &self.materials[draw.material];
+                pass.set_pipeline(&self.pipelines[material.pipeline]);
+                pass.set_bind_group(
+                    0,
+                    &material.binding.as_ref().unwrap().1,
+                    &[(index * self.stride) as u32],
+                );
+                pass.draw(0..3, 0..1);
+            }
         }
         Ok(())
     }

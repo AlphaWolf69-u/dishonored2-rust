@@ -179,6 +179,29 @@ impl MeleeQueries {
     }
 }
 impl PhysicsScene {
+    pub(in crate::app) fn melee_contact_flags(&self, source: EntityId, target: Option<EntityId>)
+        -> Result<(u32, Option<u32>), String> {
+        let &index = self.shared_indices.get(&source).ok_or("melee source header absent")?;
+        let source = self.entities.get(index).ok_or("melee source slot absent")?;
+        let target = target.and_then(|id| self.shared_indices.get(&id)
+            .and_then(|&index| self.entities.get(index))
+            .filter(|entity| !entity.retired && entity.shared == id)
+            .map(|entity| entity.entity_flags));
+        Ok((source.entity_flags, target))
+    }
+
+    ///62fec0 suppresses the entire player-melee contact callback while the
+    ///real target's D3 bit0 is set. D3 is the high byte of the existing
+    ///canonical D0..D3 entity flags, not a new presentation state.
+    pub(in crate::app) fn melee_contact_enabled(&self, live: &LiveEntities,
+        target: Option<EntityId>) -> Result<bool, String> {
+        let Some(target) = target else { return Ok(false); };
+        if live.get(target).is_none() { return Ok(false); }
+        let Some(&index) = self.shared_indices.get(&target) else { return Ok(false); };
+        let entity = self.entities.get(index).ok_or("melee contact target header absent")?;
+        Ok(!entity.retired && entity.shared == target && entity.entity_flags & 0x0100_0000 == 0)
+    }
+
     ///635140 chooses damage virtual138 only for actual target+d7 bit2.
     ///A non-damageable entity receives the raw contact virtual110 instead.
     pub(in crate::app) fn melee_damageable(&self, live: &LiveEntities,

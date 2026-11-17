@@ -290,12 +290,12 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             for action in prepared.actions.iter() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state_with_ticket(*action, target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
+                        if let Err(error) = engine.post_state_with_ticket(*action, target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone()), scene.frozen(event.object)) {
                             warn!("FX event {} Set State unavailable: {error}", prepared.declaration.name);
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop_with_ticket(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
+                        if let Err(error) = engine.post_stop_with_ticket(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone()), scene.frozen(event.object)) {
                             warn!("FX event {} Stop unavailable: {error}", prepared.declaration.name);
                         }
                     },
@@ -315,7 +315,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                                 object.position, prepared.declaration.declaration.max_distance);
                                         }
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
-                                            emitter: event.object, paused: false, world_paused: false };
+                                            emitter: event.object, paused: false, world_paused: false,
+                                            clock_frozen: scene.frozen(event.object), clock_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone(), super::StreamedMedia(holds.clone()))).id();
                                         spawned.push((entity, target, control));
                                     }

@@ -3,6 +3,7 @@
 pub mod curve;
 pub mod decal;
 pub mod environment;
+pub mod screen_distortion;
 pub mod envelope;
 pub mod groups;
 pub mod parameters;

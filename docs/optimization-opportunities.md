@@ -5,6 +5,18 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+Screen quad parameter staging, 2026-11-17:
+
+- Existing `screen_effects::passes::DistortionPasses::record_vectors` allocates
+  the stride-padded material byte vector plus a temporary byte vector for each
+  underwater quad. An owner-retained eight-slot staging array can eliminate at
+  least `1 + draws.len()` temporary allocations on frames with quads, preserving
+  the 224-byte material records and alignment exactly. The added fullscreen FX
+  contribution already uploads a fixed 368-byte stack block with no heap
+  allocation. This existing quad staging optimization waits for separately
+  measured CPU upload costs and numerical/material regression checks; no
+  performance claim is made by the current fidelity change.
+
 FX light receiver transport, 2026-11-17:
 
 - `app/setup` reserves the existing local-shadow sampling buffer for the placed
@@ -2532,3 +2544,16 @@ was introduced. Measure this existing clone boundary after the functional FX
 validation; possible `clone_from` reuse must preserve snapshot separation and
 generation withdrawal. Do not replace it with a new Arc/cache owner without
 evidence of meaningful cost and a verified extraction/lifetime design.
+
+
+### Voronoi CPU query: spatial index and immutable tetra planes (2026-11-17)
+
+Before implementation, the immutable main db5bf17b release (SHA256 11BEFC94E3809D5A770F8E75DDABD773EEF64F5DEDD891F117F364BE3ACA65A9) was sampled for eight seconds on the saved EotW waterfront walking route at 1920x1080. All 21,553 actual Profile events were recovered, with no lost ETW events; 51 absent stacks and 12 first-IP mismatches retain the authoritative sampled leaf only. Exact unwind/PDB ownership gives `ProbeLightingSet::interpolate_query_sh` 189.875 aggregate CPU ms/s inclusive, nested `ProbeQuery::select` 175.750. The private `select_cell` body at RVA456e830..456eee1 costs125.250 exclusive:742 samples (92.750 CPU ms/s) lie in the all-centers scan/prologue before456ea00,260 (32.500) in four-candidate classification. These overlapping worker CPU costs do not establish a serial frame bottleneck or explain the user's entire FPS loss.
+
+Prediction recorded before the change: replacing the all-centers scan with the actual original packed tree should lower select_cell to45–60 aggregate CPU ms/s at comparable query count/input distribution, preserving the approximately32.5 classification cost. Verify actual candidate visits and matching output, and investigate a result outside30% of this model before accepting. `DH2_DEBUG_PROBE_QUERY=linear|spatial` selects both sides in one build; `verify` performs both selections from identical retained query state and compares every output shader-record word, with position-keyed signatures and mismatch counts. `ProbeLightingSet::write_query_diagnostics(phase)` allows phase deltas; final-drop totals include loading and cannot be described as walking-only timing. ETW should scope the affected query functions, not whole-frame time.
+
+Original381cd0 builds three temporary sorted coordinate arrays,385a10 sorts with tie-sensitive swaps,381730 builds eight-byte preorder nodes with cyclic axes and equal-coordinate median adjustment,3856c0 performs near-first four-nearest traversal and split-distance pruning.382d90 classifies those four candidates;385da0 retains cell/tetrahedron state.382130 prepares four unit face normals once;3836c0/382bb0 consume those planes. The rewrite had scanned all cell centers and regenerated tetra normals during every query. The canonical map ProbeLightingSet now owns the tree and PNW runtime tetra records own their48-byte plane backing. Construction sort/partition scratch drops at load completion; final map leases release all backing. No global query cache or per-query allocation is introduced.
+
+Mapped-original oracle `DH2/analysis/performance-20261117/oracle-probe-tree.py` reuses the installed PE with only the already declared RenderDoc patch normalization. The original machine code passed156 tie-sensitive sorting cases,52 exact packed-node comparisons and932 nearest-result cases, including identical centers. This validates the algorithm transcription, not uncompiled Rust or full rendered frames. With `DH2_DEBUG_PROBE_QUERY_FIXTURE=<local binary path>`, actual compiled map loading emits tree/centers/runtime tetra normals for the same oracle's `--fixture` mode, which checks actual Rust tree bytes and every tetra normal against original machine code. Raw installed data remains local and must not be committed. Compilation, actual map fixture/SH verification and same-build scoped timing remain the acceptance gates; no measured improvement is claimed yet.
+
+Scope limits: windowless production diagnostics disable PipelinedRenderingPlugin, so their frame rate is not a visible-session FPS measurement. GPU timeline markers add timestamp command encoders and can perturb work. Current broad atmosphere4.485ms includes more than fog; no per-effect GPU regression or original matched-walk parity is established. Static source sweep: model_motion already memoizes unchanged position/query state and projected_decals already keys lighting by bank generation/position. Particle publication and rigid/arm lighting still repeat queries for unchanged inputs; any additional memoization needs actual caller attribution and its own scoped A/B rather than being bundled into this algorithm change. Parent-object initial-cell borrowing in385da0 is omitted until an actual canonical parent query is supplied; no invented parent cache was added.

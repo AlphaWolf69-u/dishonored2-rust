@@ -864,6 +864,15 @@ pub(super) fn focus_and_interact(
                     definition.has(ALLOW_SWIMMING),
                 )
             } else if let Some(index) = readable {
+                let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else{continue;};
+                //76ec20(true) marks the collected component. The static map
+                //query can still hit its retained geometry; that is not a
+                //fresh live interaction or a reason to reopen the document.
+                match scene.readable_identity(entity,live) {
+                    Ok(Some(_))=>{},
+                    Ok(None)=>continue,
+                    Err(error)=>{warn!("Readable focus identity unavailable: {error}");continue;},
+                }
                 (
                     SelectionKind::Readable,
                     index,
@@ -1279,7 +1288,7 @@ fn read_is_live(
 ) -> bool {
     physics.zip(live).is_some_and(|(scene, live)| {
         scene
-            .grapple_pickable(live,read.identity.0)
+            .interaction_pickable(live,read.identity.0)
             .is_ok_and(|current|current.is_some_and(|(reference,_)|reference==read.identity.1))
     })
 }

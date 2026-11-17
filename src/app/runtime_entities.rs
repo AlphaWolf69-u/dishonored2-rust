@@ -1461,6 +1461,15 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
         actor.removing
     };
     if !removing {
+            //A world-screen's model owns the texture parameter that its real
+            //FlashSurface Stop resets. Drain that actual component's existing
+            //registry/ACK path before withdrawing the model, including direct
+            //rollback callers that bypass the ordinary removal FIFO.
+            if super::flash_surface_movie::model_retirement_pending(world,id)
+                && !with_scene(world,|world,scene,live,events|
+                    scene.prepare_flash_model_retirement(world,live,events,id))? {
+                return Ok(false);
+            }
             super::projectiles::begin_retirement(world, id);
             let live = world
                 .remove_resource::<crate::gameplay::entity_lifetime::LiveEntities>()

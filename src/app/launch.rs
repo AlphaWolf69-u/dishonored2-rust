@@ -450,6 +450,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 gameplay_system(super::physics_scene::grenades::prepare),
                 super::weapon_throwing::prepare,
                 super::carrying_resources::prepare,
+                super::player_actions::prepare_fx,
                 super::power_world::update,
                 gameplay_system(super::physics_scene::occluded_sensor::resolve_pending)
                     .run_if(super::pause_menu::game_not_paused)
@@ -478,7 +479,9 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 gameplay_system(super::projectiles::update).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::physics_scene::ai_managers::update).run_if(super::loading_screen::is_playing),
                 super::power_execution::after_frame,
+                  gameplay_system(super::flash_surfaces::update),
                 super::entity_messages::update,
+                  gameplay_system(super::flash_surfaces::finish),
                 gameplay_system(super::breakables::update).run_if(super::loading_screen::is_playing),
                 gameplay_system(super::physics_scene::lifetime::advance).run_if(super::loading_screen::is_playing),
                 ).chain(),

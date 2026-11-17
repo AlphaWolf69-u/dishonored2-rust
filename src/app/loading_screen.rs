@@ -288,6 +288,7 @@ pub(super) fn install(
     crate::loading::gate("initial forward and shadow submissions");
     crate::loading::gate("initial player resources");
     crate::loading::gate("initial runtime resources");
+    crate::loading::gate("initial world movies");
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.insert_resource(gpu.clone()).add_systems(
@@ -352,7 +353,7 @@ pub(super) fn install(
         PostUpdate,
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
-    .add_systems(Last, (initial_render_ready, finish_loading).chain().run_if(session_exit::running))
+    .add_systems(Last, (initial_render_ready, world_movies_ready, finish_loading).chain().run_if(session_exit::running))
     .add_systems(PostUpdate, (super::texture_streaming::particle_images::publish,
         super::texture_streaming::environment_images::publish_ocean)
         .before(bevy::asset::AssetEventSystems))
@@ -821,6 +822,7 @@ fn acquire(world: &mut World) {
                 if let Err(error) = super::fx_gameplay::initialize(world)
                     .and_then(|_| super::water_impacts::initialize(world))
                     .and_then(|_| super::world_models::initialize(world))
+                    .and_then(|_| {super::flash_surface_movie::initialize(world);Ok(())})
                     .and_then(|_| super::runtime_entities::initialize(world)) {
                     lifetime.published(world, &resources);
                     state.lifetime = lifetime;
@@ -881,6 +883,14 @@ fn acquire(world: &mut World) {
 /// Reuse the production renderer's readiness signals. The benchmark's 30
 /// consecutive-frame warmup is deliberately absent: one complete submission
 /// is enough, without an arbitrary loading delay.
+fn world_movies_ready(world:&mut World) {
+    if world.get_resource::<Acquisition>().is_some_and(|state|state.finished) {return}
+    if world.get_resource::<ScenePublished>().is_some_and(|state|state.0)
+        &&super::flash_surfaces::ready(world) {
+        crate::loading::complete("initial world movies");
+    }
+}
+
 fn initial_render_ready(
     mut state: ResMut<Acquisition>, published: Res<ScenePublished>,
     forward: Res<crate::shadow_pass::ShadowCaptureReadiness>,

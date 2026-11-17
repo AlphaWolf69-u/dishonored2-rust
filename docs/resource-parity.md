@@ -1,5 +1,91 @@
 # Resource parity ledger
 
+## Fullscreen FX distortion consumer (2026-11-17)
+
+CPU owner: the existing `assets::fx::definition` resource generation holds the
+typed `screen_distortion::Asset`; `WorldEffectGroup` prepares its canonical
+renderParm references; `WorldParticleState` owns the64-slot family and each
+root/sub-FX's chain head. Sources:21b770/21b7f0(descriptor constructor/defaults),
+2241a0/2241e0(inline16 parameter defaults),19a250/19f4a0(pool64),221c40/222f80
+(family admission/start order),21cf70(timing/scalar/vec4 random preparation),
+21c0b0/21c170(range and curve-mix sampling),21b870/21c7e0(four-channel curves),
+21c8d0/21ca40/21cbb0(duration/fade-in/fade-out),21d1d0/216f80(stop),
+21d1f0/21c480(update),21d290(view submission),8911f0(default-weighted
+min/max/average reduction and option conversion),393030(camera-blur cvar).
+The N=4 curve/range extension preserves the existing N=2/N=3 operation paths.
+All23 installed FSDisto renderParm paths (game1 IDs1259..1281) are covered,
+including the authored wobble dead-zone value not read by the installed shader.
+Native8911f0 options use ceilf1411b5ad8 then signed conversion>0, not a0.5
+threshold. `r_skipCameraMotionBlur` overrides the final actual camera option.
+
+Prediction before implementation: restoring this enabled family admits Blink's
+authored top-marker FX and supplies its authored wobble; Player motionBlurFX
+supplies camera blur only through the separate source-backed startup bridge.
+No additional RNG, clock, image/texture manager or FX manager is introduced.
+Runtime vectors reuse slot capacity; metadata/typed curves are immutable shared
+leases, acquired before playback. Submission storage reuses its allocation;
+steady-state update/reduction and final Copy frame publication allocate nothing.
+Root Stop, nested looping-only Stop, completion/tails, hard clear, retirement,
+shutdown and failure cleanup use the same instance/sub-FX chains. A view's
+pending numeric submissions keep only the compiled binding lease until its
+reduction completes; inactive slots then release it. Shutdown clears the final
+numeric frame. The existing FxPublication transports only final numeric state,
+and missing required cvars withdraw that publication before returning a host
+error, rather than exposing an earlier camera/frame's output.
+
+Status: CPU descriptor/runtime/reduction/lifecycle ported, statically reviewed;
+the installed23-path inventory and default option declaration were read with
+the existing source-only resource CLI. Combined compilation, gameplay, GPU
+publication and timing verification remain root-owned; no tests, game launches,
+hardware probes or performance claims were made by this worker.
+
+Owner: existing `rendering::bevy_backend::screen_effects::ScreenEffects` and
+`DistortionPasses`; CPU descriptor/64-slot playback and `8911f0` parameter
+reduction remain in the canonical FX simulation. Evidence: installed
+`PostFX_uberMotionVector` source, its five-option `postfx/ubermv_*` materials,
+`1408911f0` (ordinary/option parameter blocks), `1403222f0` (stage1,
+UberMV, stage2 draw order and `r_skipDistortionSurfaces`), `140327270` and `140326930`
+(shared vector-field resolve with scales 1 then 4), `140374e40` (view history),
+and `1400410f0` (world retirement).
+
+Expected cost before implementation: one additional fullscreen additive draw
+in the already owned reduced-resolution vector attachment when an authored
+FS option is active; one depth sample per vector pixel for camera/sand, none
+for wobble/radial/lens. The existing two four-tap colour resolves and host HDR
+conversion are reused, including when FS distortion is the only contributor.
+One persistent uniform buffer and one persistent program/binding in that owner;
+no additional image, archive/image cache, view history or per-frame allocation.
+Inactive FS distortion adds no GPU draw/upload. CPU upload packs a fixed block
+and borrows the already published current/previous view matrices.
+
+Status: consumer implemented; coordinated CPU publication and combined
+validation pending. `host:` WGSL/backend bindings transport
+the installed arithmetic; existing texture format/resize/release and HDR-unit
+bridge remain responsible for their whole lifecycle. GPU arithmetic, loading,
+action appearance and timings require root-owned combined validation; no visual
+or performance success is claimed from source inspection.
+
+The authored wobble/camera compiled PS checksum is
+`935452d7cb0fe0552975f05940d5e5c3`; the five-option PS checksum is
+`f0ec2b7fc743613ff5729aee2a854e59`. Both were read through the existing
+ProgramLibrary/cache inspection CLI and disassembled read-only. The five
+contributions use the installed math, including unused authored wobbleDeadZone,
+camera reprojection's `abs(previous.w)`, and two four-tap colour resolves.
+`358ad9..358af6` binds group1 to `time`, independently of the localTime
+definition byte; the existing WaterFrame now carries both coherent clocks.
+Viewport allocation/format changes rebuild through ScreenEffects; the normal
+level render-acknowledgement/release drops the same owner's vector attachment,
+uniform, program and depth binding together. No separate release queue exists.
+The existing `DH2_DEBUG_ACTION_SCENARIO=blink` diagnostic logs
+`ACTION_SMOKE_FSDISTO_RENDER` after the real vector draw, both resolves and HDR
+finish have been recorded; the existing render-owner inventory exposes the
+same recorded flag. These are command-recording receipts, not device-completion
+or pixel evidence, and add no cross-world mailbox or frame-publication atomics.
+The diagnostic opt-in is read once with the existing OnceLock convention:
+ordinary active camera blur performs no repeated environment lookup/String
+allocation. Inactive FS with no quads returns before diagnostic lookup,
+resource creation, parameter packing, upload or draw.
+
 ## Owned equipment retention and action validation (2026-11-17)
 
 Owner: `app::player_actions::input`, using the existing inventory and equipment
@@ -130,6 +216,34 @@ state before generation reuse. One-shot AnimSet posts are not invented
 stop-on-interruption sounds; future crossings disappear with their source
 clips, while accepted audio tails retain their normal audio lifecycle.
 
+MotionBlur bridge prediction (2026-11-17, before implementation): the always-on
+PlayerFXMotionBlur constructor684680 and Start6846b0 request the already acquired
+manager declaration's `m_motionBlur.m_screenFX` through shared8120b0. Its installed
+camera-blur FX contains looping FSDisto parameters, not an environment DoF track.
+The missing producer should add one startup reservation and one attached Player
+FX instance through the existing WorldFX owner, with no new decoder, cache or
+per-frame parameter engine. Startup waits for the existing source/material/audio
+admission and playing publication; Stop683f10/812290 releases that request before
+the shared owner drains instance tails. Expected steady CPU addition in the
+producer is one completed-state branch; GPU cost belongs to the separately ported
+authored FSDisto consumer. No performance improvement is claimed.
+
+`ported` producer admission/start/stop: `app::player_actions` retains only the
+declared path and its own request cursor; `gameplay::player::combat_fx` projects
+that path from the already resident PlayerFXManager declaration. Ungated loading
+preparation reserves it through `app::usable_effects`, waits that owner's normal
+readiness, then starts one attached Player request. Loading remains pending until
+that exact requested revision appears in the normal playing DynamicEffects
+publication. No active-frame resource scan runs after the cursor becomes ready.
+Player teardown stops the same name and releases its reservation before the
+existing WorldFX producer/tail drain and level-source retirement; cancellation
+before a reservation exists owns nothing to release. Source: MotionBlur684680/
+6846b0, vtable141c3b558 Stop683f10, shared8120b0 and812290/1a31f0. `host:` request/
+publication acknowledgements stand in for synchronous FX handle allocation.
+FSDisto remains a shared WorldFX consumer, not a second Player parameter engine.
+FocusedAttack environment blending is unchanged. Syntax/whitespace review passed;
+runtime and affected-function timing await the parent's coordinated batch.
+
 Owner: `gameplay::player::combat_fx` and the existing `app::camera_effects`
 environment override stage. `ported`: FocusedAttack81fd60/81fda0/81fe00 uses
 actual active Slash+d1 (`focus_active`), suppressed by state4c. Preparation
@@ -149,6 +263,61 @@ CombatFocus81f7e0 additionally requires the actual NPC combat roster query
 5bf310; it must not be approximated from button state or arbitrary entities.
 The native VIEW_PARAM enum has only FOV absolute/relative and is not the
 source of the focused-thrust DoF effect.
+
+## World FlashSurface movies and model texture scopes (2026-11-17)
+
+Owners: `assets::flash_surface`, `app::physics_scene::flash_surfaces`,
+`app::flash_surface_movie`, the existing `pause_menu` Iggy worker and
+`rendering::bevy_backend::flash_ui`. `ported`, awaiting combined build and
+runtime validation: FlashSurface4b0740/4b0790 declaration/defaults,
+4b0b50/4b0d00 loaded-file handoff,4b0c50/4b0bc0 playback activation,
+4b0f40 static capture and198/199/19a notifications, InteractiveMap
+39f1d0/39efb0/39f230 subscription and actual `_C_Show` call, and
+4b0e20→4b0eb0→0310c0 playback release. Movie/source acquisition uses the
+existing Catalog/FileScope, Player, bitmap and glyph owners; world packs
+request `PackLifetime::Movie`, coalescing live/session libraries without
+promoting an otherwise unowned map movie into session-strong residency.
+
+Native4b0bc0 binds02bfd0's movie texture through2369c0 to `diffuseMap`
+and236900 to white `Color`; the names are proved by static code-resource
+records14229cb58/14229c578. `host:` actual component/entity generations
+own real Bevy Image targets, and the same GDraw implementation renders them
+before scene depth/colour sampling. Native02c010/2c2f50/2f4060 and
+31a600/2e9d10/2dd580/2bd230 prove typeless storage with an sRGB sample view
+and UNORM write view. Host uses one authorized-format image and one retained
+raw write view, without an extra texture, copy, shader or colour correction.
+GDraw pipelines, immutable bitmap/glyph texture cache, stencil and filters
+remain the existing owners; mutable stage/vertex/stencil state is per movie.
+
+Readiness distinguishes actual worker player activation, Map configuration,
+render-owner admission and target rendering. The real199 Map callback
+configures the movie before its first published frame; no unconfigured map
+texture is displayed to obtain readiness. Static capture releases player,
+frame/image/glyph leases and mutable render state after accepted capture,
+retaining only the actual target on its model. Ordinary component Stop
+sets the canonical already-prepared ImageManager `_default` (2ec020) and
+preserves white Color. The actual model scope persists independently of the
+component receipt and is reused on restart. Exact source material handles
+and non-overridden image-streaming registrations are restored/released only
+on model destruction or complete world teardown. Component-generation reuse
+waits for playback and actual render-owner withdrawal, then erases its
+tombstone; level shutdown refuses to discard live movie keys.
+Direct runtime actor rollback/removal uses the same native component Stop
+preflight before renderer withdrawal when an actual world movie is present;
+it must not assume the ordinary entity-removal FIFO has already drained
+those callbacks. The existing registry/retirement host retains pending Stop
+acknowledgements; no independent release queue is introduced.
+
+`host:` actual placed-model records and the existing runtime model draw owner
+receive per-model Probe/Decal material instances; immutable declarations and
+other images remain shared. No per-frame entity/world scan or new decoded
+resource cache is introduced. Prediction: the formerly absent physical
+movie becomes the model's diffuse input; required GPU cost is a GDraw pass
+for each newly produced target list, with no further movie draws after
+static capture. No measured CPU/GPU or appearance claim. Coverage here is
+world movie playback/material binding and the installed noninteractive Map,
+not a new world-space mouse/input feature. Evidence and validation handoff:
+ignored `analysis/gameplay-repair-20261116/flash-surface-adapter-handoff.md`.
 
 ## Melee query ownership and result order (2026-11-16)
 
@@ -10278,6 +10447,21 @@ builds or runtime exercise performed for this correction.
 
 
 Scheduled rigid post-physics publication correction (2026-11-17):
+On-demand plate/contact investigation (2026-11-17): the existing F8 append
+borrows canonical pool8/pool12, BodyStorage/MotionStorage, retained Contacts,
+and placed/runtime render owners. It records the nearest32 rigid components
+plus the last actual melee contact, with full body generation, shape variants,
+filter/material/quality, motion inverse mass and velocities, entity/actor/render
+frames, manifold response, witnesses, Jacobian flags/RHS and solved impulses.
+Melee retains only its latest accepted physical contact receipt, including
+surfaces without Health; no diagnostic collision query is submitted. Temporary
+sorting/formatting exists only during an explicit F8 capture, with no frame
+history, asset read/conversion, resource lease or GPU pass. Prediction: one
+post-hit capture can distinguish a retired/incorrect shape, filtered or absent
+floor manifold, disabled solver response, and render/body-origin divergence.
+This is observability, not a claimed fix for the reported plate falling through
+the floor. No tests, builds, gameplay launches or hardware probes run here.
+
 Follow-up movement-interface correction: both `14080b9e0` (scheduled phase5)
 and `14080b7c0` (scheduled phase6) receive the component directly; neither
 selects a component by the actor's current interface or collision userData.
@@ -23836,6 +24020,16 @@ Signed inventory health damage code resource (2026-11-17): `assets::damage::Decl
 `host:` the existing canonical ModelShaderData owns the small local/depth state for placed/first-person model keys; runtime wrapper defaults and effective flags live with WorldModels' full-generation entries. The existing individual model removal, replaced-model and level teardown paths release these fields. Mesh preparation retains the source shadow vertex ABI once even when a model initially does not cast, so later enabling uses the same mesh/template without a rebuild or clone. This may add the existing shadow-position/skin attributes to an initially disabled template; no measured RAM/VRAM or performance saving is claimed. Source syntax parsed successfully; this worker ran no compilation, tests, game launch or visual check. Coordinated build/loading/gameplay verification remains with the parent.
 
 
+### Collected readable targeting, mana sound and stopped-time audio (2026-11-17)
+
+`ported/source-reviewed`: ReadNote844bf0 still admits inventory before76e2b0/76ec20(true), hides only authored portable items after successful admission, and retains immutable journal presentation/resources separately. The shared live Pickable gates now reject both picking-up bit2 and collected bit8 (76efa0's0xA policy); the legacy placed-readable focus path resolves the same actual live readable identity instead of advertising retained hidden geometry. Pending read activation also uses the canonical interaction eligibility query. Books/notes/maps genuinely authored to remain in-world keep their original policy; no inventory-success bypass, generic interactable deletion or premature component/resource release was added.
+
+`ported`: Mana746b60 calls746730/709110 only when an eligible positive recharge countdown crosses zero. Player setup now acquires authored `m_beginRegenSoundEvent` through the existing SoundEvent registry, retains its Arc with the actual Player lifetime, and emits one ordinary PlayerBody request at that same transition. Already-regenerating frames, zero initial delay and locked regeneration do not repeatedly post. Media/banks/voice/end handling remains the existing canonical audio owner; no action-time declaration read, new timer or direct playback path exists.
+
+`ported/source-reviewed`:8abb10/709050 snapshot existing playing IDs when an owner enters stopped time;7097b0 resumes them.709110 diagnoses frozen state but then continues actual PostEvent. The host previously dropped every such post and re-applied stopped-time pause to newly born voices/actions each frame. Actual AudioTarget and pending-action journals now retain their source-clock state at admission and apply only subsequent stopped/nonstopped transitions. Existing pre-freeze voices remain paused; later accepted posts are outside that completed snapshot. GamePaused's separate existing snapshot, authored time-dilation RTPC values, source selectors, delays, media ownership and Stop/End acknowledgements remain unchanged. This is not a global pause bypass or a claim that original world ambience continues during a true Blink time stop.
+
+Prediction: collected portable readables lose world prompts/admission while journal access survives; each eligible mana recharge produces one prepared authored sound request; new actual sound posts survive a stopped owner while older paused IDs retain native semantics. No FPS or measured playback/appearance claim is made. The parent owns compilation and coherent production action validation; this worker ran no tests/build/game.
+
 ### Contact-sound stimulus admission for external actors (2026-11-17)
 
 Metadata lifetime: Player publishes this immutable certificate only when its actual external Scene header is first admitted, not during subsequent frame publication. The source bit remains with the Player for a genuine next-map Scene admission. This avoids repeated metadata publication; no FPS improvement is claimed.
@@ -24029,6 +24223,44 @@ repeated gun_idle diagnostics without changing clip/resource lifetimes or
 adding hot-path allocation. Static diff/format checks only; combined action
 validation and any timing measurement belong to the coordinating worker.
 
+WORLD callback timing/source guards follow-up (2026-11-17): prediction before
+the correction was to remove dependency-readiness-dependent recoil latency
+and restore the original obstruction witness/material selection, without any
+range increase, forced contact, new FX cache or steady-state allocation.
+631020 passes a null protected target to118/636630 for WORLD contacts;
+634320 supplies the original entity for damage contacts. The shared callback
+now preserves that distinction: only the latter receives the .01 inward
+bias, and a ray hitting its protected entity preserves the original collision
+userdata/material while publishing the actual ray body, position and normal.
+The hard-world630810 Slash/Recoil request precedes contact110, so a pending
+host FX publication cannot defer that state request. Native .09-second world
+dwell remains unchanged (141b9d6f0 bytes ed51b83d).62fec0 target-D3 bit0 and
+60a8b0 source-D2 bit7 admission read the existing canonical D0..D3 flags;
+5912e0 is the original target-D3 producer. No duplicate entity flags are added.
+One global last accepted contact packet, a single last WORLD callback receipt
+(actual active-window Player clock, callback equipment clock, raw/selected
+body/material IDs, focused/forward flags, source-D2/target-D3, state-request
+order and weak FX ticket), and bounded on-demand paired FX rows
+make the actual surface and selected effect inspectable in F8, including
+non-Health props/world, without a per-frame history or new queries. That
+packet clears when its final equipment owner retires. The weak FX ticket's
+existing F8 observer reports its actual path/loading/source/publication state;
+request admission is not reported as rendered/C8/sound activation.
+
+Installed contact audit: both wpn.pinned and wpn.sword inherit sword/weapons;
+default_db contains explicit pinned_env.stone/metal/environment pairs, and
+pinned_env.stone authors sword_stone.particledt plus imp_sword_on_stone. The
+002c60 source-first/target-second inheritance traversal matches the existing
+canonical resolver. Missing WORLD dust is therefore not evidence for a
+missing fallback or permission to substitute wpn.sword for a focused material.
+Latest cumulative F8 had17 contact callbacks/tickets, but cannot establish
+whether the reported thrust produced a WORLD callback or rendered its dust.
+These corrections are source-reviewed/syntax-checked, pending coordinating
+build, actual WORLD action receipt and appearance validation. No timing/FPS
+gain or complete visual fix is claimed. Normal CombatFocus additionally needs
+81f7e0/5bf310's real NPC combat facts; unimplemented camera FSDisto motion blur
+is a separate class and is not replaced by invented regular-swing DoF.
+
 Full631020/635140 pass closure (2026-11-17): nearest selection633a70
 remains before focus admission. Original ENTITY packets get NPC focus;
 ordinary non-arkNPC/non-mode2-Grenade packets also get WORLD focus and are
@@ -24218,3 +24450,53 @@ Carry action observation follow-up (2026-11-17): the subsequent run never mutate
 Actual5118f217 debug acceptance (2026-11-17): game build/core check passed. Full ranged/Heart/wheel/sheath/focus/ordinary-exit scenario exited0; real gun and ordinary sword contacts changed the intended bottle Health2→0 and each completed clean exit0. Bolt actual published model position now equals its runtime position at both flight and real world impact; loaded ammo child actual draw becomes Hidden on C8. This remains CPU/draw-publication evidence, not visible pixels, heard sound or FPS. Carry failed before a durable grab transaction; the bounded opt-in source-state receipt added here covers input through all admission gates/Begin/Hold/cancel without changing gameplay rules. Poke reached the charged attack but exposed a genuine sound-stimulus source-admission panic, repaired by the canonical external metadata certificate changes in this batch; its new runtime verification remains pending. No release was compiled from a failing batch.
 Verified979e77be debug action/lifetime acceptance (2026-11-17): all five real production-input scenarios exited0 with their required receipts: full ranged/Heart/wheel/sheath/redraw/focus, actual pickup+hold+physical unparented throw motion, gun→bottle Health damage, ordinary sword damage, and a new same-target charged-poke DamageResult with focused=true and forward=true after real release. Each completed canonical exit. The same debug build then loaded/retired Edge of the World, Dust District and Institute and completed a separate pause-menu exit, all0. Game compilation and independent shared-core check passed. Final result14:17:11UTC; artifacts analysis/gameplay-repair-20261116/gameplay-{cycle,actions,runtime}-result.json. This is functional/resource-lifetime validation, not actual displayed pixels, heard sound, FPS recovery, original function timing or every reported HUD/powers behavior. No testsuite, visible launch, focus manipulation or executable copy was used. Code is unchanged after the verified source979e77be; this entry records the result before normal main integration/release.
 Normal main release fee85550 acceptance (2026-11-17): the usual DH2/target/release/dishonored2-rust.exe compiled and passed all five optimized production-action scenarios (full ranged/Heart/wheel/sheath/redraw/focus, real pickup/hold/throw, gun contact damage, ordinary sword contact damage, charged focused/forward poke damage). All processes exited0 without runtime errors. The same executable then passed actual loading/clean retirement on Edge of the World, Dust District and Institute and a separate pause-menu exit, all0. Final14:59:33UTC, executable SHA25611befc94e3809d5a770f8e75ddabd773eef64f5dedd891f117f364be3aca65a9. Evidence: MAIN analysis/gameplay-repair-20261116/gameplay-release-{cycle,actions,runtime}-result.json. Main stayed at expected source throughout compilation. No visible launch, focus automation, unit-test suite or executable copy was used. These checks establish action and lifetime behavior in both dev and the normal optimized artifact; displayed particle/projectile appearance, heard audio and FPS/original function timing remain outside their scope. No code changed after this accepted build; this entry only records verification.
+
+Carry coordinate repair prediction (2026-11-17, before implementation):83d770's origin/center correction is conditional on actual mode2 PhysicsSystemEvolved and731470, not an ordinary RigidBody motion COM. The host currently substitutes the latter for all rigid props. Removing that substitution should place ordinary held bottles at the exact authored camera_tag + Hold.distance + center_offset/orientation without the extra rotated COM-height offset. No texture/model/physics resource lease, upload or collision admission changes are expected. CPU work should decrease only by the removed body/motion lookup and world read lock on hold attachment; root will measure affected attachment/throw functions rather than whole-frame performance.
+
+
+Throw coordinate/velocity prediction (2026-11-17, before implementation):83de90's ordinary-body launch origin is the entity origin; only8c3cb0's real PhysicsSystem subtype supplies731470 center. Replacing the render-bounds center should remove that unsourced ballistic-origin displacement. The actual Rigid virtual190 resolves through141c745c8 to8086a0 and returns finite-rotation COM-offset compensation, not current linear velocity. Porting its requested angular spin and COM correction should match source translational launch while producing the native tumble. Native angular magnitude10, linear scale0.7 and cvar ark_throw_shifting_removeAngularVelocity(default0,14138e270) are read from the installed executable. Expected cost is a few vector operations and the existing source quaternion kernel once per throw; no per-frame/render/resource cost or performance gain is claimed.
+
+
+Implemented the two provider distinctions above for ordinary rigid props.83d770 now leaves null PhysicsSystemEvolved's authored attachment offset unchanged; a real unported PhysicsSystem center is explicitly required rather than replaced with a rigid COM.83de90 launches from the ordinary entity origin. Its requested angular velocity is retained in the same release Progress receipt and native149 six-float packet;8086a0 COM-offset displacement uses the existing aea340 axis-angle/sine-cosine owner and actual entity delta. Current body linear velocity is no longer incorrectly subtracted in place of that rotation compensation. Existing collision-safe placement, throw factor, single queued149, detach/restore/Throwable instigator and throwFX acknowledgement/lifetime are unchanged.752900 tag resolution/composition was reviewed against875e80 and remains with the existing tag and managed binding owners; no duplicate tag cache or model conversion was introduced. Source null PhysicsSystem behavior is now faithful for ordinary bottles; ragdoll-specific center providers are not claimed. Syntax-only parsing and scoped whitespace checks passed; root owns numeric/appearance validation and affected-function timing.
+
+Bounded zero-delta/time-binding audit: normal paused carry updates are excluded
+by ClockRuntime.advanced. Its active override roots enqueue transitions on every
+accepted clock step, and First's time_sync publisher visits actual Live children
+even when the parent selector is unchanged. Thus an already held ordinary prop
+inherits the Player selector before the next player/action update, including
+BendTime. Native8086a0/877eb0 itself has no zero-delta clamp; none was invented.
+`blocked: actual actor binding override merge/detach callbacks`: native878fd0
+after adding the real child invokes80d0a0, and879100 after removing it invokes
+80d220. These differ from the already ported explicit time attachments80cd60/
+80e050: the former folds a child's timed override into its new resolved binding
+root and removes its independent override; the latter transfers the old root's
+remaining duration (infinite uses world contact-unbent duration) to the detached
+child or its explicit root. Rust bind_entity/unbind_entity currently publish
+topology and125 without those timed-override mutations; ClockRuntime's periodic
+selector propagation does not perform that merge/transfer. This can leave a
+detached prop's unbent selector without its source countdown, or retain a child
+override independently after attachment. Completing this needs canonical
+binding receipts plus the existing time manager at both topology boundaries;
+it is not a COM math fix or a separate scheduler. Generic actor binding scope
+is explicitly not claimed complete by the ordinary carry coordinate repair.
+
+MouseEvent stage-coordinate getters (2026-11-17): the user wheel crash was native getter1410858c0 missing during RadialSelectionHandler.onMouseMoved (actual session1794929018626-15736). flash::events now implements both stageX1410858c0 and stageY1410859a0 from the original target's103a050 concatenated 2D transform and1088030 float point transform, reusing the display transform owner. Original1088c20 tests localY NaN when no display target: both coordinates are NaN for that case and zero otherwise. No global mouse-position shortcut or currentTarget substitution. Existing event/display ownership and retirement remain unchanged; each getter borrows its target without retaining another cache. Prediction: mouse movement in the weapon wheel executes its actual handler without an unported-native exception; no FPS gain claimed. The production-input diagnostic now moves the windowless cursor and awaits the real wheel worker frame acknowledgement, rather than checking only open/close. Validation awaits the complete coordinated batch; no compile/run/test performed for this isolated change.
+
+
+CancelAction74 prediction (2026-11-17, before implementation): the native Cancel declaration85a610/85a620 inherits common Action, sets state74/typePress and canceling69bit10.85a6f0 requires common855230 admission and the actual state-machine cancelable count(+2f0)>0. The counter increments when a previously inactive cancelable state enters8023.../805... and decrements on actual exits, including mode teardown. Generic parsing of common declaration flags should restore authored usepower m_cancelable=true and its existing rule-table cancellation; adding74 should make existing controller priority choose the source Cancel action without any F special case. Expected cost is one integer increment/decrement per cancelable-state lifetime and a constant-time gate; no resource loads, per-frame scans or rendering work. Cancel uses the existing Action/Midnight resource owner and instance lifecycle. No performance gain is claimed.
+
+
+Cancel74/shared declaration flags implemented: actual arkPlayerStateCancel inherits Action ctor854e10 with CanStart85a6f0, Activate854e50, Update8555a0, Deactivate8550d0, ExecuteFinished8551c0 and real0xf6/855750 handling. The installed empty cancel.playerstatecancel retains the source Press/no-scene defaults; any authored scene requests the existing player Midnight owner through scene_paths and retires with its ordinary player scope. Each mode owns its own ActionRuntime and cancelable_count. Previously inactive cancelable activation increments once, allowSelf reentry does not increment again, and every actual exit/mode teardown decrements before callback dispatch. The existing cancelable/canceling rule table withdraws the original action before74 activates; no input-key special case, force-quit of unknown states or duplicate manager exists. Shared declaration reflection chunk1052 m_allowSelf/m_quitSelf/m_cancelable/m_cancelableByUI/m_canceling/m_breakable now applies to every currently retained state class. UI-cancelability is retained as its separate bit; new UI cancellation consumers are not claimed. Parameterless74 uses the same controller priority and body-part/cooldown checks as other admitted actions. Syntax-only parsing and scoped whitespace passed; root owns combined build, Blink/action cancellation validation and affected-function cost measurement.
+
+Blink-to-mantle correction (2026-11-17): source6205e0 gates the cover-ratio exclusion with the clearance result; it does not require that result for ledge admission. The traversal owner now uses `can_mantle && wall && !cover` with that exact cover gate. Source857300 enables the existing sensor2 and858950 supplies the saved Blink destination/current actor axis throughout flight. The player query stage now updates that same transferred sensor while state12 is active, instead of retaining an unrelated last aiming result.860180 uses active12 for sensor2 admission;8603b0 chooses sensor2 at request acceptance. A single retained boolean preserves that selection across the host's batched Blink deactivation, and the existing swap/restore lifecycle returns the same sensor after mantle. Prediction made before implementation: valid fitting ledges should produce state8 and refresh actual hand/destination witnesses, with no new idle/aim queries, allocations, resource acquisition or caches. Flight adds only the source-required existing sensor queries, not a performance improvement claim. Verification awaits the coordinated build/action checks. The missing top marker/aim wobble is a distinct enabled `m_fsDistoParms` family in installed blink_target_01.fx; its complete canonical FX implementation is being supplied separately, rather than discarding the family or inventing camera noise.
+
+Blink action diagnostic (2026-11-17): the opt-in `DH2_DEBUG_ACTION_SCENARIO=blink` child selects actually owned power2 through its actual inventory shortcut and production physical inputs. It observes state63/Aiming, started top/bottom FX and the canonical wobble publication, then physical F/state74 cancellation without a Blink cast or mana expenditure, followed by another aim/release/state12, actual proxy displacement, mana expenditure/recharge and the authored recharge-sound admission. Existing FX owners acknowledge helper tails; no diagnostic acknowledgement, fake target, time advance, availability override, actor or resource cache is added. Debug-only snapshots/strings retain no source definitions or runtime leases. The render owner records its separate actual FSD vector draw/two resolves/HDR-finish receipt; CPU scenario success alone is explicitly not a GPU-execution or appearance claim. Blink-to-mantle remains explicitly not covered when the normal authored spawn supplies no admitted ledge. Parent owns the single combined compile/run and receipt validation; no validation result is claimed here.
+
+WORLD sword action observations (2026-11-17): opt-in `world` and `world-poke` scenarios use physical mouse/crouch inputs from the actual level spawn. Fixture admission borrows 630890's canonical ray owner with the authored sword length, 0x443e filter, 636b40 null/idWorldspawn classification and 62f900 WORLD focus bounds. The charged case waits 86bec0's actual elapsed/declared hold duration before physical release. Neither a bottle damage callback nor an initial setup swing passes: each case requires a new actual WORLD callback/window, the selected real body and admitted material, and an actual contact-FX ticket; charged additionally requires focused and forward. Existing retained owner diagnostics provide activation/callback clocks, raw/selected witnesses, source flags, recoil decision, authored source materials and the FX ticket lifecycle. Query scratch and observation state live only in this diagnostic; there is no new asset owner, fake actor, geometry, time advance, resource-ready acknowledgement or normal-frame scan. Prediction is separate WORLD-path coverage, with no performance or audible/visible-output claim. Compilation and production-input execution remain the coordinating root's pending batch.
+
+
+## CPU Voronoi query index and runtime tetra planes —2026-11-17
+
+`ported`: map ProbeLightingSet owns381cd0/381730's eight-byte preorder spatial nodes, prepared using385a10's actual coordinate/tie ordering; query3856c0 visits/prunes without allocation. Canonical PNW RuntimeTetrahedron prepares382130's four unit normals once and retains them through3836c0/382bb0 queries. Load-only axis/scratch arrays drop after tree construction; map/source lease retirement drops tree and normals. No format conversion file, global cache, duplicate resource acquisition or GPU upload is added. Added retained backing is8 bytes per cell and48 bytes per runtime tetrahedron.
+
+`verified`: mapped original machine code matches156 sorting,52 packed-tree and932 nearest control cases. `acceptance pending`: actual compiled Rust map fixture/plane oracle, full shader-record comparison and same-build scoped walking A/B; this is not a performance acceptance claim. The concrete before-cost/prediction, controls and exact original source addresses are recorded in docs/optimization-opportunities.md. Normal gameplay enables no diagnostic timer, atomic counter or recorder. Original385da0's parent-query borrowing is not claimed ported without an actual parent accessor.

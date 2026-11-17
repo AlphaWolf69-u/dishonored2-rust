@@ -14,6 +14,8 @@ impl EffectPoolLinks {
     pub fn environment() -> Self {
         Self::ascending(64)
     }
+    ///19a250/19f4a0:64 shared FSDisto parameter-family slots.
+    pub fn screen_distortion() -> Self { Self::ascending(64) }
 
     /// 19a470 -> 19f7e0: shared parent FX-instance storage.
     pub fn instances() -> Self {

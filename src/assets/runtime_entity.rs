@@ -43,6 +43,8 @@ pub(crate) enum Kind {
     AIStatistics,
     TimersManager,
     AISmartSpot(Arc<super::ai_smart_objects::Definition>),
+    FlashSurface(Arc<super::flash_surface::Definition>),
+    InteractiveMap(Arc<super::flash_surface::MapDefinition>),
     Observable(Arc<super::ai_cues::ObservableDefinition>),
     AttentionSource(Arc<super::ai_cues::AttentionDefinition>),
     Audio(Arc<super::entities::audio::AudioBinding>),

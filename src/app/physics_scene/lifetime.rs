@@ -88,7 +88,7 @@ fn reclaim_reference_actor(
 
 /// Complete only an already accepted normal7ea870 batch. New entity
 ///destructors cannot take its registry cursor or replay its completed Stops.
-fn finish_gameplay_drain(
+pub(super) fn finish_gameplay_drain(
     world: &mut bevy::prelude::World,
     scene: &mut PhysicsScene,
     live: &mut LiveEntities,
@@ -867,6 +867,9 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if self.scene.is_flash_class(handle.class_id) {
+            return self.scene.initialize_flash_component(self.live,self.events,handle);
+        }
         if self.scene.is_smart_object_class(handle.class_id) {
             return self.scene.initialize_smart_object(self.live,self.events,handle);
         }
@@ -909,6 +912,10 @@ impl ComponentLifecycleWorld for Host<'_> {
         if self.scene.is_smart_object_class(handle.class_id) {
             self.scene.start(handle,registry)?;
             return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);
+        }
+        if self.scene.is_flash_class(handle.class_id) {
+            self.scene.start(handle,registry)?;
+            return self.scene.start_flash_component(handle);
         }
         if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
             self.scene.start(handle,registry)?;
@@ -1160,6 +1167,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_ai_danger(handle,self.events)?;
         } else if scene.is_smart_object_class(handle.class_id) {
             scene.stop_smart_object(self.world.as_deref(),self.live,handle)?;
+        } else if scene.is_flash_class(handle.class_id) {
+            scene.stop_flash_component(self.world.as_deref_mut(),self.events,handle)?;
         } else if handle.class_id==scene.classes[48]||handle.class_id==scene.classes[49] {
             scene.stop_cue_component(self.world.as_deref(),self.live,self.events,handle)?;
         } else if scene.is_ai_startup_class(handle.class_id) {
@@ -1227,6 +1236,9 @@ impl ComponentReleaseWorld for Host<'_> {
             component.allocated=false;
             for joint in &mut component.joints { joint.allocated=false; }
         }
+        if self.scene.is_flash_class(handle.class_id)&&!self.scene.flash_stop_complete(self.world.as_deref_mut(),handle)? {
+            return Ok(ReleaseStatus::Pending);
+        }
         if handle.class_id==self.scene.classes[19]&&!self.scene.grenade_stop_complete(self.world.as_deref(),handle)?{
             return Ok(ReleaseStatus::Pending);
         }
@@ -1259,6 +1271,9 @@ impl ComponentReleaseWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         self.retire_contacts(handle, true)?;
+        if self.scene.is_flash_class(handle.class_id) {
+            self.scene.deinitialize_flash_component(self.events,handle)?;
+        }
         if self.scene.is_smart_object_class(handle.class_id) {
             self.scene.deinitialize_smart_object(self.events,handle)?;
         }
@@ -1574,6 +1589,10 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle,scene.investigate_spots.get_mut(handle.slot).ok_or("InvestigateSpot absent")?)
         } else if handle.class_id==scene.classes[51] {
             entity.components.release(handle,scene.dynamic_search_spots.get_mut(handle.slot).ok_or("SearchSpotDynamic absent")?)
+        } else if handle.class_id==scene.classes[52] {
+            entity.components.release(handle,scene.flash_surfaces.get_mut(handle.slot).ok_or("FlashSurface absent")?)
+        } else if handle.class_id==scene.classes[53] {
+            entity.components.release(handle,scene.interactive_maps.get_mut(handle.slot).ok_or("InteractiveMap absent")?)
         } else if handle.class_id == scene.classes[18] {
             entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
@@ -1740,6 +1759,10 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.investigate_spots.release(handle.slot)?;
         } else if handle.class_id==scene.classes[51] {
             scene.dynamic_search_spots.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[52] {
+            scene.flash_surfaces.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[53] {
+            scene.interactive_maps.release(handle.slot)?;
         } else if handle.class_id == scene.classes[18] {
             scene.damage_zones.release(handle.slot)?;
         } else {

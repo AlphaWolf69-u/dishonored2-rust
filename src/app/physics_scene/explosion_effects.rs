@@ -163,11 +163,12 @@ fn contact_pair_path(database:&ContactDatabase,source:&Definition,target:&Defini
 impl Owner {
     pub(in crate::app) fn debug_scope(&self,world:&World,key:&str)->String {
         let Some(scope)=self.scopes.get(key)else{return format!("contact[{key}] absent");};
-        format!("contact[{key}] source={:?} ground={:?} target={:?} water={:?} task={} prepared={} rows={} source_materials={:?} error={:?}\n    {}",
+        format!("contact[{key}] source={:?} ground={:?} target={:?} water={:?} task={} prepared={} rows={} source_materials={:?} error={:?}\n    resolved_pairs={:?}\n    {}",
             scope.spec.contact,scope.spec.ground,scope.spec.contact_target,scope.spec.water,
             scope.task.is_some(),scope.prepared.is_some(),scope.prepared.as_ref().map_or(0,|prepared|prepared.rows.len()),
             scope.prepared.as_ref().map(|prepared|prepared._materials.iter().map(|material|material.name.as_str()).collect::<Vec<_>>()),
-            scope.error,super::super::usable_effects::debug_reservation(world,&scope.fx_key))
+            scope.error,scope.prepared.as_ref().map(|prepared|prepared.rows.iter().take(32).collect::<Vec<_>>()),
+            super::super::usable_effects::debug_reservation(world,&scope.fx_key))
     }
     pub(in crate::app) fn prepare(
         &mut self,
@@ -417,6 +418,12 @@ impl Owner {
             {
                 return Err("contact FX source generation is stale".into());
             }
+            //60a8b0 checks the actual source entity's D2 bit7 before
+            //creating any contact instance. D0..D3 already share the
+            //canonical entity_flags word; do not invent an FX-local flag.
+            if !world.resource::<PhysicsScene>().contact_effect_enabled(entity)? {
+                return Ok(None);
+            }
             self.sequence = self
                 .sequence
                 .checked_add(1)
@@ -604,6 +611,14 @@ pub(in crate::app) fn contact_frame(
 }
 
 impl PhysicsScene {
+    fn contact_effect_enabled(&self, source: crate::gameplay::entity_lifetime::EntityId)
+        -> Result<bool, String> {
+        let &index = self.shared_indices.get(&source).ok_or("contact FX source header absent")?;
+        let entity = self.entities.get(index).ok_or("contact FX source slot absent")?;
+        if entity.retired || entity.shared != source { return Err("contact FX source generation is stale".into()); }
+        Ok(entity.entity_flags & 0x0080_0000 == 0)
+    }
+
     pub(in crate::app) fn explosion_effect_contacts(
         &mut self,
         query: &mut Queries,

@@ -116,6 +116,18 @@ impl Default for ResidentImages {
     }
 }
 impl ResidentImages {
+    ///2ec020 assigns ImageManager's first pointer to the real `_default`
+    ///resource. Borrow its already prepared view; model reset never performs
+    ///archive IO or substitutes a new white/checker image on the frame thread.
+    pub(super) fn default_texture(&self) -> Option<Handle<Image>> {
+        let registry=self.registry.lock().ok()?;
+        registry.resident.get("_default").or_else(||registry.inline.get("_default"))
+            .map(|image|image.handle.clone())
+            .or_else(||registry.leases.get("_default").or_else(||registry.scene_leases.get("_default"))
+                .and_then(Weak::upgrade).map(|image|image.handle.clone()))
+            .or_else(||registry.editable.get("_default").and_then(|views|views.iter().rev()
+                .find_map(|(_,view)|view.upgrade().map(Handle::Strong))))
+    }
     /// 1402ec020 / 1402f5920 initialize the supported builtin views during
     /// renderer bootstrap. Use the same owner as their subsequent consumers.
     pub(super) fn prepare_intrinsics(&self, catalog: &archive::Catalog,

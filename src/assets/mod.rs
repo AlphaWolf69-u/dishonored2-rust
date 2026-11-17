@@ -17,6 +17,7 @@ pub mod installation;
 pub mod inventory_item;
 pub mod power_journal;
 pub mod interactive_map;
+pub mod flash_surface;
 pub mod lang;
 pub mod level;
 pub mod map_resources;

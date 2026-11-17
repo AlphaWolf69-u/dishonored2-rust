@@ -149,6 +149,39 @@ pub(crate) struct Contacts {
     retired_admission: Option<u16>,
 }
 impl Contacts {
+    /// Explicit F8 observation of the retained canonical contact owner.
+    /// This does not run broadphase, geometry, callbacks or solver work.
+    pub(crate) fn write_body_diagnostics(&self, world: &WorldStorage, body: u32, report: &mut String) {
+        use std::fmt::Write;
+        let total = self.manifolds.keys().filter(|key| key.bodies.contains(&body)).count();
+        let pairs = self.pairs.iter().filter(|pair| pair.contains(&body)).count();
+        let _ = writeln!(report, "    contacts serial={} pairs={} retained={} prepared_ready={} collision_pending={} (at most8 manifolds)",
+            self.serial, pairs, total, self.prepared_callbacks_ready, self.collision_pending);
+        for pair in self.pairs.iter().filter(|pair| pair.contains(&body)).take(8) {
+            let _ = writeln!(report, "      broadphase_pair bodies={pair:?}");
+            for id in *pair {
+                let _ = writeln!(report, "        candidate={:?}", world.bodies.get(id));
+            }
+        }
+        for entry in self.manifolds.values().filter(|entry| entry.key.bodies.contains(&body)).take(8) {
+            let _ = writeln!(report, "      manifold bodies={:?} shapes={:?} resources={:?} seen={} active={} response={:?} context={:#x} materials={:?} normal={:?} separation={} points={:?} correspondence={:?} solvers={:?} callbacks={:?} state={:?} cache={:?}",
+                entry.key.bodies, entry.key.shapes, entry.key.resources, entry.seen,
+                self.active_keys.contains(&entry.key), entry.response, entry.context_flags,
+                entry.material_ids, entry.normal, entry.separation, entry.points,
+                entry.correspondence, entry.solvers, entry.callback_state, entry.state, entry.cache);
+            let _ = writeln!(report, "        rows={:?}", entry.rows);
+            for id in entry.key.bodies {
+                if let Some(other) = world.bodies.get(id) {
+                    let _ = writeln!(report, "        endpoint id={id:#x} owner={:?} motion={} flags={:#x} filter={:#x} material={} shape={} position={:?}",
+                        crate::gameplay::collision_user_data::CollisionUserData::decode(other.user_data),
+                        other.motion_id, other.flags, other.filter_info, other.material_id, other.shape, other.transform[3]);
+                } else {
+                    let _ = writeln!(report, "        endpoint id={id:#x} retired=true");
+                }
+            }
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             manifolds: HashMap::new(),

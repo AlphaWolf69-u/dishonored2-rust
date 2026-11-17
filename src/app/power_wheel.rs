@@ -95,6 +95,9 @@ impl State {
     pub(super) fn movie_frame_ready(&self) -> bool {
         self.open && !self.closing && self.ready && self.snapshot.is_some() && !self.in_flight
     }
+    pub(super) fn cursor_frame_ready(&self, position: (f64, f64)) -> bool {
+        self.cursor == Some(position) && self.movie_frame_ready()
+    }
 }
 
 fn command(world: &World, epoch: u64, operation: Operation) -> Result<(), String> {

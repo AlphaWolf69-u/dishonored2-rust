@@ -179,6 +179,7 @@ pub struct Player {
     drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     inventory_health_damage: std::sync::Arc<crate::assets::damage::Declaration>,
     mana: mana::Mana,
+    mana_regen_sound: Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>,
     powers: power_states::Runtime,
     equipment_changes: equipment_states::Runtime,
     pub weapon: Option<weapons::Runtime>,
@@ -249,6 +250,7 @@ pub struct PlayerSetup {
     pub fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     pub slash_rules: Option<std::sync::Arc<crate::assets::slash_rules::Definition>>,
     pub mana: mana::Settings,
+    pub mana_regen_sound: Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>,
     pub adrenaline: adrenaline::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
     pub swimming_states: Vec<swimming::SwimmingStateDecl>,
@@ -351,6 +353,8 @@ impl Player {
     /// The last published camera world frame, available without sampling a
     /// second body pose during a component callback.
     pub fn published_camera_frame(&self) -> (Vec3, Mat3) { (self.camera.eye, self.camera_axis) }
+    /// Borrow the declaration identity used by746b60's actual regen crossing.
+    pub fn mana_regen_sound_event(&self) -> Option<u32> { self.mana_regen_sound.as_ref().map(|event|event.id) }
     pub fn set_ranged_target_hit(&mut self, hit: Option<Vec3>) { self.ranged_target_hit = hit; }
     pub fn ranged_target_hit(&self) -> Option<Vec3> { self.ranged_target_hit }
     pub fn set_ranged_target_entity(&mut self, entity: Option<crate::gameplay::entity_lifetime::EntityId>) { self.ranged_target_entity = entity; }
@@ -690,6 +694,7 @@ impl Player {
             health_regen_factor: 1.0,
             health_heal_factor: 1.0,
             mana_replenishes: true,
+            mana_regen_sound: setup.mana_regen_sound,
             camera,
             camera_axis,
             body_parts: Default::default(),
@@ -863,6 +868,14 @@ impl Player {
         let mantle_surface = self.swimming_contact.filter(|water|
             self.swimming_active && self.camera.eye.z > water.head).map(|water| water.plane);
         self.mantle_sensor.update(world, &self.physics, mantle_surface);
+        //857300 enables BlinkToMantle;858950 supplies its saved destination
+        //and the current actor axis throughout flight. Keep its ordinary
+        //sensor query/result owner instead of freezing the last aiming hit.
+        if self.machine.is_active(StateId::BLINKING) && !self.powers.mantle_sensor_swapped {
+            if let (Some(motion), Some(sensor)) = (&self.powers.blink, &mut self.powers.blink_mantle_sensor) {
+                sensor.update_at(world, &self.physics, motion.request.final_position, self.physics.axis());
+            }
+        }
         self.vault_sensor.update(world, &self.physics, dt);
         self.catfall_sensor.update(world, &self.physics);
         if !self.health.is_dead() { self.controller.think(settings, frame_delta); }
@@ -1055,7 +1068,13 @@ impl Player {
         }
         self.powers.grapple_equipment_events = equipment_events;
         self.breath.update(dt);
-        self.mana.update(dt, &self.attributes, self.mana_replenishes);
+        if self.mana.update(dt, &self.attributes, self.mana_replenishes) {
+            if let Some(event) = &self.mana_regen_sound {
+                self.body.sound_requests.push(crate::gameplay::sound::Request::Post {
+                    event: event.id, emitter: crate::gameplay::sound::Emitter::PlayerBody,
+                });
+            }
+        }
         self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
         self.health.update_with_healing(dt, &self.attributes, self.health_regen_factor, self.health_heal_factor);
         if let Some(effect) = &mut self.combat_fx {

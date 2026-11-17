@@ -51,6 +51,11 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    /// Read the last completed canonical FX parameter publication; never
+    /// advances an effect or samples its random stream.
+    pub(crate) fn observe_screen_distortion(&self) -> crate::gameplay::effects::screen_distortion::Frame {
+        self.world_particles.screen_distortion_frame()
+    }
     pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
         self.world_particles.story_boolean(worldspawn, qualified)
     }
@@ -173,6 +178,7 @@ pub(super) struct FxFrame {
     pub generation: u64,
     pub capacity: (usize, usize),
     pub retired: u64,
+    pub screen_distortion: crate::gameplay::effects::screen_distortion::Frame,
     pub screen_draws: Option<Vec<super::screen_effects::QuadDraw>>,
     pub particles: Option<ParticlePublicationFrame>,
     pub decals: Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>,
@@ -1151,10 +1157,16 @@ pub(crate) fn simulate_effects(
             }
         }
     };
+    let mut screen_distortion = simulation.observe_screen_distortion();
+    //8911f0's final option override (cvar393030, value1439a4248).
+    match crate::platform::console::shared().read().cvars.int("r_skipCameraMotionBlur") {
+        Some(skip) => { if skip != 0 { screen_distortion.camera_blur = false; } }
+        None => { published.0 = None; warn!("FSDisto publication pending: r_skipCameraMotionBlur is not registered"); return; }
+    }
     published.0 = Some(std::sync::Arc::new(FxFrame {
         camera: water.camera, frame: water.matrices.frame, generation: simulation.generation,
         capacity: simulation.particle_systems.capacity(), retired: simulation.world_particles.dynamic_retired(),
-        screen_draws, particles, decals,
+        screen_draws, particles, decals, screen_distortion,
     }));
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
@@ -1386,17 +1398,24 @@ fn render_camera<const PREPARE_ALPHA: bool>(
             .as_ref()
             .map_or_else(|| target.main_texture_view(), |w| w.destination);
         if let Some(sources) = screen_sources.0.as_deref() {
-            let draws = publication.0
+            let published = publication.0
                 .as_ref()
                 .filter(|published| published.camera == frame.camera && published.frame == water.matrices.frame)
-                .and_then(|published| published.screen_draws.as_ref())
                 .ok_or("player FX commands await current atmosphere")?;
+            let draws = published.screen_draws.as_deref()
+                .ok_or("player FX screen commands await current atmosphere")?;
             gpu.screen_effects.record(
                 &device,
                 &queue,
                 context.command_encoder(),
                 sources,
                 draws,
+                super::screen_effects::FullscreenInputs {
+                    frame: &published.screen_distortion,
+                    matrices: &water.matrices,
+                    shader_time: water.shader_time,
+                    local_time: water.local_time[0],
+                },
                 water.local_time[0],
                 colour,
                 &depth.alpha.full_sample,
@@ -1434,6 +1453,8 @@ pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
         .and_then(|frame| frame.lens.as_ref()).is_some_and(|lens| lens.settings.skip_post_process);
     let expected = (water.camera, water.matrices.frame);
     let mut rows = vec![format!("owner=camera expected={expected:?} completed={:?} skipped={skipped}", gpu.completed)];
+    rows.push(format!("owner=fullscreen-distortion expected={expected:?} camera_completed={} commands_recorded={} gpu_execution_verified=false",
+        gpu.completed == Some(expected), gpu.completed == Some(expected) && gpu.screen_effects.fullscreen_recorded()));
     if let Some((camera, view)) = &gpu.current {
         view.visit_owned_targets(&mut |role, texture| {
             rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?} mips={} samples={}", texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));

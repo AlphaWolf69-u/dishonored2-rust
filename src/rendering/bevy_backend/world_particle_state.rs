@@ -67,6 +67,7 @@ struct Instance {
     light_head: u16,
     sound_head: u16,
     decal_head: u16,
+    distortion_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
@@ -86,6 +87,7 @@ pub(super) struct GroupContext<'a> {
     pub(super) systems: &'a mut ParticleSystems,
     pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
+    pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
@@ -102,6 +104,7 @@ impl GroupContext<'_> {
         super::world_sub_effects::Chains {
             systems: self.systems,
             decals: self.decals,
+            distortion: self.distortion,
             lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
@@ -123,6 +126,7 @@ fn admit(
         return Ok(());
     }
     for group in &definition.groups {
+        for distortion in &group.screen_distortions { distortion.as_ref().map_err(Clone::clone)?; }
         for light in &group.lights {
             let light=light.as_ref().map_err(Clone::clone)?;
             if light.enabled && !matches!(light.kind,0|2) { return Err(format!("{name}: FX light type{} awaits a verified canonical render consumer",light.kind)); }
@@ -212,6 +216,7 @@ fn update_chains(
     light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
+    distortion_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     frame: &UpdateFrame,
     context: &mut GroupContext,
@@ -241,9 +246,14 @@ fn update_chains(
         |materials| Ok(materials.clone()),
         |_| {},
     )?;
+    let mut distortion_count = None;
     let mut gameplay_live = false;
     let mut index = 0;
     while index < gameplay_events.len() {
+        if distortion_count.is_none() && !gameplay_events[index].is_entity() {
+            distortion_count = Some(context.distortion.update(distortion_head, frame.age,
+                frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?);
+        }
         if gameplay_events[index].advance(
             frame.age,
             &mut context.systems.seed,
@@ -257,7 +267,12 @@ fn update_chains(
             gameplay_events.remove(index);
         }
     }
-    Ok(updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || gameplay_live)
+    let distortion_count = match distortion_count {
+        Some(count) => count,
+        None => context.distortion.update(distortion_head, frame.age,
+            frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?,
+    };
+    Ok(updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || distortion_count != 0 || gameplay_live)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -276,6 +291,7 @@ fn update_sub_effects(
             &mut sub.light_head,
             &mut sub.sound_head,
             &mut sub.decal_head,
+            &mut sub.distortion_head,
             &mut sub.gameplay_events,
             frame,
             context,
@@ -301,6 +317,7 @@ pub(super) fn start_groups(
     light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
+    distortion_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
     context: &mut GroupContext,
@@ -391,6 +408,10 @@ pub(super) fn start_groups(
                 ),
             );
         }
+        for distortion in &group.screen_distortions {
+            context.distortion.start(distortion_head, distortion.as_ref().map_err(Clone::clone)?.clone(),
+                offsets, &mut context.systems.seed)?;
+        }
         for source in &group.explosions {
             let first_explosion = gameplay_events
                 .iter()
@@ -429,6 +450,7 @@ pub(crate) struct WorldParticleState {
     >,
     lights: super::world_light_effects::LightSystems,
     decals: super::decal_effects::DecalSystems,
+    distortion: super::world_screen_distortion::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
@@ -470,6 +492,7 @@ impl Default for WorldParticleState {
             sound_systems: Default::default(),
             lights: Default::default(),
             decals: super::decal_effects::new_systems(),
+            distortion: Default::default(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
@@ -518,6 +541,9 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn screen_distortion_frame(&self) -> crate::gameplay::effects::screen_distortion::Frame {
+        self.distortion.frame()
+    }
     pub(crate) fn light_publication(&self) -> impl Iterator<Item=(u16,Option<&crate::gameplay::effects::light::LightSample>)> { self.lights.publication() }
 
     pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
@@ -1062,6 +1088,7 @@ impl WorldParticleState {
                 }
                 systems.stop(instance.head, instance.age);
                 self.lights.stop(instance.light_head, instance.age, false)?;
+                self.distortion.stop(instance.distortion_head, instance.age, false)?;
                 self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
@@ -1071,6 +1098,7 @@ impl WorldParticleState {
                         systems,
                         sound_systems: &mut self.sound_systems,
                         lights: &mut self.lights,
+                    distortion: &mut self.distortion,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -1144,6 +1172,7 @@ impl WorldParticleState {
         };
         systems.clear(&mut instance.head)?;
         self.lights.clear(&mut instance.light_head)?;
+        self.distortion.clear(&mut instance.distortion_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
@@ -1151,6 +1180,7 @@ impl WorldParticleState {
                 systems,
                 sound_systems: &mut self.sound_systems,
                 lights: &mut self.lights,
+                    distortion: &mut self.distortion,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -1307,6 +1337,8 @@ impl WorldParticleState {
                 self.shutdown_instance(index as u16, systems)?;
             }
         }
+        if !self.distortion.drained() { return Err("FX FSDisto pool retains a live chain after shutdown".into()); }
+        self.distortion.shutdown();
         if !self.lights.drained() { return Err("FX light pool retains a live chain after instance shutdown".into()); }
         self.pending_starts.clear();
         self.pending_actor_starts.clear();
@@ -1562,6 +1594,7 @@ impl WorldParticleState {
             light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
+            distortion_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
@@ -1901,6 +1934,7 @@ impl WorldParticleState {
             .cvars
             .float("pm_screenParticleOffset")
             .ok_or("pm_screenParticleOffset is not registered")?;
+        self.distortion.begin_frame();
         // FX the particle systems' m_fxEvents started (1401da820: an FX
         // entity at the event with the system's origin or target as its
         // record target, then 1401a2ff0).
@@ -1923,6 +1957,7 @@ impl WorldParticleState {
                 &mut instance.light_head,
                 &mut instance.sound_head,
                 &mut instance.decal_head,
+                &mut instance.distortion_head,
                 &mut instance.gameplay_events,
                 &mut instance.sub_effects,
                 &mut GroupContext {
@@ -1932,6 +1967,7 @@ impl WorldParticleState {
                     systems,
                     sound_systems: &mut self.sound_systems,
                     lights: &mut self.lights,
+                    distortion: &mut self.distortion,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2010,6 +2046,7 @@ impl WorldParticleState {
                     systems,
                     sound_systems: &mut self.sound_systems,
                     lights: &mut self.lights,
+                    distortion: &mut self.distortion,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2026,6 +2063,7 @@ impl WorldParticleState {
                     &mut instance.light_head,
                     &mut instance.sound_head,
                     &mut instance.decal_head,
+                &mut instance.distortion_head,
                     &mut instance.gameplay_events,
                     &update,
                     &mut context,
@@ -2078,6 +2116,7 @@ impl WorldParticleState {
         }
         self.query = Some(query);
         self.frame = Some(frame);
+        self.distortion.finish_frame();
         Ok(())
     }
 }
@@ -2406,6 +2445,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
+            distortion_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,

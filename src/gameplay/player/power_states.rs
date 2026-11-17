@@ -60,6 +60,9 @@ pub struct Runtime {
     execution_requested: bool,
     mana_potion_requested: bool,
     pub blink_mantle_sensor: Option<super::sensors::MantleSensor>,
+    ///8603b0 chooses sensor2 while12 is still active, before the host's
+    ///batched deactivation callbacks run.
+    pub blink_mantle_requested: bool,
     pub mantle_sensor_swapped: bool,
     pub blink_from_sprinting: bool,
     pub blink_from_sliding: bool,
@@ -239,6 +242,7 @@ pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
 pub fn activate_blink(frame: &mut Frame<'_>) {
     let runtime = &mut *frame.powers;
     runtime.blink_pending = false; runtime.blink_finished = false; runtime.blink_aborted = false;
+    runtime.blink_mantle_requested = false;
     runtime.previous_posture = frame.physics.posture;
     frame.controller.disable_actions(0x4000);
     frame.physics.instant_motion();

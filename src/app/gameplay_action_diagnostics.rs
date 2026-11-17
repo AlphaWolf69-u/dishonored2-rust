@@ -5,6 +5,7 @@ use super::{interaction_focus::DiscoveredDocuments, player::PlayerState};
 use crate::{gameplay::{entity_lifetime::EntityId, player::{Player, states::StateId, weapons::RangedFamily}}, platform::{bindings, console}};
 use bevy::{input::{ButtonState, keyboard::{KeyboardInput, Key, NativeKey}, mouse::MouseButtonInput}, prelude::*};
 use std::{collections::HashSet, time::{Duration, Instant}};
+mod blink;
 
 #[derive(Resource, Default)]
 struct Receipts { heart_uses: u64, heart: Option<EntityId> }
@@ -54,7 +55,7 @@ fn player(world: &World) -> Result<&Player, String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, PickObject, ThrowObject, ObjectMotion, Done }
+enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldSword, WorldCharge, WorldAim, WorldContact, PickObject, ThrowObject, ObjectMotion, Done }
 pub(super) struct Observation {
     stage: Stage,
     since: Instant,
@@ -92,12 +93,18 @@ pub(super) struct Observation {
     expected_fx: HashSet<String>,
     observed_fx: HashSet<String>,
     bolt_c8_observed: bool,
+    wheel_cursor: Option<(f64, f64)>,
+    world_only: bool,
+    world_poke: bool,
+    world_crouch: Option<Input>,
+    world_target: Option<crate::gameplay::collision_hit::ShapeHitInfo>,
+    blink: Option<blink::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee or poke")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("blink")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke or blink")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -107,21 +114,25 @@ impl Observation {
         }
         let melee_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("melee");
         let poke_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("poke");
+        let world_poke=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-poke");
+        let world_only=world_poke||std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world");
         let contact_only=melee_only || poke_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("contact");
         let carry_only=contact_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("carry");
-        if !heart_only && !carry_only {
+        if !heart_only && !carry_only && !world_only {
             for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
                 if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
             }
         }
         world.insert_resource(Receipts::default());
+        let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),
-            audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false })
+            audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
+            world_only,world_poke,world_crouch:None,world_target:None,blink })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -368,6 +379,50 @@ impl Observation {
         }
         Ok(moved)
     }
+    /// Fixture selection uses the SAME 630890 camera ray, actual sword length
+    /// and 62f900 WORLD focus bounds. It does not manufacture a melee hit.
+    fn world_fixture(world:&World)->Result<Option<crate::gameplay::collision_hit::ShapeHitInfo>,String>{
+        let p=player(world)?;
+        let (identity,_,_)=p.equipment_action_status(1).ok_or("WORLD fixture sword absent")?;
+        let definition=world.resource::<super::player_actions::PlayerActions>().equipment_metadata(identity)
+            .and_then(|metadata|metadata.melee.as_ref()).ok_or("WORLD fixture actual sword declaration absent")?;
+        let (eye,axis)=p.published_camera_frame();
+        let equipment=super::equipment_identity::id(world,identity);
+        let scene=world.resource::<super::physics_scene::PhysicsScene>();
+        let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+        let mut queries=super::physics_scene::melee::MeleeQueries::default();
+        let contacts=scene.melee_ray_contacts(live,&mut queries,
+            &super::physics_scene::melee::Ray{origin:eye.to_array(),direction:(axis.x_axis*definition.dimensions.x).to_array(),maximum_fraction:1.,layers:0x443e})?;
+        for contact in contacts {
+            // A real static WORLD witness is required. Props, even props that
+            // additionally use WORLD focus, cannot pass this separate case.
+            if contact.entity.is_some()&&(contact.entity==p.managed_entity()||contact.entity==equipment){continue}
+            //636b40's closest-ray WORLD bank admits null/idWorldspawn, not
+            //arbitrary non-damageable props. Do not look through occluders.
+            if !scene.melee_contact_world(live,contact,3)?{return Ok(None)}
+            let hit=match contact.hit{
+                super::physics_scene::melee::Hit::Ray(hit)=>hit,
+                super::physics_scene::melee::Hit::Shape(_)=>return Err("WORLD fixture ray produced a non-ray witness".into()),
+            };
+            return Ok(definition.world_focus.contains(p.physics.position(),eye,axis,definition.focus_step_back,Vec3::from_slice(&hit.position))
+                .then_some(hit.target));
+        }
+        Ok(None)
+    }
+    fn world_evidence(&self,world:&World,reason:&str)->Result<(),String>{
+        let p=player(world)?;
+        let (identity,_,_)=p.equipment_action_status(1).ok_or("WORLD evidence sword absent")?;
+        let definition=world.resource::<super::player_actions::PlayerActions>().equipment_metadata(identity)
+            .and_then(|metadata|metadata.melee.as_ref()).ok_or("WORLD evidence declaration absent")?;
+        let scene=world.resource::<super::physics_scene::PhysicsScene>();
+        let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"WORLD evidence query owner poisoned")?;
+        let receipt=super::melee::world_action_receipt(world);
+        let material=receipt.and_then(|(_,hit,_,_,_,_)|queries.storage.materials.material_for_id(hit.material_id))
+            .map(|material|material.name.as_str());
+        eprintln!("ACTION_SMOKE_WORLD reason={reason} charged={} fixture={:?} receipt={receipt:?} actual_target_material={material:?} authored_source_material={:?} authored_focused_material={:?} native_charge={:?} {}",
+            self.world_poke,self.world_target,definition.material,definition.focused_material,p.machine.melee_focus_charge(),super::melee::debug_startup_pending(world));
+        Ok(())
+    }
     fn focus_curve(&mut self,world:&World)->Result<(bool,usize,bool),String>{
         // Bounded diagnostic output only; production retains no frame history.
         if self.focus_samples>=4096{return Err("focus action exceeded bounded 4096-frame diagnostic curve".into())}
@@ -397,6 +452,11 @@ impl Observation {
         Ok((fx.focus_requested(),count,count>0&&full))
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(blink)=&mut self.blink{
+            let complete=blink.poll(world)?;
+            if complete{self.stage=Stage::Done;}
+            return Ok(complete)
+        }
         // Sample every actual app frame across hold/release, including the
         // input-release frame, so endpoint-only evidence cannot hide a snap.
         let focus=if matches!(self.stage,Stage::Focus|Stage::FocusFade|Stage::ContactFocus|Stage::ContactPokeAim)||self.poke_only&&self.stage==Stage::ContactDamage{Some(self.focus_curve(world)?)}else{None};
@@ -406,7 +466,7 @@ impl Observation {
         if self.since.elapsed()>Duration::from_secs(90) {
             let mut snapshot=String::new();player(world)?.write_combat_diagnostics(&mut snapshot);
             super::weapon_firing::write_diagnostics(world,&mut snapshot);
-            if self.melee_only||self.poke_only {
+            if self.melee_only||self.poke_only||self.world_only {
                 snapshot.push_str(&super::melee::debug_startup_pending(world));
             }
             if matches!(self.stage,Stage::CarryApproach|Stage::ContactAim|Stage::PickObject) {
@@ -417,6 +477,69 @@ impl Observation {
             return Err(format!("action smoke timeout stage={:?} shots={} projectile_seen={} snapshot={snapshot}",self.stage,self.shot_count,self.projectile_seen));
         }
         match self.stage {
+            Stage::Begin if self.world_only => {
+                eprintln!("ACTION_SMOKE_SCENARIO name={} setup=actual_level_spawn+physical_crouch+mouse source=630890+62f900 no_teleport=true no_range_override=true",if self.world_poke{"world-poke"}else{"world"});
+                // Normal LMB captures the virtual window and draws the sword;
+                // this setup swing is explicitly excluded by a later serial.
+                self.tap(world,19)?;
+                self.stage(Stage::WorldSword,world)?;
+            }
+            Stage::WorldSword if player(world)?.equipment_action_status(1).is_some_and(|(_,equipped,transitioning)|equipped&&!transitioning)
+                &&!player(world)?.machine.is_active(StateId::SLASH) => {
+                let input=input_for(player(world)?.controller.sneak_action)?;
+                send(world,input,true)?;self.world_crouch=Some(input);
+                if self.world_poke{self.stage(Stage::WorldCharge,world)?;}else{self.stage(Stage::WorldAim,world)?;}
+            }
+            Stage::WorldCharge => {
+                // Charge while looking upward, excluding the actual floor
+                // from the initial ordinary swing. Aim down only AFTER the
+                // state's own 86bec0 elapsed/declared-duration predicate.
+                let (_,axis)=player(world)?.published_camera_frame();
+                if self.held.is_none(){
+                    if axis.x_axis.z<=0.{world.write_message(bevy::input::mouse::MouseMotion{delta:Vec2::new(0.,-8.)});}
+                    else{let input=input_for(19)?;send(world,input,true)?;self.held=Some(input);}
+                }else if let Some((elapsed,required))=player(world)?.machine.melee_focus_charge(){
+                    if elapsed>=required{
+                        eprintln!("ACTION_SMOKE_WORLD_CHARGE elapsed={elapsed} authored_focus_hold_duration={required} ready=true source=86bec0");
+                        self.stage(Stage::WorldAim,world)?;
+                    }
+                }
+            }
+            Stage::WorldAim => {
+                if let Some(hit)=Self::world_fixture(world)?{
+                    self.world_target=Some(hit);
+                    self.contact_serial=super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);
+                    self.contact_windows=super::melee::active_windows(world);
+                    self.world_evidence(world,"before-physical-attack")?;
+                    if self.world_poke{
+                        let (elapsed,required)=player(world)?.machine.melee_focus_charge().ok_or("WORLD poke lost held focus before release")?;
+                        if elapsed<required{return Err("WORLD poke native charge regressed before release".into())}
+                        let input=self.held.take().ok_or("WORLD poke physical hold absent")?;send(world,input,false)?;
+                    }else{self.tap(world,19)?;}
+                    self.stage(Stage::WorldContact,world)?;
+                }else{
+                    // Controller fixture increments only. No collision point,
+                    // callback, weapon extent, elapsed time or pose is changed.
+                    world.write_message(bevy::input::mouse::MouseMotion{delta:Vec2::new(0.,8.)});
+                }
+            }
+            Stage::WorldContact => {
+                if let Some((serial,hit,focused,forward,recoil,ticket))=super::melee::world_action_receipt(world){
+                    if serial>self.contact_serial&&super::melee::active_windows(world)>self.contact_windows
+                        &&focused==self.world_poke&&(!self.world_poke||forward)&&ticket {
+                        let fixture=self.world_target.ok_or("WORLD receipt fixture absent")?;
+                        if hit.body_id!=fixture.body_id{return Err(format!("WORLD callback hit a different real body: fixture={fixture:?} actual={hit:?}"))}
+                        let scene=world.resource::<super::physics_scene::PhysicsScene>();
+                        let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"WORLD receipt query owner poisoned")?;
+                        if queries.storage.materials.material_for_id(hit.material_id).is_none(){return Err(format!("WORLD callback material is not admitted: {hit:?}"))}
+                        drop(queries);
+                        self.world_evidence(world,"accepted-callback")?;
+                        eprintln!("ACTION_SMOKE_PASS check={} serial={serial} focused={focused} forward={forward} recoil_requested={recoil} actual_FX_ticket=true visible_or_audible_output_not_claimed=true",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"});
+                        if let Some(input)=self.world_crouch.take(){send(world,input,false)?}
+                        self.stage(Stage::Done,world)?;
+                    }
+                }
+            }
             Stage::Begin if self.carry_only => {
                 // Debug fixture is the normal authored player spawn. The bottle
                 // is only looked up, never moved or marked reached/admitted.
@@ -537,6 +660,17 @@ impl Observation {
             }
             Stage::WheelOpen if world.get_resource::<super::power_wheel::State>().is_some_and(|wheel|wheel.movie_frame_ready()) => {
                 eprintln!("ACTION_SMOKE_PASS check=wheel_real_open");
+                {
+                    let mut windows=world.query::<&mut Window>();
+                    let mut window=windows.iter_mut(world).next().ok_or("wheel window absent")?;
+                    let position=Vec2::new(window.width()*0.5+24.,window.height()*0.5+12.);
+                    self.wheel_cursor=Some((position.x as f64*1920./window.width() as f64,position.y as f64*1080./window.height() as f64));
+                    window.set_cursor_position(Some(position));
+                }
+                self.stage(Stage::WheelMove,world)?;
+            }
+            Stage::WheelMove if self.wheel_cursor.is_some_and(|position|world.get_resource::<super::power_wheel::State>().is_some_and(|wheel|wheel.cursor_frame_ready(position))) => {
+                eprintln!("ACTION_SMOKE_PASS check=wheel_actual_mouse_frame");
                 if let Some(input)=self.held.take(){send(world,input,false)?}
                 self.stage(Stage::WheelClose,world)?;
             }

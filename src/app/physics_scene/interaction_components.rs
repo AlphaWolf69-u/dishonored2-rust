@@ -628,6 +628,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if self.scene.is_flash_class(handle.class_id) {
+                return self.scene.initialize_flash_component(self.live,self.events,handle);
+            }
             if self.scene.is_smart_object_class(handle.class_id) {
                 return self.scene.initialize_smart_object(self.live,self.events,handle);
             }
@@ -716,6 +719,10 @@ impl ComponentLifecycleWorld for Startup<'_> {
             if self.scene.is_smart_object_class(handle.class_id) {
                 self.scene.start(handle,registry)?;
                 return self.scene.start_smart_object(self.world.as_deref(),self.live,handle);
+            }
+            if self.scene.is_flash_class(handle.class_id) {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_flash_component(handle);
             }
             if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
                 self.scene.start(handle,registry)?;
@@ -990,6 +997,10 @@ impl PhysicsScene {
             membership!(self.investigate_spots)
         } else if handle.class_id==self.classes[51] {
             membership!(self.dynamic_search_spots)
+        } else if handle.class_id==self.classes[52] {
+            membership!(self.flash_surfaces)
+        } else if handle.class_id==self.classes[53] {
+            membership!(self.interactive_maps)
         } else if handle.class_id == self.classes[18] {
             membership!(self.damage_zones)
         } else {

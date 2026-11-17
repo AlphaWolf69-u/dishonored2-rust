@@ -208,6 +208,7 @@ impl LevelLifetime {
             if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
             self.physics_retired = true;
         }
+        if !super::flash_surface_movie::shutdown(world)? { return Ok(false); }
         self.retirement_phase = "AIWorld identities and shared model scopes";
         if !self.ai_worlds_retired {
             // Constructor-owned managers retain actual child generations until

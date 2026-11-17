@@ -375,6 +375,16 @@ impl ReadyEquipment {
     }
 }
 
+///684680's handle lives with the real PlayerFX manager. Source acquisition,
+///playing state and interruption tails remain in the shared WorldFX owner.
+struct MotionBlur {
+    path: Arc<str>,
+    scope: Option<Arc<str>>,
+    started: bool,
+    ready: bool,
+    closed: bool,
+}
+
 #[derive(Resource)]
 pub(super) struct PlayerActions {
     catalog: Arc<Catalog>,
@@ -396,6 +406,7 @@ pub(super) struct PlayerActions {
     pub prepared_owned_metadata: Vec<(String, Arc<crate::assets::equipment::Metadata>)>,
     equipment_admissions: HashSet<String>,
     startup_error: Option<String>,
+    motion_blur: Option<MotionBlur>,
     metadata: HashMap<String, Arc<crate::assets::equipment::Metadata>>,
     metadata_failed: HashSet<String>,
     metadata_order: VecDeque<String>,
@@ -584,6 +595,8 @@ impl PlayerActions {
             prepared_owned_metadata: Vec::new(),
             equipment_admissions: Default::default(),
             startup_error: None,
+            motion_blur: player::combat_fx::motion_blur_source(&declarations.fx).map(|path|
+                MotionBlur { path, scope: None, started: false, ready: false, closed: false }),
             metadata: Default::default(),
             metadata_failed: Default::default(),
             metadata_order: Default::default(),
@@ -655,6 +668,7 @@ impl PlayerActions {
 
     pub fn startup_pending(&self) -> bool {
         !self.rehydrated
+            || self.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed)
             || !self.loading.is_empty()
             || !self.power_loading.is_empty()
             || !self.metadata_loading.is_empty()
@@ -1994,6 +2008,40 @@ pub(super) fn retire_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut actions| actions.retire_acquisitions())
 }
 
+///6846b0 ->8120b0: start the authored persistent, attached PlayerFX through
+///the same requested/playing source owner as other Player effects. This runs
+///during loading so its real resource admission participates in that barrier.
+pub(super) fn prepare_fx(world: &mut World) {
+    let Some(actions) = world.get_resource::<PlayerActions>() else { return };
+    if actions.cancelled.load(Ordering::Acquire) || actions.startup_error.is_some()
+        || !actions.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed) { return; }
+    let Some(player) = super::player_lifetime::id(world) else { return };
+    if !world.contains_resource::<super::usable_effects::EffectRequests>() { return; }
+    let result = world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
+        let fx = actions.motion_blur.as_mut().expect("pending PlayerFX");
+        if fx.scope.is_none() {
+            let scope: Arc<str> = Arc::from(format!("player-motion-blur:{player:?}"));
+            world.resource_mut::<super::usable_effects::EffectRequests>()
+                .reserve(scope.clone(), vec![fx.path.to_string()]);
+            fx.scope = Some(scope);
+            return Ok::<(), String>(());
+        }
+        let scope = fx.scope.as_ref().expect("reserved PlayerFX");
+        if !super::usable_effects::reservation_ready(world, scope)? { return Ok(()); }
+        if !fx.started {
+            world.resource_mut::<super::usable_effects::EffectRequests>()
+                .start_player(scope, &fx.path);
+            fx.started = true;
+            return Ok(());
+        }
+        fx.ready = super::usable_effects::player_published(world, scope, &fx.path)?;
+        Ok(())
+    });
+    if let Err(error) = result {
+        world.resource_mut::<PlayerActions>().startup_error = Some(format!("Player motion blur: {error}"));
+    }
+}
+
 /// Release owned time/FX requests before their shared managers are retired.
 /// Both the selected component and a detached, still-moving Blink are real
 /// consumers; equipment selection alone is not their completion signal.
@@ -2004,7 +2052,8 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
     let has_blinks = actions.has_family_work();
     let has_reservations =
         !actions.power_reservations.is_empty() || !actions.retiring_power_dependencies.is_empty();
-    if !has_blinks && !has_reservations {
+    let has_motion_blur = actions.motion_blur.as_ref().is_some_and(|fx| fx.scope.is_some() && !fx.closed);
+    if !has_blinks && !has_reservations && !has_motion_blur {
         return Ok(());
     }
     if !world.contains_resource::<super::usable_effects::EffectRequests>() {
@@ -2064,6 +2113,15 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
     }
     world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
         let mut effects = world.resource_mut::<super::usable_effects::EffectRequests>();
+        //683f10 ->812290 ->1a31f0: stop the same PlayerFX handle, then
+        //release only this producer's reservation. Shared FX tails drain later.
+        if let Some(fx) = actions.motion_blur.as_mut().filter(|fx| !fx.closed) {
+            if let Some(scope) = fx.scope.take() {
+                if fx.started { effects.stop_player(&scope); }
+                effects.release_reservation(scope);
+            }
+            fx.closed = true;
+        }
         for (_, key) in actions.power_reservations.drain() {
             effects.release_reservation(key);
         }

@@ -326,6 +326,8 @@ mod world_sub_effects;
 #[cfg(feature = "game")]
 mod world_light_effects;
 #[cfg(feature = "game")]
+mod world_screen_distortion;
+#[cfg(feature = "game")]
 mod world_gameplay_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_sounds;

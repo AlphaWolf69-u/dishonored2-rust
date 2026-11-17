@@ -60,6 +60,10 @@ pub(super) struct PhysicsFrameDriver {
     last_solver: Option<SolverParameters>,
 }
 impl PhysicsFrameDriver {
+    pub(super) fn write_body_diagnostics(&self, storage: &WorldStorage, body: u32, report: &mut String) {
+        self.contacts.write_body_diagnostics(storage, body, report);
+    }
+
     pub(super) fn is_idle(&self) -> bool {
         self.frame.is_none()
     }

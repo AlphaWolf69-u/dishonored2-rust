@@ -33,6 +33,7 @@ pub struct ScreenEffectSources {
     pub leave_water: EffectDefinition,
     pub materials: Vec<ScreenDistortionMaterial>,
     pub resolve_state: crate::render_state::RenderState,
+    pub fullscreen_state: crate::render_state::RenderState,
     pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
 }
 impl ScreenEffectSources {
@@ -163,6 +164,8 @@ impl ScreenEffectSources {
             leave_water,
             materials,
             resolve_state,
+            fullscreen_state: library.definition(b"PostFX_uberMotionVector")?
+                .ok_or("fullscreen distortion program definition absent")?.render_state(),
             transparency_resolve_state,
         })
     }

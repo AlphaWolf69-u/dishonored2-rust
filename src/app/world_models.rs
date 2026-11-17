@@ -687,6 +687,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
     result
 }
 pub(super) fn remove(world: &mut World, id: EntityId) -> Result<(), String> {
+    super::flash_surface_movie::retire_model(world,id)?;
     if let Some(mut contexts)=world.get_resource_mut::<super::projected_decals::ModelProjectionContexts>(){contexts.retire(super::projected_decals::ModelKey::Actor(id));}
     if let Some(mut data)=world.get_resource_mut::<super::model_motion::ModelShaderData>(){data.remove(super::model_motion::ModelKey::Actor(id));}
     let Some(mut owner) = world.remove_resource::<WorldModels>() else {
@@ -709,6 +710,7 @@ pub(super) fn remove_entity(world: &mut World, live: &LiveEntities, id: EntityId
         return remove(world, id);
     }
     if world.get_resource::<WorldModels>().is_some_and(|owner| owner.retiring.contains_key(&id)) { return Ok(()) }
+    super::flash_surface_movie::retire_model(world,id)?;
     let (name, _) = live.get(id).ok_or("render retirement targeted a stale entity generation")?;
     let name = name.to_owned();
     super::model_motion::set_entity_visible(world, live, id, false)?;

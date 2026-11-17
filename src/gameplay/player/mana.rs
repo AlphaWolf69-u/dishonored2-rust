@@ -78,8 +78,10 @@ impl Mana {
         self.countdown = self.settings.regen_delay + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_DELAY");
         deficit
     }
-    pub fn update(&mut self, dt: f32, attributes: &Attributes, replenish: bool) {
-        if self.lock_flags & 2 != 0 { return; }
+    ///746b60 ->746730 posts the authored sound only when a positive
+    ///recharge delay crosses zero. Already-recharging frames do not repost it.
+    pub fn update(&mut self, dt: f32, attributes: &Attributes, replenish: bool) -> bool {
+        if self.lock_flags & 2 != 0 { return false; }
         let target = self.regen_target(attributes, replenish).min(self.maximum(attributes));
         if self.current >= target {
             if self.countdown <= 0.0 && self.potion_used {
@@ -87,9 +89,11 @@ impl Mana {
                 self.potion_regen = false;
                 self.countdown = self.settings.regen_delay + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_DELAY");
             }
-            return;
+            return false;
         }
+        let previous_countdown = self.countdown;
         self.countdown -= dt;
+        let begin_regen = previous_countdown > 0.0 && self.countdown <= 0.0;
         if self.countdown <= 0.0 {
             let rate = attributes.get("ARK_ATTRIBUTE_MANA_REGEN_RATE");
             let speed = if self.potion_used { self.potion_speed } else { 1.0 };
@@ -100,5 +104,6 @@ impl Mana {
                 self.countdown = self.settings.regen_delay + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_DELAY");
             }
         }
+        begin_regen
     }
 }

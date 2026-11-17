@@ -95,11 +95,18 @@ pub(in crate::app) fn snapshot(
                     inventory.declaration(path),
                     player.selected_power_hud_status(),
                 ) {
-                    let casting = player
+                    //673760 also queries selectedPower virtual130. Blink's
+                    //141b9bb78 slot points to43cc00, reading base byte+a4:
+                    //61bc20 sets it at Begin,61be50 clears it at End. The
+                    //same Cast owner retains that interval beyond UsePower63.
+                    let casting = player.selected_power().is_some_and(|cast|
+                        cast.phase()!=crate::gameplay::powers::Phase::Idle) || player
                         .active_player_states()
                         .iter()
                         .any(|state| state.0 == 63);
-                    out.power = Some((item.hud_index, casting, !available));
+                    //673760 publishes (61bce0 == 0), and673d30 forwards it
+                    //unchanged: _C_SetPower's third argument is bHasEnoughMana.
+                    out.power = Some((item.hud_index, casting, available));
                 }
             } else if matches!(equipment.archetype, 7 | 9) && inventory.quantity(path) > 0 {
                 if let Some(item) = inventory.declaration(path) {
@@ -136,12 +143,12 @@ impl HudMovie {
         self.apply_equipment(input)
     }
     pub(super) fn apply_equipment(&mut self, input: Snapshot) -> Result<(), String> {
-        if let Some((index, locked, empty)) = input.power {
+        if let Some((index, activated, available)) = input.power {
             self.player
                 .call_path_method(
                     "_masterHUD",
                     "_C_SetPower",
-                    &[index.into(), locked.into(), empty.into()],
+                    &[index.into(), activated.into(), available.into()],
                 )
                 .map_err(|error| self.player.describe(&error))?;
         } else {

@@ -564,6 +564,8 @@ impl PhysicsScene {
                 let immediate = declaration.scheduling.starts_on_spawn();
                 let handle = match &component.kind {
                     Kind::AISmartSpot(definition)=>self.create_smart_object(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::FlashSurface(definition)=>self.create_flash_surface(index,definition.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::InteractiveMap(definition)=>self.create_interactive_map(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::Observable(definition)=>self.create_observable(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::AttentionSource(definition)=>self.create_attention_source(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::AIStatistics => ComponentFactory { declaration:&declaration,pool:&mut self.statistics,registry:&mut registry,grow_one_at_a_time:false }.create(&mut self.entities[index].components,immediate,|_,_,_|Ok(crate::gameplay::ai_world::managers::Statistics::new()),|_,_,_|Ok(()))?,

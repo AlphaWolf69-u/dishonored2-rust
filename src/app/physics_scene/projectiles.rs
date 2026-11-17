@@ -202,7 +202,7 @@ impl PhysicsScene {
             .get(handle.slot)
             .ok_or("interaction Pickable slot absent")?;
         if !component.interaction_enabled
-            || component.interaction_flags & 2 != 0
+            || component.interaction_flags & 0xa != 0
             || !component.definition.usable_by_player
         {
             return Ok(None);

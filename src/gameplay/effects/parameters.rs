@@ -33,12 +33,14 @@ impl EffectParameterSample {
 
 ///218060/218120 and226bc0/226d30 normalize tiny endpoints before weighting.
 ///Vec2's independent second product retains fraction*endpoint operand order.
+///21c0b0/21c170 extend the same sampling to FSDisto's four lanes: shared
+///sampling uses fraction*endpoint; independent sampling does so only in X.
 fn vector_range<const N: usize>(range: [[f32; N]; 2], mix: [f32; N], uniform: bool) -> [f32; N] {
     use crate::float::{add, multiply, subtract};
     std::array::from_fn(|i| {
         let first = super::normalize_small(range[0][i]);
         let second = super::normalize_small(range[1][i]);
-        let product = if N == 2 && !uniform {
+        let product = if (N == 2 && !uniform) || (N == 4 && (uniform || i == 0)) {
             multiply(mix[i], second)
         } else {
             multiply(second, mix[i])
@@ -56,8 +58,8 @@ impl<const N: usize> EffectVectorParameterSample<N> {
     ///curve-mix sample. Independent mode consumes all N range samples BEFORE
     ///the N curve-mix samples, rather than interleaving scalar constructors.
     pub fn new(range: [[f32; N]; 2], uniform: bool, seed: &mut u32) -> Result<Self, String> {
-        if N != 2 && N != 3 {
-            return Err("FX vector parameter requires two or three channels".into());
+        if N != 2 && N != 3 && N != 4 {
+            return Err("FX vector parameter requires two, three or four channels".into());
         }
         let fractions = if uniform {
             [crate::random::lcg_unit(seed); N]

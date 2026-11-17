@@ -43,6 +43,10 @@ struct ContactFrame {
     forward: bool,
 }
 struct Delivery {
+    world: bool,
+    raw_hit: ShapeRayContact,
+    raw_target: Option<EntityId>,
+    world_receipt: Option<u64>,
     hit: ShapeRayContact,
     target: Option<EntityId>,
     attacker: EntityId,
@@ -57,6 +61,27 @@ struct Delivery {
     contact_enabled: bool,
     phase: u8,
     contact: Option<super::physics_scene::explosion_effects::Contact>,
+}
+#[derive(Default)]
+struct WorldContacts {
+    serial: u64,
+    last: Option<WorldContact>,
+}
+struct WorldContact {
+    serial: u64,
+    equipment: EntityId,
+    window: u64,
+    activation_player_time: f64,
+    callback_entity_time: f64,
+    raw: (Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo),
+    selected: (Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo),
+    focused: bool,
+    forward: bool,
+    source_flags: u32,
+    target_flags: Option<u32>,
+    recoil_requested: bool,
+    result: &'static str,
+    ticket: Option<super::usable_effects::EffectTicket>,
 }
 /// Retained receipts for F8/action diagnostics, not another attack history.
 /// No formatting, allocation or geometry copying occurs while recording.
@@ -112,6 +137,7 @@ struct Owned {
     last_sweep: Option<([f32; 3], [f32; 3], [f32; 3], f32)>,
     physics_base: [i32; 2],
     npc_range: [i32; 2],
+    activation_player_time: f64,
 }
 #[derive(Resource, Default)]
 pub(super) struct Melee {
@@ -120,9 +146,16 @@ pub(super) struct Melee {
     generation: u64,
     error: Option<String>,
     active_frame_events: u64,
+    last_contact: Option<(Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo)>,
+    world_contacts: WorldContacts,
 }
 
 impl Melee {
+    /// Last accepted physical callback, including non-damageable world/props.
+    /// F8 borrows this single receipt; it does not run another collision query.
+    pub(super) fn diagnostic_last_contact(&self) -> Option<(Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo)> {
+        self.last_contact
+    }
     pub(super) fn write_diagnostics(&self, report: &mut String) {
         use std::fmt::Write;
         let _ = writeln!(report, "  melee owners={} query_work_pending={} active_frame_events={} error={:.240}", self.owned.len(), self.queries.has_pending(), self.active_frame_events, self.error.as_deref().unwrap_or("<none>"));
@@ -161,6 +194,15 @@ pub(super) fn focused_action_receipt(world: &World, target: EntityId)
             receipt.last_damage_accepted, receipt.last_health_damage,
             receipt.last_damage_focused, receipt.last_damage_forward))
     })
+}
+
+///Actual last WORLD callback, for the same production-input smoke path.
+///The final bool means a real FX request ticket exists, not GPU/audio ready.
+pub(super) fn world_action_receipt(world: &World)
+    -> Option<(u64, crate::gameplay::collision_hit::ShapeHitInfo, bool, bool, bool, bool)> {
+    let receipt = world.get_resource::<Melee>()?.world_contacts.last.as_ref()?;
+    Some((receipt.serial, receipt.selected.1, receipt.focused, receipt.forward,
+        receipt.recoil_requested, receipt.ticket.is_some()))
 }
 
 pub(super) fn request_owned(
@@ -233,6 +275,7 @@ pub(super) fn request_owned(
             last_sweep: None,
             physics_base,
             npc_range,
+            activation_player_time: 0.,
         },
     );
     Ok(())
@@ -268,6 +311,18 @@ pub(super) fn debug_startup_pending(world:&World)->String {
     use std::fmt::Write;
     let Some(owner)=world.get_resource::<Melee>()else{return "melee owner=absent".into();};
     let mut report=String::new();owner.write_diagnostics(&mut report);
+    if let Some(contact) = &owner.world_contacts.last {
+        let _ = writeln!(report,
+            "    last_WORLD_contact serial={} equipment={:?} window={} activation_player_time={} callback_entity_time={} focused={} forward={} protected_target=None raw={:?} selected={:?} source_D2={:#04x} target_D3={:?} recoil_requested_before_FX={} result={}",
+            contact.serial, contact.equipment, contact.window, contact.activation_player_time,
+            contact.callback_entity_time, contact.focused, contact.forward, contact.raw,
+            contact.selected, (contact.source_flags >> 16) as u8,
+            contact.target_flags.map(|flags| (flags >> 24) as u8),
+            contact.recoil_requested, contact.result);
+        if let Some(ticket) = &contact.ticket {
+            let _ = writeln!(report, "      WORLD_FX {}", super::usable_effects::debug_ticket(world, ticket));
+        }
+    }
     for entry in owner.owned.values(){for scope in &entry.scopes{
         let _=writeln!(report,"    identity={} {}",entry.identity,super::explosions::debug_owned(world,&scope.key));
     }}report
@@ -307,6 +362,8 @@ pub(super) fn handle_animation_event(
         return Err("weapon active frames arrived without a timed-event phase".into());
     };
     let settings = ActiveFrames::read(&event.properties)?;
+    let activation_player_time = world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+        .player_time().map_err(str::to_owned)?;
     let Some(mut owner) = world.get_resource_mut::<Melee>() else {
         return Ok(());
     };
@@ -328,6 +385,7 @@ pub(super) fn handle_animation_event(
                 return Err("melee active frames reached an unprepared owned component".into());
             }
             entry.active = true;
+            entry.activation_player_time = activation_player_time;
             entry.receipts.windows += 1;
             entry.forward_attack = settings.forward_attack;
             entry.heavy_block = settings.heavy_block;
@@ -360,7 +418,8 @@ fn witness(hit: Hit) -> ShapeRayContact {
 ///630890 calls636630 to replace the swept witness with the first real hit,
 ///ignores its rejection return, then optionally selects the forward ray.
 ///The player supplies XY and the weapon supplies Z; target contacts are
-///biased inward by the source .01 before extending to the active shape length.
+///biased inward by .01 only for634320's explicit protected entity;631020
+///passes a null protected entity for WORLD packets.
 fn player_contact(
     world: &World,
     queries: &mut MeleeQueries,
@@ -369,6 +428,7 @@ fn player_contact(
     frame: ReferenceFrame,
     length: f32,
     target: Option<EntityId>,
+    protected: Option<EntityId>,
     raw: ShapeRayContact,
     player_origin: Vec3,
     eye: Vec3,
@@ -378,7 +438,7 @@ fn player_contact(
 ) -> Result<(ShapeRayContact, Option<EntityId>), String> {
     let from = Vec3::new(player_origin.x, player_origin.y, frame.position[2]);
     let mut to = Vec3::new(raw.position[0], raw.position[1], raw.position[2]);
-    if target.is_some() {
+    if protected.is_some() {
         to -= Vec3::new(raw.normal[0], raw.normal[1], raw.normal[2]) * f32::from_bits(0x3c23_d70a);
     }
     let ray = Ray {
@@ -399,7 +459,14 @@ fn player_contact(
         if contact.entity == Some(attacker) || contact.entity == Some(equipment) {
             continue;
         }
-        selected = (witness(contact.hit), contact.entity);
+        let mut hit = witness(contact.hit);
+        if protected.is_some() && contact.entity == protected {
+            //636630 still publishes the ray position/normal/body, but the
+            //protected target keeps the original collision/material pair.
+            hit.target.user_data = raw.target.user_data;
+            hit.target.material_id = raw.target.material_id;
+        }
+        selected = (hit, contact.entity);
         break;
     }
     if forward_attack {
@@ -417,13 +484,43 @@ fn player_contact(
     Ok(selected)
 }
 
-fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> Result<(), String> {
+fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries,
+    last_contact: &mut Option<(Option<EntityId>, crate::gameplay::collision_hit::ShapeHitInfo)>,
+    world_contacts: &mut WorldContacts) -> Result<(), String> {
     while let Some(delivery) = entry.deliveries.front_mut() {
         let attacker = delivery.attacker;
         if delivery.phase == 0 {
             if !world.resource::<PhysicsScene>().melee_contact_current(delivery.hit.target)? {
                 entry.deliveries.pop_front();
                 continue;
+            }
+            *last_contact = Some((delivery.target, delivery.hit.target));
+            //631020 calls630810 before634890 and contact virtual110. The
+            //host's asynchronous contact-FX publication must not delay the
+            //actual Slash→Recoil request until a cold effect becomes ready.
+            if delivery.recoil {
+                if let Some(player) = world.get_resource_mut::<super::player::PlayerState>()
+                    .as_mut().and_then(|state| state.player.as_mut()) {
+                    player.machine.request_melee_recoil(1);
+                }
+            }
+            if delivery.world {
+                world_contacts.serial = world_contacts.serial.wrapping_add(1);
+                let serial = world_contacts.serial;
+                let (source_flags, target_flags) = world.resource::<PhysicsScene>()
+                    .melee_contact_flags(entry.entity, delivery.target)?;
+                world_contacts.last = Some(WorldContact {
+                    serial, equipment: entry.entity, window: entry.receipts.windows,
+                    activation_player_time: entry.activation_player_time,
+                    callback_entity_time: world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+                        .entity_time(entry.entity).map_err(str::to_owned)?,
+                    raw: (delivery.raw_target, delivery.raw_hit.target),
+                    selected: (delivery.target, delivery.hit.target),
+                    focused: delivery.focused, forward: delivery.frame.forward,
+                    source_flags, target_flags, recoil_requested: delivery.recoil,
+                    result: "callback accepted; ContactFX pending", ticket: None,
+                });
+                delivery.world_receipt = Some(serial);
             }
             //635140 ->8519d0: the actual contact witness receives a point
             //impulse; its vertical component uses the source absolute value.
@@ -463,7 +560,7 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
                 if delivery.effect_hit.is_none() {
                     let frame = delivery.frame;
                     let (copy, target) = player_contact(world, queries, entry.entity,
-                        attacker, frame.weapon, frame.length, delivery.target, delivery.hit,
+                        attacker, frame.weapon, frame.length, delivery.target, delivery.target, delivery.hit,
                         frame.origin, frame.eye, frame.camera, frame.forward, entry.physics_base)?;
                     if target != delivery.target { entry.receipts.retargeted += 1; }
                     delivery.target = target;
@@ -542,6 +639,10 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
             delivery.phase = 2;
         }
         if delivery.phase == 2 {
+            //Player virtual110 is62fec0; its target-D3 gate precedes both
+            //ordinary635c90 and focused-material contact packets.
+            delivery.contact_enabled &= world.resource::<PhysicsScene>().melee_contact_enabled(
+                world.resource::<LiveEntities>(), delivery.target)?;
             let material = if delivery.focused {
                 entry
                     .definition
@@ -581,24 +682,27 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
                 )? {
                     super::explosions::ContactPost::Pending => return Ok(()),
                     super::explosions::ContactPost::Complete(Some(ticket)) => {
+                        if let Some(receipt) = world_contacts.last.as_mut()
+                            .filter(|receipt| Some(receipt.serial) == delivery.world_receipt) {
+                            receipt.result = "ContactFX requested";
+                            receipt.ticket = Some(ticket.clone());
+                        }
                         entry.receipts.contact_tickets += 1;
                         entry.tails.push(ticket);
                     }
-                    super::explosions::ContactPost::Complete(None) => {},
+                    super::explosions::ContactPost::Complete(None) => {
+                        if let Some(receipt) = world_contacts.last.as_mut()
+                            .filter(|receipt| Some(receipt.serial) == delivery.world_receipt) {
+                            receipt.result = "no material effect or source flag suppressed";
+                        }
+                    },
                 }
                 entry.receipts.contact_fx += 1;
+            } else if let Some(receipt) = world_contacts.last.as_mut()
+                .filter(|receipt| Some(receipt.serial) == delivery.world_receipt) {
+                receipt.result = "contact callback suppressed by target flag or absent source material";
             }
             delivery.phase = 3;
-        }
-        if delivery.phase == 3 && delivery.recoil {
-            if let Some(player) = world
-                .get_resource_mut::<super::player::PlayerState>()
-                .as_mut()
-                .and_then(|state| state.player.as_mut())
-            {
-                player.machine.request_melee_recoil(1);
-            }
-            delivery.phase = 4;
         }
         entry.deliveries.pop_front();
     }
@@ -610,7 +714,7 @@ fn deliver(world: &mut World, entry: &mut Owned, queries: &mut MeleeQueries) -> 
 pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
     let Some(mut owner)=world.remove_resource::<Melee>() else{return Ok(true);};
     let result=(||{
-        for entry in owner.owned.values_mut(){deliver(world,entry,&mut owner.queries)?;}
+        for entry in owner.owned.values_mut(){deliver(world,entry,&mut owner.queries,&mut owner.last_contact,&mut owner.world_contacts)?;}
         Ok(owner.owned.values().all(|entry|entry.deliveries.is_empty()))
     })();
     world.insert_resource(owner);result
@@ -645,7 +749,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 let id = &mut entry.queries[bank];
                 owner.queries.cancel(id)?;
             }
-            deliver(world, entry, &mut owner.queries)?;
+            deliver(world, entry, &mut owner.queries, &mut owner.last_contact, &mut owner.world_contacts)?;
             continue;
         }
         if !entry.requested {
@@ -789,6 +893,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         current,
                         entry.shape_length,
                         hit.entity,
+                        None,
                         raw_witness,
                         origin,
                         eye,
@@ -843,6 +948,10 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         }
                     }
                     entry.deliveries.push_back(Delivery {
+                        world: world_hit,
+                        raw_hit: raw_witness,
+                        raw_target: hit.entity,
+                        world_receipt: None,
                         hit: witness,
                         target,
                         attacker,
@@ -873,7 +982,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     }
                 }
             }
-            deliver(world, entry, &mut owner.queries)?;
+            deliver(world, entry, &mut owner.queries, &mut owner.last_contact, &mut owner.world_contacts)?;
             if entry.stop_after_update {
                 entry.active = false;
                 entry.stop_after_update = false;
@@ -910,6 +1019,10 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
         for scope in entry.scopes {
             super::explosions::release_owned(world, &scope.key)?;
         }
+    }
+    if owner.owned.is_empty() {
+        owner.last_contact = None;
+        owner.world_contacts.last = None;
     }
     Ok(())
 }

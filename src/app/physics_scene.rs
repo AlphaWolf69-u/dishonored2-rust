@@ -74,6 +74,7 @@ mod entity_removal;
 pub(super) mod explosions;
 pub(super) mod explosion_effects;
 mod interaction_components;
+mod flash_surfaces;
 pub(super) mod interaction_queries;
 pub(super) mod level_bodies;
 pub(super) mod player_reference;
@@ -82,6 +83,7 @@ pub(super) mod melee;
 pub(super) mod preparation;
 pub(super) mod projectiles;
 pub(super) mod rigid_actor;
+mod rigid_diagnostics;
 pub(super) mod runtime_animation;
 pub(super) mod runtime_entities;
 pub(super) mod simulation;
@@ -139,8 +141,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 52],
-    classes: [i32; 52],
+    factories: [u32; 54],
+    classes: [i32; 54],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -198,6 +200,8 @@ pub(super) struct PhysicsScene {
     attention_sources: ComponentPool<crate::gameplay::ai_cues::AttentionSource>,
     investigate_spots: ComponentPool<crate::gameplay::ai_smart_objects::Component>,
     dynamic_search_spots: ComponentPool<crate::gameplay::ai_smart_objects::Component>,
+    flash_surfaces: ComponentPool<flash_surfaces::Surface>,
+    interactive_maps: ComponentPool<flash_surfaces::Map>,
     cue_actions:std::collections::VecDeque<ai_cue_events::Action>,
     cue_update_marker:Option<i32>,
     ///Host callback retry position in the actual clock's1/2/3 stage frame.
@@ -522,6 +526,8 @@ impl PhysicsScene {
             factory(b"arkCpntAIAttentionSource")?,
             factory(b"arkCpntAIInvestigateSpot")?,
             factory(b"arkCpntAISearchSpot_Dynamic")?,
+            factory(b"arkCpntFlashSurface")?,
+            factory(b"arkCpntInteractiveMap")?,
         ];
         let names = types
             .classes()
@@ -551,7 +557,7 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 52];
+        let mut classes = [0; 54];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
@@ -703,6 +709,8 @@ impl PhysicsScene {
             attention_sources: types.create_pool(factories[49], &cvars.cvars)?,
             investigate_spots: types.create_pool(factories[50], &cvars.cvars)?,
             dynamic_search_spots: types.create_pool(factories[51], &cvars.cvars)?,
+            flash_surfaces: types.create_pool(factories[52], &cvars.cvars)?,
+            interactive_maps: types.create_pool(factories[53], &cvars.cvars)?,
             cue_actions:Default::default(),
             cue_update_marker:None,
             ai_stage_frame:None,
@@ -992,6 +1000,7 @@ impl PhysicsScene {
                 scene.audio_handles.push(handle);
             }
             drop(query_world);
+            scene.admit_placed_flash_components(catalog,document,live,&mut registry,constructor_tag)?;
             if let Some(interactions) = interactions {
                 scene.admit_interaction_components(
                     document,
@@ -1454,6 +1463,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.attention_sources.get(handle.slot).map(|v|&v.owner)
         } else if self.is_smart_object_class(handle.class_id) {
             self.smart_object(handle).ok().map(|v|&v.owner)
+        } else if handle.class_id==self.classes[52] {
+            self.flash_surfaces.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[53] {
+            self.interactive_maps.get(handle.slot).map(|v|&v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1523,6 +1536,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.attention_sources.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if self.is_smart_object_class(handle.class_id) {
             self.smart_object_mut(handle).ok().map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[52] {
+            self.flash_surfaces.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[53] {
+            self.interactive_maps.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner_mut(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1821,6 +1838,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.investigate_spots.schedule(handle.slot)?;
                 } else if handle.class_id==self.classes[51] {
                     self.dynamic_search_spots.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[52] {
+                    self.flash_surfaces.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[53] {
+                    self.interactive_maps.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[18] {
                     self.damage_zones.schedule(handle.slot)?;
                 } else {

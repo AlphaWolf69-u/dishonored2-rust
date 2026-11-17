@@ -197,6 +197,8 @@ mod power_execution;
 mod player_damage;
 mod entity_messages;
 mod damage_zones;
+mod flash_surfaces;
+mod flash_surface_movie;
 mod player_statistics;
 mod blink;
 mod far_reach;

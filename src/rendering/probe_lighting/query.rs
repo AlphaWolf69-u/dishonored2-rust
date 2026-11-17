@@ -137,7 +137,7 @@ fn tetra_distance(p: [f32; 3], v: [[f32; 3]; 4]) -> f32 {
     }
     d
 }
-fn select_cell(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
+fn linear_nearest(set: &ProbeLightingSet, p: [f32; 3]) -> ([(f32, usize); 4], usize) {
     let mut nearest = [(f32::MAX, usize::MAX); 4];
     for (i, g) in set.cell_geometry.iter().enumerate() {
         let delta = sub(p, g.center);
@@ -151,6 +151,13 @@ fn select_cell(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
             }
         }
     }
+    (nearest, set.cell_geometry.len())
+}
+fn select_cell(set: &ProbeLightingSet, p: [f32; 3], spatial: bool) -> Option<usize> {
+    let started = set.query_diagnostics.as_ref().map(|_| std::time::Instant::now());
+    let cycles = set.query_diagnostics.as_ref().and_then(|_| crate::loading::thread_cycles());
+    let (nearest, visits) = if spatial { set.cell_tree.nearest(&set.cell_geometry, p) }
+        else { linear_nearest(set, p) };
     let mut best = [(f32::MAX, usize::MAX); 3];
     for (_, i) in nearest {
         if i == usize::MAX {
@@ -161,9 +168,18 @@ fn select_cell(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
             best[kind] = (score, i);
         }
     }
-    Some(best.into_iter().find(|v| v.1 != usize::MAX)?.1)
+    let selected = best.into_iter().find(|v| v.1 != usize::MAX).map(|v| v.1);
+    if let (Some(diagnostics), Some(started)) = (&set.query_diagnostics, started) {
+        let cycles = cycles.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
+        diagnostics.selection(spatial, visits, started.elapsed().as_nanos().min(u64::MAX as u128) as u64, cycles);
+    }
+    selected
 }
-fn select_tetrahedron(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Option<usize> {
+fn distance(set: &ProbeLightingSet, index: usize, p: [f32; 3], spatial: bool) -> f32 {
+    let tetrahedron = &set.spatial.runtime_tetrahedra[index];
+    if spatial { tetrahedron.plane_distance(p) } else { tetra_distance(p, tetrahedron.positions) }
+}
+fn select_tetrahedron(set: &ProbeLightingSet, cell: usize, p: [f32; 3], spatial: bool) -> Option<usize> {
     let cell = &set.spatial.cells[cell];
     if cell.tetrahedron_count == 0 {
         return None;
@@ -173,7 +189,7 @@ fn select_tetrahedron(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Optio
     // The first tetrahedron is the cell's fallback; regular tetrahedra start+1.
     for i in 1..cell.tetrahedron_count {
         let index = cell.first_tetrahedron + i;
-        let d = tetra_distance(p, set.spatial.runtime_tetrahedra[index].positions);
+        let d = distance(set, index, p, spatial);
         if d < score {
             score = d;
             chosen = index;
@@ -238,21 +254,26 @@ fn neighbor(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Option<usize> {
 }
 impl ProbeQuery {
     pub fn select(&mut self, set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
+        let spatial = set.query_diagnostics.as_ref().is_none_or(|diagnostics|
+            diagnostics.strategy() != super::query_diagnostics::Strategy::Linear);
+        self.select_strategy(set, p, spatial)
+    }
+    pub(super) fn select_strategy(&mut self, set: &ProbeLightingSet, p: [f32; 3], spatial: bool) -> Option<usize> {
         if self.cell.is_none() {
-            self.cell = select_cell(set, p);
+            self.cell = select_cell(set, p, spatial);
             self.tetrahedron = None;
         }
         let cell = self.cell?;
         if !contains(set, cell, p) || !visible(set, cell, p) {
-            self.cell = neighbor(set, cell, p).or_else(|| select_cell(set, p));
+            self.cell = neighbor(set, cell, p).or_else(|| select_cell(set, p, spatial));
             self.tetrahedron = None;
         }
         let cell = self.cell?;
         if self.tetrahedron.is_none_or(|index| {
-            tetra_distance(p, set.spatial.runtime_tetrahedra[index].positions)
+            distance(set, index, p, spatial)
                 > f32::from_bits(0x3a83126f)
         }) {
-            self.tetrahedron = select_tetrahedron(set, cell, p);
+            self.tetrahedron = select_tetrahedron(set, cell, p, spatial);
         }
         self.tetrahedron
     }

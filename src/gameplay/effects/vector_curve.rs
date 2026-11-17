@@ -1,4 +1,4 @@
-//! 1ed2a0/1cc3b0: two/three-component FX curves and per-channel min/max mixing.
+//!1ed2a0/1cc3b0/21b870:two/three/four-component FX curves and min/max mixing.
 //! Their cubic reduction differs from 1cbd50's scalar SIMD reduction.
 use crate::float::{add, divide, multiply, subtract};
 
@@ -94,13 +94,13 @@ impl<const N: usize> EffectVectorCurve<N> {
         let u3 = multiply(multiply(u, u), u);
         let t3 = multiply(multiply(t, t), t);
         let outgoing = multiply(multiply(multiply(t, 3.), u), u);
-        let incoming = if N == 2 && minimum {
+        let incoming = if (N == 2 && minimum) || N == 4 {
             multiply(multiply(multiply(t, t), 3.), u)
         } else {
             multiply(multiply(multiply(t, 3.), t), u)
         };
-        // Vec3's interior path always indexes cubic triples. Vec2 additionally
-        // retains the source's nontripled indexing branch; neither is linear.
+        //Vec3 always indexes cubic triples. Vec2 and21c7e0's Vec4 retain
+        //the nontripled indexing branch; none of these paths is linear.
         let at = if N == 3 || triples {
             index * 3 + 1
         } else {
@@ -111,23 +111,23 @@ impl<const N: usize> EffectVectorCurve<N> {
         let into = self.value(at + 2)?;
         let b = self.value(at + 3)?;
         Ok(std::array::from_fn(|i| {
-            let first = if N == 2 {
+            let first = if N == 2 || (N == 4 && !minimum) {
                 multiply(a[i], u3)
             } else {
                 multiply(u3, a[i])
             };
             let second = multiply(outgoing, add(out[i], a[i]));
-            let pair = if N == 2 {
+            let pair = if N == 2 || (N == 4 && i != 0) {
                 add(first, second)
             } else {
                 add(second, first)
             };
-            let tangent = if N == 2 && i == 1 {
+            let tangent = if (N == 2 && i == 1) || (N == 4 && i != 0) {
                 add(into[i], b[i])
             } else {
                 add(b[i], into[i])
             };
-            let last = if N == 3 || (minimum && i == 1) {
+            let last = if N == 3 || (N == 2 && minimum && i == 1) || (N == 4 && minimum) {
                 multiply(t3, b[i])
             } else {
                 multiply(b[i], t3)
@@ -149,8 +149,8 @@ impl<const N: usize> EffectVectorCurvePair<N> {
     }
 
     pub fn sample(&self, time: f32, mix: [f32; N]) -> Result<[f32; N], String> {
-        if N != 2 && N != 3 {
-            return Err("FX vector curve requires two or three channels".into());
+        if N != 2 && N != 3 && N != 4 {
+            return Err("FX vector curve requires two, three or four channels".into());
         }
         let maximum = self.maximum.sample(time, false)?;
         if self.minimum.times.is_empty() {

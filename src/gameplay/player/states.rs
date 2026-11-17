@@ -63,6 +63,7 @@ impl StateId {
     pub const READ_NOTE: Self = Self(52);
     pub const LOOT_OBJECT: Self = Self(47);
     pub const GRAB_OBJECT: Self = Self(48);
+    pub const CANCEL_ACTION: Self = Self(74);
     pub const HOLD_ONE_HAND: Self = Self(49);
     pub const HOLD_TWO_HAND: Self = Self(50);
     pub const RELEASE_OBJECT: Self = Self(51);
@@ -94,6 +95,8 @@ pub struct StateFlags {
     pub allow_self: bool,
     pub quit_self: bool,
     pub cancelable: bool,
+    ///Declaration69 bit8, separately retained from the Cancel74 count bit4.
+    pub cancelable_by_ui:bool,
     pub canceling: bool,
     pub allow_camera_out_of_shape: bool,
     /// +0x69 bit 0x20: a midnight break event quits it.
@@ -446,6 +449,7 @@ impl Default for LeaningDecl {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
+    CancelAction(Arc<super::combat::ActionDecl>),
     Running,
     Sneaking,
     Sprinting(SprintingDecl),
@@ -519,6 +523,7 @@ impl StateDecl {
             allow_self: false,
             quit_self: false,
             cancelable: false,
+            cancelable_by_ui:false,
             canceling: false,
             allow_camera_out_of_shape: false,
             breakable: false,
@@ -526,6 +531,11 @@ impl StateDecl {
         let mut navigation = NavigationDecl::default();
         let mut flags = navigation_flags;
         let (id, air_friction) = match kind {
+            Kind::CancelAction(_) => {
+                //85a610/620 inherits common853c90 secondary empty masks.
+                flags=StateFlags{primary:false,body_parts:0,locked_body_parts:0,exclusive_body_parts:0,canceling:true,..flags};
+                (StateId::CANCEL_ACTION,0.)
+            }
             Kind::Running => (StateId::RUNNING, 0.0),
             Kind::Sneaking => (StateId::SNEAKING, 0.0),
             Kind::Sprinting(_) => (StateId::SPRINTING, 0.0),
@@ -1013,7 +1023,7 @@ pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
             Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
             Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
             Kind::LootObject(d) | Kind::GrabObject(d) => d.action.midnight.iter().collect(),
-            Kind::ReleaseObject(d) => d.midnight.iter().collect(),
+            Kind::ReleaseObject(d) | Kind::CancelAction(d) => d.midnight.iter().collect(),
             Kind::Grapple(d) => d.translate_midnight.iter().chain(&d.wall_midnight).chain(&d.ceil_midnight).collect(),
             Kind::UsePower(d) => d.out_of_mana.iter().chain(&d.out_of_mana_slide).chain(&d.action.midnight).collect(),
             Kind::UseHeart(d) => d.beat.iter().collect(),
@@ -1163,6 +1173,7 @@ pub struct State {
     block: super::combat::BlockRuntime,
     heart: use_heart::Runtime,
     heart_bark: super::combat::ActionRuntime,
+    cancel_action: super::combat::ActionRuntime,
     /// 14085b490 +56/+57: hands which were holding actual equipment.
     catfall_restore: [bool; 2],
     code_locks: u8,
@@ -1195,6 +1206,8 @@ pub struct StateMachine {
     default_state: StateId,
     pending_sounds: Vec<u32>,
     pending_fall_damage: Option<f32>,
+    ///Source state-machine+2f0, maintained by actual activation/exit only.
+    cancelable_count:i32,
     read_note: super::read_note::Runtime,
     wheel_movie_ready: bool,
     wheel_logic_active: bool,
@@ -1231,7 +1244,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
     }
 
     pub(super) fn world_pickup_busy(&self)->bool{self.world_pickup.busy()}
@@ -1308,6 +1321,7 @@ impl StateMachine {
                 block: Default::default(),
                 heart: Default::default(),
                 heart_bark: Default::default(),
+                cancel_action:Default::default(),
                 catfall_restore: [false; 2],
                 code_locks: 0,
             })
@@ -1341,7 +1355,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
     }
 
     pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
@@ -1432,7 +1446,7 @@ impl StateMachine {
         use std::fmt::Write;
         let _ = write!(report, "  {owner} active_ids({})=", self.active.len());
         for id in self.active.iter().take(32) { let _ = write!(report, " {:?}", id); }
-        let _ = writeln!(report, " queued_commands={} slash_interrupt_pending={}", self.queue.len(), self.queue.iter().any(|command| matches!(command, Command::FinishSlash)));
+        let _ = writeln!(report, " queued_commands={} cancelable_count={} slash_interrupt_pending={}", self.queue.len(), self.cancelable_count, self.queue.iter().any(|command| matches!(command, Command::FinishSlash)));
         if let Some(state) = self.state(StateId::SLASH) {
             let s = &state.slash;
             let _ = writeln!(report, "    slash active={} action={:?} last_type={} last_time={} chained={} left_response={} focus_ready={} focus_active={} focused={} can_focus={} release_seen={} press_again={} selection={} dispersion_active={}", state.active, s.action, s.last_type, s.last_time, s.chained_scene, s.secondary_scene, s.focus_ready, s.focus_active, s.focused, s.can_focus, s.release_seen, s.press_again, s.selected.is_some(), s.dispersion_active);
@@ -1628,6 +1642,8 @@ impl StateMachine {
             }
             Kind::Falling(_) => true,
             Kind::ReadNote => state.decl.flags.body_parts == 0 && self.read_note.admission,
+            Kind::CancelAction(declaration)=>self.cancelable_count>0
+                && state.cancel_action.can_activate(frame.action_time,declaration),
             Kind::PowerWheel => self.wheel_movie_ready,
             Kind::UseHeart(_) => true,
             Kind::PlayHeartBark(d) => frame.heart_entity.is_some() && !frame.heart_bark_playing && self.states[index].heart_bark.can_activate(frame.action_time,&d.action),
@@ -1681,9 +1697,9 @@ impl StateMachine {
             Kind::Leaning(_) => physics.near_ground(),
             // FUN_14085b2e0 (swimming is not ported).
             Kind::CatFall(_) => true,
-            // FUN_140860180 (blink-to-mantle is not ported).
+            //860180 uses sensor2 only while the actual Blinking state is active.
             Kind::Mantle(_) => !self.is_active(StateId::MANTLE) && (frame.mantle_sensor.can_mantle()
-                || frame.powers.blink_finished && frame.powers.blink_mantle_sensor.as_ref().is_some_and(|sensor| sensor.can_mantle())),
+                || self.is_active(StateId::BLINKING) && frame.powers.blink_mantle_sensor.as_ref().is_some_and(|sensor| sensor.can_mantle())),
             // FUN_140872380.
             Kind::Vault(decl) => {
                 let v = frame.velocity;
@@ -2047,6 +2063,15 @@ impl StateMachine {
     /// BREAK_PLAYER_STATE quits the breakable state playing that scene
     /// (FUN_140802e10).
     pub fn handle_message(&mut self, event: &str, handle: u32) {
+        if event=="ARK_MDNT_MSG_TRIGGER_PLAYER_STATE_ACTION" {
+            //854fd0/855750 routes the actual0xf6 scene handle to Action.
+            for id in self.active.clone() {
+                let Some(index)=self.index(id) else{continue;};
+                let Kind::CancelAction(declaration)=self.states[index].decl.kind.clone() else{continue;};
+                if self.states[index].cancel_action.message(&declaration,handle)==super::combat::ActionStep::Execute
+                    && self.states[index].cancel_action.finish_execution(&declaration)==super::combat::ActionStep::Quit {self.quit(id);}
+            }
+        }
         if event == "ARK_MDNT_MSG_SLASH_CAN_BE_INTERRUPTED" {
             //7fbeb0 checks the actual Slash active flag, not scene completion.
             if self.is_active(StateId::SLASH) { self.queue.push(Command::FinishSlash); }
@@ -2318,6 +2343,10 @@ impl StateMachine {
             self.land_blink_fall_debt(frame);
         }
         for &(id, _) in &accepted {
+            if id == StateId::MANTLE {
+                //8603b0 runs at request admission, before Blink is withdrawn.
+                frame.powers.blink_mantle_requested = self.is_active(StateId::BLINKING);
+            }
             if id == StateId::BLINKING {
                 frame.powers.blink_from_sprinting = self.is_active(StateId::SPRINTING);
                 frame.powers.blink_from_sliding = self.is_active(StateId::SLIDING);
@@ -2405,6 +2434,12 @@ impl StateMachine {
     /// Slot 8 OnRequestAccepted (InAir FUN_14083eb00, Jumping FUN_1408681a0,
     /// Falling FUN_140865b90, Slipping FUN_140870030).
     fn on_request_accepted(&mut self, index: usize) {
+        if let Kind::CancelAction(declaration)=&self.states[index].decl.kind {
+            let declaration=declaration.clone();
+            let active=self.states[index].active;
+            self.states[index].cancel_action.requested_again(&declaration,active);
+            return;
+        }
         if let Kind::PlayHeartBark(decl)=&self.states[index].decl.kind {
             let decl=decl.action.clone();let active=self.states[index].active;
             self.states[index].heart_bark.requested_again(&decl,active);return;
@@ -2467,6 +2502,9 @@ impl StateMachine {
 
     /// Slot 10 Activate (slot 11 with Sliding's params speed).
     fn activate(&mut self, index: usize, slide_speed: Option<f32>, frame: &mut Frame) {
+        if !self.states[index].active && self.states[index].decl.flags.cancelable {
+            self.cancelable_count=self.cancelable_count.wrapping_add(1);
+        }
         self.states[index].active = true;
         let decl = self.states[index].decl.clone();
         // Base Activate FUN_140853d40: a LEGS owner wants the legs shown
@@ -2475,6 +2513,14 @@ impl StateMachine {
             *frame.desired_legs += 1;
         }
         match &decl.kind {
+            Kind::CancelAction(action)=>{
+                if self.states[index].cancel_action.activate(action,false)==super::combat::ActionStep::Execute {
+                    let handle=Self::play(action.midnight.as_ref(),1.,decl.flags.body_parts,frame);
+                    self.states[index].midnight=handle;
+                    self.states[index].cancel_action.after_scene(handle,action);
+                }
+                return;
+            }
             Kind::GrappleCatch(declaration)=>{self.grapple_catch.activate(declaration);return;}
             Kind::PlayHeartBark(declaration) => {self.activate_heart_bark(index,declaration,frame);return;}
             Kind::LootObject(declaration) => {
@@ -2642,12 +2688,13 @@ impl StateMachine {
             return;
         }
         if let Kind::Mantle(mantle) = &decl.kind {
-            if frame.powers.blink_finished && !frame.powers.mantle_sensor_swapped {
+            if frame.powers.blink_mantle_requested && !frame.powers.mantle_sensor_swapped {
                 if let Some(sensor) = frame.powers.blink_mantle_sensor.as_mut() {
                     std::mem::swap(frame.mantle_sensor, sensor);
                     frame.powers.mantle_sensor_swapped = true;
                 }
             }
+            frame.powers.blink_mantle_requested = false;
             frame.midnight.last_start_error = None;
             self.activate_mantle(index, mantle, frame);
             return;
@@ -2847,7 +2894,7 @@ impl StateMachine {
             // Activated above, without the navigation base.
             Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::PowerWheel | Kind::UseHeart(_) | Kind::PlayHeartBark(_) | Kind::UsePower(_) | Kind::Blinking | Kind::Grapple(_) | Kind::Dead(_)
                 | Kind::FireWeapon(_) | Kind::ThrowWeapon | Kind::Recoil(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon
-                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) | Kind::GrappleCatch(_) => {}
+                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) | Kind::GrappleCatch(_) | Kind::CancelAction(_) => {}
         }
     }
 
@@ -2913,12 +2960,20 @@ impl StateMachine {
 
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
+        if self.states[index].active && self.states[index].decl.flags.cancelable {
+            self.cancelable_count=self.cancelable_count.wrapping_sub(1);
+        }
         self.states[index].active = false;
         // Base Deactivate FUN_1408541a0.
         if self.states[index].decl.flags.body_parts & LEGS != 0 {
             *frame.desired_legs -= 1;
         }
         match self.states[index].decl.kind.clone() {
+            Kind::CancelAction(_)=>{
+                self.states[index].cancel_action.deactivate(frame.action_time);
+                self.states[index].midnight=0;
+                return;
+            }
             Kind::GrappleCatch(_)=>{self.grapple_catch.deactivate();return;}
             Kind::Recoil(_) => {
                 self.states[index].recoil.action.deactivate(frame.action_time);
@@ -3195,6 +3250,14 @@ impl StateMachine {
         let kind = self.states[index].decl.kind.clone();
         let id = self.states[index].decl.id;
         match kind {
+            Kind::CancelAction(declaration)=>{
+                use super::combat::ActionStep;
+                let action=frame.controller.mapping.iter().find(|m|m.state==id).map_or(0,|m|m.action);
+                let finished=frame.midnight.finished(self.states[index].midnight);
+                let step=self.states[index].cancel_action.update(frame.dt,&declaration,frame.controller.down(action),finished,false);
+                if step==ActionStep::Quit || (step==ActionStep::Execute
+                    && self.states[index].cancel_action.finish_execution(&declaration)==ActionStep::Quit){self.quit(id);}
+            }
             Kind::GrappleCatch(declaration)=>{self.grapple_catch.update(frame.dt,frame.controller.pressed(declaration.action),frame.camera.eye,frame.camera_axis.x_axis);}
             Kind::LootObject(declaration) => {
                 use super::combat::ActionStep;

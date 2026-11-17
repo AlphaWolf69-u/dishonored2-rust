@@ -431,6 +431,8 @@ struct AudioTarget {
     emitter: Emitter,
     paused: bool,
     world_paused: bool,
+    clock_frozen: bool,
+    clock_paused: bool,
 }
 
 pub struct SoundPlugin;
@@ -1274,9 +1276,9 @@ fn play_events(
         if completions.component_cookies.get(&queued.ticket.as_ref().expect("admitted post").id())
             .is_some_and(|cookie| cookie.event.game_defined) { continue; }
         if waiting.contains(&emitter) { pending.0.push(queued); continue; }
-        // 1408abb10 pauses components on a zero owner clock; 140709110
-        // forbids posting into a frozen component. Stop requests above still run.
-        if scene.frozen(emitter) { completions.failed_watch(event, emitter, queued.watched); continue; }
+        //709110 diagnoses a zero component rate, then still performs Post.
+        //8abb10/709050 pause IDs existing at the rate transition; later
+        //accepted posts are not part of that already completed snapshot.
         if queued.watched.is_some() && !registry.sources.contains_key(&event) {
             if let Some(error) = completions.decode_failures.remove(&event) {
                 warn!("Wwise event {event:#010x} background preparation failed: {error}");
@@ -1332,12 +1334,12 @@ fn play_events(
             for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state_with_ticket(action, target_path, event, emitter, tracked.clone()) {
+                        if let Err(error) = engine.post_state_with_ticket(action, target_path, event, emitter, tracked.clone(), scene.frozen(emitter)) {
                             warn!("Wwise event {event:#010x} Set State unavailable: {error}");
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop_with_ticket(action, target_path, event, emitter, tracked.clone()) {
+                        if let Err(error) = engine.post_stop_with_ticket(action, target_path, event, emitter, tracked.clone(), scene.frozen(emitter)) {
                             warn!("Wwise event {event:#010x} Stop unavailable: {error}");
                         }
                     },
@@ -1348,7 +1350,8 @@ fn play_events(
                                 // its output tail/stop is still being processed.
                                 // End belongs to that real owner, not its proxy.
                                 if let Some(ticket) = &tracked { source.retain_event(ticket.clone()); }
-                                let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false };
+                                let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false,
+                                    clock_frozen: scene.frozen(emitter), clock_paused: false };
                                 if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
                                         Ok(voice) => {
@@ -1408,7 +1411,12 @@ fn update_playing_volume(
         // world's global object, and c4550 posts new IDs while paused.
         // Resume (788d70 -> c8070/c8080 -> c59c0) releases that pause.
         if pause_changed { target.world_paused = world_paused; }
-        let frozen = scene.frozen(target.emitter) || target.world_paused;
+        let clock_frozen = scene.frozen(target.emitter);
+        if clock_frozen != target.clock_frozen {
+            target.clock_frozen = clock_frozen;
+            target.clock_paused = clock_frozen;
+        }
+        let frozen = target.clock_paused || target.world_paused;
         if let Some(fallback) = fallback { fallback.pause(frozen); }
         if let Some(voice) = voice {
             voice.pause(frozen);

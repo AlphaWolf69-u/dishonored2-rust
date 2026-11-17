@@ -564,6 +564,7 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
                         previous: matrices,
                     },
                     local_time: [0.; 2],
+                    shader_time: 0.,
                 },
             )));
         }
