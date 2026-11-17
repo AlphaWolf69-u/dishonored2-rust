@@ -274,13 +274,16 @@ impl Movie {
             }
             for (provider, range) in [("shortcutPCData", 0..10), ("shortcutDPadData", 10..14)] {
                 let values = &snapshot.shortcuts[range];
+                // WheelGameData constructs plain Arrays (10 PC / 4 DPad),
+                // unlike equipmentData's GameDataProvider. 4f6c20 iterates
+                // their elements directly through0280b0, with no `data` member.
                 self.player.set_value(
                     &format!("wheelData.{provider}.length"),
                     (values.len() as u32).into(),
                 )?;
                 for (index, &value) in values.iter().enumerate() {
                     self.player
-                        .set_value(&format!("wheelData.{provider}.data[{index}]"), value.into())?;
+                        .set_value(&format!("wheelData.{provider}[{index}]"), value.into())?;
                 }
             }
             self.player.call_path_method(
