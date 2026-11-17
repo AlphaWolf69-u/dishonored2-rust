@@ -25,6 +25,12 @@ impl EffectPoolLinks {
         Self::ascending(1024)
     }
 
+    ///19a510 ->19f8b0: 128 shared light-family slots. Runtime slots retain
+    ///their renderer allocation across releases; links are reused in source order.
+    pub fn lights() -> Self {
+        Self::ascending(128)
+    }
+
     /// 19a0b0 -> 19f230: 256 live decal-FX entries. This family pool is
     /// distinct from the renderer's configurable 4..128 projection records.
     pub fn decals() -> Self {

@@ -265,7 +265,7 @@ impl PhysicsScene {
             zone.update_marker = Some(marker);
             if zone.expired() {
                 //39d680 posts ordinary reflected Remove; the manager owns FIFO.
-                super::super::entity_functions::enqueue_removal(world, id, 0.)?;
+                super::super::entity_functions::enqueue_removal_with_live(world, live, id, 0.)?;
             } else if zone.active() && zone.interval <= 0. {
                 zone.sensor
                     .set_origin(self.entities[index].frame.pose.position);
@@ -284,7 +284,7 @@ impl PhysicsScene {
                     .ok_or("DamageZone removal payload vanished")?
                     .expired()
             {
-                super::super::entity_functions::enqueue_removal(world, id, 0.)?;
+                super::super::entity_functions::enqueue_removal_with_live(world, live, id, 0.)?;
             }
         }
         Ok(())

@@ -93,6 +93,9 @@ impl FxSimulation {
     }
     /// Diagnostic snapshots borrow the actual manager without starting or
     /// advancing another simulation. No ordinary-frame observer is installed.
+    pub(crate) fn light_publication(&self) -> impl Iterator<Item=(u16,Option<&crate::gameplay::effects::light::LightSample>)> {
+        self.world_particles.light_publication()
+    }
     pub(crate) fn observe_started_fx(&self) -> Vec<String> {
         self.world_particles.observe_started_fx()
     }

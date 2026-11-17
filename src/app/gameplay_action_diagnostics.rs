@@ -84,6 +84,8 @@ pub(super) struct Observation {
     contact_damage_seen: bool,
     contact_health: Option<f32>,
     approach_move: Option<Input>,
+    fixture_gate: Option<(bool,bool,bool,bool)>,
+    fixture_reports: u32,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -111,7 +113,7 @@ impl Observation {
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
-            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None })
+            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0 })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -168,6 +170,50 @@ impl Observation {
         self.contact_serial=super::melee::action_receipt(world,id).map_or(0,|receipt|receipt.0);
         self.contact_windows=super::melee::active_windows(world);
         eprintln!("ACTION_SMOKE_CONTACT_BEFORE entity={id:?} source_health={:?} source_expected_health=2 melee_receipt_serial={} active_windows={}",self.contact_health,self.contact_serial,self.contact_windows);
+        Ok(())
+    }
+    fn fixture_report(&mut self,world:&mut World,reason:&str,include_owner:bool)->Result<(),String>{
+        let Some((id,_))=self.object else{return Ok(())};
+        let summary={
+            let state=world.resource::<PlayerState>();let p=state.player.as_ref().ok_or("fixture Player absent")?;
+            let (eye,axis)=p.published_camera_frame();
+            let flags=[2,3,4,5,6,19,20,22,45].map(|action|(action,p.controller.down(action),p.controller.pressed(action),p.controller.released(action)));
+            format!("free_fly={} physics_position={:?} physics_axis={:?} input_velocity={:?} feet={:?} published_eye={eye:?} published_axis={axis:?} body_camera_joint={} body_camera_local={:?} states={:?} possession={:?} controls_move={:?} controls_look={:?} action_down_pressed_released={flags:?} input_held={:?} paused={:?} wheel_blocks={:?}",
+                state.debug_free_fly,p.physics.position(),p.physics.axis(),p.physics.input_velocity(),p.feet(),p.pose.camera,p.pose.positions.get(p.pose.camera),p.active_player_states(),p.possession_state(),p.controller.input_move,p.controller.input_look,
+                world.get_resource::<super::player::PlayerInput>().map(|input|&input.held),world.get_resource::<crate::gameplay::game_clock_runtime::GamePaused>().map(|paused|paused.0),
+                world.get_resource::<super::power_wheel::State>().map(|wheel|wheel.blocks_input()))
+        };
+        let physical={
+            let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+            let scene=world.resource::<super::physics_scene::PhysicsScene>();
+            format!("live={:?} stage={:?} parent={:?} physical_frame={:?} model_bounds={:?} prompt={:?}",
+                live.get(id),live.stage(id),live.parent(id),scene.entity_frame(live,id),super::world_models::entity_bounds(world,live,id),
+                world.get_resource::<super::interaction_focus::FocusedInteraction>().and_then(|focus|focus.current.as_ref()))
+        };
+        let cursors:Vec<_>=world.query::<(Entity,&bevy::window::CursorOptions)>().iter(world).map(|(entity,cursor)|(entity,cursor.visible,cursor.grab_mode)).collect();
+        let transform=*world.query_filtered::<&Transform,With<Camera3d>>().single(world).map_err(|error|error.to_string())?;
+        let eye=Vec3::from(super::view_to_game(transform.translation));let forward=Vec3::from(super::view_to_game(transform.forward().as_vec3()));
+        eprintln!("ACTION_SMOKE_FIXTURE reason={reason} stage={:?} intended={id:?} app_frame={:?} camera_eye={eye:?} camera_forward={forward:?} camera_rotation={:?} cursor={cursors:?} queued_release={:?} held_input={:?} movement_input={:?} {summary} {physical}",
+            self.stage,world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),transform.rotation,self.release,self.held,self.approach_move);
+        let scene=world.resource::<super::physics_scene::PhysicsScene>();let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+        let owner=scene.point_queries()?;let queries=owner.read().map_err(|_|"fixture query owner poisoned")?;
+        let mut ray=crate::gameplay::world_ray_query::WorldRayQuery::default();let mut hits=Vec::new();
+        queries.ray_hits(&mut ray,&crate::gameplay::world_ray_query::WorldRayRequest{
+            origin:eye.to_array(),direction:(forward*100.).to_array(),maximum_fraction:1.,
+            hit:crate::gameplay::collision_hit::ShapeHitInfo{body_id:None,material_id:u16::MAX,shape_key:u32::MAX,filter_info:0,user_data:0},
+            filter:Some(crate::gameplay::collision_filter::CollisionQueryFilter{layers:0x1ffff,required_flags:0x800}),
+        },0,&mut hits)?;
+        hits.sort_by(|a,b|a.fraction.total_cmp(&b.fraction));
+        for (index,hit) in hits.iter().take(8).enumerate(){
+            let target=scene.collision_entity(live,&hit.target);
+            let material=queries.storage.materials.material_for_id(hit.target.material_id).map(|material|material.name.as_str());
+            eprintln!("ACTION_SMOKE_FIXTURE_RAY reason={reason} index={index} closest={} intended={id:?} entity={target:?} material={material:?} contact={hit:?}",index==0);
+        }
+        if hits.is_empty(){eprintln!("ACTION_SMOKE_FIXTURE_RAY reason={reason} intended={id:?} no_hits=true layers=0x1ffff required_flags=0x800")}
+        drop(queries);
+        if include_owner{
+            eprintln!("ACTION_SMOKE_FIXTURE_OWNER reason={reason} {}",super::interactions::describe_carry_fixture(world,id)?);
+        }
         Ok(())
     }
     fn projectiles(&mut self, world: &World, collect_existing: bool) -> Result<bool,String> {
@@ -232,6 +278,7 @@ impl Observation {
             }
             if matches!(self.stage,Stage::CarryApproach|Stage::ContactAim) {
                 eprintln!("ACTION_SMOKE_FIXTURE_INCOMPLETE stage={:?} no_range_or_hit_override=true intended_actor={:?}",self.stage,self.object.map(|(id,_)|id));
+                if let Err(error)=self.fixture_report(world,"timeout",true){eprintln!("ACTION_SMOKE_FIXTURE_REPORT_ERROR {error}");}
             }
             return Err(format!("action smoke timeout stage={:?} shots={} projectile_seen={} snapshot={snapshot}",self.stage,self.shot_count,self.projectile_seen));
         }
@@ -250,6 +297,7 @@ impl Observation {
                 if binding(Input::Mouse(MouseButton::Left))!=Some(19){return Err("carry fixture setup requires normal LMB/MELEE mouse capture binding".into())}
                 send(world,Input::Mouse(MouseButton::Left),true)?;self.release=Some(Input::Mouse(MouseButton::Left));
                 self.stage(Stage::CarryApproach,world)?;
+                self.fixture_report(world,"entry",true)?;
             }
             Stage::Begin => {
                 if self.heart_only{
@@ -393,6 +441,15 @@ impl Observation {
                     let yaw=(to.y.atan2(to.x)-forward.y.atan2(forward.x));
                     let yaw=yaw.sin().atan2(yaw.cos());
                     let pitch=-to.z.atan2(to.truncate().length())+forward.z.atan2(forward.truncate().length());
+                    let gate=(focused,close,yaw.abs()<0.05,pitch.abs()<0.05);
+                    if self.fixture_gate!=Some(gate){
+                        self.fixture_gate=Some(gate);
+                        if self.fixture_reports<32{
+                            self.fixture_reports+=1;
+                            eprintln!("ACTION_SMOKE_FIXTURE_GATE focused={} source_close={} yaw_error={} pitch_error={} center={center:?} eye={eye:?} source_gate={gate:?}",focused,close,yaw,pitch);
+                            self.fixture_report(world,"gate-change",false)?;
+                        }
+                    }
                     // Host test steering produces ordinary relative mouse
                     // motion. These bounds are controller increments, never a
                     // gameplay interaction-distance/range admission override.

@@ -23,6 +23,7 @@ pub mod decal;
 pub mod fade;
 pub mod entity_def;
 pub mod explosion;
+pub mod light;
 
 pub struct EnvironmentEffectAsset {
     pub name: String,

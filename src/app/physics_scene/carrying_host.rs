@@ -18,7 +18,7 @@ use crate::gameplay::{
 };
 use bevy::prelude::{Mat3, Mat4, Quat, Vec3};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Progress {
     loot_eligible: bool,
     begin: u8,
@@ -45,6 +45,10 @@ pub(in crate::app) struct CarryPhysics {
     sounds: Vec<crate::gameplay::sound::Request>,
     next_effect: u64,
     error: Option<String>,
+}
+pub(in crate::app) fn describe_fixture_progress(world:&bevy::prelude::World,id:EntityId)->String {
+    world.get_resource::<CarryPhysics>().map_or_else(||"carry owner absent".into(),|owner|
+        format!("progress={:?} last_error={:?}",owner.progress.get(&id),owner.error))
 }
 pub(in crate::app) struct CarryHost<'a> {
     pub scene: &'a mut PhysicsScene,

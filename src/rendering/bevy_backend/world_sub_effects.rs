@@ -15,6 +15,7 @@ type SoundSystems = crate::gameplay::effects::sound::systems::SoundSystems<
 /// The chains a stop or release touches.
 pub(super) struct Chains<'a> {
     pub(super) systems: &'a mut ParticleSystems,
+    pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
     pub(super) sound_systems: &'a mut SoundSystems,
     pub(super) sounds: &'a WorldSounds,
@@ -40,6 +41,7 @@ pub(super) struct SubEffect {
     live: bool,
     stopped: bool,
     pub(super) head: u16,
+    pub(super) light_head: u16,
     pub(super) sound_head: u16,
     pub(super) decal_head: u16,
     pub(super) children: Vec<SubEffect>,
@@ -104,6 +106,7 @@ impl SubEffect {
             live: true,
             stopped: false,
             head: u16::MAX,
+            light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
             children: Vec::new(),
@@ -155,6 +158,7 @@ impl SubEffect {
             event.stop();
         }
         context.systems.stop(self.head, now);
+        context.lights.stop(self.light_head, now, true)?;
         context.decals.stop(self.decal_head, now);
         context
             .sound_systems
@@ -169,6 +173,7 @@ impl SubEffect {
     pub(super) fn clear(&mut self, context: &mut Chains) -> Result<(), String> {
         self.gameplay_events.clear();
         context.systems.clear(&mut self.head)?;
+        context.lights.clear(&mut self.light_head)?;
         context.decals.clear(&mut self.decal_head, |_| {})?;
         if self.sound_head != u16::MAX {
             let mut sounds = context.sounds.clone();
@@ -227,6 +232,7 @@ impl SubEffect {
                     &definition,
                     now,
                     &mut self.head,
+                    &mut self.light_head,
                     &mut self.sound_head,
                     &mut self.decal_head,
                     &mut self.gameplay_events,

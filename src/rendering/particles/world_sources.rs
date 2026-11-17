@@ -13,6 +13,7 @@ pub struct WorldEffectGroup {
     pub asset: Arc<EffectGroupAsset>,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
+    pub lights: Vec<Result<Arc<crate::assets::fx::light::LightAsset>, String>>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
     pub(crate) entity_defs: Vec<Arc<WorldEntityDef>>,
     pub(crate) explosions: Vec<Arc<WorldExplosion>>,
@@ -550,6 +551,10 @@ impl WorldFxSources {
                         }
                         Err(error) => vec![Err(error.clone())],
                     };
+                    let lights = match group.lights.get().expect("world FX families acquired") {
+                        Ok(lights) => lights.clone(),
+                        Err(error) => vec![Err(error.clone())],
+                    };
                     let admission = group
                         .world_other_families
                         .get()
@@ -623,6 +628,7 @@ impl WorldFxSources {
                         asset,
                         particles,
                         sounds,
+                        lights,
                         decals,
                         entity_defs,
                         explosions,

@@ -254,4 +254,5 @@ mod entity_functions;
 
 mod entity_removal;
 mod fx_gameplay;
+mod fx_lights;
 mod water_impacts;

@@ -160,6 +160,15 @@ impl LevelLifetime {
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
         }
+        //226060 retains renderer allocations across flash reuse. The actual
+        //FX pool has now drained; free those allocations only at pool teardown.
+        self.retirement_phase = "FX light renderer allocations";
+        if let Some(mut lights) = world.remove_resource::<super::fx_lights::FxLightAllocations>() {
+            if let Err(error) = lights.shutdown(world) {
+                world.insert_resource(lights);
+                return Err(error);
+            }
+        }
         self.retirement_phase = "FX gameplay actors";
         if !self.fx_gameplay_retired {
             super::fx_gameplay::retire(world)?;

@@ -14,6 +14,7 @@ pub(super) fn publish(
         &LocalLightCull,
         &Visibility,
         &GlobalTransform,
+        Option<&super::fx_lights::FxLightRecord>,
     )>,
     cameras: Query<Entity, With<Camera3d>>,
     shadows: Res<shadow_pass::LocalShadowSceneFrame>,
@@ -25,9 +26,9 @@ pub(super) fn publish(
         let camera = cameras.single().map_err(|e| e.to_string())?;
         let mut ordered: Vec<_> = lights
             .iter()
-            .filter(|(_, _, _, visibility, _)| **visibility != Visibility::Hidden)
+            .filter(|(_, _, _, visibility, _, _)| **visibility != Visibility::Hidden)
             .collect();
-        ordered.sort_by_key(|(_, source, _, _, _)| source.0);
+        ordered.sort_by_key(|(_, source, _, _, _, _)| source.key(scene.placed_lights.len()).unwrap_or(usize::MAX));
         let receiver = shadows
             .0
             .as_ref()
@@ -38,8 +39,24 @@ pub(super) fn publish(
         let mut source_indices = Vec::new();
         let sources = area_sources.0.as_ref().map_err(Clone::clone)?;
         let mut area_images = Vec::new();
-        for (entity, source, cull, _, transform) in ordered {
-            let light = &scene.placed_lights[source.0];
+        for (entity, source, cull, _, transform, runtime) in ordered {
+            let key = source.key(scene.placed_lights.len())?;
+            if let LocalLightSource::Fx(_) = *source {
+                let runtime = runtime.ok_or("FXLight fog source lost its retained record")?;
+                if runtime.base[0] & 1 == 0 { continue; }
+                let kind = u32::from_le_bytes(runtime.base[0x5c..0x60].try_into().unwrap());
+                if kind > 3 { continue; }
+                let shadow = receiver.and_then(|r| r.lights.iter().find(|l| l.entity == entity));
+                let mut first = shadow.map_or(0, |s| s.first);
+                let mut packet = [0; 28];
+                render_light::prepare_tlf_lighting_packet(&runtime.base, shadow.map_or(0, |s| s.count), false, &mut first, &mut packet);
+                packets.push(packet);
+                source_indices.push(key as u32);
+                area_images.push(None);
+                continue;
+            }
+            let LocalLightSource::Placed(index) = *source else { unreachable!() };
+            let light = &scene.placed_lights[index];
             let kind = match light.kind {
                 entities::LightType::Point => 0,
                 entities::LightType::HalfPoint => 1,
@@ -106,8 +123,8 @@ pub(super) fn publish(
                 &mut packet,
             );
             packets.push(packet);
-            source_indices.push(source.0 as u32);
-            area_images.push(sources[source.0].clone());
+            source_indices.push(key as u32);
+            area_images.push(sources[index].clone());
         }
         if packets.len() >= crate::tiled_lighting::LIGHT_BUFFER_CAPACITY {
             return Err("too many admitted scattering lights".into());

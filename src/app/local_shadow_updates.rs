@@ -13,7 +13,14 @@ use super::{
 use bevy::prelude::*;
 
 #[derive(Component, Clone, Copy)]
-pub(super) struct LocalLightSource(pub(super) usize);
+pub(super) enum LocalLightSource { Placed(usize), Fx(u16) }
+impl LocalLightSource {
+    pub(super) fn key(self, placed_count: usize) -> Result<usize, String> {
+        let key = match self { Self::Placed(index) => index, Self::Fx(slot) => placed_count.checked_add(usize::from(slot)).ok_or("local light registry overflow")? };
+        u16::try_from(key).map_err(|_| "local light registry exceeds16-bit identities")?;
+        Ok(key)
+    }
+}
 
 #[derive(Resource, Default)]
 pub(super) struct LocalShadowViewControls(
@@ -53,6 +60,7 @@ pub(super) struct LocalShadowOwner {
 
 pub(super) struct LocalProjectedLight {
     pub entity: Entity,
+    pub source_orientation: [[f32; 3]; 2],
     pub request: render_shadow::LocalShadowRequest,
     pub clips: Vec<render_shadow::ShadowMatrix>,
     pub crops: Vec<[f32; 4]>,
@@ -544,15 +552,15 @@ pub(super) fn publish_local_shadow_draws(
                     render_light::fill_tlf_shadow_packet(&descriptor, &mut packet);
                     receiver.shadows.push(packet);
                 }
-                let source = &scene.placed_lights[light.request.candidate.source];
+                let source = &light.source_orientation;
                 receiver
                     .lights
                     .push(shadow_pass::LocalShadowReceiverLight {
                         entity: light.entity,
                         kind: light.request.candidate.kind as u32,
-                        position: source.position,
-                        left: source.rotation[1],
-                        direction: source.rotation[0].map(|v| -v),
+                        position: light.request.candidate.position,
+                        left: source[0],
+                        direction: source[1].map(|v| -v),
                         first: first as u32,
                         count: count as u32,
                     });
@@ -773,7 +781,7 @@ pub(super) fn prepare_local_shadow_owner(
 pub(super) fn prepare_local_shadow_cpu(
     owner: Option<ResMut<LocalShadowOwner>>,
     scene: Res<SceneData>,
-    lights: Query<(Entity, &LocalLightSource, &Visibility)>,
+    lights: Query<(Entity, &LocalLightSource, &Visibility, Option<&super::fx_lights::FxLightRecord>)>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame: Res<bevy::diagnostic::FrameCount>,
@@ -860,28 +868,28 @@ pub(super) fn prepare_local_shadow_cpu(
         };
         let mut sources = HashMap::new();
         let mut candidates = Vec::new();
-        for (entity, source, visibility) in &lights {
+        for (entity, source, visibility, runtime) in &lights {
             if *visibility == Visibility::Hidden {
                 continue;
             }
-            let light = scene
-                .placed_lights
-                .get(source.0)
-                .ok_or("local light lost its authored source")?;
+            let key = source.key(scene.placed_lights.len())?;
+            let light = match *source {
+                LocalLightSource::Placed(index) => scene.placed_lights.get(index).ok_or("local light lost its authored source")?,
+                LocalLightSource::Fx(_) => &runtime.ok_or("FXLight source lost its retained record")?.descriptor,
+            };
             let kind = match light.kind {
                 entities::LightType::Point => 0,
                 entities::LightType::HalfPoint => 1,
                 entities::LightType::Spot => 2,
                 _ => continue,
             };
-            let color = Color::srgb(
-                light.color[0].max(0.0),
-                light.color[1].max(0.0),
-                light.color[2].max(0.0),
-            )
-            .to_linear();
-            let preset = light_preset(light, [color.red, color.green, color.blue])
-                .ok_or("local light preset is unresolved")?;
+            let range = if let Some(runtime) = runtime {
+                super::fx_lights::value(&runtime.base, 0x80)
+            } else {
+                let color = Color::srgb(light.color[0].max(0.0), light.color[1].max(0.0), light.color[2].max(0.0)).to_linear();
+                light_preset(light, [color.red, color.green, color.blue])
+                    .ok_or("local light preset is unresolved")?.range
+            };
             let quality = if kind != 2 || light.no_shadows {
                 0
             } else {
@@ -894,20 +902,20 @@ pub(super) fn prepare_local_shadow_cpu(
                     }
                 }
             };
-            let flags = [
+            let flags = if let Some(runtime) = runtime { [runtime.base[0], runtime.base[1]] } else { [
                 u8::from(!light.no_shadows) * 2
                     | u8::from(light.cast_volumetric_shadows) * 0x20
                     | u8::from(light.dont_alter_volumetric_dynamic_shadow) * 0x40,
                 u8::from(light.scatter_only),
-            ];
-            sources.insert(source.0, entity);
+            ] };
+            sources.insert(key, (entity, light));
             candidates.push(render_shadow::LocalShadowCandidate {
-                source: source.0,
+                source: key,
                 flags,
                 kind,
                 quality,
                 position: light.position,
-                range: preset.range,
+                range,
             });
         }
         // Runtime capture maps158 authored lights in strictly increasing
@@ -978,7 +986,7 @@ pub(super) fn prepare_local_shadow_cpu(
             .max(1);
         let mut projected = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
             for (chunk, requests) in requests.chunks(chunk_size).enumerate() {
-                let scene = &*scene;
+                let source_lights = &sources;
                 let camera = &camera_fit;
                 let view_flags = owner.view_flags;
                 let model_inputs = &model_inputs;
@@ -989,7 +997,7 @@ pub(super) fn prepare_local_shadow_cpu(
                         requests
                             .iter()
                             .map(|request| {
-                                let light = &scene.placed_lights[request.candidate.source];
+                                let light = source_lights[&request.candidate.source].1;
                                 (
                                     project_local_shadow(
                                         request,
@@ -1039,14 +1047,14 @@ pub(super) fn prepare_local_shadow_cpu(
             {
                 let serial = project_local_shadow(
                     request,
-                    &scene.placed_lights[request.candidate.source],
+                    sources[&request.candidate.source].1,
                     owner.view_flags,
                     &camera_fit,
                     &mut scratch,
                 );
                 let serial_models = collect_local_light_models(
                     request,
-                    &scene.placed_lights[request.candidate.source],
+                    sources[&request.candidate.source].1,
                     owner.view_flags,
                     &vp,
                     &model_inputs,
@@ -1069,7 +1077,7 @@ pub(super) fn prepare_local_shadow_cpu(
             .into_iter()
             .zip(projected.into_iter().flat_map(|(_, results)| results))
         {
-            let light = &scene.placed_lights[request.candidate.source];
+            let light = sources[&request.candidate.source].1;
             //333570/332f20 reserve every face before doing any projection.
             //One failed reservation releases the entire light's partial bank.
             let mut allocations = Vec::with_capacity(request.side_count);
@@ -1192,7 +1200,8 @@ pub(super) fn prepare_local_shadow_cpu(
                 && quality.local_partial_squared_distance < squared;
             let refresh_dynamic = request.candidate.flags[0] & 0x40 != 0 || !skip_dynamic;
             output.push(LocalProjectedLight {
-                entity: sources[&request.candidate.source],
+                entity: sources[&request.candidate.source].0,
+                source_orientation: [light.rotation[1], light.rotation[0]],
                 request,
                 clips,
                 crops,

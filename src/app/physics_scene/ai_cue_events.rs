@@ -78,7 +78,7 @@ impl PhysicsScene {
                         });
                     }
                 }
-                2 => super::super::entity_functions::enqueue_removal(world, child, 0.)?,
+                2 => super::super::entity_functions::enqueue_removal_with_live(world, live, child, 0.)?,
                 _ => {
                     let component = self.ai_cues.get_mut(handle.slot).unwrap();
                     component.retire_phase = 0;

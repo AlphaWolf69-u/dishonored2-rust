@@ -64,6 +64,7 @@ struct Instance {
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
+    light_head: u16,
     sound_head: u16,
     decal_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
@@ -83,6 +84,7 @@ pub(super) struct GroupContext<'a> {
     pub(super) frame: ReferenceFrame,
     pub(super) entity_context: Option<super::world_effects::EntityEffectContext>,
     pub(super) systems: &'a mut ParticleSystems,
+    pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
@@ -100,6 +102,7 @@ impl GroupContext<'_> {
         super::world_sub_effects::Chains {
             systems: self.systems,
             decals: self.decals,
+            lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
         }
@@ -120,6 +123,10 @@ fn admit(
         return Ok(());
     }
     for group in &definition.groups {
+        for light in &group.lights {
+            let light=light.as_ref().map_err(Clone::clone)?;
+            if light.enabled && !matches!(light.kind,0|2) { return Err(format!("{name}: FX light type{} awaits a verified canonical render consumer",light.kind)); }
+        }
         for (family, admission) in definition.other_families(group) {
             if *admission.as_ref().map_err(Clone::clone)? {
                 return Err(format!("{name}: world FX family {family} is not connected"));
@@ -202,6 +209,7 @@ struct UpdateFrame {
 /// The particle and sound chains of one FX level; true while any is alive.
 fn update_chains(
     head: &mut u16,
+    light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -215,6 +223,7 @@ fn update_chains(
         frame.underwater,
         Some(&frame.motion),
     )?;
+    let light_count = context.lights.update(light_head, frame.age, frame.particle.owner, &mut context.systems.seed)?;
     let mut audio = context.sounds.clone();
     let sound_count = context.sound_systems.update(
         sound_head,
@@ -248,7 +257,7 @@ fn update_chains(
             gameplay_events.remove(index);
         }
     }
-    Ok(updated != 0 || sound_count != 0 || decal_count != 0 || gameplay_live)
+    Ok(updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || gameplay_live)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -264,6 +273,7 @@ fn update_sub_effects(
         let sub = &mut sub_effects[index];
         let chains = update_chains(
             &mut sub.head,
+            &mut sub.light_head,
             &mut sub.sound_head,
             &mut sub.decal_head,
             &mut sub.gameplay_events,
@@ -288,6 +298,7 @@ pub(super) fn start_groups(
     definition: &Arc<WorldEffectDefinition>,
     start: f32,
     head: &mut u16,
+    light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -319,6 +330,9 @@ pub(super) fn start_groups(
             context
                 .systems
                 .start(head, particle.as_ref().map_err(Clone::clone)?, offsets)?;
+        }
+        for light in &group.lights {
+            context.lights.start(light_head, light.as_ref().map_err(Clone::clone)?.clone(), offsets, context.frame, &mut context.systems.seed)?;
         }
         for sound in &group.sounds {
             let audio = context.sounds.lock();
@@ -413,6 +427,7 @@ pub(crate) struct WorldParticleState {
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
     >,
+    lights: super::world_light_effects::LightSystems,
     decals: super::decal_effects::DecalSystems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
@@ -453,6 +468,7 @@ impl Default for WorldParticleState {
             source: None,
             sounds: None,
             sound_systems: Default::default(),
+            lights: Default::default(),
             decals: super::decal_effects::new_systems(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
@@ -502,6 +518,8 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn light_publication(&self) -> impl Iterator<Item=(u16,Option<&crate::gameplay::effects::light::LightSample>)> { self.lights.publication() }
+
     pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
         if self.source.is_none() || self.closed { return Err("story Kiscule manager is not initialized".into()); }
         let Some(&root) = self.entity_graphs.get(&worldspawn) else { return Ok(None) };
@@ -1043,6 +1061,7 @@ impl WorldParticleState {
                     event.stop();
                 }
                 systems.stop(instance.head, instance.age);
+                self.lights.stop(instance.light_head, instance.age, false)?;
                 self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
@@ -1051,6 +1070,7 @@ impl WorldParticleState {
                     let mut chains = super::world_sub_effects::Chains {
                         systems,
                         sound_systems: &mut self.sound_systems,
+                        lights: &mut self.lights,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -1123,12 +1143,14 @@ impl WorldParticleState {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
+        self.lights.clear(&mut instance.light_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
             let mut chains = super::world_sub_effects::Chains {
                 systems,
                 sound_systems: &mut self.sound_systems,
+                lights: &mut self.lights,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -1285,6 +1307,7 @@ impl WorldParticleState {
                 self.shutdown_instance(index as u16, systems)?;
             }
         }
+        if !self.lights.drained() { return Err("FX light pool retains a live chain after instance shutdown".into()); }
         self.pending_starts.clear();
         self.pending_actor_starts.clear();
         self.entities.clear();
@@ -1533,6 +1556,7 @@ impl WorldParticleState {
             motion,
             age: 0.,
             head: u16::MAX,
+            light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
             sub_effects: Vec::new(),
@@ -1893,6 +1917,7 @@ impl WorldParticleState {
                 &definition,
                 0.,
                 &mut instance.head,
+                &mut instance.light_head,
                 &mut instance.sound_head,
                 &mut instance.decal_head,
                 &mut instance.gameplay_events,
@@ -1903,6 +1928,7 @@ impl WorldParticleState {
                     entity_context: instance.entity_context,
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    lights: &mut self.lights,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -1980,6 +2006,7 @@ impl WorldParticleState {
                     entity_context: instance.entity_context,
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    lights: &mut self.lights,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -1993,6 +2020,7 @@ impl WorldParticleState {
                 };
                 let alive = update_chains(
                     &mut instance.head,
+                    &mut instance.light_head,
                     &mut instance.sound_head,
                     &mut instance.decal_head,
                     &mut instance.gameplay_events,
@@ -2372,6 +2400,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,
+            light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
             sub_effects: Vec::new(),

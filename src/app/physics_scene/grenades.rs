@@ -1401,7 +1401,7 @@ impl PhysicsScene {
             .shared;
             //6dd550 simply does nothing when the managed identity is gone.
             if live.get(id).is_some() {
-                super::super::entity_functions::enqueue_remove_or_ghost(world, id, 0.)?;
+                super::super::entity_functions::enqueue_remove_or_ghost_with_live(world, live, id, 0.)?;
             }
             resources.remove_after_explosion = false;
         }

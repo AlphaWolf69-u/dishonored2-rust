@@ -496,7 +496,9 @@ pub(super) fn prepare(
         buffer: shadow_buffer.clone(),
         unavailable_depth: shadow_map.clone(),
     });
-    let local_capacity = scene.placed_lights.len().max(1).next_power_of_two() as u32;
+    //19a510 retains128 FXLight renderer slots in addition to level lights.
+    //Reserve the existing receiver buffer once, not again for each flash.
+    let local_capacity = scene.placed_lights.len().saturating_add(128).max(1).next_power_of_two() as u32;
     let local_shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
         vec![0u32; shadow_sampling::local_sampling_word_count(local_capacity)],
     ));
@@ -1838,7 +1840,7 @@ pub(super) fn prepare(
                         Transform::from_translation(position),
                         Visibility::Inherited,
                         cull.expect("local scattering light cull data"),
-                        local_shadow_updates::LocalLightSource(light_index),
+                        local_shadow_updates::LocalLightSource::Placed(light_index),
                     ));
                     spawned += 1;
                     continue;
@@ -1861,7 +1863,7 @@ pub(super) fn prepare(
                             },
                             Transform::from_translation(position),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::LocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource::Placed(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1896,7 +1898,7 @@ pub(super) fn prepare(
                             },
                             Transform::from_translation(position),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::LocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource::Placed(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1941,7 +1943,7 @@ pub(super) fn prepare(
                             },
                             Transform::from_translation(position).looking_to(direction, up),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::LocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource::Placed(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1965,7 +1967,7 @@ pub(super) fn prepare(
                             },
                             transform,
                             cull.expect("local light cull data"),
-                            local_shadow_updates::LocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource::Placed(light_index),
                         ));
                         spawned += 1;
                     }

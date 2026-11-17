@@ -52,7 +52,7 @@ pub(super) struct Interactions {
     retire: Vec<PendingPickup>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SelectionKind {
     Readable,
     Usable,
@@ -1269,6 +1269,32 @@ fn read_is_live(
             .grapple_pickable(live,read.identity.0)
             .is_ok_and(|current|current.is_some_and(|(reference,_)|reference==read.identity.1))
     })
+}
+
+///Bounded fixture report requested by the real-input action driver. All
+///values are borrowed from production owners; no focus/pose/ACK is injected.
+pub(super) fn describe_carry_fixture(world:&World,id:crate::gameplay::entity_lifetime::EntityId)->Result<String,String> {
+    use std::fmt::Write;
+    let live=world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>().ok_or("fixture LiveEntities absent")?;
+    let scene=world.get_resource::<super::physics_scene::PhysicsScene>().ok_or("fixture PhysicsScene absent")?;
+    let interactions=world.get_resource::<Interactions>().ok_or("fixture Interactions absent")?;
+    let player=world.get_resource::<super::player::PlayerState>().and_then(|s|s.player.as_ref()).ok_or("fixture Player absent")?;
+    let mut out=String::new();
+    let (eye,axis)=player.published_camera_frame();
+    writeln!(out,"player eye={eye:?} forward={:?} states={:?} swimming={} held={:?} pending47={:?} active47target={:?} mode47={:?} availableHold1={} availableHold2={}",axis.x_axis,player.active_player_states(),player.is_swimming(),player.carrying.held.as_ref().map(|t|t.entity),player.pending_loot_object(),player.world_pickup_target(),player.world_pickup_mode(),player.loot_hold_available(false),player.loot_hold_available(true)).unwrap();
+    writeln!(out,"focused={:?} selected={:?} grapplePrompt={:?} closed={} pendingRead={} pendingActivation={} retiringReads={} pendingPickup={:?}",world.get_resource::<super::interaction_focus::FocusedInteraction>().and_then(|f|f.current.as_ref()),interactions.selected,interactions.grapple_prompt,interactions.acquisitions_closed.load(Ordering::Acquire),interactions.pending_read.is_some(),interactions.pending_activation.is_some(),interactions.retire.len(),interactions.pending_pickup.as_ref().map(|p|(p.entity,p.reference,p.phase,p.hold.is_some(),p.from_grapple))).unwrap();
+    if let Some((name,_))=live.get(id) {
+        writeln!(out,"binding placedCarry={:?} readable={:?} actor={:?}",interactions.carrying_by_entity.get(name),interactions.readable_by_entity.get(name),interactions.actor_by_entity.get(name)).unwrap();
+        writeln!(out,"bounds={:?} carryContext={:?}",super::world_models::entity_bounds(world,live,id),world.get_resource::<super::shadow_updates::ModelShadowSources>().map(|sources|scene.carry_context(name,live,sources))).unwrap();
+    }
+    if let Some((reference,p))=scene.grapple_pickable(live,id)? {
+        let def=&p.definition.pickup_interaction;
+        writeln!(out,"admission ref={reference:?} authoredState={} mode={} loot={:?} legacyCarry={:?} capability={:?}",def.player_state,def.player_mode,player.loot_interaction_allowed(def.player_mode,def.player_state),player.carry_interaction_allowed(def.player_mode,def.player_state),scene.grapple_pickup_available(live,player,id)).unwrap();
+    }
+    writeln!(out,"carry={}",super::physics_scene::carrying_host::describe_fixture_progress(world,id)).unwrap();
+    for (group,hits) in interactions.casts.hits.iter().enumerate(){writeln!(out,"production_cast group={group} count={} hits={:?}",hits.len(),&hits[..hits.len().min(64)]).unwrap();}
+    writeln!(out,"physics={}",scene.describe_interaction_fixture(live,id,eye,axis.x_axis,interactions.sensor)?).unwrap();
+    Ok(out)
 }
 
 /// 14077be20 follows the owning entity pose. Unchanged owners do not touch the

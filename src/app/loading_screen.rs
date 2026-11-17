@@ -592,6 +592,7 @@ fn acquire(world: &mut World) {
             .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
             .or_else(|| super::power_wheel::startup_error(world))
             .or_else(|| super::ai_world::creation::startup_error(world).map(str::to_owned))
+            .or_else(|| super::fx_lights::error(world).map(str::to_owned))
             .or_else(|| super::carrying_resources::startup_error(world)) {
             fail_initial_images(world, &error);
             world.insert_resource(state);

@@ -42,6 +42,27 @@ fn enqueue(
     if world.resource::<LiveEntities>().get(target).is_none() {
         return Err("scheduled entity identity is stale".into());
     }
+    schedule(world, target, delay, function)
+}
+/// Component callbacks may hold the canonical live owner outside `World`
+/// while Stop/Deinitialize runs. Validate against that same owner, never a
+/// second lookup of a temporarily withdrawn Bevy resource.
+fn enqueue_with_live(
+    world: &mut World,
+    live: &LiveEntities,
+    target: EntityId,
+    delay: f32,
+    function: Function,
+) -> Result<(), String> {
+    if !delay.is_finite() {
+        return Err("non-finite delayed entity function".into());
+    }
+    if live.get(target).is_none() {
+        return Err("scheduled entity identity is stale".into());
+    }
+    schedule(world, target, delay, function)
+}
+fn schedule(world: &mut World, target: EntityId, delay: f32, function: Function) -> Result<(), String> {
     let now = world
         .resource::<ClockRuntime>()
         .clock()?
@@ -69,6 +90,14 @@ pub(super) fn enqueue_removal(
 ) -> Result<(), String> {
     enqueue(world, target, delay, Function::Remove)
 }
+pub(super) fn enqueue_removal_with_live(
+    world: &mut World,
+    live: &LiveEntities,
+    target: EntityId,
+    delay: f32,
+) -> Result<(), String> {
+    enqueue_with_live(world, live, target, delay, Function::Remove)
+}
 ///Reflected activate uses the same deferred function manager as removal;
 ///875290 dispatches the concrete class hook and its normal C5 notification.
 pub(super) fn enqueue_activation(world: &mut World, target: EntityId, delay: f32) -> Result<(), String> {
@@ -78,6 +107,14 @@ pub(super) fn enqueue_activation(world: &mut World, target: EntityId, delay: f32
 ///distinct from Remove; actual declared AITampering changes its result.
 pub(super) fn enqueue_remove_or_ghost(world: &mut World, target: EntityId, delay: f32) -> Result<(), String> {
     enqueue(world,target,delay,Function::RemoveOrGhost)
+}
+pub(super) fn enqueue_remove_or_ghost_with_live(
+    world: &mut World,
+    live: &LiveEntities,
+    target: EntityId,
+    delay: f32,
+) -> Result<(), String> {
+    enqueue_with_live(world, live, target, delay, Function::RemoveOrGhost)
 }
 ///627620/627780 ->883f80 schedules removeWhenHidden877140 on the
 ///canonical entity-function clock, independent of a component's time space.

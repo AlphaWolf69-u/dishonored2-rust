@@ -933,7 +933,7 @@ impl PhysicsScene {
             while component.retire_cursor < component.children.len() {
                 let child = component.children[component.retire_cursor];
                 if live.get(child).is_some() {
-                    super::super::entity_functions::enqueue_removal(world, child, 0.)?;
+                    super::super::entity_functions::enqueue_removal_with_live(world, live, child, 0.)?;
                 }
                 component.retire_cursor += 1;
             }

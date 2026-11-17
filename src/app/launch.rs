@@ -752,6 +752,13 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(
             PostUpdate,
+            (super::fx_lights::publish, bevy::ecs::schedule::ApplyDeferred).chain()
+                .after(crate::rendering::bevy_backend::camera_scene::simulate_effects)
+                .before(cull_small_local_lights)
+                .run_if(super::loading_screen::scene_published),
+        )
+        .add_systems(
+            PostUpdate,
             gameplay_system(super::fx_gameplay::consume_after_simulation)
                 .after(crate::rendering::bevy_backend::camera_scene::simulate_effects)
                 .run_if(super::pause_menu::game_not_paused)

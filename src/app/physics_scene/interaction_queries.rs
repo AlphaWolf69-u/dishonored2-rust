@@ -80,6 +80,57 @@ impl InteractionQueries {
     }
 }
 impl PhysicsScene {
+    ///On-demand action diagnostic over the same retained bodies and source
+    ///sphere casts. It changes no component, admission flag or query result.
+    pub(in crate::app) fn describe_interaction_fixture(
+        &self,live:&LiveEntities,target:EntityId,eye:Vec3,forward:Vec3,sensor:Sensor,
+    )->Result<String,String> {
+        use std::fmt::Write;
+        let mut out=String::new();
+        writeln!(out,"identity={:?} stage={:?} parent={:?} frame={:?}",live.get(target),live.stage(target),live.parent(target),self.entity_frame(live,target)).unwrap();
+        if let Some(&index)=self.shared_indices.get(&target) {
+            let entity=&self.entities[index];
+            writeln!(out,"scene index={index} retired={} flagsD0D1={:#x} D4={:#x} D7={:#x} timespace={} sensor={sensor:?}",entity.retired,entity.entity_flags,self.entity_flags_d4[index],entity.entity_flags_d7,entity.timespace).unwrap();
+            for &packed in entity.components.entries.values() {
+                let h=ComponentHandle::from_packed(packed)?;
+                let owner=self.owner(h)?;
+                writeln!(out,"component={h:?} generation={} flags={:#x} scheduling={:?}",owner.generation,owner.flags,self.declarations.get(&h.packed()).map(|d|&d.scheduling)).unwrap();
+                if h.class_id==self.classes[6] {
+                    let p=self.pickables.get(h.slot).ok_or("diagnostic Pickable absent")?;
+                    writeln!(out,"pickable enabled={} rawD0={:#x} interaction={:?} definition={:?} item={:?} player={:?} references=audio:{:?}/physics:{:?}/system:{:?}/mark:{:?}",p.interaction_enabled,p.interaction_flags,p.interaction,p.definition,p.item.as_ref().map(|i|(&i.path,i.type_number,i.note_type)),p.player,p.references.as_ref().and_then(|r|r.player_audio),p.references.as_ref().and_then(|r|r.physics_base),p.references.as_ref().and_then(|r|r.physics_system),p.references.as_ref().and_then(|r|r.outsider_mark)).unwrap();
+                }
+            }
+            if let Some(h)=self.document_rigid(index)? {
+                let body_id=self.rigid_component(h)?.body();
+                let world=self.world.read().map_err(|_|"fixture world poisoned")?;
+                writeln!(out,"rigid={h:?} body={body_id:?} record={:?}",body_id.and_then(|id|world.storage.bodies.get(id)).map(|b|(b.flags,b.filter_info,b.broadphase_id,b.user_data,b.motion_id))).unwrap();
+            }
+        }
+        writeln!(out,"production_pickable={:?} simple_reference={:?} interactable={:?}",self.interaction_pickable(live,target).map(|p|p.map(|(r,_)|r)),self.grapple_pickable(live,target).map(|p|p.map(|(r,_)|r)),self.grapple_has_interactable(live,target)).unwrap();
+        let world=self.world.read().map_err(|_|"fixture query world poisoned")?;
+        world.ready().map_err(str::to_owned)?;
+        let mut scratch=InteractionQueries::default();
+        for group in 0..5 {
+            let radius=sensor.shape_radii[group];
+            if radius<=0.||radius>sensor.max_distance {continue;}
+            let start=eye+forward*radius;
+            scratch.cast(&world,start,(start+forward*(sensor.max_distance-radius))-start,radius,if group<3{0x20cc38}else{0x408},0)?;
+            writeln!(out,"raw_cast group={group} radius={radius} count={} initial_count={}",scratch.hits.len(),scratch.initial.len()).unwrap();
+            let target_hit=scratch.hits.iter().find(|h|self.interaction_hit_entity(live,h).ok().flatten()==Some(target)).map(|h|h.position);
+            for hit in scratch.hits.iter().take(64) {
+                let actor=self.interaction_hit_entity(live,hit);
+                writeln!(out,"raw_hit fraction={} point={:?} normal={:?} target={:?} entity={actor:?} transparentMaterial={:?} breakable={:?}",hit.fraction,hit.position,hit.normal,hit.target,world.storage.materials.material_for_id(hit.target.material_id).map(|m|m.can_blink_through()),actor.as_ref().ok().and_then(|id|*id).map(|id|self.is_breakable(live,id))).unwrap();
+            }
+            if let Some(point)=target_hit {
+                scratch.cast(&world,eye,Vec3::from_array(point[..3].try_into().unwrap())-eye,radius,0xc43e,4)?;
+                writeln!(out,"occlusion group={group} count={} initial_count={}",scratch.hits.len(),scratch.initial.len()).unwrap();
+                for hit in scratch.hits.iter().take(64) {
+                    writeln!(out,"occlusion_hit fraction={} point={:?} target={:?} entity={:?}",hit.fraction,hit.position,hit.target,self.interaction_hit_entity(live,hit)).unwrap();
+                }
+            }
+        }
+        Ok(out)
+    }
     fn interaction_hit_entity(
         &self,
         live: &LiveEntities,

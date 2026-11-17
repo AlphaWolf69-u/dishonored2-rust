@@ -17,6 +17,7 @@ pub mod values;
 pub mod pool;
 pub mod sound;
 pub mod timing;
+pub mod light;
 pub mod standard_events;
 pub(crate) mod gameplay;
 pub mod vector_curve;

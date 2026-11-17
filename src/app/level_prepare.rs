@@ -1105,6 +1105,7 @@ pub(super) fn prepare_level(
         // the shadow maps small enough to leave room for the mission assets.
         // Authored shadow flags remain intact.
         .insert_resource(PointLightShadowMap { size: 128 })
+        .insert_resource(super::fx_lights::FxLightAllocations::default())
         .insert_resource(DirectionalLightShadowMap { size: 512 })
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectFrames::load(

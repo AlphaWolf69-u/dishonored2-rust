@@ -76,6 +76,7 @@ fn release(world: &mut World, entry: &mut Entry) -> Result<(), String> {
 /// Only a changed immutable FX source snapshot is walked. Weak source records
 /// keep no FX alive; actual instance/sub-FX tails retain the defining groups.
 pub(super) fn prepare(world: &mut World) -> Result<(), String> {
+    if let Some(error)=super::fx_lights::error(world) { return Err(format!("FX light publication: {error}")); }
     let Some(mut owner) = world.remove_resource::<FxGameplay>() else {
         return Ok(());
     };
