@@ -663,7 +663,7 @@ pub(super) fn publish(world: &mut World) {
         }
     }
     while let Some(mut delivery) = owner.deliveries.pop_front() {
-        if let Err(error) = dispatch(world, &mut owner, &delivery.message, &mut delivery.phase) {
+        if let Err(error) = dispatch(world, &mut owner, state.player.as_mut(), &delivery.message, &mut delivery.phase) {
             owner.error = Some(error);
             owner.deliveries.push_front(delivery);
             break;
@@ -710,6 +710,7 @@ pub(super) fn retired(world: &World, identity: &str) -> bool {
 fn dispatch(
     world: &mut World,
     owner: &mut Firing,
+    player: Option<&mut Player>,
     message: &WeaponMessage,
     phase: &mut u8,
 ) -> Result<(), String> {
@@ -745,6 +746,20 @@ fn dispatch(
             phase,
         ),
         WeaponEffect::MagazineChanged { previous, current } => {
+            if *phase == 0 {
+                //62b990 resolves this component's own AnimEvolved, not the
+                //possibly-replaced left-hand tree. Keep its callback receipt
+                //before the separate attachment visibility acknowledgement.
+                if message.weapon.family == RangedFamily::Crossbow {
+                    let alias = if current < 1 { message.weapon.fired_animation.as_deref() }
+                        else { message.weapon.equipment.default_alias.as_deref() };
+                    if let Some(alias) = alias {
+                        player.ok_or("crossbow default-animation callback lost its player tree owner")?
+                            .set_equipment_default_alias(&message.identity, entity, alias)?;
+                    }
+                }
+                *phase = 1;
+            }
             children::update_pending_magazine(world, entity, current);
             let visible = match message.weapon.family {
                 RangedFamily::Gun => current > 0 && current >= previous,

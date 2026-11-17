@@ -1289,7 +1289,8 @@ pub(super) fn describe_carry_fixture(world:&World,id:crate::gameplay::entity_lif
     }
     if let Some((reference,p))=scene.grapple_pickable(live,id)? {
         let def=&p.definition.pickup_interaction;
-        writeln!(out,"admission ref={reference:?} authoredState={} mode={} loot={:?} legacyCarry={:?} capability={:?}",def.player_state,def.player_mode,player.loot_interaction_allowed(def.player_mode,def.player_state),player.carry_interaction_allowed(def.player_mode,def.player_state),scene.grapple_pickup_available(live,player,id)).unwrap();
+        let resolved_mode=if def.player_mode==14{i32::from(player.is_swimming())}else{def.player_mode};
+        writeln!(out,"admission ref={reference:?} authoredState={} mode={} resolvedMode={resolved_mode} loot={:?} legacyCarry={:?} capability={:?}",def.player_state,def.player_mode,player.loot_interaction_allowed(resolved_mode,def.player_state),player.carry_interaction_allowed(resolved_mode,def.player_state),scene.grapple_pickup_available(live,player,id)).unwrap();
     }
     writeln!(out,"carry={}",super::physics_scene::carrying_host::describe_fixture_progress(world,id)).unwrap();
     for (group,hits) in interactions.casts.hits.iter().enumerate(){writeln!(out,"production_cast group={group} count={} hits={:?}",hits.len(),&hits[..hits.len().min(64)]).unwrap();}

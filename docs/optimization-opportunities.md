@@ -5,6 +5,21 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+FX light receiver transport, 2026-11-17:
+
+- `app/setup` reserves the existing local-shadow sampling buffer for the placed
+  sources plus the native 128 FX light slots. `shadow_pass/local` still clears
+  and uploads the whole buffer. Relative to the placed-only allocation, each
+  existing upload adds exactly `64 * (next_power_of_two(placed_count + 128) -
+  next_power_of_two(max(placed_count, 1)))` bytes, even when FX slots are idle.
+  Reusing `ShaderBufferPatches` could eliminate unchanged suffix writes; the
+  possible transport saving is that byte count per upload, not a measured time
+  or FPS gain. It waits for verification of source-index stability, withdrawal
+  and stale-tail safety in the completed dynamic-light path. The initial fixed
+  reservation avoids replacing buffers at flash start; no separate light
+  buffer or per-flash allocation was added. Measure only this clear/upload
+  function before keeping a later optimization.
+
 SurfaceImpact resource-demand audit, 2026-11-17:
 
 - `app/usable_effects::publish` acknowledges nonempty reservation groups only after the shared particle/world/decal material generation completes. A ready group can consequently wait for unrelated groups in the same generation. A future per-group certificate could shorten admission delay, but must prove every actual requested shader/image/receiver dependency is GPU-ready and preserve activation/audio/gameplay ordering. The current render owners expose shared-generation acknowledgements, so bypassing that barrier for nonempty groups would manufacture readiness. No timing gain is measured and no current-loading causal claim is made. Registered empty groups are handled independently because they own no such dependencies.

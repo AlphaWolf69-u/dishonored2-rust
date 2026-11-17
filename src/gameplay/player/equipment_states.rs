@@ -4,6 +4,7 @@
 use super::{equipment::EquipmentTree, states::{Frame, StateId, StateMachine}, weapons::Equipment, Player};
 use crate::entities::{scene_motion::atom, Value};
 use std::{collections::{HashMap, VecDeque}, sync::{Arc, atomic::{AtomicU32, Ordering}}};
+mod default_animation;
 
 static NEXT_REQUEST: AtomicU32 = AtomicU32::new(1);
 

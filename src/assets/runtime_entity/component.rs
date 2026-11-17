@@ -52,8 +52,8 @@ pub(super) fn from_resolved(
                 scheduling: scheduling.clone(),
             })),
         ),
-        //Installed entityDef references use .cpntrigidbodythrowable; placed
-        //map component records serialize the same actual class cpntThrowable.
+        //Installed entityDef references AND map-local declarations use
+        //cpntRigidBodyThrowable; cpntThrowable is the alternate spelling.
         "cpntrigidbodythrowable" | "cpntthrowable" => {
             let value = assets::throwable::Definition::from_resolved(
                 catalog,

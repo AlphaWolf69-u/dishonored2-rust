@@ -63,6 +63,16 @@ pub(super) struct WorldModels {
     closing: bool,
 }
 impl WorldModels {
+    /// Borrow the actual renderer pose and draw entities for action diagnostics.
+    /// Requested Entry.frame alone does not prove the surface publisher ran.
+    pub(super) fn publication_pose(&self, id: EntityId) -> Option<(ReferenceFrame, [f32; 3], bool)> {
+        let entry = self.entries.get(&id)?;
+        Some((self.models.frame(id)?, entry.scale,
+            matches!(&entry.descriptor.geometry, crate::assets::equipment::attachment::Geometry::Rigid(_))))
+    }
+    pub(super) fn publication_draws(&self, id: EntityId) -> Option<impl Iterator<Item = Entity> + '_> {
+        Some(self.models.projection_draws(id)?.map(|(entity, _, _, _, _)| entity))
+    }
     pub(super) fn interaction_bounds(&self, id: EntityId) -> Option<[[f32; 3]; 2]> {
         let entry = self.entries.get(&id)?;
         Some(crate::render_model::transformed_bounds(entry.descriptor.geometry.bounds(), entry.frame.position, entry.frame.basis, entry.scale))

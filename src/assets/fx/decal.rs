@@ -96,11 +96,13 @@ pub fn decal(fields: &Fields) -> Result<DecalAsset, String> {
                 }
             }
             "m_projectionAxis" => {
-                // 141a31c20: idMat3::normal_axis_t literal table.
+                //141a31c20 names the directional basis;141a31cb0 names the
+                //same indexed Cartesian axes X/Y/Z (installed decal data).
+                //Both native tables map their three axes to0/1/2.
                 attachment.projection_axis = match atom(value)? {
-                    "AXIS_FORWARD" | "0" => 0,
-                    "AXIS_LEFT" | "1" => 1,
-                    "AXIS_UP" | "2" => 2,
+                    "X" | "AXIS_FORWARD" | "0" => 0,
+                    "Y" | "AXIS_LEFT" | "1" => 1,
+                    "Z" | "AXIS_UP" | "2" => 2,
                     axis => return Err(format!("unknown decal projection axis {axis}")),
                 };
             }

@@ -1125,13 +1125,6 @@ impl Player {
             self.camera.update_fov(dt, base_fov, speed_state);
         }
         // Body DEFAULT (FUN_140777280).
-        //62b990 switches the crossbow's own default input on magazine changes;
-        //its loaded child's visibility remains a separate actual entity flag.
-        if let Some(alias) = self.weapon.as_ref().and_then(weapons::Runtime::default_animation) {
-            if let Some(tree) = self.body.equipment[0].as_mut() {
-                if let Err(error) = tree.set_default_alias(alias) { eprintln!("Weapon default animation: {error}"); }
-            }
-        }
         self.body.set_grapple_control(self.camera.grapple_control());
         let input_velocity = self.physics.input_velocity();
         let supported = self.controller.support_state != SupportState::Unsupported;

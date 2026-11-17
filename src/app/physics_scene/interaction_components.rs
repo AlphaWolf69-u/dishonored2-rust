@@ -19,6 +19,22 @@ impl ComponentInstance for UsableComponent {
 }
 
 impl PhysicsScene {
+    ///76e8b0 captures mode1 PhysicsBase/PhysicsSystemEvolved references at
+    ///Start. These are weak checked component generations, not resource leases.
+    pub(super) fn start_pickable_physics_references(&mut self,handle:ComponentHandle)->Result<(),String> {
+        use crate::gameplay::pickable_component::{CheckedComponent,PickableReferences};
+        let index=self.owner(handle)?.entity.ok_or("Pickable Start entity absent")?;
+        let checked=|candidate:Option<ComponentHandle>|->Result<Option<CheckedComponent>,String>{
+            candidate.map(|handle|self.owner(handle).map(|o|CheckedComponent{handle,generation:o.generation})).transpose()
+        };
+        let physics_base=checked(self.document_rigid(index)?)?;
+        let physics_system=checked(self.grapple_dependency(index,4,[0x20,0])?)?;
+        let refs=self.pickables.get_mut(handle.slot).ok_or("Pickable Start payload absent")?
+            .references.get_or_insert_with(PickableReferences::default);
+        refs.physics_base=physics_base;
+        refs.physics_system=physics_system;
+        Ok(())
+    }
     pub(super) fn admit_interaction_components(
         &mut self,
         document: &entities::Document,
@@ -744,6 +760,7 @@ impl ComponentLifecycleWorld for Startup<'_> {
                 }
                 Ok(())
             } else if handle.class_id==self.scene.classes[6] {
+                self.scene.start_pickable_physics_references(handle)?;
                 self.scene.start(handle,registry)?;
                 if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_started(world,handle)?;}
                 Ok(())

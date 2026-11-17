@@ -72,6 +72,7 @@ impl PhysicsScene {
             // the body type/filter. Repeated pending callbacks see null parent.
             if *step == 0 {
                 if live.parent(self.entities[index].shared)?.is_some() {
+                    self.pickables.get_mut(reference.handle.slot).ok_or("bound Pickable absent")?.pickup_parent=live.parent(self.entities[index].shared)?;
                     // 8762d0 clears d0 bit7, then727450(null)/727880 restores
                     // the live movement interface to type2 before parent links
                     // disappear. The same mode cursor resumes a failed change.

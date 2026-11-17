@@ -777,6 +777,18 @@ struct Host<'a> {
 }
 
 impl Host<'_> {
+    fn audio_objects_retired(&mut self, handle: ComponentHandle) -> Result<bool, String> {
+        if handle.class_id != self.scene.classes[4] { return Ok(true); }
+        let Some(world) = self.world.as_deref_mut() else { return Ok(true); };
+        let component = self.scene.audios.get_mut(handle.slot)
+            .ok_or("audio retiring component absent")?;
+        let generation = component.owner.generation;
+        super::super::audio::drain_component_posts(world, handle, generation, component)?;
+        super::super::audio::retire_component_joints(world, handle.packed(), generation, component)?;
+        super::super::audio::retire_component_object(world,
+            crate::gameplay::sound::Emitter::Component { handle: handle.packed(), generation })
+    }
+
     fn retire_contacts(
         &mut self,
         handle: ComponentHandle,
@@ -1017,6 +1029,9 @@ impl ComponentReleaseWorld for Host<'_> {
         self.retire_contacts(handle, false)?;
         if handle.class_id==self.scene.classes[6] {
             if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_stopped(world,handle)?;}
+            //76eaf0 withdraws the checked references at Stop, before owners
+            //can retire or reuse their component generations.
+            self.scene.pickables.get_mut(handle.slot).ok_or("Pickable Stop payload absent")?.references=None;
         }
         let published = self.world.is_some();
         let scene = &mut self.scene;
@@ -1219,6 +1234,20 @@ impl ComponentReleaseWorld for Host<'_> {
         if handle.class_id==self.scene.classes[18]&&!self.scene.damage_zone_stop_complete(self.world.as_deref(),handle)?{
             return Ok(ReleaseStatus::Pending);
         }
+        Ok(ReleaseStatus::Complete)
+    }
+
+    fn poll_deinitialize(
+        &mut self,
+        handle: ComponentHandle,
+        registry: &mut ComponentRegistry,
+    ) -> Result<ReleaseStatus, String> {
+        //708620 returns actual objects even without a preceding709020 Stop
+        //(initialized hidden cue pools). Await the real backend return.
+        if !self.audio_objects_retired(handle)? {
+            return Ok(ReleaseStatus::Pending);
+        }
+        self.deinitialize(handle, registry)?;
         Ok(ReleaseStatus::Complete)
     }
 
@@ -1548,6 +1577,18 @@ impl ComponentReleaseWorld for Host<'_> {
         } else {
             Err("physics shutdown class is unsupported".into())
         }
+    }
+
+    fn poll_released(
+        &mut self,
+        handle: ComponentHandle,
+        registry: &mut ComponentRegistry,
+    ) -> Result<ReleaseStatus, String> {
+        //A canceled, uninitialized registration can bypass Deinitialize.
+        //Retain its actual immediate-release generation until object return.
+        if !self.audio_objects_retired(handle)? { return Ok(ReleaseStatus::Pending); }
+        self.released(handle, registry)?;
+        Ok(ReleaseStatus::Complete)
     }
 
     fn released(

@@ -22568,7 +22568,8 @@ authored-name HashSet no longer admits transparency.
 
 The existing 808ea0/809d80 preparation path now resolves all placed cpntRigidBody
 
-and cpntThrowable declarations, rather than only readable bodies. The same
+and canonical cpntRigidBodyThrowable declarations (including the alternate
+cpntThrowable spelling), rather than only readable bodies. The same
 
 entity header/retirement roster owns each actual body, with base8 and Throwable12
 
@@ -22585,6 +22586,26 @@ Expected additional cost is startup work/resources for genuinely admitted body
 instances, not per-cast archive work or a second body cache. No measured speed
 
 or memory claim is made.
+
+Placed admission correction (2026-11-17): the earlier implementation's
+kind discriminator accepted only cpntRigidBody/cpntThrowable, silently
+omitting installed map-local cpntRigidBodyThrowable records. Actual archived
+Edge-of-the-World metadata names map_cpntrigidbodythrowable_decl_1 as kind
+cpntRigidBodyThrowable; the resulting skipped early header/body admission
+also made later Health/Breakable passes skip that absent actor before
+Pickable/Observable admitted its late header. The discriminator now uses
+the same two Throwable spellings as runtime entity construction and existing
+hierarchy seeding. It acquires the canonical Throwable declaration and
+model/material/Havok shape leases, creates the existing factory12 payload,
+and follows808ea0/809d80 Init/Start plus the existing Stop/Deinit/body/shape
+retirement. Registration1413bbf30→8e9040→4c6600 proves the real
+arkCpntRigidBodyThrowable subclass of arkCpntRigidBody. No synthetic
+model-derived collider, second physics world or object-name exception is
+introduced. Prediction: actual body/Health/Breakable dependencies become
+available for every supported placed Throwable-kind record; startup work,
+resident bodies and simulation cost grow by the genuinely missing admitted
+instances. No FPS/memory gain is claimed. Source/syntax/whitespace review
+only; loading and actual action verification pending the combined batch.
 
 
 
@@ -23767,6 +23788,10 @@ Signed inventory health damage code resource (2026-11-17): `assets::damage::Decl
 `host:` the existing canonical ModelShaderData owns the small local/depth state for placed/first-person model keys; runtime wrapper defaults and effective flags live with WorldModels' full-generation entries. The existing individual model removal, replaced-model and level teardown paths release these fields. Mesh preparation retains the source shadow vertex ABI once even when a model initially does not cast, so later enabling uses the same mesh/template without a rebuild or clone. This may add the existing shadow-position/skin attributes to an initially disabled template; no measured RAM/VRAM or performance saving is claimed. Source syntax parsed successfully; this worker ran no compilation, tests, game launch or visual check. Coordinated build/loading/gameplay verification remains with the parent.
 
 
+### Audio object return for initialized inactive components (2026-11-17)
+
+`host:` Audio708620 returns the component's actual joint/default objects;709020 invokes it from Stop, but the actual base lifecycle also destroys initialized components which never Started (notably hidden cue pools). The previous host Deinitialize treated an absent prior Stop receipt as a fatal error immediately after submitting its own asynchronous return. Ordinary/global and entity-scoped release now retain their actual reverse-order cursor through a polled Deinitialize boundary, and the Audio host waits for real backend/object/playing-cookie acknowledgements before invoking the existing Deinitialize callback. Existing acknowledged-Stop and pool-release checks remain intact; no receipt is manufactured or ignored. Canceled, uninitialized registrations similarly retain their existing immediate-release journal until the polled pool-release boundary completes, covering constructor rollback without replaying unlink/shutdown. Other component families keep synchronous default callbacks. Prediction: remove the demonstrated placed-physics exit error without changing playing behavior or adding normal-frame work. Compilation and actual exit/rollback validation remain with the coordinating worker; no builds or runtime checks were run by this worker.
+
 ### Reflected entity functions under borrowed lifecycle owners (2026-11-17)
 
 `host:` Cues458b30 and Crew577f60 teardown retain their actual child generations through reflected Remove883f60 and the canonical ordinary-removal FIFO. The Scene lifecycle host temporarily withdraws `LiveEntities` from Bevy while supplying that same owner to typed callbacks. Reflected removal and RemoveOrGhost now accept this supplied owner for generation validation and then share the existing clock2 deadline/insertion scheduler. Cues/Crew Deinitialize, DamageZone expiration and Grenade FX completion no longer re-fetch an unavailable Bevy resource. No missing-owner fallback, copied identity registry, direct child destruction or synthetic acknowledgement is introduced; callback cursors advance only after scheduling succeeds. Prediction: eliminate the demonstrated exit panic without changing event timing, queue ordering or normal-frame work. Source review covers every Scene entity-function producer; compilation and actual exit validation remain with the coordinating worker.
@@ -23893,6 +23918,21 @@ Far Reach cancels an unaccepted aim independently of the last-released target in
 
 Prediction: repairs lost notifications and stale canceled aim; no steady-frame cost or CPU/GPU/memory gain claimed. Source review and whitespace checks only; these edits are beyond the separately compiled766603d4 and await the next coherent build/production observation. No tests or visible launches performed.
 ### Accepted ranged callback retirement and melee collector identity (2026-11-17)
+
+Equipment default-input correction (2026-11-17):61b3a0 resolves the actual
+equipment component's own AnimEvolved;53f4f0→1cb780→1c7030 leaves its input
+unchanged when the model alias has no typed clip. The rewrite now applies
+62b990's crossbow alias switch in the existing accepted MagazineChanged
+callback, addressed by the actual equipment generation, including an outgoing
+or retained tree. The prepared tree also receives the actual owned runtime's
+current alias on admission. Missing model aliases are native no-ops; aliases
+which exist but lack a prepared clip still fail explicitly. No fallback clip
+or replacement pose is added. This removes the per-frame write into whichever
+actor happens to occupy the left hand, its repeated lookups and error output.
+Prediction: eliminate the demonstrated crossbow→gun alias misrouting and
+repeated gun_idle diagnostics without changing clip/resource lifetimes or
+adding hot-path allocation. Static diff/format checks only; combined action
+validation and any timing measurement belong to the coordinating worker.
 
 Full631020/635140 pass closure (2026-11-17): nearest selection633a70
 remains before focus admission. Original ENTITY packets get NPC focus;
@@ -24041,3 +24081,10 @@ verification: source/schema/native assembly review and static patch applicabilit
 OPTIMIZATION OPPORTUNITY вЂ” local receiver transport reserve
 
 The new fixed slot capacity reserves next_power_of_two(placed_count+128) receiver records at level initialization, preventing buffer allocation/replacement at flash start. Existing uploader clears/uploads the full reserved records, so added transport per existing upload is exactly64*(next_power_of_two(placed_count+128)-next_power_of_two(placed_count)) bytes, even with no active FX. CPU clear work grows by the same record capacity. This is a known added cost, not an improvement claim. Kept for the first coherent fidelity implementation to avoid per-flash buffer growth and preserve actual Bevy cluster/light-index coverage. Follow-up should reuse the existing ShaderBufferPatches/range owner only after checking actual light-index reordering and stale-tail safety, then measure that affected clear/upload function with the same binary controls. No new buffers, guessed static index stability, broad renderer refactor or unmeasured savings claim.
+
+
+Actual-action fixture follow-up (2026-11-17): the ordinary EotW bottle has authored48, not default47; its body was not admitted and all five raw source sphere casts were empty. The acquisition owner is correcting that independent missing Throwable component closure. Pickable Start76e8b0 now captures the existing mode1 PhysicsBase/PhysicsSystemEvolved checked generations; Stop76eaf0 withdraws them before generation reuse. Null optional owners remain null. The47 pull gate was also corrected:841500 compares raw Pickable+28 to all-ones(-1), not the cached PhysicsBase+50 reference. Constructor76e030 sets+28 to managed-null0x3fff0010, and76e2b0 retains an actual previous binding parent; neither equals-1. The existing admitted birth path therefore uses the actual physical reach predicate unless nativeflag4 requests immediate completion. The separate all-ones saved-state representation is not admitted by the rewrite's current constructors, rather than being fabricated from an absent body pointer. Actual previous binding identity is retained with the same Pickable. On-demand diagnostics now resolve native CURRENT_MODE14 before displaying state admission, as production3b80a0 already does. No cast bounds/filters, target poses, state ACKs or invented collision proxies were added. Syntax-only parsing passed; root owns combined compilation and actual-input validation.
+
+FX decal axis correction (2026-11-17): assets::fx::decal::axis now reads native Cartesian X/Y/Z as0/1/2 (table141a31cb0 and its installed PE strings) as well as the existing directional table141a31c20. It preserves basis indices and geometry/resource ownership. Actual e10 crossbow contact got past m_lights admission but rejected `unknown decal projection axis X`;62 resolved combat decals use that canonical spelling. Source audit covered99 resolved combat FX,33 particulate declarations and142 typed FX descriptor field paths across pistol muzzle, crossbow/pistol/sword contacts and bottle breakage, including enabled nested references; no further unsupported enabled family or unknown typed field was found in this bounded scope. This is metadata coverage, not a claim of live GPU/audio output. Runtime validation remains pending.
+
+e10ccc1f debug evidence: game typecheck/dev compilation/shared-core check passed. Heart/wheel and full combat input sequences again completed. Teardown progressed beyond the repaired LiveEntities borrow panic, but then failed actual audio return during placed component destruction (`audio object retirement lost its acknowledged Stop`). The newly polled destructor retains the original cursor until genuine audio-object acknowledgements, including never-Started initialized and canceled constructor paths. Carry setup's comprehensive source report showed no actual Throwable collider or dependent Health/Breakable payload, rather than a manufactured interaction-range failure; the canonical placed cpntRigidBodyThrowable kind had been silently skipped by the map reader. That class now reaches the already-existing factory, source shape reader and lifecycle. These corrections await the next combined action run. No release or performance/output success is claimed from the failed e10 action batch.

@@ -60,6 +60,9 @@ pub struct PickableComponent {
     /// The component and interaction owner share one immutable declaration.
     pub item: Option<std::sync::Arc<crate::assets::inventory_item::PickableItem>>,
     pub references: Option<PickableReferences>,
+    ///76e030's +28 starts at managed-null0x3fff0010;76e2b0 saves a
+    ///previous real binding parent here. Managed-null is NOT all-ones(-1).
+    pub(crate) pickup_parent:Option<crate::gameplay::entity_lifetime::EntityId>,
     /// Outer None means the game-local player lookup has not been supplied.
     pub player: Option<Option<crate::gameplay::entity_lifetime::EntityId>>,
     /// 76ee70 updates this checked pointer when a loot owner associates the
@@ -77,7 +80,7 @@ impl PickableComponent {
         // the declaration UID along with its other fields.
         let interaction = super::interaction_definition::InteractionDef::new();
         Self { owner, definition, interaction_enabled: true, interaction, interaction_flags: 0,
-            item: None, references: None, player: None, loot_owner: None }
+            item: None, references: None, pickup_parent:None, player: None, loot_owner: None }
     }
 
     /// 76e750's virtual record callback. The host supplies the live

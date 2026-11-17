@@ -145,14 +145,11 @@ impl CarryHost<'_> {
             .pickables
             .get(reference.handle.slot)
             .ok_or("Loot pull Pickable absent")?;
-        //841500's Simple branch commits immediately without a cached physics
-        //interface (or after the source restore flag4). Actual rigid ammo pulls.
-        if pickable
-            .references
-            .as_ref()
-            .and_then(|refs| refs.physics_base)
-            .is_none()
-            || pickable.interaction_flags & 4 != 0
+        //841500 tests raw+28 against all-ones, not the PhysicsBase pointer.
+        //Our admitted constructors use native managed-null0x3fff0010 or a
+        //real saved binding parent; neither is -1. No saved-state path
+        //currently admits the separate all-ones representation.
+        if pickable.interaction_flags & 4 != 0
         {
             return Ok(true);
         }

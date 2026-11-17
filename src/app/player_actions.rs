@@ -357,6 +357,15 @@ impl ReadyEquipment {
             arm.install_equipment(prepared);
         }
         player.install_animation_scenes(self.scenes);
+        //53f4f0 cannot set a leaf before this actor's tree exists. Its
+        //prepared tree now receives the actual owned component's current
+        //magazine-dependent alias, including callbacks accepted while loading.
+        if let (Some(tree), Some(alias)) = (
+            self.tree.as_mut(),
+            player.registered_ranged(&self.item.path).and_then(player::weapons::Runtime::default_animation),
+        ) {
+            tree.set_default_alias(alias)?;
+        }
         Ok(player::equipment_states::Target {
             identity: self.item.path.to_string(),
             entity: self.descriptor.entity.clone(),

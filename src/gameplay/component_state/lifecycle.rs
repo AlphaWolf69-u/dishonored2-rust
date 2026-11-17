@@ -93,6 +93,12 @@ pub trait ComponentReleaseWorld: ComponentLifecycleWorld {
     }
     /// Virtual20 deinitializes an initialized component and unlinks it.
     fn deinitialize(&mut self, component: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String>;
+    /// Host resource returns may complete asynchronously even when a component
+    /// was initialized but never Started and therefore received no Stop.
+    fn poll_deinitialize(&mut self, component: ComponentHandle, registry: &mut ComponentRegistry) -> Result<ReleaseStatus, String> {
+        self.deinitialize(component, registry)?;
+        Ok(ReleaseStatus::Complete)
+    }
     fn shutdown(
         &mut self,
         component: ComponentHandle,
@@ -103,6 +109,12 @@ pub trait ComponentReleaseWorld: ComponentLifecycleWorld {
         component: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String>;
+    /// Canceled registrations can bypass Deinitialize. Their actual backend
+    /// return must still complete before their component generation is freed.
+    fn poll_released(&mut self, component: ComponentHandle, registry: &mut ComponentRegistry) -> Result<ReleaseStatus, String> {
+        self.released(component, registry)?;
+        Ok(ReleaseStatus::Complete)
+    }
 }
 
 pub(super) fn sort_batch(list: &mut PointerList, world: &impl ComponentLifecycleWorld) -> Result<(), String> {
@@ -178,6 +190,9 @@ impl ComponentRegistry {
 
     fn stop_and_release_inner(&mut self, world: &mut impl ComponentReleaseWorld) -> Result<ReleaseStatus, String> {
         loop {
+            if self.poll_immediate_releases(world)? == ReleaseStatus::Pending {
+                return Ok(ReleaseStatus::Pending);
+            }
             match self.release_progress.phase {
                 ReleasePhase::Idle => {
                     if self.release_events_pending {
@@ -294,7 +309,9 @@ impl ComponentRegistry {
                     if world.owner(component)?.flags & 12 == 12 {
                         self.release_progress.deferred.try_reserve(1).map_err(|error| format!("deferred component release: {error}"))?;
                         self.release_progress.deferred.push(value);
-                    } else { world.deinitialize(component, self)?; }
+                    } else if world.poll_deinitialize(component, self)? == ReleaseStatus::Pending {
+                        return Ok(ReleaseStatus::Pending);
+                    }
                     self.release_progress.next -= 1;
                 }
                 ReleasePhase::Release => {
@@ -304,7 +321,9 @@ impl ComponentRegistry {
                     let component = ComponentHandle::from_packed(value)?;
                     if world.owner(component)?.flags & 3 < 2 {
                         self.ensure_no_update_references(component)?;
-                        world.released(component, self)?;
+                        if world.poll_released(component, self)? == ReleaseStatus::Pending {
+                            return Ok(ReleaseStatus::Pending);
+                        }
                     }
                     self.release_progress.next -= 1;
                 }
@@ -426,12 +445,25 @@ impl ComponentRegistry {
                 .ok_or("immediate component release progress disappeared")?;
             self.release_progress.immediate[position].shutdown_done = true;
         }
-        world.released(component, self)?;
+        if world.poll_released(component, self)? == ReleaseStatus::Pending {
+            return Ok(());
+        }
         let position = self.release_progress.immediate.iter().position(|entry|
             entry.component == component && entry.generation == generation)
             .ok_or("immediate component release progress disappeared")?;
         self.release_progress.immediate.remove(position);
         Ok(())
+    }
+    pub(super) fn poll_immediate_releases(&mut self, world: &mut impl ComponentReleaseWorld) -> Result<ReleaseStatus, String> {
+        while let Some((component, generation)) = self.release_progress.immediate.first()
+            .map(|entry| (entry.component, entry.generation)) {
+            self.resume_immediate_release(component, world)?;
+            if self.release_progress.immediate.iter().any(|pending|
+                pending.component == component && pending.generation == generation) {
+                return Ok(ReleaseStatus::Pending);
+            }
+        }
+        Ok(ReleaseStatus::Complete)
     }
     ///7ec4c0, including the source's missing-entry (-1) cursor comparison.
     pub fn cancel_pending_start(&mut self, component: usize) -> Result<bool, String> {

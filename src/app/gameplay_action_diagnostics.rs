@@ -228,6 +228,37 @@ impl Observation {
             // A real newly Started component with a changed source-origin is
             // required. A loaded-bolt model/Prepared definition cannot pass.
             if projectile.position != projectile.origin {
+                //627110 leaves a flying bolt unbound. Owner/attacker identity
+                //is not an attachment parent. Observe the actual renderer-side
+                //publication after the normal end-of-frame model update.
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let parent=live.parent(id)?;
+                let owner=world.get_resource::<super::world_models::WorldModels>().ok_or("projectile world-model owner absent")?;
+                let Some((pose,scale,rigid))=owner.publication_pose(id)else{continue};
+                if !rigid{return Err("installed regular bolt fixture did not publish its rigid LWO geometry".into())}
+                let affine=crate::render_model::affine_rows(pose.position,pose.basis,scale);
+                let expected=super::view_geometry::game_affine_to_view(&std::array::from_fn(|index|affine[index/4][index%4]));
+                let expected=GlobalTransform::from(expected).to_matrix().to_cols_array();
+                let mut count=0;let mut matching=true;let mut max_error=0.0f32;
+                if let Some(draws)=owner.publication_draws(id){for entity in draws{
+                    count+=1;
+                    let Some(actual)=world.get::<GlobalTransform>(entity)else{matching=false;continue};
+                    let actual=actual.to_matrix().to_cols_array();
+                    // The reported failure is a drawable stuck at the muzzle.
+                    // Require its exact published translation; rotation error
+                    // is diagnostic data, without an invented pass threshold.
+                    matching &= actual[12..15]==expected[12..15];
+                    for (actual,expected) in actual.into_iter().zip(expected){
+                        let error=(actual-expected).abs();max_error=max_error.max(error);
+                        matching &= actual.is_finite();
+                    }
+                    matching &= world.get::<Visibility>(entity).is_some_and(|visibility|*visibility!=Visibility::Hidden);
+                }}
+                let in_flight=projectile.movement_enabled&&!projectile.impact_stopped&&!projectile.has_hit_and_stopped&&!projectile.picked_up;
+                let published=in_flight&&parent.is_none()&&pose.position==projectile.position.to_array()
+                    &&count>0&&matching&&owner.interaction_visible(id)&&owner.interaction_bounds(id).is_some();
+                eprintln!("ACTION_SMOKE_PROJECTILE_PUBLICATION id={id:?} in_flight={in_flight} parent={parent:?} runtime_position={:?} published_position={:?} actual_draws={count} translations_match={matching} max_matrix_error={max_error} visible={} bounds={:?} complete={published} witness=actual_CPU_draw_GlobalTransforms_not_GPU_draw",projectile.position,pose.position,owner.interaction_visible(id),owner.interaction_bounds(id));
+                if !published{continue}
                 eprintln!("ACTION_SMOKE_PROJECTILE id={id:?} source={} origin={:?} position={:?} velocity={:?} moving={}",
                     projectile.declaration.entity,projectile.origin,projectile.position,projectile.velocity,projectile.movement_enabled);
                 moved=true;

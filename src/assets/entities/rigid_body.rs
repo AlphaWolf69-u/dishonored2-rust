@@ -67,7 +67,12 @@ pub(crate) fn bindings(
                 continue;
             };
             let kind = components::entry_class(entry, &declarations)?;
-            let Some(kind @ ("cpntrigidbody" | "cpntthrowable")) = kind.as_deref() else {
+            //The installed map declaration class is cpntRigidBodyThrowable;
+            //cpntThrowable is an alternate serialized spelling of this SAME
+            //1413bbf30/4c6600 component, also admitted by runtime factories.
+            //Do not skip its actual body/header before dependent Health,
+            //Breakable and Pickable components are constructed.
+            let Some(kind @ ("cpntrigidbody" | "cpntthrowable" | "cpntrigidbodythrowable")) = kind.as_deref() else {
                 continue;
             };
             if admitted {
@@ -95,7 +100,7 @@ pub(crate) fn bindings(
                     .ok_or("rigid component class changed during resolution")?;
             let scheduling = Arc::new(components::scheduling(&fields,
                 crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?);
-            let definition = if kind == "cpntthrowable" {
+            let definition = if matches!(kind, "cpntthrowable" | "cpntrigidbodythrowable") {
                 let value =
                     if let Some(shared) = identity.as_ref().and_then(|key| throwables.get(key)) {
                         shared.clone()
