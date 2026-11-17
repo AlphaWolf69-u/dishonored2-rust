@@ -4,8 +4,10 @@
 //! submit FUN_1403a2f60, results FUN_1403a2730) finds an overhang the player
 //! can only pass crouched. Its queries run synchronously on the previous
 //! frame's movement request, as the async submit/result pair reads it. The
-//! WallCrouch sensor's decl starts disabled and no enabling caller was found,
-//! so it is not ported (WALLCROUCH stays unreachable, as in the game).
+//! WallCrouch detects low cover with clear space above it (FUN_1403d4950).
+//! Its installed decl inherits the disabled constructor default; no normal
+//! enabling caller was found. It is not ported, so WALLCROUCH is unreachable
+//! in the rewrite; this does not prove every original-game path is unreachable.
 use super::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::collision_filter::{layer, QueryFilter};
 

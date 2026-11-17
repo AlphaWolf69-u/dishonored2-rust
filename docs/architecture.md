@@ -297,8 +297,22 @@ group 0.
 - States also cover Sliding (distance-based 7 → 2.5 m/s curve, uphill
   shortening, side steering, blend-out, resume from short falls), Slipping
   (controller slope thresholds every frame, slip-fall) and AutoCrouch with
-  its sensor (`sensors.rs`). The WallCrouch sensor starts disabled and no
-  enabling caller was found, so WALLCROUCH stays unreachable as in the game.
+  its sensor (`sensors.rs`). WallCrouch is a separate low-cover duck: the
+  original sensor compares body sweeps against three eye-level rays, requires
+  clear space above the obstacle, and normally gates entry on pushing toward
+  it while facing its normal (FUN_1403d5060 / FUN_1403d4950). Constructor
+  defaults are a 45-degree facing limit, 0.1-second push duration, and 2 m
+  minimum clear distance beyond the body obstruction; these are not a
+  2 m obstacle-height test (FUN_1403d4350 / FUN_141774390). Installed physics
+  gives sneaking / wallcrouching / autocrouching heights of 1.2 / 1 / 0.68 m.
+  The state uses the Wallcrouching stance, temporarily returns to Sneaking
+  for actions, and restores the lower posture afterward; under-obstacle
+  AutoCrouch takes priority (FUN_140887f80 through FUN_140888330,
+  FUN_140854e50 / FUN_1408550d0). The installed WallCrouch sensor decl is
+  empty and its constructor explicitly disables it; base, Emily and Corvo
+  body definitions do not override that setting. No normal enabling caller
+  was found. WALLCROUCH is not ported and remains unreachable in the rewrite;
+  universal unreachability in the original game has not been established.
 - `camera.rs` / `body.rs` / `animation.rs`: the view is `camera_jnt` of the
   body pose, pitched through the spine03/neck/head split and kept inside the
   capsule. The body anim tree subset runs the loco nodes for the body and
