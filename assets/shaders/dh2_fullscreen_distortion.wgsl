@@ -45,7 +45,7 @@ struct FullscreenDistortionParameters {
     var projected_z=0.0;
     var linear_z=0.0;
     if fs.options.w!=0u {
-        projected_z=textureSampleLevel(fs_depth,fs_linear_clamp,uv,0.0);
+        projected_z=textureSampleLevel(fs_depth,fs_linear_clamp,uv,0);
         linear_z=-fs.inverse_z.z/(fs.inverse_z.x*projected_z+fs.inverse_z.y);
     }
     if (fs.options.w&1u)!=0u {

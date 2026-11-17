@@ -32,6 +32,18 @@ counts and source identities. No FPS, memory saving or millisecond claim is
 made before measurement. Status: implemented; coherent compilation, repeated
 real contacts, scoped A/B and production retirement validation pending.
 
+The preparation snapshots refresh on a real source-roster change even when
+graphics inputs match. This releases retired FX graphs and sound declaration
+metadata without changing resource generations or requesting GPU preparation.
+Sound-bank ownership remains with its existing bank/cookie owners.
+
+Validation through commit `380aa31a`: game and core compilation pass. The
+production run configured and encoded all eight Edge of the World map-legend
+targets, then caught a fullscreen-distortion shader type error before action
+coverage completed. The depth texture now uses the required integer mip
+level, as the existing depth-copy/fog shaders do. GPU/action/lifetime acceptance
+remains pending the corrected production run; no appearance success is claimed.
+
 ## Fullscreen FX distortion consumer (2026-11-17)
 
 CPU owner: the existing `assets::fx::definition` resource generation holds the

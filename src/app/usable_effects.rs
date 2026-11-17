@@ -892,16 +892,19 @@ pub(super) fn publish(
         //source with equivalent inputs must acquire its true weak leases.
         world_materials.leases = leases.clone();
         decal_materials.leases = leases;
-        if inputs_changed {
+        //A source roster is also a lifetime boundary. Equivalent immutable
+        //material inputs reuse their ACK, not retired FX graphs/descriptors.
+        //Refresh these existing snapshots independently of GPU generation.
         prewarm.sources = dynamic.clone();
+        world_materials.sources = dynamic.clone();
+        decal_materials.sources = dynamic;
+        if inputs_changed {
         prewarm.generation = generation;
         prewarm.retirement = owner.retirement;
         if !needs_materials { prewarm.completed.store(prewarm.generation, Ordering::Release); }
-        world_materials.sources = dynamic.clone();
         world_materials.generation = generation;
         world_materials.retirement = owner.retirement;
         if !needs_world_materials { world_materials.completed.store(world_materials.generation, Ordering::Release); }
-        decal_materials.sources = dynamic;
         decal_materials.generation = generation;
         decal_materials.retirement = owner.retirement;
         if !needs_decals { decal_materials.completed.store(decal_materials.generation, Ordering::Release); }
