@@ -37,6 +37,8 @@ fn to_game(v: Vec3) -> Vec3 {
 
 /// The level collision in game coordinates (Z up). Level triangles are one
 /// static body; placed colliders are bodies of their owner.
+pub(in crate::app) mod collision;
+
 pub(super) struct GameCollision<'a>(pub &'a CollisionWorld);
 
 impl PlayerWorld for GameCollision<'_> {
@@ -68,6 +70,29 @@ impl PlayerWorld for GameCollision<'_> {
         cast: &mut Vec<WorldHit>,
         start: Option<&mut Vec<WorldHit>>,
     ) {
+        self.cast_shape_where(filter, shape, rotation, from, displacement, tolerance, cast, start, |_| true);
+    }
+    fn cast_shape_filtered(&self, filter: QueryFilter, shape: &[Vec3], rotation: Mat3,
+        from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>,
+        start: Option<&mut Vec<WorldHit>>, _accepts_body: &mut dyn FnMut(u32,bool)->bool) {
+        // Navigation owner indices are not WorldStorage body identities.
+        self.cast_shape(filter,shape,rotation,from,displacement,tolerance,cast,start);
+    }
+    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+        self.cast_ray_where(filter, from, direction, length, |_| true)
+    }
+}
+impl GameCollision<'_> {
+    fn cast_shape_where(&self, filter: QueryFilter,
+        shape: &[Vec3],
+        rotation: Mat3,
+        from: Vec3,
+        displacement: Vec3,
+        tolerance: f32,
+        cast: &mut Vec<WorldHit>,
+        start: Option<&mut Vec<WorldHit>>,
+        mut accepts_owner: impl FnMut(u32) -> bool,
+    ) {
         let points: Vec<Vec3> = shape.iter().map(|p| to_view(from + rotation * *p)).collect();
         let motion = to_view(displacement);
         let (mut min, mut max) = (points[0], points[0]);
@@ -78,29 +103,30 @@ impl PlayerWorld for GameCollision<'_> {
         let margin = Vec3::splat(tolerance.max(0.0) + 0.01);
         let mut start = start;
         for (key, triangle, owner) in self.0.triangles_in(min - margin, max + margin, filter) {
+            if !accepts_owner(owner) { continue; }
             let body = if owner == u32::MAX { 0 } else { owner + 1 };
             if let Some((fraction, contact)) = shape_cast::cast(&points, motion, &triangle, 0.001) {
-                cast.push(WorldHit { position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
+                cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
             }
             if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                 let contact = shape_cast::closest(&points, &triangle);
                 if contact.distance <= tolerance {
-                    start.push(WorldHit { position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
+                    start.push(WorldHit { user_data: 0, body_flags: 1, material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
                 }
             }
         }
     }
 
-    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+    fn cast_ray_where(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32, accepts_owner: impl FnMut(u32) -> bool) -> Option<RayHit> {
         let start = to_view(from);
         let end = to_view(from + direction * length);
-        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details(start, end, filter)?;
+        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details_where(start, end, filter, accepts_owner)?;
         let mut normal = to_game((b - a).cross(c - a).normalize_or_zero());
         if normal.dot(direction) > 0.0 {
             normal = -normal;
         }
         let body = if owner == u32::MAX { 0 } else { owner + 1 };
-        Some(RayHit { distance, position: from + direction * distance, normal, body, key })
+        Some(RayHit { user_data: 0, body_flags: 1, material_id: None, distance, position: from + direction * distance, normal, body, key })
     }
 }
 
@@ -289,17 +315,24 @@ fn load_body(
         let sounds = prepare_sounds_owned(catalog, &decl, &casting)?;
         let count = decl.scenes.len();
         let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
-            equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
+            equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds,
+            animation_sounds: Default::default() };
         for index in super::player_actions::scene_indices(&prepared, [body_model, &arm_models[0], &arm_models[1], "", ""])
             .map_err(|e| format!("{resource}: {e}"))? {
             if let Some(g) = prepared.group_for_model(index, 0, body_model).map_err(|e| format!("{resource}: {e}"))? {
                 let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                 prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
+                for (key, &index) in keys.iter().zip(&prepared.clips[index]) {
+                    prepared.animation_sounds.prepare(0, index, &rig, &key.anim)?;
+                }
             }
             for (side, clips) in arm_clips.iter_mut().enumerate() {
                 if let Some(g) = prepared.group_for_model(index, side + 1, &arm_models[side]).map_err(|e| format!("{resource}: {e}"))? {
                     let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                     prepared.arm_clips[side][index] = keys.iter().map(|k| clips.clip(&k.anim)).collect::<Result<_, _>>()?;
+                    for (key, &index) in keys.iter().zip(&prepared.arm_clips[side][index]) {
+                        prepared.animation_sounds.prepare(side + 1, index, clips.rig, &key.anim)?;
+                    }
                 }
             }
         }
@@ -376,6 +409,9 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         None => false,
     };
     Ok(PlayerSetup {
+        ai_tampering_declared: declarations.ai_tampering_declared,
+        chaos: crate::gameplay::player::chaos::Definition::acquire(catalog,&declarations.chaos)?,
+        combat_fx: crate::gameplay::player::combat_fx::Definition::acquire(catalog, &declarations.fx)?,
         physics: decls::physics(&declarations.physics)?,
         camera,
         mapping: decls::states_mapping(&declarations.controller)?,
@@ -383,6 +419,8 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         rules: decls::rules(&declarations.mode)?,
         default_state: decls::default_state(&declarations.mode),
         attributes,
+        ranged_target: crate::gameplay::player::weapons::shooting::RangedTargetDecl::read(&declarations.ranged_target_sensor)?,
+        rune_charms: std::sync::Arc::new(crate::gameplay::player::weapons::heart::sensor::Definition::read(&declarations.rune_charms_sensor)?),
         body,
         autocrouch: decls::autocrouch_sensor(&declarations.autocrouch_sensor)?,
         lean: decls::lean_sensor(&declarations.lean_sensor)?,
@@ -395,8 +433,13 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         fall_damage: decls::fall_damage_decl(&declarations)
             .map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
         drowning_damage: drowning_damage.map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
+        inventory_health_damage: crate::assets::damage::Declaration::acquire_inventory_health(catalog)?,
         slash_rules,
         mana: decls::mana(&declarations.mana)?,
+        mana_regen_sound: crate::assets::entities::scene_motion::atom(&declarations.mana,"m_beginRegenSoundEvent")
+            .filter(|name|!name.is_empty()&&!name.eq_ignore_ascii_case("NULL"))
+            .map(|name|crate::assets::wwise::event_resources::acquire_with(catalog,name,|path|
+                crate::assets::declaration_texts::read_common_or_catalog(catalog,path))).transpose()?,
         adrenaline: decls::adrenaline(&declarations.adrenaline)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,
@@ -499,7 +542,7 @@ fn base_fov() -> f32 {
 }
 
 /// DirectInput buttons 0..6 are engine codes 0xe0..0xe6.
-fn mouse_button_key(button: MouseButton) -> Option<u32> {
+pub(super) fn mouse_button_key(button: MouseButton) -> Option<u32> {
     Some(match button {
         MouseButton::Left => 0xe0,
         MouseButton::Right => 0xe1,
@@ -526,8 +569,15 @@ pub(super) fn sample_player_input(
     motion: Res<AccumulatedMouseMotion>,
     cursor: Single<&CursorOptions>,
     paused: Res<GamePaused>,
+    wheel: Option<Res<super::power_wheel::State>>,
     mut input: ResMut<PlayerInput>,
 ) {
+    if wheel.as_ref().is_some_and(|wheel|wheel.blocks_input()) {
+        keys.clear();buttons.clear();gamepad.clear();
+        input.events.clear();input.held.clear();input.ring.fill([0.;2]);
+        input.mouse_moving=false;input.cleared=true;
+        return;
+    }
     if paused.0 {
         keys.clear();
         buttons.clear();
@@ -649,6 +699,28 @@ impl DebugBenchmarkWalk {
     }
 }
 
+/// Source8ad260's Midnight/message phase precedes player component updates.
+pub(super) fn prepare_animation_frame(world: &mut World) -> Result<(), String> {
+    if world.get_resource::<GamePaused>().is_none_or(|paused| paused.0) { return Ok(()); }
+    let Some(clock) = world.get_resource::<ClockRuntime>().filter(|clock| clock.advanced()) else { return Ok(()); };
+    let marker = clock.clock().map_err(str::to_owned)?.frame_marker();
+    let dt = clock.player_delta().map_err(str::to_owned)?;
+    let now = clock.player_time().map_err(str::to_owned)?;
+    let Some(state) = world.get_resource::<PlayerState>() else { return Ok(()); };
+    if state.player.is_none() || state.debug_free_fly
+        || world.contains_resource::<BenchmarkSeconds>() && !debug_benchmark_walk_enabled()
+        || !world.contains_resource::<NavigationWorld>()
+        || !world.contains_resource::<super::physics_scene::PhysicsScene>()
+        || !world.contains_resource::<super::interaction_focus::DiscoveredDocuments>() { return Ok(()); }
+    world.resource_scope(|world, mut state: Mut<PlayerState>| {
+        let player = state.player.as_mut().ok_or("player animation owner disappeared")?;
+        let mut inventory = world.get_resource_mut::<super::interaction_focus::DiscoveredDocuments>()
+            .ok_or("player animation inventory owner disappeared")?;
+        super::player_actions::prepare_animation_frame(player, &mut inventory, marker, dt, now);
+        Ok(())
+    })
+}
+
 /// The simulated frame (input dispatch happens only on simulated frames;
 /// unsimulated frames keep accumulating events), then the view.
 pub(super) fn update_player(
@@ -661,24 +733,26 @@ pub(super) fn update_player(
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut contact_sounds: MessageWriter<super::audio::ContactSound>,
-    mut walk: Local<DebugBenchmarkWalk>,
+    query: (Local<DebugBenchmarkWalk>, Local<std::cell::RefCell<collision::Scratch>>,
+        Option<Res<super::physics_scene::PhysicsScene>>),
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
     inventory: Option<ResMut<super::interaction_focus::DiscoveredDocuments>>,
     mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
-) {
+) -> Result<(), bevy::ecs::error::BevyError> {
+    let (mut walk, query_scratch, scene) = query;
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
-        return;
+        return Ok(());
     }
     let PlayerState {
         player, difficulty, ..
     } = &mut *state;
     let (Some(player), Some(collision)) = (player.as_mut(), collision) else {
-        return;
+        return Ok(());
     };
     if paused.0 {
         // In a non-game logic state the input components are cleared.
@@ -689,10 +763,19 @@ pub(super) fn update_player(
             input.held.clear();
             input.cleared = true;
         }
-        return;
+        return Ok(());
     }
     input.cleared = false;
-    let world = GameCollision(&collision.0);
+    let Some(scene)=scene.as_deref() else{return Ok(());};
+    let query_owner = match scene.point_queries() {
+        Ok(owner) => owner,
+        Err(error) => return Err(error.into()),
+    };
+    let query_world = match query_owner.read() {
+        Ok(world) => world,
+        Err(_) => return Err("Player canonical query owner is poisoned".into()),
+    };
+    let world = collision::Collision::new(&collision.0,scene,&query_world,&query_scratch);
     player.swimming_contact = water.0.as_ref().and_then(|water| {
         let plane = water.head_water_surface?;
         let current = water_scene.as_ref()?.swimming_current()?;
@@ -768,6 +851,7 @@ pub(super) fn update_player(
                     now,
                     base,
                     &mut inventory,
+                    game_clock.frame_marker(),
                 );
                 if let Some(actions) = actions.as_deref_mut() {
                     super::player_actions::dispatch_automatic_potion(player, &mut inventory, actions,
@@ -785,6 +869,9 @@ pub(super) fn update_player(
                 );
             }
         }
+    }
+    if let Some(error) = world.take_error() {
+        return Err(format!("Player canonical collision query failed: {error}").into());
     }
     for event in player.machine.take_sound_events() {
         sound_events.write(super::audio::SoundEvent(
@@ -805,7 +892,7 @@ pub(super) fn update_player(
     }
     let view = player.view();
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {
-        return;
+        return Ok(());
     };
     let origin = to_view(view.origin);
     *transform = Transform::from_translation(origin)
@@ -818,6 +905,7 @@ pub(super) fn update_player(
             }
         }
     }
+    Ok(())
 }
 
 /// Send the dead state's authored screen FX to the shared level FX owner.

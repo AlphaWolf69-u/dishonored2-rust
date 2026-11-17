@@ -5,6 +5,7 @@ use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
 mod acquisition;
 pub(crate) mod animset;
+pub(crate) mod animset_sounds;
 pub(crate) mod declaration;
 
 pub struct Rig {
@@ -323,6 +324,12 @@ impl Rig {
         let set = self.animsets.iter().find(|set| set.alias(alias).is_some())
             .ok_or_else(|| format!("no animset alias {alias}"))?;
         set.markers(alias).map_err(str::to_owned)
+    }
+
+    pub(crate) fn animation_sound_events(&self, alias: &str) -> Result<&[animset_sounds::Sound], String> {
+        let set = self.animsets.iter().find(|set| set.alias(alias).is_some())
+            .ok_or_else(|| format!("no animset alias {alias}"))?;
+        Ok(set.sounds(alias))
     }
 
     /// The marker events for an animation are stored in its model's animsets,

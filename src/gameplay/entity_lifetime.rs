@@ -2,6 +2,7 @@
 //! Parsing a map declaration alone does not insert an entity here. The engine
 //! registers a successfully allocated entity's handle and name before the
 //! batch initialization and spawn passes (1408ae2ba–1408ae335).
+mod observers;
 use hashbrown::{Equivalent, HashMap};
 use super::name_pool::NameId;
 use std::{hash::{Hash, Hasher}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
@@ -46,7 +47,7 @@ impl Equivalent<Name> for NameQuery<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityId(u64);
 
-/// The identity created for map entry zero, before the layer entity batch.
+/// The map's actual constructed worldspawn identity for global game services.
 #[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
 #[derive(Clone, Copy, Debug)]
 pub struct WorldspawnEntity(pub EntityId);
@@ -54,6 +55,8 @@ pub struct WorldspawnEntity(pub EntityId);
 struct Entry {
     name: Arc<str>,
     class: usize,
+    ///idEntity+2e0, constructor874c50 initializes the actual AIWorld index0.
+    ai_world_index: u32,
     stage: Stage,
     spawn_tag: NameId,
     tag_group: Option<u32>,
@@ -62,6 +65,15 @@ struct Entry {
     // and parent binding are implemented; authored attachments remain gated.
     children: Vec<EntityId>,
     parent: Option<EntityId>,
+    /// idEntity+ac is a managed owner reference, independent of attachments.
+    owner: Option<EntityId>,
+    ///idEventReceiver+8/+10, constructed empty by883740. Generic notice
+    ///subscriptions own only generation-bearing identities, never resources.
+    event_observers: Option<Box<Vec<EntityId>>>,
+    event_subjects: Option<Box<Vec<EntityId>>>,
+    ///Host: derived arkTrigger+360 state is allocated only for a touched
+    ///native Trigger, rather than adding a Vec to every idEntity header.
+    trigger_touching: Option<Box<Vec<EntityId>>>,
     spawned_index: Option<usize>,
     removal_requested: bool,
     removal_queued: bool,
@@ -181,8 +193,8 @@ impl LiveEntities {
         let slot = &mut self.slots[index];
         slot.generation = generation;
         let id = EntityId((u64::from(slot.generation) << 32) | index as u64);
-        slot.entry = Some(Box::new(Entry { name: name.clone(), class, stage: Stage::Allocated, spawn_tag: constructor_spawn_tag, tag_group: None,
-            children: Vec::new(), parent: None, spawned_index: None, removal_requested: false, removal_queued: false,
+        slot.entry = Some(Box::new(Entry { name: name.clone(), class, ai_world_index: 0, stage: Stage::Allocated, spawn_tag: constructor_spawn_tag, tag_group: None,
+            children: Vec::new(), parent: None, owner: None, event_observers: None, event_subjects: None, trigger_touching: None, spawned_index: None, removal_requested: false, removal_queued: false,
             release_prepared: false, context: EntityContext::default(), update_mask: 0, update_active: false }));
         self.by_name.insert(Name(name), id);
         if requested.is_none() { self.managed_cursor = index; }
@@ -269,9 +281,49 @@ impl LiveEntities {
 
     pub fn find(&self, name: &str) -> Option<EntityId> { self.by_name.get(&NameQuery(name)).copied() }
 
+    pub fn ai_world_index(&self, id: EntityId) -> Result<u32, String> {
+        let slot = self.slots.get(id.0 as u32 as usize).ok_or("AIWorld entity slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("AIWorld entity generation stale".into()); }
+        Ok(slot.entry.as_ref().ok_or("AIWorld entity retired")?.ai_world_index)
+    }
+    pub fn set_ai_world_index(&mut self, id: EntityId, index: u32) -> Result<(), String> {
+        let slot = self.slots.get_mut(id.0 as u32 as usize).ok_or("AIWorld entity slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("AIWorld entity generation stale".into()); }
+        slot.entry.as_mut().ok_or("AIWorld entity retired")?.ai_world_index = index;
+        Ok(())
+    }
+    ///875fc0: queue the actual EC(old,new) packet before publishing2e0.
+    ///Birth assignments use set_ai_world_index before component admission.
+    pub fn change_ai_world_index(&mut self,id:EntityId,index:u32,
+        events:&mut super::entity_events::EntityEvents)->Result<bool,String>{
+        let previous=self.ai_world_index(id)?;
+        if previous==index{return Ok(false)}
+        let mut bytes=Vec::with_capacity(8);
+        bytes.extend_from_slice(&previous.to_le_bytes());bytes.extend_from_slice(&index.to_le_bytes());
+        events.post(super::entity_events::Event{id:0xec,target:Some(id),payload:super::entity_events::Payload::Bytes(bytes)});
+        self.set_ai_world_index(id,index)?;
+        Ok(true)
+    }
+
     pub fn stage(&self, id: EntityId) -> Option<Stage> {
         let slot = self.slots.get(id.0 as u32 as usize)?;
         (slot.generation == (id.0 >> 32) as u32).then(|| slot.entry.as_ref().map(|entry| entry.stage)).flatten()
+    }
+
+    /// Resolve the original +ac managed reference through its actual generation.
+    /// A retired owner resolves null; it never transfers to a reused slot.
+    pub fn owner(&self, id: EntityId) -> Result<Option<EntityId>, String> {
+        let slot = self.slots.get(id.0 as u32 as usize).ok_or("entity owner slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("entity owner generation stale".into()); }
+        let entry = slot.entry.as_ref().ok_or("entity owner subject retired")?;
+        Ok(entry.owner.filter(|owner| self.get(*owner).is_some()))
+    }
+    pub fn set_owner(&mut self, id: EntityId, owner: Option<EntityId>) -> Result<(), String> {
+        if owner.is_some_and(|owner| self.get(owner).is_none()) { return Err("assigned entity owner is stale".into()); }
+        let slot = self.slots.get_mut(id.0 as u32 as usize).ok_or("entity owner slot absent")?;
+        if slot.generation != (id.0 >> 32) as u32 { return Err("entity owner generation stale".into()); }
+        slot.entry.as_mut().ok_or("entity owner subject retired")?.owner = owner;
+        Ok(())
     }
 
     pub fn get(&self, id: EntityId) -> Option<(&str, usize)> {
@@ -703,6 +755,9 @@ impl LiveEntities {
         self.removal_batch_in_flight = batch.is_some();
         Ok(batch)
     }
+    pub(crate) fn active_removal_pending(&self) -> bool {
+        self.active_removal_batch.is_some() || self.removal_batch_in_flight
+    }
     pub(crate) fn finish_active_removal_batch(&mut self, batch: super::entity_release::EntityReleaseBatch,
         completed: bool) -> Result<(), String> {
         if !self.removal_batch_in_flight || self.active_removal_batch.is_some() {
@@ -778,6 +833,7 @@ impl LiveEntities {
             if position < self.context_commit_cursor { self.context_commit_cursor -= 1; }
             if position < self.context_notify_cursor { self.context_notify_cursor -= 1; }
         }
+        self.detach_event_observers(id)?;
         let entry = self.slots[index as usize].entry.take()?;
         self.by_name.remove(&NameQuery(&entry.name));
         Some(entry.name)

@@ -1,14 +1,14 @@
 //! Body creation parameters shared by arkCpntTrigger instances (779530).
 use crate::assets::physworld::{body::BodyInfo, rotation_quaternion};
 
-pub mod transform;
 mod component;
+pub mod transform;
 pub use component::TriggerComponent;
 mod store;
 pub use store::{DeferredPhysicsState, TriggerComponentStore, TriggerDataStore};
+pub mod initialization;
 mod publication;
 pub(crate) mod startup;
-pub mod initialization;
 pub use publication::TriggerPublication;
 
 pub struct TriggerShapeRequest {
@@ -74,6 +74,20 @@ impl Default for TriggerCollisionSettings {
             npc_ragdolls: false,
             npc_capsules: true,
             keyframed: false,
+        }
+    }
+}
+impl TriggerCollisionSettings {
+    ///779f90, used by the collision-data virtual10, separately from the
+    ///ordinary body's broadphase pair-filter word.
+    pub fn accepts_layer(self, layer: u32) -> bool {
+        match layer {
+            5 => true,
+            3 => self.rigid_bodies,
+            4 => self.debris,
+            10 | 14 => self.npc_ragdolls,
+            9 => self.npc_capsules,
+            _ => false,
         }
     }
 }

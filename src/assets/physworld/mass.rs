@@ -89,6 +89,23 @@ impl PrincipalMassProperties {
 #[path = "mass/tensor_tests.rs"]
 mod tensor_tests;
 
+///808ea0 ->cb9800/cb9830 computes the actual single-shape distribution,
+///normalizes principal inertia by source mass, then forces body-local axes
+///and zeros precisely the authored locked inertia lanes.
+pub(crate) fn rotation_locked_distribution(properties:PrincipalMassProperties,locked:[bool;3])->super::body::MassDistribution{
+    let mut combined=MassProperties{volume:0.,mass:0.,center:[0.;4],inertia:[[0.;4];3]};
+    let identity=[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.],[0.,0.,0.,1.]];
+    combine_mass(&[MassElement{properties:properties.to_tensor(),transform:identity}],&mut combined);
+    let principal=combined.to_principal();
+    let inverse_mass=1./combined.mass;
+    let mut inertia=[principal.inertia[0]*inverse_mass,principal.inertia[1]*inverse_mass,principal.inertia[2]*inverse_mass,0.];
+    for axis in 0..3{if locked[axis]{inertia[axis]=0.;}}
+    super::body::MassDistribution{
+        center_of_mass_and_volume:[combined.center[0],combined.center[1],combined.center[2],combined.volume],
+        major_axis_space:[0.,0.,0.,1.],inertia_tensor:inertia,
+    }
+}
+
 /// caf5c0 selects cached/shape-calculated mass or an authored distribution,
 /// then applies the explicit override. The caller must supply the real shape
 /// calculation for an uncached shape; absence never fabricates unit inertia.
@@ -184,6 +201,14 @@ pub fn decode_compressed(bytes: &[u8]) -> Result<MassProperties, String> {
         center: packed_vector(0),
         inertia,
     })
+}
+
+///08c7f0 attaches the canonical companion resource to the acquired shape.
+///Absence is a retained source state; the body's native mass calculator
+///handles a null property, while malformed resources remain errors.
+pub(crate) fn acquire_resource(catalog:&crate::archive::Catalog,path:&str)
+    ->Result<std::sync::Arc<Option<PrincipalMassProperties>>,String>{
+    resources::acquire(catalog,path)
 }
 
 pub(crate) enum MassSourceError {

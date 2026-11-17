@@ -52,7 +52,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
         || kind.eq_ignore_ascii_case("inventoryitem")
         || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
-        || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc")
+        || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc") || kind.eq_ignore_ascii_case("gamesoundproperties")
         || kind.eq_ignore_ascii_case("arkCloth") || kind.eq_ignore_ascii_case("massprops") || kind.eq_ignore_ascii_case("physSystem")
         || kind.eq_ignore_ascii_case("physhape") || kind.eq_ignore_ascii_case("cpntFaction")
         || kind.eq_ignore_ascii_case("ragdoll") || kind.eq_ignore_ascii_case("physicsMaterial")
@@ -357,8 +357,11 @@ impl LevelList {
             crate::gameplay::gameflow::program::promote_bootstrap(catalog)?;
             crate::assets::speech::promote_bootstrap(catalog)?;
             crate::assets::damage::promote_bootstrap(catalog)?;
+            crate::assets::explosions::promote_bootstrap(catalog)?;
+            crate::assets::runtime_entity::promote_bootstrap(catalog)?;
             crate::assets::slash_rules::promote_bootstrap(catalog)?;
             crate::assets::wwise::event_resources::promote_bootstrap(catalog)?;
+            crate::assets::wwise::game_properties::promote_bootstrap(catalog)?;
             crate::assets::wwise::auxiliary_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
             crate::assets::difficulty::promote_bootstrap(catalog)?;
@@ -372,6 +375,7 @@ impl LevelList {
             crate::assets::entities::physics_material::resources::promote_bootstrap(catalog)?;
             crate::assets::bmd6::cloth::promote_bootstrap(catalog)?;
             crate::assets::physworld::physics_system::promote_bootstrap(catalog)?;
+            crate::assets::physworld::navmesh::promote_bootstrap(catalog)?;
             crate::assets::entities::effects::declarations::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
@@ -425,7 +429,9 @@ impl LevelList {
             if !header.mask.iter().zip(&layers).any(|(mask, selected)| mask & selected != 0)
                 || header.flags & 0x20 != 0 { return Ok(()); }
             if [".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| resource.path.contains(suffix)) { return Ok(()); }
-            if resource.kind.eq_ignore_ascii_case("inventoryLoadout")
+            if resource.kind.eq_ignore_ascii_case("Navmesh") {
+                crate::assets::physworld::navmesh::register_preload(catalog, &resource.path, if section < 2 { 2 } else { 1 })?;
+            } else if resource.kind.eq_ignore_ascii_case("inventoryLoadout")
                 || resource.kind.eq_ignore_ascii_case("inventoryItemCollection") {
                 // Gate by the existing kind before normalizing a path: other
                 // resource families make no inventory allocation or lookup.
@@ -479,17 +485,24 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("soundauxbus") {
                 crate::assets::wwise::auxiliary_resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("explosion") {
+                crate::assets::explosions::register_preload(catalog, &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("entityDef") {
+                crate::assets::runtime_entity::register_header(catalog, &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("damage") {
                 crate::assets::damage::register_preload(catalog, &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("ruleHandler") {
                 // Not in 0661e0's conditional heap-1 list at 142280ee0.
                 crate::assets::slash_rules::register_preload(catalog, &resource.path, context as u8, false)?;
-            } else if resource.kind.eq_ignore_ascii_case("gameflowManager") {
+            } else if resource.kind.eq_ignore_ascii_case("gameflowManager") || resource.kind.eq_ignore_ascii_case("arkTree") {
                 crate::gameplay::gameflow::program::register_preload(catalog, &resource.path, context as u8)?;
             } else if crate::assets::speech::is_kind(&resource.kind) {
                 crate::assets::speech::register_preload(catalog, &resource.kind, &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("soundevent") {
                 crate::assets::wwise::event_resources::register_preload(catalog,
+                    &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("gamesoundproperties") {
+                crate::assets::wwise::game_properties::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("kiscule") {
                 crate::assets::entities::effects::declarations::register_preload(catalog,

@@ -17,6 +17,7 @@ pub mod installation;
 pub mod inventory_item;
 pub mod power_journal;
 pub mod interactive_map;
+pub mod flash_surface;
 pub mod lang;
 pub mod level;
 pub mod map_resources;
@@ -45,3 +46,15 @@ pub mod damage;
 pub mod equipment;
 pub mod slash_rules;
 pub mod projectiles;
+
+pub(crate) mod runtime_entity;
+
+pub(crate) mod throwable;
+
+pub(crate) mod breakable;
+pub(crate) mod grenades;
+pub(crate) mod ai_world;
+pub(crate) mod ai_cues;
+pub(crate) mod ai_smart_objects;
+
+pub mod explosions;

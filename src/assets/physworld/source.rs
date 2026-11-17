@@ -71,8 +71,23 @@ pub struct ShapeSource {
     // locks the bootstrap registry; registry -> history -> loading is the sole
     // nested lock order for admission and retirement.
     _history: Option<SourceReadLease>,
+    world_history: Option<(u64, String)>,
+}
+impl Drop for ShapeSource {
+    fn drop(&mut self) {
+        if let Some((catalog, path)) = self.world_history.take() {
+            crate::loading::forget(catalog, "physworld", &path);
+        }
+    }
 }
 impl ShapeSource {
+    /// 852100 retains the physworld resource through all its admitted bodies.
+    /// Consume the navigation loader's existing read rather than reading or
+    /// copying the level's compressed collision payload a second time.
+    pub(crate) fn from_world_read(catalog: u64, path: String, bytes: Vec<u8>, physics: PhysWorld) -> Arc<Self> {
+        Arc::new(Self { bytes, physics, alias: None, session: false,
+            _history: None, world_history: Some((catalog, path)) })
+    }
     fn require_hkx(&self) -> Result<(), ShapeSourceError> {
         if self.alias.is_some() {
             // 14008c9a0 resolves an alias through 1400607f0 and constructs a
@@ -98,6 +113,9 @@ pub(crate) struct StandaloneShape {
     /// The innermost resource's first four serialized bytes.
     pub source_header: u32,
     pub wrappers: Vec<Arc<ShapeAlias>>,
+    ///08c7f0's actual0xf100 companion property, including a missing source.
+    ///The resource lease survives through the final registered body/query.
+    pub mass: Option<Arc<Option<super::mass::PrincipalMassProperties>>>,
 }
 
 pub(crate) struct ShapeAlias {
@@ -140,6 +158,13 @@ impl ShapeAlias {
 }
 
 impl StandaloneShape {
+    pub(crate) fn acquire_mass_properties(&mut self,catalog:&Catalog)->Result<(),String>{
+        let path=self.wrappers.first().map_or(self.source_path.as_str(),|resource|resource.path.as_str());
+        let key=path.strip_suffix(".hkx").ok_or("standalone shape mass resource key has no HKX suffix")?;
+        self.mass=Some(super::mass::acquire_resource(catalog,&format!("{key}.massProps"))?);
+        Ok(())
+    }
+
     /// This is the innermost shape, not the full resource when `wrappers` is
     /// nonempty. The component must retain and apply each compound wrapper.
     pub(crate) fn base_query_shapes(&self) -> Result<super::query_geometry::QueryShapes, String> {
@@ -184,7 +209,7 @@ impl ShapeSource {
     pub(crate) fn query_shapes(self: &Arc<Self>, root: usize)
         -> Result<super::query_geometry::QueryShapes, String> {
         self.require_hkx().map_err(ShapeSourceError::message)?;
-        let mut shapes = self.physics.query_shapes(&self.bytes, root)?;
+        let mut shapes = self.physics.query_shapes_retained(self, root)?;
         shapes.retain_source(self.clone());
         Ok(shapes)
     }
@@ -230,7 +255,7 @@ fn read_source(catalog: &Catalog, path: &str, counts: &mut Counts)
         Some((super::physics_shape_asset_path(name), scale))
     } else { None };
     let physics = if alias.is_some() { empty_physics() } else { parse_hkx(&bytes).map_err(ShapeSourceError::Parse)? };
-    Ok(Some(ShapeSource { bytes, physics, alias, session: false, _history: Some(history) }))
+    Ok(Some(ShapeSource { bytes, physics, alias, session: false, _history: Some(history), world_history: None }))
 }
 
 struct BootstrapEntry { marker: u8, source: Option<Arc<ShapeSource>> }
@@ -438,7 +463,7 @@ impl ShapeSources {
             }
             leases.reverse();
             return Ok(Some(StandaloneShape { catalog_identity: catalog.identity(), shareable: !catalog.has_overlays(),
-                source, source_path: key, source_header: header, wrappers: leases }));
+                source, source_path: key, source_header: header, wrappers: leases, mass: None }));
         }
     }
 
@@ -587,7 +612,7 @@ pub(crate) fn schema_capacity(physics: &PhysWorld) -> usize {
 pub(crate) fn empty_source() -> Arc<ShapeSource> {
     static EMPTY: OnceLock<Arc<ShapeSource>> = OnceLock::new();
     EMPTY.get_or_init(|| Arc::new(ShapeSource { bytes: Vec::new(), physics: empty_physics(),
-        alias: None, session: false, _history: None })).clone()
+        alias: None, session: false, _history: None, world_history: None })).clone()
 }
 
 fn empty_physics() -> PhysWorld {

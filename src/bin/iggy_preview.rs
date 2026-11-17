@@ -3,6 +3,8 @@
 //!
 //! Usage: iggy-preview <movie resource> <out.png> [frames] [--call <method>]...
 //!        [--pause-state] [--tree] [--debug-ignore-visibility] [--debug-language <name>]
+//!        [--debug-invoke path.method=number,true,null,string@frame]
+//!        [--debug-draw-data] [--debug-no-raster]
 //!
 //! `--pause-state` writes the pause state's data and shows the menu as the
 //! game does (`gameplay::pause_state`).
@@ -89,6 +91,7 @@ fn run() -> Result<(), String> {
     let keys = at("--debug-key");
     // `--debug-set PATH=NUMBER@FRAME` sets a movie value (as a user edit would).
     let sets = at("--debug-set");
+    let invokes = at("--debug-invoke");
     let mut unhandled = Vec::new();
     for frame in 0..frames {
         for (_, xy) in clicks.iter().filter(|c| c.0 == frame) {
@@ -121,6 +124,24 @@ fn run() -> Result<(), String> {
             let (path, v) = a.split_once('=').ok_or("--debug-set PATH=NUMBER@FRAME")?;
             let v: f64 = v.parse().map_err(|_| "--debug-set value")?;
             player.set_value(path, v.into()).map_err(|e| player.describe(&e))?;
+        }
+        for (_, invocation) in invokes.iter().filter(|c| c.0 == frame) {
+            let (method, arguments) = invocation.split_once('=').unwrap_or((invocation, ""));
+            let arguments = if arguments.is_empty() { Vec::new() } else {
+                arguments.split(',').map(|argument| {
+                    use dishonored2_rust::flash::avm2::value::Value;
+                    match argument.trim() {
+                        "true" => true.into(), "false" => false.into(), "null" => Value::Null,
+                        value => value.parse::<f64>().map(Into::into)
+                            .unwrap_or_else(|_| value.trim_matches('"').into()),
+                    }
+                }).collect()
+            };
+            let result = match method.rsplit_once('.') {
+                Some((path, method)) => player.call_path_method(path, method, &arguments),
+                None => player.call_root_method(method, &arguments),
+            };
+            result.map_err(|e| format!("{method}: {}", player.describe(&e)))?;
         }
         let pressed = keys.iter().find(|k| k.0 == frame).and_then(|k| k.1.parse::<u32>().ok());
         player.tick(1.0 / frame_rate).map_err(|e| format!("frame {frame}: {}", player.describe(&e)))?;
@@ -180,7 +201,8 @@ fn run() -> Result<(), String> {
         eprintln!("{tree}");
     }
     let mut images = raster::Images::default();
-    for (index, path) in &resources {
+    let no_raster = args.iter().any(|argument| argument == "--debug-no-raster");
+    for (index, path) in resources.iter().filter(|_| !no_raster) {
         let file = player.state.borrow().file(*index);
         images.load(&catalog, *index, path, &file)?;
     }
@@ -209,9 +231,43 @@ fn run() -> Result<(), String> {
         render::stack(&mut list, render::draw_list(&g.vm));
     }
     eprintln!("{} batches, {} vertices", list.batches.len(), list.vertices.len());
+    if args.iter().any(|argument| argument == "--debug-draw-data") {
+        for (index, batch) in list.batches.iter().enumerate() {
+            let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+            for vertex in &list.vertices[batch.first as usize..(batch.first + batch.count) as usize] {
+                for axis in 0..2 {
+                    bounds[axis] = bounds[axis].min(vertex.position[axis]);
+                    bounds[axis + 2] = bounds[axis + 2].max(vertex.position[axis]);
+                }
+            }
+            eprintln!("batch {index} texture={:?} vertices={} test={:#04x} set={:#04x} clear={:#04x} bounds={bounds:?}",
+                batch.texture, batch.count, batch.stencil_test, batch.stencil_set, batch.stencil_clear);
+        }
+        fn masks(object: &dishonored2_rust::flash::avm2::object::Obj, path: &str) {
+            use dishonored2_rust::flash::{display, graphics};
+            let Some(display) = display::display_ref(object) else { return };
+            let path = format!("{path}.{}", display.name);
+            if display.mask.is_some() || display.clip_depth != 0 {
+                eprintln!("mask target={path} clip={} script={} matrix={:?}", display.clip_depth, display.mask.is_some(), display.matrix);
+            }
+            if let Some(graphics) = &display.graphics {
+                if let Some(state) = graphics::state(graphics) {
+                    let layers = state.layers.len();
+                    let points = state.layers.iter().map(|layer| layer.points.len()).sum::<usize>();
+                    let fills = state.layers.iter().map(|layer| layer.fills.len()).sum::<usize>();
+                    drop(state);
+                    eprintln!("graphics target={path} layers={layers} points={points} fills={fills} bounds={:?}", graphics::bounds(graphics));
+                }
+            }
+            drop(display);
+            for child in display::children(object) { masks(&child, &path); }
+        }
+        if let Some(stage) = player.state.borrow().stage.clone() { masks(&stage, ""); }
+    }
     for l in &list.layers {
         eprintln!("layer batches {}..{} bounds {:?} filters {:?}", l.first, l.end, l.bounds, l.filters);
     }
+    if no_raster { return Ok(()); }
     let (w, h) = (size.0 as u32, size.1 as u32);
     let rgba = raster::rasterize(&list, &images, w, h, [0, 0, 0, 255]);
     let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;

@@ -3,11 +3,13 @@ pub mod blueprint;
 mod light_sources;
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
-mod components;
+pub(crate) mod components;
 mod processed_decl;
 pub mod spawn;
 pub mod character_selection;
+pub(crate) mod carrying;
 pub use components::scheduling_bindings as component_scheduling;
+pub(crate) use components::scheduling as scheduling_from_fields;
 pub(crate) use components::overlay_owned;
 pub mod wind;
 pub mod machinery;
@@ -2689,7 +2691,7 @@ fn placed_models_using(
     blueprints: bool,
 ) -> Vec<PlacedModel> {
     document.definitions.iter().filter(|definition| definition.kind == "entity" && !entity_hidden(definition))
-        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints))
+        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints, false))
         .collect()
 }
 
@@ -2717,16 +2719,20 @@ pub(crate) fn model_descriptor(
             _ => None,
         }
     } else { None };
-    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true);
+    if matches!(explicit, Some(Value::Atom(path)) if path.trim_matches('"').is_empty() || path.trim_matches('"').eq_ignore_ascii_case("NULL"))
+        || (explicit.is_none() && inherited.as_deref().is_some_and(|path| path.is_empty() || path.eq_ignore_ascii_case("NULL"))) {
+        return Ok(None);
+    }
+    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true, true);
     if descriptor.is_none() && (explicit.is_some() || inherited.is_some()) {
         return Err(format!("{}: authored RenderModel descriptor is unsupported or incomplete: model={explicit:?}, inherited={inherited:?}", definition.id));
     }
     Ok(descriptor)
 }
 
-fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool) -> Option<PlacedModel> {
+fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool, map_models: bool) -> Option<PlacedModel> {
     if definition.kind != "entity" { return None; }
-    let edit = scope(field(&definition.fields, "edit"))?;
+    let edit = scope(field(&definition.fields, "edit")).unwrap_or(&[]);
     let render_info = scope(field(edit, "renderModelInfo"));
     let model_path = match render_info.and_then(|info| field(info, "model")) {
         Some(Value::Atom(path)) => path.as_str(),
@@ -2736,7 +2742,11 @@ fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blu
         },
     };
     let model_path = model_path.trim_matches('"');
-    let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
+    let resource_path = if model_path.ends_with(".lwo$cpu") {
+        //The installed source identity retains this literal modifier; the
+        //compiled resource appends .bmodel instead of replacing .lwo$cpu.
+        format!("generated/model/{model_path}.bmodel")
+    } else if let Some(stem) = model_path.strip_suffix(".lwo") {
         format!("generated/model/{stem}.bmodel")
     } else if model_path.ends_with(".bmodel") {
         format!("generated/model/{model_path}")
@@ -2747,31 +2757,24 @@ fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blu
             "generated/basemodel/{}.bmd6model",
             model_path.trim_end_matches(".md6")
         )
+    } else if map_models && model_path.starts_with("maps/")
+        && !model_path.rsplit('/').next()?.contains('.') {
+        //Map-local volume models use their indexed BML name directly;
+        //ordinary world draws already belong to the BWM projection.
+        format!("{model_path}.bmodel")
     } else {
         return None;
     };
-    let Some(position) =
-        scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
-    else {
-        return None;
-    };
+    //874c50 initializes origin/basis before authored fields are overlaid.
+    //A model without an explicit spawnPosition still has that real frame;
+    //use the same descriptor defaults as its physics/reference-frame owner.
+    let frame = spawn_frame(definition).ok()?;
+    let position = frame.position;
     let scale = render_info
         .and_then(|info| scope(field(info, "scale")))
         .and_then(|values| vector(values, [1.0; 3]))
         .unwrap_or([1.0; 3]);
-    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let rotation = scope(field(edit, "spawnOrientation"))
-        .and_then(|values| scope(field(values, "mat")))
-        .and_then(|matrix| {
-            let mut rows = identity;
-            for row in 0..3 {
-                if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
-                    rows[row] = vector(values, identity[row])?;
-                }
-            }
-            Some(rows)
-        })
-        .unwrap_or(identity);
+    let rotation = frame.basis;
     let custom_materials = render_info
         .and_then(|info| scope(field(info, "m_customMaterials")))
         .map(|overrides| {

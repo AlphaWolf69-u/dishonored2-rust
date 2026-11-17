@@ -90,7 +90,7 @@ pub struct ReadableBinding {
     pub locked: bool,
     pub allowed_swimming: bool,
     pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
-    pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
+    pub loot: Option<Arc<crate::gameplay::loot_component::LootDefinition>>,
     pub rigid: Option<Arc<super::rigid_body::Definition>>,
     pub faction: Option<(String, crate::gameplay::component_state::declaration::DeclarationScheduling)>,
     pub unsupported_pickup_components: Vec<String>,
@@ -129,7 +129,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
-    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::EmptyLootDefinition>>::new();
+    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::LootDefinition>>::new();
     let mut rigid_definitions = HashMap::<String, Arc<super::rigid_body::Definition>>::new();
     let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
@@ -153,19 +153,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
             let component = if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
                 shared.clone()
             } else {
-                let begin_pickup_sound = atom(&fields, "m_beginPickupSoundEvent")
-                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
-                    .map(|name| crate::assets::wwise::event_resources::acquire_with(catalog, name, &mut read)).transpose()?;
-                let definition = Arc::new(crate::gameplay::pickable_component::PickableDefinition {
-                    item: item.to_owned(), quantity: atom(&fields, "m_quantity").unwrap_or("0").parse()
-                        .map_err(|_| "invalid pickable quantity")?, begin_pickup_sound,
-                    shadow_grapple: boolean(&fields, "m_canBeShadowGrappled", true)?,
-                    usable_by_player: boolean(&fields, "m_usableByPlayer", true)?,
-                    invisible_npc_loot: boolean(&fields, "m_invisibleNpcLoot", false)?,
-                    pickup_interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(interaction)?,
-                    scheduling: components::scheduling(&fields,
-                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
-                });
+                let definition = super::carrying::definition(catalog, &fields)?;
                 if !catalog.has_overlays() {
                     if let Some(key) = identity { definitions.insert(key, definition.clone()); }
                 }
@@ -234,7 +222,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                     name == "num" && matches!(value, Value::Atom(value) if value == "0")) {
                     return Err(format!("{}: nonempty Loot requires its actual child spawn/attachment callbacks", entity.id));
                 }
-                let definition = Arc::new(crate::gameplay::loot_component::EmptyLootDefinition {
+                let definition = Arc::new(crate::gameplay::loot_component::LootDefinition {
                     scheduling: components::scheduling(&fields,
                         crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
                     tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),

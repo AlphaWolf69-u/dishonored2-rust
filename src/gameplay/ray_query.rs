@@ -45,10 +45,12 @@ fn max(first: f32, second: f32) -> f32 {
 struct QuantizedRay {
     origin: [f32; 3],
     inverse_direction: [f32; 3],
+    half_extent: [f32; 3],
 }
 impl QuantizedRay {
     fn new(quantization: RayQuantization, origin: [f32; 3], direction: [f32; 3]) -> Self {
         Self {
+            half_extent: [0.; 3],
             origin: std::array::from_fn(|i| {
                 multiply(
                     add(quantization.offset[i], origin[i]),
@@ -69,13 +71,19 @@ impl QuantizedRay {
         let lower: [f32; 3] = std::array::from_fn(|i| {
             multiply(
                 self.inverse_direction[i],
-                subtract(f32::from(bounds.min[i]), self.origin[i]),
+                subtract(
+                    subtract(f32::from(bounds.min[i]), self.half_extent[i]),
+                    self.origin[i],
+                ),
             )
         });
         let upper: [f32; 3] = std::array::from_fn(|i| {
             multiply(
                 self.inverse_direction[i],
-                subtract((u32::from(bounds.max[i]) + 1) as f32, self.origin[i]),
+                subtract(
+                    add((u32::from(bounds.max[i]) + 1) as f32, self.half_extent[i]),
+                    self.origin[i],
+                ),
             )
         });
         let near: [f32; 3] = std::array::from_fn(|i| min(lower[i], upper[i]));
@@ -98,6 +106,47 @@ impl HybridRayQuery {
         visitor: &mut impl RayQueryVisitor,
     ) -> Result<(), String> {
         let ray = QuantizedRay::new(quantization, origin, direction);
+        self.query_quantized(trees, ray, maximum_fraction, control, visitor)
+    }
+
+    /// 1288060 expands target admission bounds by the query's actual calcAabb.
+    /// Quantize both bounds before forming the center and half extent.
+    pub fn query_swept_bounds(
+        &mut self,
+        trees: &[PointQueryTree<'_>],
+        quantization: RayQuantization,
+        bounds: [[f32; 3]; 2],
+        direction: [f32; 3],
+        maximum_fraction: f32,
+        control: &mut RayQueryControl,
+        visitor: &mut impl RayQueryVisitor,
+    ) -> Result<(), String> {
+        let lower: [f32; 3] = std::array::from_fn(|i| {
+            multiply(
+                add(quantization.offset[i], bounds[0][i]),
+                quantization.scale[i],
+            )
+        });
+        let upper: [f32; 3] = std::array::from_fn(|i| {
+            multiply(
+                add(quantization.offset[i], bounds[1][i]),
+                quantization.scale[i],
+            )
+        });
+        let mut ray = QuantizedRay::new(quantization, [0.; 3], direction);
+        ray.origin = std::array::from_fn(|i| multiply(add(upper[i], lower[i]), 0.5));
+        ray.half_extent = std::array::from_fn(|i| multiply(subtract(upper[i], lower[i]), 0.5));
+        self.query_quantized(trees, ray, maximum_fraction, control, visitor)
+    }
+
+    fn query_quantized(
+        &mut self,
+        trees: &[PointQueryTree<'_>],
+        ray: QuantizedRay,
+        maximum_fraction: f32,
+        control: &mut RayQueryControl,
+        visitor: &mut impl RayQueryVisitor,
+    ) -> Result<(), String> {
         for (index, tree) in trees.iter().enumerate() {
             if control.early_out {
                 break;

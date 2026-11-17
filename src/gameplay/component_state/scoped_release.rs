@@ -61,6 +61,9 @@ impl ComponentRegistry {
     fn release_entity_scoped_inner(&mut self, p: &mut ScopedRelease,
         world: &mut impl ComponentReleaseWorld) -> Result<ReleaseStatus, String> {
         loop {
+            if self.poll_immediate_releases(world)? == ReleaseStatus::Pending {
+                return Ok(ReleaseStatus::Pending);
+            }
             match p.phase {
                 Phase::ExtractStop | Phase::ExtractRelease => {
                     let stopping = matches!(p.phase, Phase::ExtractStop);
@@ -144,7 +147,9 @@ impl ComponentRegistry {
                     let handle = ComponentHandle::from_packed(self.pending_release.values()[p.cursor - 1])?;
                     let generation = world.owner(handle)?.generation;
                     self.ensure_no_update_references(handle)?;
-                    world.deinitialize(handle, self)?;
+                    if world.poll_deinitialize(handle, self)? == ReleaseStatus::Pending {
+                        return Ok(ReleaseStatus::Pending);
+                    }
                     p.collected.push((handle, generation));
                     p.cursor -= 1;
                 }
@@ -158,7 +163,9 @@ impl ComponentRegistry {
                     let (handle, generation) = p.collected[p.cursor];
                     if world.owner(handle)?.generation != generation { return Err("stale scoped destruction target".into()); }
                     self.ensure_no_update_references(handle)?;
-                    world.released(handle, self)?;
+                    if world.poll_released(handle, self)? == ReleaseStatus::Pending {
+                        return Ok(ReleaseStatus::Pending);
+                    }
                     p.cursor += 1;
                 }
             }

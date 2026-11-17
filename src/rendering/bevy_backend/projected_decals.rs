@@ -106,6 +106,8 @@ pub struct Receiver {
     pub flags48: u8,
     pub bounds: [[f32; 3]; 2],
     pub layout: u32,
+    pub surface: usize,
+    pub model_projections: Option<Arc<[crate::rendering::decals::ModelProjection]>>,
 }
 #[derive(Resource, Default)]
 pub struct DecalReceivers(pub Vec<Receiver>);
@@ -330,7 +332,7 @@ pub fn register(app: &mut App) {
 struct DecalGpu {
     projections: StorageBuffer<Vec<GpuProjection>>,
     receivers: StorageBuffer<Vec<GpuReceiver>>,
-    remap: StorageBuffer<Vec<u32>>,
+    remap: StorageBuffer<Vec<UVec2>>,
     receiver_indices: Vec<Option<u32>>,
     world_target_floors: Vec<u32>,
     previous: Vec<bevy::render::sync_world::MainEntity>,
@@ -494,6 +496,7 @@ fn prepare(
             Vec4::new(0., 1., 0., 0.),
             Vec4::W,
         );
+        let mut model_projection_indices=std::collections::HashMap::<(u32,u64,[[u32;4];4]),u32>::new();
         for (entity, proxy) in &proxies {
             let mut packets = Vec::new();
             if proxy.program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox {
@@ -528,7 +531,7 @@ fn prepare(
                     let first = gpu.remap.get().len() as u32;
                     gpu.remap
                         .get_mut()
-                        .push((projection as u32) << 24 | receiver);
+                        .push(UVec2::new(projection as u32, receiver));
                     packets.push(bevy::pbr::DirectMeshDraw {
                         mesh: proxy.mesh,
                         first,
@@ -565,17 +568,9 @@ fn prepare(
                                 )
                                 && decal.projection.targets.binary_search(&world).is_ok()
                         } else {
-                            let d = &decal.description;
-                            let volume = crate::rendering::bounds::OrientedBox {
-                                centre: std::array::from_fn(|axis| {
-                                    d.position[axis] - d.axes[2][axis] * d.scale[2] * 0.5
-                                }),
-                                half_extent: [d.scale[0], d.scale[1], d.scale[2] * 0.5],
-                                axes: d.axes,
-                            };
-                            volume.overlaps(&crate::rendering::bounds::OrientedBox::from_aabb(
-                                receiver.bounds,
-                            ))
+                            receiver.model_projections.as_deref().is_some_and(|rows|rows.iter().any(|row|
+                                row.slot==decals[projection].0 && row.owner==decals[projection].1
+                                    && row.surfaces & 1u32.rotate_left(receiver.surface as u32)!=0))
                         };
                         if admitted {
                             let index = if let Some(index) = gpu.receiver_indices[number] {
@@ -598,7 +593,18 @@ fn prepare(
                                 gpu.receiver_indices[number] = Some(index);
                                 index
                             };
-                            gpu.remap.get_mut().push((projection as u32) << 24 | index);
+                            let projection_index = if let Some(rows)=receiver.model_projections.as_deref() {
+                                let row=rows.iter().find(|row|row.slot==decals[projection].0 && row.owner==decals[projection].1
+                                    && row.surfaces & 1u32.rotate_left(receiver.surface as u32)!=0).ok_or("admitted model projection context absent")?;
+                                let key=(row.slot,row.owner,row.world_to_decal.map(|r|r.map(f32::to_bits)));
+                                *model_projection_indices.entry(key).or_insert_with(||{
+                                    let index=gpu.projections.get().len() as u32;
+                                    let lighting=gpu.lighting.get(&row.slot).map_or([[0.;4];9],|entry|entry.3);
+                                    gpu.projections.get_mut().push(GpuProjection::new(&row.world_to_decal,decal.description.colour,lighting));
+                                    index
+                                })
+                            }else{projection as u32};
+                            gpu.remap.get_mut().push(UVec2::new(projection_index,index));
                         }
                     }
                     let count = gpu.remap.get().len() as u32 - first;
@@ -615,8 +621,10 @@ fn prepare(
                 .entities
                 .insert(*entity, bevy::pbr::DirectInstanceDraw::Meshes(packets));
         }
-        if gpu.receivers.get().len() >= 0x01000000 {
-            return Err("decal receiver remap exceeds 24 bits".into());
+        // bevy_backend: model-local contexts exceed the WORLD-only 8-bit
+        // projection payload. Explicit u32 pairs preserve every row identity.
+        if gpu.receivers.get().len()>u32::MAX as usize || gpu.projections.get().len()>u32::MAX as usize {
+            return Err("decal record indices exceed u32".into());
         }
         if std::env::var_os("DH2_TRACE_DECALS").is_some() {
             let counts = (

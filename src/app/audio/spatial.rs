@@ -60,6 +60,8 @@ impl Scene {
     }
 
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
+    ///709ee0/709f70 publishes the actual object frame independently of listener availability.
+    pub(super) fn publish_frame(&mut self, emitter: Emitter, position: Position) { self.emitters.insert(emitter, position); }
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
     pub fn listener_motion(&self) -> Option<crate::gameplay::sound::admission::ListenerMotion> {
@@ -131,6 +133,16 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
             if let Some(rate) = rate {
                 scene.rates.insert(emitter, (settings.rate(rate), rate == 0.0));
+            }
+        });
+        player.visit_animation_sound_emitters(|emitter| {
+            if let Some((position, axis)) = player.sound_transform(emitter) {
+                scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
+                if let Some(rate) = rate {
+                    if let Some(value) = player.sound_rate(emitter, rate) {
+                        scene.rates.insert(emitter, (value, rate == 0.0));
+                    }
+                }
             }
         });
     }

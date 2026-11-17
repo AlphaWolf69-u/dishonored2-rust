@@ -9,7 +9,12 @@ struct Impulse {
     duration: f32,
     elapsed: f32,
 }
-const EMPTY: Impulse = Impulse { direction: Vec3::ZERO, strength: 0., duration: 0., elapsed: 0. };
+const EMPTY: Impulse = Impulse {
+    direction: Vec3::ZERO,
+    strength: 0.,
+    duration: 0.,
+    elapsed: 0.,
+};
 
 /// Native list flags0x440 select its four embedded records, rather than an
 /// unbounded heap list. Immutable authored scalar pairs are projected into
@@ -21,17 +26,29 @@ pub(super) struct Impulses {
     count: usize,
 }
 impl Default for Impulses {
-    fn default() -> Self { Self { records: [EMPTY; 4], count: 0 } }
+    fn default() -> Self {
+        Self {
+            records: [EMPTY; 4],
+            count: 0,
+        }
+    }
 }
 impl Impulses {
     pub fn add(&mut self, direction: Vec3, strength: f32, duration: f32) -> bool {
         // 7fcb80 accepts the direction unchanged, and only positive pairs.
-        if !(strength > 0. && duration > 0.) { return false; }
+        if !(strength > 0. && duration > 0.) {
+            return false;
+        }
         // Native admission removes slot3 when the inline capacity is full,
         // then 1b4460 inserts at zero. Keep precisely that newest-first order.
         let retained = self.count.min(3);
         self.records.copy_within(0..retained, 1);
-        self.records[0] = Impulse { direction, strength, duration, elapsed: 0. };
+        self.records[0] = Impulse {
+            direction,
+            strength,
+            duration,
+            elapsed: 0.,
+        };
         self.count = retained + 1;
         true
     }

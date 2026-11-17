@@ -52,15 +52,12 @@ impl PhysicsScene {
             .find_map(|packed| {
                 ComponentHandle::from_packed(*packed)
                     .ok()
-                    .filter(|handle| handle.class_id == self.classes[8])
+                    .filter(|handle| self.is_rigid_class(handle.class_id))
             })
         else {
             return Ok(None);
         };
-        let component = self
-            .rigid_bodies
-            .get(handle.slot)
-            .ok_or("windblast refreshed rigid component is absent")?;
+        let component = self.rigid_component(handle)?;
         if component.owner.flags & 0xc != 8 {
             return Ok(None);
         }
@@ -157,13 +154,10 @@ impl PhysicsScene {
             let handle =
                 crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?
                     .component;
-            if handle.class_id != self.classes[8] {
+            if !self.is_rigid_class(handle.class_id) {
                 continue;
             }
-            let component = self
-                .rigid_bodies
-                .get(handle.slot)
-                .ok_or("windblast rigid component is absent")?;
+            let component = self.rigid_component(handle)?;
             let entity = self
                 .entities
                 .get(
@@ -318,15 +312,12 @@ impl PhysicsScene {
             .find_map(|packed| {
                 ComponentHandle::from_packed(*packed)
                     .ok()
-                    .filter(|handle| handle.class_id == self.classes[8])
+                    .filter(|handle| self.is_rigid_class(handle.class_id))
             })
         else {
             return Ok(false);
         };
-        let component = self
-            .rigid_bodies
-            .get(handle.slot)
-            .ok_or("windblast rigid component is absent")?;
+        let component = self.rigid_component(handle)?;
         if component.owner.flags & 0xc != 8 {
             return Ok(false);
         }

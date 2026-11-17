@@ -121,6 +121,19 @@ pub trait GraphInputs {
             .and_then(|p| p.links.first())
             .copied()
     }
+    /// Typed vector outputs include BreakableNotification's actual owner location (7986b0).
+    fn vector(&self, id: u32, port: u32, depth: usize) -> Result<[f32; 3], String> {
+        if depth > 64 { return Err("cyclic variable graph".into()); }
+        let node = self.node(id)?;
+        let point = node.ports.iter().find(|point| point.id == port).ok_or("missing vector port")?;
+        if point.kind == "InputVariable" {
+            if let Some(&(node, port)) = point.links.first() { return self.vector(node, port, depth + 1); }
+            return super::effects::variables::read_vector(&node.params, &point.name);
+        }
+        if let Some(value) = self.variable_value(node, port, depth)? { return value.vector(); }
+        if node.class == "arkKisculeNodeVec3" { return super::effects::variables::read_vector(&node.params, "m_value"); }
+        Err(format!("unsupported vector output {}.{}", node.class, point.name))
+    }
     fn number(&self, id: u32, port: u32, depth: usize) -> Result<f32, String> {
         if depth > 64 {
             return Err("cyclic variable graph".into());

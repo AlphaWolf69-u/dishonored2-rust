@@ -1,5 +1,5 @@
 //! Movement-body frame publication shared with ordinary post-physics traversal.
-use super::{post_update::PostPhysicsWorld, ActorUpdatePhase, PhysicsActorLinks};
+use super::{ActorUpdatePhase, PhysicsActorLinks, post_update::PostPhysicsWorld};
 use crate::{
     float::{add, multiply, subtract},
     gameplay::reference_frame::ReferenceFrame,

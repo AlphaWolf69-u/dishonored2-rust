@@ -33,6 +33,7 @@ struct FxEntity {
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
     dynamic_retirement: Option<Arc<super::world_effects::DynamicEffectLifetime>>,
+    entity_context: Option<super::world_effects::EntityEffectContext>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
 }
 enum FxEntityOwner {
@@ -50,6 +51,7 @@ enum FxEntityOwner {
     },
 }
 struct Instance {
+    gameplay_events: Vec<super::world_gameplay_effects::Event>,
     id: u32,
     entity: u32,
     definition: Arc<WorldEffectDefinition>,
@@ -58,11 +60,15 @@ struct Instance {
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
     dynamic_retirement: Option<Arc<super::world_effects::DynamicEffectLifetime>>,
+    entity_context: Option<super::world_effects::EntityEffectContext>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
+    light_head: u16,
     sound_head: u16,
     decal_head: u16,
+    distortion_head: u16,
+    rumble_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
@@ -75,8 +81,15 @@ struct Instance {
 /// What a group start (222f80) needs from the FX manager, for top-level
 /// instances and for the effects their sub-FX trigger.
 pub(super) struct GroupContext<'a> {
+    pub(super) gameplay:
+        &'a mut crate::gameplay::effects::gameplay::Requests,
+    pub(super) frame: ReferenceFrame,
+    pub(super) entity_context: Option<super::world_effects::EntityEffectContext>,
     pub(super) systems: &'a mut ParticleSystems,
+    pub(super) lights: &'a mut super::world_light_effects::LightSystems,
     pub(super) decals: &'a mut super::decal_effects::DecalSystems,
+    pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
+    pub(super) rumble: &'a mut super::world_rumble::Systems,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
@@ -93,6 +106,9 @@ impl GroupContext<'_> {
         super::world_sub_effects::Chains {
             systems: self.systems,
             decals: self.decals,
+            distortion: self.distortion,
+            rumble: self.rumble,
+            lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
         }
@@ -113,6 +129,12 @@ fn admit(
         return Ok(());
     }
     for group in &definition.groups {
+        for distortion in &group.screen_distortions { distortion.as_ref().map_err(Clone::clone)?; }
+        for rumble in &group.rumbles { rumble.as_ref().map_err(Clone::clone)?; }
+        for light in &group.lights {
+            let light=light.as_ref().map_err(Clone::clone)?;
+            if light.enabled && !matches!(light.kind,0|2) { return Err(format!("{name}: FX light type{} awaits a verified canonical render consumer",light.kind)); }
+        }
         for (family, admission) in definition.other_families(group) {
             if *admission.as_ref().map_err(Clone::clone)? {
                 return Err(format!("{name}: world FX family {family} is not connected"));
@@ -195,8 +217,12 @@ struct UpdateFrame {
 /// The particle and sound chains of one FX level; true while any is alive.
 fn update_chains(
     head: &mut u16,
+    light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
+    distortion_head: &mut u16,
+    rumble_head: &mut u16,
+    gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     frame: &UpdateFrame,
     context: &mut GroupContext,
 ) -> Result<bool, String> {
@@ -207,6 +233,7 @@ fn update_chains(
         frame.underwater,
         Some(&frame.motion),
     )?;
+    let light_count = context.lights.update(light_head, frame.age, frame.particle.owner, &mut context.systems.seed)?;
     let mut audio = context.sounds.clone();
     let sound_count = context.sound_systems.update(
         sound_head,
@@ -224,7 +251,36 @@ fn update_chains(
         |materials| Ok(materials.clone()),
         |_| {},
     )?;
-    Ok(updated != 0 || sound_count != 0 || decal_count != 0)
+    let mut distortion_count = None;
+    let mut gameplay_live = false;
+    let mut index = 0;
+    while index < gameplay_events.len() {
+        if distortion_count.is_none() && !gameplay_events[index].is_entity() {
+            distortion_count = Some(context.distortion.update(distortion_head, frame.age,
+                frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?);
+        }
+        if gameplay_events[index].advance(
+            frame.age,
+            &mut context.systems.seed,
+            context.frame,
+            context.entity_context,
+            context.gameplay,
+        )? {
+            gameplay_live = true;
+            index += 1;
+        } else {
+            gameplay_events.remove(index);
+        }
+    }
+    let distortion_count = match distortion_count {
+        Some(count) => count,
+        None => context.distortion.update(distortion_head, frame.age,
+            frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed)?,
+    };
+    let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
+        frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),
+        &mut context.systems.seed)?;
+    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || distortion_count != 0 || gameplay_live)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -240,8 +296,12 @@ fn update_sub_effects(
         let sub = &mut sub_effects[index];
         let chains = update_chains(
             &mut sub.head,
+            &mut sub.light_head,
             &mut sub.sound_head,
             &mut sub.decal_head,
+            &mut sub.distortion_head,
+            &mut sub.rumble_head,
+            &mut sub.gameplay_events,
             frame,
             context,
         )?;
@@ -263,8 +323,12 @@ pub(super) fn start_groups(
     definition: &Arc<WorldEffectDefinition>,
     start: f32,
     head: &mut u16,
+    light_head: &mut u16,
     sound_head: &mut u16,
     decal_head: &mut u16,
+    distortion_head: &mut u16,
+    rumble_head: &mut u16,
+    gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
     context: &mut GroupContext,
 ) -> Result<(), String> {
@@ -293,6 +357,9 @@ pub(super) fn start_groups(
             context
                 .systems
                 .start(head, particle.as_ref().map_err(Clone::clone)?, offsets)?;
+        }
+        for light in &group.lights {
+            context.lights.start(light_head, light.as_ref().map_err(Clone::clone)?.clone(), offsets, context.frame, &mut context.systems.seed)?;
         }
         for sound in &group.sounds {
             let audio = context.sounds.lock();
@@ -339,6 +406,40 @@ pub(super) fn start_groups(
                 &mut context.systems.seed,
             )?;
         }
+        for source in &group.entity_defs {
+            //221ac0 pushes each family onto its own chain head. Keep all
+            //entity events before explosions, reverse-start order per family.
+            gameplay_events.insert(
+                0,
+                super::world_gameplay_effects::Event::entity(
+                    source.clone(),
+                    offsets[0],
+                    &mut context.systems.seed,
+                ),
+            );
+        }
+        for distortion in &group.screen_distortions {
+            context.distortion.start(distortion_head, distortion.as_ref().map_err(Clone::clone)?.clone(),
+                offsets, &mut context.systems.seed)?;
+        }
+        for source in &group.explosions {
+            let first_explosion = gameplay_events
+                .iter()
+                .position(|event| !event.is_entity())
+                .unwrap_or(gameplay_events.len());
+            gameplay_events.insert(
+                first_explosion,
+                super::world_gameplay_effects::Event::explosion(
+                    source.clone(),
+                    offsets[0],
+                    &mut context.systems.seed,
+                ),
+            );
+        }
+        //222f80 family bit13 starts after explosions and before sub-FX.
+        for rumble in &group.rumbles {
+            context.rumble.start(rumble_head, rumble.as_ref().map_err(Clone::clone)?.clone(), offsets, &mut context.systems.seed)?;
+        }
         for (index, sub) in group.asset.sub_effects.iter().enumerate() {
             if super::world_sub_effects::SubEffect::admitted(sub) {
                 sub_effects.push(super::world_sub_effects::SubEffect::start(
@@ -354,18 +455,23 @@ pub(super) fn start_groups(
     Ok(())
 }
 pub(crate) struct WorldParticleState {
+    gameplay: crate::gameplay::effects::gameplay::Requests,
     source: Option<Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>>,
     sounds: Option<super::world_sounds::WorldSounds>,
     sound_systems: crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
     >,
+    lights: super::world_light_effects::LightSystems,
     decals: super::decal_effects::DecalSystems,
+    distortion: super::world_screen_distortion::Systems,
+    rumble: super::world_rumble::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
     entity_graphs: HashMap<crate::gameplay::entity_lifetime::EntityId, u64>,
     started_entity_graphs: HashSet<crate::gameplay::entity_lifetime::EntityId>,
+    breakable_subscribers: HashMap<crate::gameplay::entity_lifetime::EntityId, Vec<(u64, u32)>>,
     pickup_subscribers: HashMap<crate::gameplay::entity_lifetime::EntityId, Vec<(u64, u32)>>,
     actors_initialized: bool,
     closed: bool,
@@ -395,16 +501,21 @@ impl Default for WorldParticleState {
     fn default() -> Self {
         let pool = EffectPoolLinks::instances();
         Self {
+            gameplay: Default::default(),
             source: None,
             sounds: None,
             sound_systems: Default::default(),
+            lights: Default::default(),
             decals: super::decal_effects::new_systems(),
+            distortion: Default::default(),
+            rumble: Default::default(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
             entity_graphs: HashMap::new(),
             started_entity_graphs: HashSet::new(),
             pickup_subscribers: HashMap::new(),
+            breakable_subscribers: HashMap::new(),
             actors_initialized: false,
             closed: false,
             actors: HashMap::new(),
@@ -446,20 +557,55 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
-    pub(crate) fn set_gameflow(&mut self, mailbox: Arc<crate::gameplay::gameflow::program::Mailbox>) {
+    pub(crate) fn rumble_frame(&self) -> Option<(u32,[f32;4])> { self.rumble.completed() }
+    pub(crate) fn screen_distortion_frame(&self) -> crate::gameplay::effects::screen_distortion::Frame {
+        self.distortion.frame()
+    }
+    pub(crate) fn light_publication(&self) -> impl Iterator<Item=(u16,Option<&crate::gameplay::effects::light::LightSample>)> { self.lights.publication() }
+
+    pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
+        if self.source.is_none() || self.closed { return Err("story Kiscule manager is not initialized".into()); }
+        let Some(&root) = self.entity_graphs.get(&worldspawn) else { return Ok(None) };
+        self.graphs.story_boolean(root, qualified)
+    }
+    pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> {
+        self.gameplay.front()
+    }
+    pub(crate) fn acknowledge_gameplay(&mut self) -> Result<(), String> {
+        self.gameplay
+            .pop_front()
+            .ok_or_else(|| "FX gameplay event acknowledgement has no pending event".to_owned())
+            .map(|_| ())
+    }
+    pub(crate) fn clear_gameplay(&mut self) {
+        self.gameplay.clear();
+    }
+    pub(crate) fn set_gameflow(
+        &mut self,
+        mailbox: Arc<crate::gameplay::gameflow::program::Mailbox>,
+    ) {
         self.graphs.set_gameflow(mailbox);
     }
 
     /// One shared graph manager is constructed before source startup callbacks.
     /// Real admitted entities own gameplay roots; other existing map FX roots
     /// keep their explicitly host-scoped relevance filter in this same manager.
-    pub(crate) fn prepare_graphs(&mut self, definitions: &WorldEffectDefinitions,
+    pub(crate) fn prepare_graphs(
+        &mut self,
+        definitions: &WorldEffectDefinitions,
         declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
-        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> Result<(), String> {
-        if self.closed || self.source.is_some() { return Err("world graph manager is already prepared or closing".into()); }
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
+    ) -> Result<(), String> {
+        if self.closed || self.source.is_some() {
+            return Err("world graph manager is already prepared or closing".into());
+        }
         self.graphs = FxGraphInstances::new_level(&[], declarations, definitions.seed);
         if let Some(live) = live {
-            let by_name: HashMap<_, _> = definitions.graphs.iter().map(|graph| (graph.owner.to_ascii_lowercase(), graph)).collect();
+            let by_name: HashMap<_, _> = definitions
+                .graphs
+                .iter()
+                .map(|graph| (graph.owner.to_ascii_lowercase(), graph))
+                .collect();
             for &entity in live.spawned_entities() {
                 let (name, _) = live.get(entity).ok_or("spawned graph entity is stale")?;
                 if let Some(graph) = by_name.get(&name.to_ascii_lowercase()) {
@@ -468,29 +614,52 @@ impl WorldParticleState {
             }
         }
         for graph in definitions.graphs.iter() {
-            if self.graphs.has_root_owner(&graph.owner) { continue; }
-            let root = self.graphs.admit_render_root(Arc::clone(graph), declarations)?;
+            if self.graphs.has_root_owner(&graph.owner) {
+                continue;
+            }
+            let root = self
+                .graphs
+                .admit_render_root(Arc::clone(graph), declarations)?;
             self.graphs.queue_loading_end(root)?;
         }
-        for error in self.graphs.startup() { self.report(error); }
+        for error in self.graphs.startup() {
+            self.report(error);
+        }
         self.source = Some(Arc::clone(&definitions.graphs));
         self.report_graph_lifetime("prepared");
         Ok(())
     }
     fn report_graph_lifetime(&self, phase: &str) {
-        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") {
+            return;
+        }
         let (instances, definitions) = self.graphs.definition_counts();
         let roots = self.graphs.root_owners().count();
-        let subscriptions: usize = self.pickup_subscribers.values().map(Vec::len).sum();
-        eprintln!("ENTITY_GRAPH_LIFETIME phase={phase} managed_roots={} host_roots={} instances={instances} definitions={definitions} subscriptions={subscriptions} pending={} closed={}",
-            self.entity_graphs.len(), roots.saturating_sub(self.entity_graphs.len()), self.graphs.events.pending().count(), self.closed);
+        let subscriptions: usize = self
+            .pickup_subscribers
+            .values()
+            .chain(self.breakable_subscribers.values())
+            .map(Vec::len)
+            .sum();
+        eprintln!(
+            "ENTITY_GRAPH_LIFETIME phase={phase} managed_roots={} host_roots={} instances={instances} definitions={definitions} subscriptions={subscriptions} pending={} closed={}",
+            self.entity_graphs.len(),
+            roots.saturating_sub(self.entity_graphs.len()),
+            self.graphs.events.pending().count(),
+            self.closed
+        );
     }
-    pub(crate) fn admit_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+    pub(crate) fn admit_entity_graph(
+        &mut self,
+        entity: crate::gameplay::entity_lifetime::EntityId,
         graph: Arc<crate::assets::entities::effects::FxGraph>,
         declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
-        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<u64, String> {
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<u64, String> {
         use crate::gameplay::entity_lifetime::Stage;
-        if self.closed { return Err("graph manager is closing".into()); }
+        if self.closed {
+            return Err("graph manager is closing".into());
+        }
         let (name, _) = live.get(entity).ok_or("graph owner has retired")?;
         if live.stage(entity) != Some(Stage::Spawned) || !name.eq_ignore_ascii_case(&graph.owner) {
             return Err("graph does not belong to the admitted spawned entity".into());
@@ -506,24 +675,138 @@ impl WorldParticleState {
         }
         Ok(root)
     }
-    fn start_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
-        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
-        let root = *self.entity_graphs.get(&entity).ok_or("entity graph is absent")?;
-        if self.started_entity_graphs.contains(&entity) { return Err("entity graph already started".into()); }
-        let indices = self.graphs.retirement_subtree(root).ok_or("graph declaration subtree is unavailable")?;
+    fn start_entity_graph(
+        &mut self,
+        entity: crate::gameplay::entity_lifetime::EntityId,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
+        let root = *self
+            .entity_graphs
+            .get(&entity)
+            .ok_or("entity graph is absent")?;
+        if self.started_entity_graphs.contains(&entity) {
+            return Err("entity graph already started".into());
+        }
+        let indices = self
+            .graphs
+            .retirement_subtree(root)
+            .ok_or("graph declaration subtree is unavailable")?;
         // 7becf0 starts each instance's actual receivers before LoadingEnd.
         for index in indices {
-            let graph = self.graphs.instance_id(index).ok_or("graph generation is unavailable")?;
+            let graph = self
+                .graphs
+                .instance_id(index)
+                .ok_or("graph generation is unavailable")?;
             let (subscriptions, errors) = self.graphs.pickup_subscriptions(graph)?;
-            if !errors.is_empty() { return Err(errors.join("; ")); }
-            for (node, target) in subscriptions { self.register_pickup_receiver(graph, node, target, live)?; }
+            if !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
+            for (node, target) in subscriptions {
+                self.register_pickup_receiver(graph, node, target, live)?;
+            }
+            let (subscriptions, errors) = self.graphs.breakable_subscriptions(graph)?;
+            if !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
+            for (node, target) in subscriptions {
+                self.register_breakable_receiver(graph, node, target, live)?;
+            }
         }
         self.graphs.queue_loading_end(root)?;
         self.started_entity_graphs.insert(entity);
         Ok(())
     }
-    fn register_pickup_receiver(&mut self, graph: u64, node: u32, target: EntityReference,
-        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
+    fn register_breakable_receiver(
+        &mut self,
+        graph: u64,
+        node: u32,
+        target: EntityReference,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
+        let target = match target {
+            EntityReference::Named(name) => live.find(&name),
+            EntityReference::Invalid => None,
+            EntityReference::Player => {
+                return Err(
+                    "breakable notification requires an admitted player entity binding".into(),
+                );
+            }
+        };
+        if let Some(target) = target
+            .filter(|id| live.stage(*id) == Some(crate::gameplay::entity_lifetime::Stage::Spawned))
+        {
+            let listeners = self.breakable_subscribers.entry(target).or_default();
+            if !listeners.contains(&(graph, node)) {
+                listeners.push((graph, node));
+            }
+        }
+        Ok(())
+    }
+    fn reset_breakable_receiver(
+        &mut self,
+        graph: u64,
+        node: u32,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
+        self.breakable_subscribers.retain(|_, listeners| {
+            listeners.retain(|entry| *entry != (graph, node));
+            !listeners.is_empty()
+        });
+        let index = self
+            .graphs
+            .instance_index(graph)
+            .ok_or("breakable reset graph retired")?;
+        self.graphs[index]
+            .as_mut()
+            .ok_or("breakable reset graph busy")?
+            .reset_notification_count(node);
+        if let Some(target) = self.graphs.breakable_subscription(graph, node)? {
+            self.register_breakable_receiver(graph, node, target, live)?;
+        }
+        Ok(())
+    }
+    /// 8848a0/7986b0 use actual subscriptions, in reverse registration order.
+    pub(crate) fn dispatch_broken(
+        &mut self,
+        target: crate::gameplay::entity_lifetime::EntityId,
+        step: i32,
+        removed: bool,
+        location: [f32; 3],
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<Vec<String>, String> {
+        if self.closed || self.source.is_none() {
+            return Err("breakable graph manager is not active".into());
+        }
+        let name = live
+            .get(target)
+            .ok_or("broken entity identity is stale")?
+            .0
+            .to_owned();
+        let listeners = self
+            .breakable_subscribers
+            .get(&target)
+            .cloned()
+            .unwrap_or_default();
+        let mut errors = Vec::new();
+        for (graph, node) in listeners.into_iter().rev() {
+            errors.extend(self.graphs.broken(
+                graph,
+                node,
+                EntityReference::Named(name.clone()),
+                step,
+                removed,
+                location,
+            )?);
+        }
+        Ok(errors)
+    }
+    fn register_pickup_receiver(
+        &mut self,
+        graph: u64,
+        node: u32,
+        target: EntityReference,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
         use crate::gameplay::entity_lifetime::Stage;
         let target = match target {
             EntityReference::Named(name) => live.find(&name),
@@ -533,22 +816,34 @@ impl WorldParticleState {
             EntityReference::Player => {
                 self.report(format!("pickup node {node} has no admitted player receiver; no placeholder subscription was created"));
                 None
-            },
+            }
         };
         if let Some(target) = target.filter(|id| live.stage(*id) == Some(Stage::Spawned)) {
             let listeners = self.pickup_subscribers.entry(target).or_default();
-            if !listeners.contains(&(graph, node)) { listeners.push((graph, node)); }
+            if !listeners.contains(&(graph, node)) {
+                listeners.push((graph, node));
+            }
         }
         Ok(())
     }
-    fn reset_pickup_receiver(&mut self, graph: u64, node: u32,
-        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
+    fn reset_pickup_receiver(
+        &mut self,
+        graph: u64,
+        node: u32,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<(), String> {
         self.pickup_subscribers.retain(|_, listeners| {
             listeners.retain(|entry| *entry != (graph, node));
             !listeners.is_empty()
         });
-        let index = self.graphs.instance_index(graph).ok_or("pickup reset graph retired")?;
-        self.graphs[index].as_mut().ok_or("pickup reset graph busy")?.reset_notification_count(node);
+        let index = self
+            .graphs
+            .instance_index(graph)
+            .ok_or("pickup reset graph retired")?;
+        self.graphs[index]
+            .as_mut()
+            .ok_or("pickup reset graph busy")?
+            .reset_notification_count(node);
         if let Some(target) = self.graphs.pickup_subscription(graph, node)? {
             self.register_pickup_receiver(graph, node, target, live)?;
         }
@@ -556,30 +851,90 @@ impl WorldParticleState {
     }
     /// 883d10 snapshots only this entity's receiver list and delivers it in
     /// reverse registration order. Work joins the existing manager queue.
-    pub(crate) fn dispatch_picked_up(&mut self, target: crate::gameplay::entity_lifetime::EntityId,
-        successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
-        if self.closed || self.source.is_none() { return Err("pickup graph manager is not active".into()); }
-        if live.stage(target) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+    pub(crate) fn dispatch_picked_up_receipt(
+        &mut self,
+        target:crate::gameplay::entity_lifetime::EntityId,
+        successful:bool,from_grapple:bool,
+        live:&crate::gameplay::entity_lifetime::LiveEntities,
+        receipt:&mut crate::gameplay::effects::instances::PickupReceipt,
+    )->Result<(),String>{
+        if let Some(error)=&receipt.failure{return Err(error.clone());}
+        if self.closed || self.source.is_none(){return Err("pickup graph manager is not active".into());}
+        if live.stage(target)!=Some(crate::gameplay::entity_lifetime::Stage::Spawned){
             return Err("pickup notification target is not a spawned entity".into());
         }
-        let listeners = self.pickup_subscribers.get(&target).cloned().unwrap_or_default();
-        let mut errors = Vec::new();
-        let receivers = listeners.len();
-        for (graph, node) in listeners.into_iter().rev() {
-            errors.extend(self.graphs.picked_up(graph, node, successful, from_grapple)?);
+        let arguments=(target,successful,from_grapple);
+        if let Some(saved)=receipt.arguments{
+            if saved!=arguments{return Err("pickup receipt belongs to another actual event".into());}
+        }else{
+            if let Some(listeners)=self.pickup_subscribers.get(&target){
+                receipt.receivers.try_reserve_exact(listeners.len()).map_err(|error|format!("pickup receiver snapshot: {error}"))?;
+                receipt.receivers.extend(listeners.iter().rev().copied());
+            }
+            receipt.arguments=Some(arguments);
         }
+        while let Some(&(graph,node))=receipt.receivers.get(receipt.next){
+            // Once a callback mutates its notification/action stack, retrying
+            //the same failing callback would double delivery. Preserve a real
+            //failure receipt rather than acknowledging or replaying it.
+            match self.graphs.picked_up(graph,node,successful,from_grapple){
+                Ok(errors)=>{
+                    receipt.next+=1;
+                    receipt.errors.extend(errors);
+                }
+                Err(error)=>{receipt.failure=Some(error.clone());return Err(error);}
+            }
+        }
+        if !receipt.errors.is_empty(){
+            let error=receipt.errors.join("; ");receipt.failure=Some(error.clone());return Err(error);
+        }
+        Ok(())
+    }
+    pub(crate) fn dispatch_picked_up(
+        &mut self,
+        target: crate::gameplay::entity_lifetime::EntityId,
+        successful: bool,
+        from_grapple: bool,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
+    ) -> Result<Vec<String>, String> {
+        let mut receipt=crate::gameplay::effects::instances::PickupReceipt::default();
+        if let Err(error)=self.dispatch_picked_up_receipt(target,successful,from_grapple,live,&mut receipt){
+            if receipt.errors.is_empty() || receipt.next!=receipt.receivers.len(){return Err(error);}
+        }
+        let receivers=receipt.receivers.len();
+        let errors=receipt.errors;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("ENTITY_GRAPH_PICKUP target={target:?} receivers={receivers} successful={successful} from_grapple={from_grapple} errors={}", errors.len());
+            eprintln!(
+                "ENTITY_GRAPH_PICKUP target={target:?} receivers={receivers} successful={successful} from_grapple={from_grapple} errors={}",
+                errors.len()
+            );
         }
         Ok(errors)
     }
-    pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+    pub(crate) fn retire_entity_graph(
+        &mut self,
+        entity: crate::gameplay::entity_lifetime::EntityId,
+    ) -> Result<(), String> {
         let indices = match self.entity_graphs.get(&entity) {
-            Some(root) => self.graphs.retirement_subtree(*root).ok_or("entity graph subtree is busy")?,
-            None => { self.pickup_subscribers.remove(&entity); return Ok(()) }
+            Some(root) => self
+                .graphs
+                .retirement_subtree(*root)
+                .ok_or("entity graph subtree is busy")?,
+            None => {
+                self.pickup_subscribers.remove(&entity);
+                self.breakable_subscribers.remove(&entity);
+                return Ok(());
+            }
         };
-        let ids: HashSet<_> = indices.iter().filter_map(|&index| self.graphs.instance_id(index)).collect();
+        let ids: HashSet<_> = indices
+            .iter()
+            .filter_map(|&index| self.graphs.instance_id(index))
+            .collect();
         self.pickup_subscribers.retain(|target, listeners| {
+            listeners.retain(|(graph, _)| !ids.contains(graph));
+            *target != entity && !listeners.is_empty()
+        });
+        self.breakable_subscribers.retain(|target, listeners| {
             listeners.retain(|(graph, _)| !ids.contains(graph));
             *target != entity && !listeners.is_empty()
         });
@@ -592,37 +947,56 @@ impl WorldParticleState {
     }
     pub(super) fn detach_graph_receivers(&mut self, graphs: &HashSet<usize>) {
         for entity in self.entities.values_mut() {
-            if matches!(&entity.owner, FxEntityOwner::Node { graph, .. } if graphs.contains(graph)) {
+            if matches!(&entity.owner, FxEntityOwner::Node { graph, .. } if graphs.contains(graph))
+            {
                 entity.owner = FxEntityOwner::Detached;
             }
         }
         for instance in self.slots.iter_mut().flatten() {
-            if instance.actor_observer.is_some_and(|(graph, _)| graphs.contains(&graph)) {
+            if instance
+                .actor_observer
+                .is_some_and(|(graph, _)| graphs.contains(&graph))
+            {
                 instance.actor_observer = None;
             }
         }
         // 7c10b0 skips queued work once its node instance has been detached.
-        self.graphs.events.retain(|event| !graphs.contains(&event.graph()));
+        self.graphs
+            .events
+            .retain(|event| !graphs.contains(&event.graph()));
         self.timers.retain(|(graph, _)| !graphs.contains(graph));
         self.started.retain(|(graph, _, _)| !graphs.contains(graph));
-        self.completed.retain(|(graph, _, _)| !graphs.contains(graph));
-        self.actor_completed.retain(|(graph, _, _)| !graphs.contains(graph));
+        self.completed
+            .retain(|(graph, _, _)| !graphs.contains(graph));
+        self.actor_completed
+            .retain(|(graph, _, _)| !graphs.contains(graph));
     }
-    pub(super) fn dynamic_retired(&self) -> u64 { self.dynamic_retired }
+    pub(super) fn dynamic_retired(&self) -> u64 {
+        self.dynamic_retired
+    }
     /// Prepare the live WORLD projections and publish compact frame records.
     /// Their target arrays remain shared with the retained committed records.
     pub(super) fn snapshot_decals(
         &mut self,
         tree: &crate::local_caster_query::LocalWorldQuery,
         limit: usize,
-    ) -> Result<Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>, String> {
+    ) -> Result<
+        Vec<(
+            u32,
+            u64,
+            crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>,
+        )>,
+        String,
+    > {
         let pool = self.decal_pool();
         pool.reconfigure_when_empty(limit, |_| {})?;
         pool.prepare_world(tree)?;
-        Ok((0..pool.limit() as u32).filter_map(|slot| {
-            let entry = pool.slot(slot)?;
-            Some((slot, entry.owner()?.get(), entry.renderer.as_ref()?.clone()))
-        }).collect())
+        Ok((0..pool.limit() as u32)
+            .filter_map(|slot| {
+                let entry = pool.slot(slot)?;
+                Some((slot, entry.owner()?.get(), entry.renderer.as_ref()?.clone()))
+            })
+            .collect())
     }
 
     pub(super) fn decal_pool(
@@ -650,11 +1024,19 @@ impl WorldParticleState {
         frames: &WorldEffectFrames,
         live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
     ) -> Result<(), String> {
-        if self.source.as_ref().is_some_and(|old| !Arc::ptr_eq(old, &sources.graphs)) {
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|old| !Arc::ptr_eq(old, &sources.graphs))
+        {
             return Err("world FX level changed before the shared pool was reset".into());
         }
-        if self.source.is_none() { self.prepare_graphs(sources, &assets.declarations, live)?; }
-        if self.actors_initialized { return Ok(()); }
+        if self.source.is_none() {
+            self.prepare_graphs(sources, &assets.declarations, live)?;
+        }
+        if self.actors_initialized {
+            return Ok(());
+        }
         // 87e8e0 starts a placed actor's declared effect unless startOff is set.
         // It retains the scene actor after playback; NodeFx-created entities
         // have a different completion lifetime below.
@@ -703,7 +1085,8 @@ impl WorldParticleState {
                     local: None,
                     dynamic_sources: None,
                     dynamic_retirement: None,
-                explicit_target: None,
+                    entity_context: None,
+                    explicit_target: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -717,7 +1100,13 @@ impl WorldParticleState {
     fn stop(&mut self, handle: u32, systems: &mut ParticleSystems) -> Result<(), String> {
         if let Some(&slot) = self.handles.get(&handle) {
             if let Some(instance) = self.slots[usize::from(slot)].as_mut() {
+                for event in &mut instance.gameplay_events {
+                    event.stop();
+                }
                 systems.stop(instance.head, instance.age);
+                self.lights.stop(instance.light_head, instance.age, false)?;
+                self.distortion.stop(instance.distortion_head, instance.age, false)?;
+                self.rumble.stop(instance.rumble_head, instance.age, false)?;
                 self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
@@ -726,6 +1115,9 @@ impl WorldParticleState {
                     let mut chains = super::world_sub_effects::Chains {
                         systems,
                         sound_systems: &mut self.sound_systems,
+                        lights: &mut self.lights,
+                    distortion: &mut self.distortion,
+                    rumble: &mut self.rumble,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -798,12 +1190,18 @@ impl WorldParticleState {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
+        self.lights.clear(&mut instance.light_head)?;
+        self.distortion.clear(&mut instance.distortion_head)?;
+        self.rumble.clear(&mut instance.rumble_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
             let mut chains = super::world_sub_effects::Chains {
                 systems,
                 sound_systems: &mut self.sound_systems,
+                lights: &mut self.lights,
+                    distortion: &mut self.distortion,
+                    rumble: &mut self.rumble,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -818,9 +1216,14 @@ impl WorldParticleState {
         }
         // All remaining operations use the completed release record; no
         // resource-family clear can now discard a still-owned chain.
-        let instance = self.slots[usize::from(slot)].take()
+        let instance = self.slots[usize::from(slot)]
+            .take()
             .expect("cleared FX instance remains owned until retirement");
-        let one_shot = instance.dynamic_retirement.as_ref().filter(|lifetime| lifetime.once).cloned();
+        let one_shot = instance
+            .dynamic_retirement
+            .as_ref()
+            .filter(|lifetime| lifetime.once)
+            .cloned();
         self.handles.remove(&instance.id);
         if let Some(index) = self
             .pending_starts
@@ -856,7 +1259,9 @@ impl WorldParticleState {
         let mut head = slot;
         self.pool.release_head(&mut head)?;
         if let Some(lifetime) = one_shot {
-            lifetime.completed.store(true, std::sync::atomic::Ordering::Release);
+            lifetime
+                .completed
+                .store(true, std::sync::atomic::Ordering::Release);
         }
         Ok(())
     }
@@ -869,17 +1274,38 @@ impl WorldParticleState {
         let trace = std::env::var_os("DH2_DEBUG_FX_RESOURCES").is_some();
         let started = trace.then(std::time::Instant::now);
         let cycles = trace.then(crate::loading::thread_cycles).flatten();
-        let before = trace.then(|| (self.slots.iter().flatten().count(), self.handles.len(),
-            self.pending_starts.len(), systems.allocated_count(), self.sound_systems.allocated_count(),
-            self.decals.allocated_count()));
+        let before = trace.then(|| {
+            (
+                self.slots.iter().flatten().count(),
+                self.handles.len(),
+                self.pending_starts.len(),
+                systems.allocated_count(),
+                self.sound_systems.allocated_count(),
+                self.decals.allocated_count(),
+            )
+        });
         let result = self.shutdown_inner(systems);
         if let Some((instances, handles, starts, particles, sounds, decals)) = before {
             let elapsed = started.expect("trace start").elapsed().as_secs_f64() * 1000.0;
-            let cycles = cycles.zip(crate::loading::thread_cycles()).map(|(start, end)| end.saturating_sub(start));
-            eprintln!("FX_RESOURCES shutdown_ok={} instances={}->{} handles={}->{} pending_starts={}->{} shared_particle_slots={}->{} sound_slots={}->{} decal_slots={}->{} elapsed_ms={elapsed:.3} thread_cycles={cycles:?}",
-                result.is_ok(), instances, self.slots.iter().flatten().count(), handles, self.handles.len(),
-                starts, self.pending_starts.len(), particles, systems.allocated_count(),
-                sounds, self.sound_systems.allocated_count(), decals, self.decals.allocated_count());
+            let cycles = cycles
+                .zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start));
+            eprintln!(
+                "FX_RESOURCES shutdown_ok={} instances={}->{} handles={}->{} pending_starts={}->{} shared_particle_slots={}->{} sound_slots={}->{} decal_slots={}->{} elapsed_ms={elapsed:.3} thread_cycles={cycles:?}",
+                result.is_ok(),
+                instances,
+                self.slots.iter().flatten().count(),
+                handles,
+                self.handles.len(),
+                starts,
+                self.pending_starts.len(),
+                particles,
+                systems.allocated_count(),
+                sounds,
+                self.sound_systems.allocated_count(),
+                decals,
+                self.decals.allocated_count()
+            );
         }
         result
     }
@@ -894,13 +1320,16 @@ impl WorldParticleState {
         self.graphs.retire_detached(&indices)?;
         // A family clear can notify another still-live instance in this host.
         // Disarm every completion route before the first fallible clear.
-        for instance in self.slots.iter_mut().flatten() { instance.actor_observer = None; }
+        for instance in self.slots.iter_mut().flatten() {
+            instance.actor_observer = None;
+        }
         for entity in self.entities.values_mut() {
             if matches!(entity.owner, FxEntityOwner::Node { .. }) {
                 entity.owner = FxEntityOwner::Detached;
             }
         }
         self.pickup_subscribers.clear();
+        self.breakable_subscribers.clear();
         self.entity_graphs.clear();
         self.started_entity_graphs.clear();
         self.report_graph_lifetime("graphs-retired");
@@ -909,10 +1338,15 @@ impl WorldParticleState {
         self.actor_completed.clear();
         for position in 0..self.entity_order.len() {
             let entity_id = self.entity_order[position];
-            let handle = self.entities.get(&entity_id).and_then(|entity| match &entity.owner {
-                FxEntityOwner::Actor { active, .. } => *active,
-                FxEntityOwner::Node { .. } | FxEntityOwner::Detached => entity.component.handle(),
-            });
+            let handle = self
+                .entities
+                .get(&entity_id)
+                .and_then(|entity| match &entity.owner {
+                    FxEntityOwner::Actor { active, .. } => *active,
+                    FxEntityOwner::Node { .. } | FxEntityOwner::Detached => {
+                        entity.component.handle()
+                    }
+                });
             if let Some(slot) = handle.and_then(|handle| self.handles.get(&handle).copied()) {
                 self.shutdown_instance(slot, systems)?;
             }
@@ -920,8 +1354,15 @@ impl WorldParticleState {
         // The real manager can also own detached/pending instances that no
         // longer have an entity entry. Keep those leases until cleared too.
         for index in 0..self.slots.len() {
-            if self.slots[index].is_some() { self.shutdown_instance(index as u16, systems)?; }
+            if self.slots[index].is_some() {
+                self.shutdown_instance(index as u16, systems)?;
+            }
         }
+        if !self.distortion.drained() { return Err("FX FSDisto pool retains a live chain after shutdown".into()); }
+        self.distortion.shutdown();
+        if !self.rumble.drained() { return Err("FX rumble pool retains a live chain after shutdown".into()); }
+        self.rumble.shutdown();
+        if !self.lights.drained() { return Err("FX light pool retains a live chain after instance shutdown".into()); }
         self.pending_starts.clear();
         self.pending_actor_starts.clear();
         self.entities.clear();
@@ -933,8 +1374,15 @@ impl WorldParticleState {
         Ok(())
     }
 
-    fn shutdown_instance(&mut self, slot: u16, systems: &mut ParticleSystems) -> Result<(), String> {
-        let instance = self.slots.get_mut(usize::from(slot)).and_then(Option::as_mut)
+    fn shutdown_instance(
+        &mut self,
+        slot: u16,
+        systems: &mut ParticleSystems,
+    ) -> Result<(), String> {
+        let instance = self
+            .slots
+            .get_mut(usize::from(slot))
+            .and_then(Option::as_mut)
             .ok_or("FX shutdown instance absent")?;
         instance.actor_observer = None;
         if let Some(entity) = self.entities.get_mut(&instance.entity) {
@@ -945,24 +1393,44 @@ impl WorldParticleState {
         self.retire(slot, systems)
     }
 
-    fn sync_dynamic(&mut self, snapshot: &super::world_effects::DynamicEffects,
-        systems: &mut ParticleSystems, frames: &WorldEffectFrames) -> Result<(), String> {
-        if self.dynamic_snapshot.as_ref().is_some_and(|old| Arc::ptr_eq(old, &snapshot.0)) {
+    fn sync_dynamic(
+        &mut self,
+        snapshot: &super::world_effects::DynamicEffects,
+        systems: &mut ParticleSystems,
+        frames: &WorldEffectFrames,
+    ) -> Result<(), String> {
+        if self
+            .dynamic_snapshot
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old, &snapshot.0))
+        {
             return Ok(());
         }
         let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
-        let removed: Vec<_> = self.dynamic.iter().filter_map(|(owner, &(id, revision))| {
-            (!snapshot.0.iter().any(|entry| entry.owner == *owner && entry.revision == revision))
+        let removed: Vec<_> = self
+            .dynamic
+            .iter()
+            .filter_map(|(owner, &(id, revision))| {
+                (!snapshot
+                    .0
+                    .iter()
+                    .any(|entry| entry.owner == *owner && entry.revision == revision))
                 .then(|| (owner.clone(), id))
-        }).collect();
+            })
+            .collect();
         for (owner, id) in removed {
-            if started.is_some() { eprintln!("FX_LIFECYCLE stop owner={owner}"); }
+            if started.is_some() {
+                eprintln!("FX_LIFECYCLE stop owner={owner}");
+            }
             self.dynamic.remove(&owner);
             self.pending_actor_starts.retain(|pending| *pending != id);
-            let active = self.entities.get(&id).and_then(|entity| match &entity.owner {
-                FxEntityOwner::Actor { active, .. } => *active,
-                _ => None,
-            });
+            let active = self
+                .entities
+                .get(&id)
+                .and_then(|entity| match &entity.owner {
+                    FxEntityOwner::Actor { active, .. } => *active,
+                    _ => None,
+                });
             if let Some(handle) = active {
                 self.stop(handle, systems)?;
                 self.dynamic_retiring.insert(id);
@@ -972,25 +1440,42 @@ impl WorldParticleState {
             }
         }
         for entry in snapshot.0.iter() {
-            let pose = if let Some(world) = entry.initial_world { world } else {
-                let parent = frames.resolve(&entry.target, &entry.tag)?.ok_or("dynamic FX target pose is unavailable")?;
+            let pose = if let Some(world) = entry.initial_world {
+                world
+            } else {
+                let parent = frames
+                    .resolve(&entry.target, &entry.tag)?
+                    .ok_or("dynamic FX target pose is unavailable")?;
                 crate::gameplay::reference_frame::compose(parent, entry.local)
             };
-            let location = entry.initial_world.is_none().then(|| entry.target.clone());
-            let local = entry.initial_world.is_none().then_some(entry.local);
+            //87cb90's explicit matrix is a detached placement. Context keeps
+            //the real owner, clock, velocities and callbacks; it does not turn
+            //that owner into a transform parent (or bind an Invalid target).
+            let has_parent = entry.initial_world.is_none();
+            let location = has_parent.then(|| entry.target.clone());
+            let local = has_parent.then_some(entry.local);
             if let Some(&(id, _)) = self.dynamic.get(&entry.owner) {
                 // 87dc10 changes an existing effect's placement without a
                 // new Start. Keep its age, source lease and active handle.
                 if let Some(entity) = self.entities.get_mut(&id) {
                     entity.explicit_target = entry.explicit_target;
-                    entity.pose = pose; entity.local = local;
+                    entity.pose = pose;
+                    entity.local = local;
                     entity.parameters.location = location.clone();
                     entity.parameters.tag.clone_from(&entry.tag);
                     entity.parameters.update_position = entry.attached;
                 }
-                for instance in self.slots.iter_mut().flatten().filter(|instance| instance.entity == id) {
-                    if let Some(target) = entry.explicit_target { instance.target = target; }
-                    instance.pose = pose; instance.local = local;
+                for instance in self
+                    .slots
+                    .iter_mut()
+                    .flatten()
+                    .filter(|instance| instance.entity == id)
+                {
+                    if let Some(target) = entry.explicit_target {
+                        instance.target = target;
+                    }
+                    instance.pose = pose;
+                    instance.local = local;
                     instance.parameters.location = location.clone();
                     instance.parameters.tag.clone_from(&entry.tag);
                     instance.parameters.update_position = entry.attached;
@@ -999,30 +1484,59 @@ impl WorldParticleState {
             }
             let id = self.next_entity;
             self.next_entity = id.wrapping_add(1);
-            self.entities.insert(id, FxEntity {
-                owner: FxEntityOwner::Actor { name: entry.owner.clone(), active: None, remove_on_end: false },
-                parameters: FxRuntimeParameters {
-                    effect: Some(entry.effect.clone()),
-                    location,
-                    tag: entry.tag.clone(),
-                    update_position: entry.attached,
-                    stop_on_parent_removal: false,
-                    ..Default::default()
+            self.entities.insert(
+                id,
+                FxEntity {
+                    owner: FxEntityOwner::Actor {
+                        name: entry.owner.clone(),
+                        active: None,
+                        remove_on_end: false,
+                    },
+                    parameters: FxRuntimeParameters {
+                        effect: Some(entry.effect.clone()),
+                        location,
+                        tag: entry.tag.clone(),
+                        update_position: entry.attached,
+                        stop_on_parent_removal: false,
+                        ..Default::default()
+                    },
+                    component: Default::default(),
+                    suspended: false,
+                    pose,
+                    local,
+                    dynamic_sources: Some(entry.sources.clone()),
+                    dynamic_retirement: Some(entry.retirement.clone()),
+                    entity_context: entry.entity_context,
+                    explicit_target: entry.explicit_target,
+                    motion: crate::gameplay::particles::spawn::SpawnVelocity {
+                        center: pose.position,
+                        linear: entry
+                            .entity_context
+                            .map_or([0.; 3], |context| context.velocities[0]),
+                        angular: entry
+                            .entity_context
+                            .map_or([0.; 3], |context| context.velocities[1]),
+                        angular_enabled: entry.entity_context.is_some(),
+                    },
                 },
-                component: Default::default(), suspended: false, pose, local,
-                dynamic_sources: Some(entry.sources.clone()),
-                dynamic_retirement: Some(entry.retirement.clone()),
-                explicit_target: entry.explicit_target,
-                motion: crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() },
-            });
+            );
             self.entity_order.push(id);
             self.pending_actor_starts.push(id);
-            self.dynamic.insert(entry.owner.clone(), (id, entry.revision));
-            if started.is_some() { eprintln!("FX_LIFECYCLE start owner={} effect={}", entry.owner, entry.effect); }
+            self.dynamic
+                .insert(entry.owner.clone(), (id, entry.revision));
+            if started.is_some() {
+                eprintln!(
+                    "FX_LIFECYCLE start owner={} effect={}",
+                    entry.owner, entry.effect
+                );
+            }
         }
         self.dynamic_snapshot = Some(snapshot.0.clone());
         if let Some(started) = started {
-            eprintln!("FX_LIFECYCLE owner_update_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "FX_LIFECYCLE owner_update_ms={:.3}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
         }
         Ok(())
     }
@@ -1042,16 +1556,32 @@ impl WorldParticleState {
             .as_ref()
             .map_err(Clone::clone)?
             .clone();
-        admit(&start.fx, &definition, &sources.effects, self.sounds.as_ref(), &self.decal_programs, &mut HashSet::new())?;
+        admit(
+            &start.fx,
+            &definition,
+            &sources.effects,
+            self.sounds.as_ref(),
+            &self.decal_programs,
+            &mut HashSet::new(),
+        )?;
         let mut slot = u16::MAX;
         if !self.pool.acquire(&mut slot)? {
             return Ok(());
         }
-        let pose = ReferenceFrame { position: start.position, basis: start.axis };
-        let parameters = FxRuntimeParameters { effect: Some(start.fx), ..Default::default() };
+        let pose = ReferenceFrame {
+            position: start.position,
+            basis: start.axis,
+        };
+        let parameters = FxRuntimeParameters {
+            effect: Some(start.fx),
+            ..Default::default()
+        };
         let entity = self.next_entity;
         self.next_entity = entity.wrapping_add(1);
-        let motion = crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() };
+        let motion = crate::gameplay::particles::spawn::SpawnVelocity {
+            center: pose.position,
+            ..Default::default()
+        };
         self.entities.insert(
             entity,
             FxEntity {
@@ -1063,6 +1593,7 @@ impl WorldParticleState {
                 local: None,
                 dynamic_sources: None,
                 dynamic_retirement: None,
+                entity_context: None,
                 explicit_target: None,
                 motion,
             },
@@ -1070,6 +1601,7 @@ impl WorldParticleState {
         let id = self.next_instance;
         self.next_instance = id.wrapping_add(1);
         self.slots[usize::from(slot)] = Some(Instance {
+            gameplay_events: Vec::new(),
             id,
             entity,
             definition,
@@ -1078,11 +1610,15 @@ impl WorldParticleState {
             local: None,
             dynamic_sources: None,
             dynamic_retirement: None,
+            entity_context: None,
             motion,
             age: 0.,
             head: u16::MAX,
+            light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
+            distortion_head: u16::MAX,
+            rumble_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
@@ -1111,6 +1647,14 @@ impl WorldParticleState {
             return Ok(());
         }
         if !self.actors_initialized {
+            //bevy_backend:87e8e0 starts placed actors with loaded declarations.
+            //Our asynchronous EntityDef/Explosion acquisition must acknowledge
+            //those actual dependencies before the one-shot actor admission.
+            //Do not consume pending_actor_starts while that host preparation
+            //is incomplete; this is not a retry of a native pool refusal.
+            if !sources.gameplay_ready() {
+                return Ok(());
+            }
             let audio = sounds.lock();
             for effect in sources
                 .effects
@@ -1200,7 +1744,8 @@ impl WorldParticleState {
                     local: None,
                     dynamic_sources: None,
                     dynamic_retirement: None,
-                explicit_target: None,
+                    entity_context: None,
+                    explicit_target: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -1257,13 +1802,18 @@ impl WorldParticleState {
             }
             self.collect(index);
         }
-        for error in self.graphs.poll_gameflow(){self.report(error);}
+        for error in self.graphs.poll_gameflow() {
+            self.report(error);
+        }
         self.graphs.events.begin_update();
         while let Some(event) = self.graphs.events.pop() {
             let (index, node, port) = match event {
                 GraphEvent::Action { graph, node, port } => (graph, node, port),
                 GraphEvent::LoadingEnd { graph, node } => {
-                    self.graphs[graph].as_mut().ok_or("startup graph busy")?.loading_end_node(node)?;
+                    self.graphs[graph]
+                        .as_mut()
+                        .ok_or("startup graph busy")?
+                        .loading_end_node(node)?;
                     self.collect(graph);
                     continue;
                 }
@@ -1280,9 +1830,27 @@ impl WorldParticleState {
             });
             self.graphs[index] = Some(runtime);
             match result {
+                Ok(GraphStep::BreakableReset { node }) => {
+                    let graph = self
+                        .graphs
+                        .instance_id(index)
+                        .ok_or("breakable reset graph retired")?;
+                    self.reset_breakable_receiver(
+                        graph,
+                        node,
+                        live.ok_or("breakable reset has no managed entity owner")?,
+                    )?;
+                }
                 Ok(GraphStep::PickupReset { node }) => {
-                    let graph = self.graphs.instance_id(index).ok_or("pickup reset graph retired")?;
-                    self.reset_pickup_receiver(graph, node, live.ok_or("pickup reset has no managed entity owner")?)?;
+                    let graph = self
+                        .graphs
+                        .instance_id(index)
+                        .ok_or("pickup reset graph retired")?;
+                    self.reset_pickup_receiver(
+                        graph,
+                        node,
+                        live.ok_or("pickup reset has no managed entity owner")?,
+                    )?;
                 }
                 Ok(GraphStep::Action {
                     schedule: Some(node),
@@ -1330,7 +1898,9 @@ impl WorldParticleState {
                     .filter(|_| clock.entity_delta > 0.)
                 {
                     if let Some(pose) = frames.resolve(location, &entity.parameters.tag)? {
-                        let pose = entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
+                        let pose = entity.local.map_or(pose, |local| {
+                            crate::gameplay::reference_frame::compose(pose, local)
+                        });
                         let velocities = crate::gameplay::reference_frame::velocities(
                             entity.pose,
                             pose,
@@ -1388,6 +1958,11 @@ impl WorldParticleState {
             .cvars
             .float("pm_screenParticleOffset")
             .ok_or("pm_screenParticleOffset is not registered")?;
+        self.distortion.begin_frame();
+        //1a3390 selects the last real RenderView callback.806600's
+        //interface virtual20=486a50 returns RenderView+a8, the same origin
+        //published in this selected camera frame. No Player/body substitute.
+        self.rumble.begin_frame(Some(camera.position));
         // FX the particle systems' m_fxEvents started (1401da820: an FX
         // entity at the event with the system's origin or target as its
         // record target, then 1401a2ff0).
@@ -1407,15 +1982,29 @@ impl WorldParticleState {
                 &definition,
                 0.,
                 &mut instance.head,
+                &mut instance.light_head,
                 &mut instance.sound_head,
                 &mut instance.decal_head,
+                &mut instance.distortion_head,
+                &mut instance.rumble_head,
+                &mut instance.gameplay_events,
                 &mut instance.sub_effects,
                 &mut GroupContext {
+                    gameplay: &mut self.gameplay,
+                    frame: instance.pose,
+                    entity_context: instance.entity_context,
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    lights: &mut self.lights,
+                    distortion: &mut self.distortion,
+                    rumble: &mut self.rumble,
                     decals: &mut self.decals,
                     sounds,
-                    effects: &instance.dynamic_sources.as_deref().unwrap_or(sources).effects,
+                    effects: &instance
+                        .dynamic_sources
+                        .as_deref()
+                        .unwrap_or(sources)
+                        .effects,
                     world,
                     query: &mut query,
                     position: instance.pose.position,
@@ -1435,7 +2024,9 @@ impl WorldParticleState {
                 if instance.parameters.update_position {
                     if let Some(location) = instance.parameters.location.as_ref() {
                         if let Some(pose) = frames.resolve(location, &instance.parameters.tag)? {
-                            let pose = instance.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
+                            let pose = instance.local.map_or(pose, |local| {
+                                crate::gameplay::reference_frame::compose(pose, local)
+                            });
                             instance.pose = pose;
                         }
                     }
@@ -1470,24 +2061,42 @@ impl WorldParticleState {
                     position: bevy::math::Vec3::from_array(instance.pose.position),
                     basis,
                     sound: super::world_sounds::SoundFrame {
+                        entity_context: instance.entity_context,
                         axis: basis,
                         scale: clock.scale,
+                        energy: instance.entity_context.map_or(0., |context| {
+                            context.contact_speed * context.contact_speed * context.contact_mass
+                        }),
                     },
                 };
                 let mut context = GroupContext {
+                    gameplay: &mut self.gameplay,
+                    frame: instance.pose,
+                    entity_context: instance.entity_context,
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    lights: &mut self.lights,
+                    distortion: &mut self.distortion,
+                    rumble: &mut self.rumble,
                     decals: &mut self.decals,
                     sounds,
-                    effects: &instance.dynamic_sources.as_deref().unwrap_or(sources).effects,
+                    effects: &instance
+                        .dynamic_sources
+                        .as_deref()
+                        .unwrap_or(sources)
+                        .effects,
                     world,
                     query: &mut query,
                     position: instance.pose.position,
                 };
                 let alive = update_chains(
                     &mut instance.head,
+                    &mut instance.light_head,
                     &mut instance.sound_head,
                     &mut instance.decal_head,
+                &mut instance.distortion_head,
+                &mut instance.rumble_head,
+                    &mut instance.gameplay_events,
                     &update,
                     &mut context,
                 )?;
@@ -1539,6 +2148,8 @@ impl WorldParticleState {
         }
         self.query = Some(query);
         self.frame = Some(frame);
+        self.distortion.finish_frame();
+        self.rumble.finish_frame(frame);
         Ok(())
     }
 }
@@ -1653,7 +2264,12 @@ impl FxGraphWorld for GraphHost<'_> {
         self.sources
             .effects
             .get(effect)
-            .map(|result| result.as_ref().map(|_| true).map_err(Clone::clone))
+            .map(|result| {
+                result
+                    .as_ref()
+                    .map(|definition| definition.gameplay_ready())
+                    .map_err(Clone::clone)
+            })
             .unwrap_or_else(|| Err(format!("world FX declaration {effect} was not prepared")))
     }
     fn entity_exists(&self, entity: &EntityReference) -> Result<bool, String> {
@@ -1690,6 +2306,7 @@ impl FxGraphWorld for GraphHost<'_> {
                 local: None,
                 dynamic_sources: None,
                 dynamic_retirement: None,
+                entity_context: None,
                 explicit_target: None,
                 motion: crate::gameplay::particles::spawn::SpawnVelocity {
                     center: pose.position,
@@ -1727,12 +2344,20 @@ impl InstanceHost<'_> {
     /// 1404b1880: the target entity's world pose, or the pose of its target
     /// tag or joint (1404b19b0); None while the target entity is absent.
     fn target_pose(&self) -> Result<Option<crate::gameplay::particles::beam::BeamTarget>, String> {
-        if let Some(target) = self.entity.explicit_target { return Ok(Some(target)); }
+        if let Some(target) = self.entity.explicit_target {
+            return Ok(Some(target));
+        }
         let parameters = &self.entity.parameters;
-        let Some(target) = parameters.target.as_ref() else { return Ok(None) };
-        Ok(self.frames.resolve(target, &parameters.target_tag)?.map(|pose| {
-            crate::gameplay::particles::beam::BeamTarget { position: pose.position, basis: pose.basis }
-        }))
+        let Some(target) = parameters.target.as_ref() else {
+            return Ok(None);
+        };
+        Ok(self
+            .frames
+            .resolve(target, &parameters.target_tag)?
+            .map(|pose| crate::gameplay::particles::beam::BeamTarget {
+                position: pose.position,
+                basis: pose.basis,
+            }))
     }
 }
 impl WorldFxComponentHost for InstanceHost<'_> {
@@ -1740,6 +2365,25 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         self.entity.parameters.effect.is_some()
     }
     fn reference_readiness(&self) -> Option<ReferenceReadiness> {
+        let sources = self
+            .entity
+            .dynamic_sources
+            .as_deref()
+            .unwrap_or(self.sources);
+        if self
+            .entity
+            .parameters
+            .effect
+            .as_ref()
+            .and_then(|name| sources.effects.get(name))
+            .and_then(|result| result.as_ref().ok())
+            .is_some_and(|definition| !definition.gameplay_ready())
+        {
+            return Some(ReferenceReadiness {
+                state: 0,
+                pending_binding: false,
+            });
+        }
         // This host completes the zero-offset attachment by resolving the
         // published location hierarchy before allowing the component to play.
         let attached = self
@@ -1767,7 +2411,11 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
             bevy::log::info!(effect = name, "World FX play requested");
         }
-        let sources = self.entity.dynamic_sources.as_deref().unwrap_or(self.sources);
+        let sources = self
+            .entity
+            .dynamic_sources
+            .as_deref()
+            .unwrap_or(self.sources);
         let definition = sources
             .effects
             .get(name)
@@ -1775,6 +2423,9 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             .as_ref()
             .map_err(Clone::clone)?
             .clone();
+        if !definition.gameplay_ready() {
+            return Ok(None);
+        }
         // Admit only complete supported groups, never skip another enabled
         // family and consequently consume an incorrect shared RNG sequence.
         admit(
@@ -1791,13 +2442,15 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             self.entity.pose
         } else {
             let pose = self
-            .frames
-            .resolve(
-                parameters.location.as_ref().ok_or("FX location absent")?,
-                &parameters.tag,
-            )?
-            .ok_or("FX location was removed")?;
-            self.entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local))
+                .frames
+                .resolve(
+                    parameters.location.as_ref().ok_or("FX location absent")?,
+                    &parameters.tag,
+                )?
+                .ok_or("FX location was removed")?;
+            self.entity.local.map_or(pose, |local| {
+                crate::gameplay::reference_frame::compose(pose, local)
+            })
         };
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {
@@ -1809,6 +2462,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         let id = self.state.next_instance;
         self.state.next_instance = id.wrapping_add(1);
         self.state.slots[usize::from(slot)] = Some(Instance {
+            gameplay_events: Vec::new(),
             id,
             entity: self.id,
             definition,
@@ -1817,11 +2471,15 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             local: self.entity.local,
             dynamic_sources: self.entity.dynamic_sources.clone(),
             dynamic_retirement: self.entity.dynamic_retirement.clone(),
+            entity_context: self.entity.entity_context,
             motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,
+            light_head: u16::MAX,
             sound_head: u16::MAX,
             decal_head: u16::MAX,
+            distortion_head: u16::MAX,
+            rumble_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
@@ -1846,13 +2504,20 @@ impl WorldFxComponentHost for InstanceHost<'_> {
     }
     /// 1404b2200's 1406dc560: the target entity still exists.
     fn target_alive(&mut self) -> Result<bool, String> {
-        let target = self.entity.parameters.target.as_ref().ok_or("world FX target absent")?;
+        let target = self
+            .entity
+            .parameters
+            .target
+            .as_ref()
+            .ok_or("world FX target absent")?;
         Ok(self.frames.resolve(target, "")?.is_some())
     }
     /// 1404b20b0: the target pose (1404b1880) into every record of the
     /// instance.
     fn update_target_pose(&mut self, handle: u32) -> Result<(), String> {
-        let Some(target) = self.target_pose()? else { return Ok(()) };
+        let Some(target) = self.target_pose()? else {
+            return Ok(());
+        };
         let Some(&slot) = self.state.handles.get(&handle) else {
             return Ok(());
         };

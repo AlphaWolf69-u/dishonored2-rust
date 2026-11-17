@@ -4,6 +4,9 @@
 //! Generic source trees are projected once and released after acquisition.
 use crate::{archive::Catalog, entities::{self, event_graph::{atom, child}, Value}};
 use std::sync::Arc;
+pub mod barks;
+pub mod crew;
+pub mod chaos;
 
 type Fields = [(String, Value)];
 
@@ -64,6 +67,9 @@ pub(crate) struct Rule {
 #[derive(Debug, PartialEq)]
 pub struct Definition {
     pub(crate) rules: Vec<Rule>,
+    barks: Option<barks::Definition>,
+    crew: Option<crew::Definition>,
+    chaos: Option<chaos::Definition>,
 }
 
 fn path(fields: &Fields, key: &str) -> Option<String> {
@@ -151,6 +157,15 @@ impl Outcome {
 }
 impl Definition {
     pub fn read(fields: &Fields) -> Result<Self, String> {
+        if atom(fields,"m_type")==Some("RULE_TYPE_DEVICE_BARK") {
+            return Ok(Self {rules:Vec::new(),barks:Some(barks::Definition::read(fields)?),crew:None,chaos:None});
+        }
+        if atom(fields,"m_type")==Some("RULE_TYPE_AI_CREW") {
+            return Ok(Self {rules:Vec::new(),barks:None,crew:Some(crew::Definition::read(fields)?),chaos:None});
+        }
+        if atom(fields,"m_type")==Some("RULE_TYPE_CHAOS") {
+            return Ok(Self {rules:Vec::new(),barks:None,crew:None,chaos:Some(chaos::Definition::read(fields)?)});
+        }
         if !matches!(atom(fields, "m_type"), Some("RULE_TYPE_PLAYER_SLASH" | "10")) {
             return Err(format!("rule-handler outcome owner is not player Slash: {:?}", atom(fields, "m_type")));
         }
@@ -173,9 +188,14 @@ impl Definition {
         }
         // 140696cc0 only sorts bark families 6..8. PLAYER_SLASH=10
         // retains authored rule order, and 140895820 takes the first match.
-        Ok(Self { rules })
+        Ok(Self { rules, barks:None, crew:None, chaos:None })
     }
     pub fn acquire(catalog: &Catalog, name: &str) -> Result<Arc<Self>, String> {
+        let definition=Self::acquire_shared(catalog,name)?;
+        if definition.barks.is_some() || definition.crew.is_some() || definition.chaos.is_some() {return Err(format!("{name}: Slash requested a different ruleHandler outcome class"))}
+        Ok(definition)
+    }
+    fn acquire_shared(catalog: &Catalog, name: &str) -> Result<Arc<Self>, String> {
         catalog.rule_handlers.get_or_init(Default::default).lock().map_err(|_| "rule-handler registry is poisoned")?
             .acquire_with_sharing(&resource_path(name), 0, !catalog.has_overlays(), |_| {
                 let _tag = crate::platform::allocation_tags::tag("Rule handler declarations");
@@ -192,7 +212,7 @@ impl Definition {
                 .chain(outcome.cancel_midnight.iter()).chain(outcome.attack_hit_midnight.iter()).map(String::as_str))
     }
     fn storage_bytes(&self) -> usize {
-        self.rules.capacity() * std::mem::size_of::<Rule>() + self.rules.iter().map(|rule|
+        self.chaos.as_ref().map_or(0,chaos::Definition::storage_bytes)+self.crew.as_ref().map_or(0,crew::Definition::storage_bytes)+self.barks.as_ref().map_or(0,barks::Definition::storage_bytes)+self.rules.capacity() * std::mem::size_of::<Rule>() + self.rules.iter().map(|rule|
             rule.conditions.capacity() * std::mem::size_of::<Condition>()
                 + rule.outcomes.capacity() * std::mem::size_of::<Outcome>()
                 + rule.outcomes.iter().map(|outcome| outcome.midnight.iter().chain(outcome.recoil_midnights.iter().flatten())

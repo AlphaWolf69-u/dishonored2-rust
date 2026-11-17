@@ -41,6 +41,8 @@ pub(super) use journal::presentation as readable_presentation;
 
 enum Command {
     Modal(journal::Command),
+    PowerWheel(super::power_wheel_movie::Command),
+    Surface(super::flash_surface_movie::Command),
     Shutdown,
     StartHud { screen: (i32, i32), epoch: u64 },
     HudTick(f64, bool),
@@ -48,6 +50,8 @@ enum Command {
     HudOxygen(Option<super::hud_movie::Oxygen>),
     HudHealth(super::hud_movie::Health),
     HudMana(super::hud_movie::Mana),
+    HudEquipment(super::hud_movie::Equipment),
+    HudPickup(u64, super::hud_movie::notifications::Pickup),
     HudObjectives(Vec<crate::gameplay::gameflow::ObjectiveUpdate>),
     HudMarkers(Vec<super::objective_markers::Marker>),
     HudAdmission(bool),
@@ -173,14 +177,38 @@ pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(u
 /// Resolve the movie selected by a game-logic state declaration, honoring
 /// the installed archive/overlay owner instead of duplicating its asset path.
 pub(super) fn state_movie(catalog: &Catalog, kind: &str, state: &str) -> Result<String, String> {
+    state_movie_info(catalog, kind, state).map(|(movie, _)| movie)
+}
+
+pub(super) fn state_movie_info(catalog: &Catalog, kind: &str, state: &str) -> Result<(String, crate::gameplay::options::decl::Fields), String> {
     let edit = crate::assets::entities::player::resolved_decl(kind, state, |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
             .map(crate::assets::entities::owned_declaration_text))
     })?;
     let reference = crate::gameplay::options::decl::atom(&edit, "m_iggyInfo")
         .ok_or_else(|| format!("{state} has no m_iggyInfo"))?;
-    let movie = reference.strip_suffix(".iggyfile").ok_or_else(|| format!("{state} has invalid Iggy reference {reference}"))?;
-    Ok(format!("{movie}.iggy"))
+    if !reference.ends_with(".iggyfile") {
+        return Err(format!("{state} has invalid Iggy reference {reference}"));
+    }
+    //The descriptor's identity need not match its compiled movie. For
+    //example powerwheel.iggyfile names quick_access_wheel.swf.1414fc810
+    //reflects the actual m_flashFileName at descriptor+58.
+    iggy_movie_info(catalog, reference)
+}
+
+/// The same installed descriptor owner for screen and world movies.
+pub(super) fn iggy_movie_info(catalog: &Catalog, reference: &str) -> Result<(String, crate::gameplay::options::decl::Fields), String> {
+    let descriptor = crate::assets::entities::player::resolved_decl("iggyfile", reference, |path| {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(crate::assets::entities::owned_declaration_text))
+    })?;
+    let flash = crate::gameplay::options::decl::atom(&descriptor, "m_flashFileName")
+        .filter(|name| !name.is_empty() && *name != "NULL")
+        .ok_or_else(|| format!("{reference} has no m_flashFileName"))?;
+    let stem = flash.strip_suffix(".swf").ok_or_else(|| format!("{reference} has invalid Flash file {flash}"))?;
+    let movie = if stem.starts_with("ui/") { format!("{stem}.iggy") }
+        else { format!("ui/{stem}.iggy") };
+    Ok((movie, descriptor))
 }
 
 /// Diagnostic only. Weak image references do not extend payload lifetime;
@@ -293,10 +321,13 @@ pub struct PauseMenu {
     hud_in_flight_force: bool,
     hud_in_flight_before_ready: bool,
     hud_failed: bool,
+    power_wheel_open: bool,
     hud_interaction: Option<super::hud_movie::Interaction>,
     hud_oxygen: Option<super::hud_movie::Oxygen>,
     hud_health: Option<super::hud_movie::Health>,
     hud_mana: Option<super::hud_movie::Mana>,
+    hud_equipment: Option<super::hud_movie::Equipment>,
+    hud_notifications: Mutex<super::hud_movie::notifications::Mailbox>,
     hud_objectives: Vec<crate::gameplay::gameflow::ObjectiveUpdate>,
     marker_buffer: Option<Vec<super::objective_markers::Marker>>,
     hud_admission: Option<bool>,
@@ -386,11 +417,44 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_objectives: Vec::new(), marker_buffer: Some(Vec::new()), hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, power_wheel_open: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_equipment: None, hud_notifications: Mutex::new(Default::default()), hud_objectives: Vec::new(), marker_buffer: Some(Vec::new()), hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
 impl PauseMenu {
+    ///496760/841030 request a pickup log explicitly after actual admission.
+    ///A loadout or silent scripted inventory change does not call this API.
+    pub(super) fn queue_pickup(&self, item: Arc<crate::assets::inventory_item::PickableItem>, count: u32) -> Result<(), String> {
+        if self.hud_failed { return Err("HUD pickup delivery owner failed".into()); }
+        // Keep this epoch's accepted notice until the existing HUD-ready drain.
+        self.hud_notifications.lock().map_err(|_| "HUD pickup mailbox poisoned")?
+            .pending.push_back(super::hud_movie::notifications::Pickup::Item { item, count });
+        Ok(())
+    }
+    ///6733c0 uses HUD-owned currency labels/image, not an inventory item.
+    pub(super) fn queue_currency(&self,count:i32)->Result<(),String> {
+        if self.hud_failed {return Err("HUD currency delivery owner failed".into());}
+        self.hud_notifications.lock().map_err(|_|"HUD pickup mailbox poisoned")?
+            .pending.push_back(super::hud_movie::notifications::Pickup::Currency {count});
+        Ok(())
+    }
+    pub(super) fn power_wheel_command(&self, command: super::power_wheel_movie::Command) -> Result<(), String> {
+        self.commands.send(Command::PowerWheel(command)).map_err(|error| error.to_string())
+    }
+    pub(super) fn surface_command(&self, command: super::flash_surface_movie::Command) -> Result<(), String> {
+        self.commands.send(Command::Surface(command)).map_err(|error| error.to_string())
+    }
+    pub(super) fn hud_ready_for_wheel(&self) -> bool {
+        self.hud_started && !self.hud_failed && self.hud_interval > 0.0 && !self.open && self.modal.active.is_none()
+    }
+    pub(super) fn ui_worker_failed(&self) -> bool {
+        self.worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+    }
+    pub(super) fn set_power_wheel_open(&mut self, open: bool) {
+        if self.power_wheel_open && !open { self.hud_force = true; }
+        self.power_wheel_open = open;
+    }
+    pub(super) fn hud_epoch(&self) -> u64 { self.hud_epoch }
     pub(super) fn marker_buffer(&mut self)->Option<Vec<super::objective_markers::Marker>>{
         if self.hud_interval<=0.||self.hud_failed{return None;}
         self.marker_buffer.take()
@@ -422,8 +486,13 @@ impl PauseMenu {
 
     pub(super) fn begin_level(&mut self) {
         self.modal.clear();
+        self.power_wheel_open = false;
         let _ = self.commands.send(Command::EndHud);
         self.hud_epoch = self.hud_epoch.wrapping_add(1);
+        if let Ok(mut mailbox) = self.hud_notifications.lock() {
+            mailbox.generation = self.hud_epoch;
+            mailbox.pending.clear();
+        }
         super::ui_lifecycle_diagnostics::boundary("level-epoch", self.hud_epoch);
         // Level teardown also exits Journal/READ_NOTE (140790ea0 ->
         // 140788d70). Pause Close alone only retires the pause movie.
@@ -439,6 +508,7 @@ impl PauseMenu {
         self.hud_oxygen = None;
         self.hud_health = None;
         self.hud_mana = None;
+        self.hud_equipment = None;
         self.hud_objectives.clear();
         self.hud_admission = None;
         self.hud_starting_powers = None;
@@ -617,6 +687,8 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
 /// The movie thread: one player at a time, rebuilt on every Open.
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut modal = journal::Worker::default();
+    let mut wheel = super::power_wheel_movie::Worker::default();
+    let mut surfaces = super::flash_surface_movie::Worker::default();
     let mut loaded: Option<Loaded> = None;
     let mut hud: Option<super::hud_movie::HudMovie> = None;
     let mut hud_epoch = 0u64;
@@ -635,6 +707,8 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
+            Command::PowerWheel(command) => wheel.command(command, &mut generation),
+            Command::Surface(command) => surfaces.command(command, &mut generation),
             Command::Modal(command) => {
                 let cleared = matches!(&command.operation, journal::Operation::Clear);
                 let epoch = command.epoch;
@@ -679,13 +753,19 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             Command::HudMana(value) => if let Some(movie) = hud.as_mut() {
                 if let Err(error) = movie.mana(value) { warn!("HUD mana: {error}"); }
             },
+            Command::HudEquipment(value) => if let Some(movie) = hud.as_mut() {
+                if let Err(error) = movie.equipment(value) { warn!("HUD equipment: {error}"); }
+            },
+            Command::HudPickup(epoch, value) => if let Some(movie) = hud.as_mut().filter(|_| epoch == hud_epoch) {
+                if let Err(error) = movie.pickup(value) { let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
+            },
             Command::HudMarkers(markers)=>{
                 if let Some(movie)=hud.as_mut(){if let Err(error)=movie.markers(&markers){warn!("HUD objective markers: {error}");}}
                 let _=outbox.send(Event::HudMarkersReturned(hud_epoch,markers));
             },
             Command::HudObjectives(updates) => if let Some(movie)=hud.as_mut(){movie.queue_objectives(updates);},
             Command::HudAdmission(value) => if let Some(movie) = hud.as_mut() { movie.inactivity_admission(value); },
-            Command::EndHud => { hud = None; modal.clear(); },
+            Command::EndHud => { hud = None; modal.clear(); wheel.clear(); },
             Command::Loading { screen, map, frames } => {
                 generation += 1;
                 match super::loading_movie::Movie::load(screen, &map, generation) {
@@ -966,7 +1046,7 @@ pub fn update_pause_menu(
         let updates=std::mem::take(&mut menu.hud_objectives);
         let _=menu.commands.send(Command::HudObjectives(updates));
     }
-    if !super::loading_screen::is_loading(&loading) {
+    if !super::loading_screen::is_loading(&loading) && !menu.power_wheel_open {
         if let Err(error) = menu.modal.update(menu.hud_epoch, modal_screen, &mut journal_data,
             player_state.as_deref_mut().and_then(|runtime| runtime.player.as_mut()), &menu.commands, time.delta_secs_f64(), menu.open) {
             warn!("Journal/reading state: {error}");
@@ -997,7 +1077,7 @@ pub fn update_pause_menu(
             menu.hud_force = true;
         }
     }
-    if menu.hud_started && !menu.hud_failed && !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading)
+    if menu.hud_started && !menu.hud_failed && !menu.open && !menu.power_wheel_open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading)
         && (menu.hud_interval > 0.0 || menu.hud_force)
     {
         let player = player_state.as_ref().and_then(|state| state.player.as_ref());
@@ -1011,11 +1091,24 @@ pub fn update_pause_menu(
         let due = menu.hud_interval > 0.0 && menu.hud_phase >= menu.hud_interval;
         if !menu.hud_in_flight && (menu.hud_force || due) {
             if due { menu.hud_phase -= menu.hud_interval; }
+            if let Ok(mut mailbox) = menu.hud_notifications.lock() {
+                while let Some(pickup) = mailbox.pending.front() {
+                    if menu.commands.send(Command::HudPickup(menu.hud_epoch, pickup.clone())).is_err() { break; }
+                    mailbox.pending.pop_front();
+                }
+            }
             if oxygen != menu.hud_oxygen {
                 let _ = menu.commands.send(Command::HudOxygen(oxygen));
                 menu.hud_oxygen = oxygen;
             }
             if let Some(player) = player {
+                if let Some(inventory) = documents.as_deref() {
+                    let equipment = super::hud_movie::equipment_snapshot(player, inventory);
+                    if menu.hud_equipment != Some(equipment) {
+                        let _ = menu.commands.send(Command::HudEquipment(equipment));
+                        menu.hud_equipment = Some(equipment);
+                    }
+                }
                 let admitted = player.possession_state() == Some(14)
                     && !player.active_player_states().iter().any(|state| matches!(state.0, 26 | 39 | 44 | 56 | 60 | 62 | 63));
                 if Some(admitted) != menu.hud_admission {
@@ -1095,6 +1188,7 @@ pub fn update_pause_menu(
         }
     }
     for input in keys.read() {
+        if menu.power_wheel_open { continue; }
         if readable_ui_diagnostics_enabled() && !input.repeat && input.state == ButtonState::Pressed {
             if let Some(key) = super::engine_keys::engine_key(input.key_code) {
                 if crate::platform::console::shared().read().bindings.sets[bindings::IN_GAME][key as usize].action == 44 {
@@ -1136,6 +1230,7 @@ pub fn update_pause_menu(
     // Controller entry uses the same configured action owner as keyboard.
     // Movie navigation still follows its own supported input callbacks.
     for event in gamepad.read() {
+        if menu.power_wheel_open { continue; }
         let Some(key) = super::engine_keys::gamepad_key(event.button) else { continue };
         if event.state != ButtonState::Pressed || menu.open || menu.modal.active.is_some() { continue; }
         if crate::platform::console::shared().read().bindings.sets[bindings::IN_GAME][key as usize].action != 44 { continue; }
@@ -1211,7 +1306,7 @@ pub fn update_pause_menu(
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 menu.hud_in_flight = false;
                 menu.hud_failed = true;
-                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                if !menu.open && !menu.power_wheel_open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
                 break;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) if (menu.open && menu.ready && !framed) || menu.hud_in_flight => {
@@ -1227,7 +1322,7 @@ pub fn update_pause_menu(
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         menu.hud_in_flight = false;
                         menu.hud_failed = true;
-                        if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                        if !menu.open && !menu.power_wheel_open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
                         break;
                     }
                 }
@@ -1261,7 +1356,7 @@ pub fn update_pause_menu(
                 }
                 if menu.hud_timing_since.is_some() { menu.hud_acks += 1; }
                 if f.is_none() && forced { menu.hud_force = true; }
-                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) {
+                if !menu.open && !menu.power_wheel_open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) {
                     if let Some(f) = f { frame.0 = Some(f); }
                 } else if f.is_some() { menu.hud_force = true; }
             }
@@ -1283,7 +1378,7 @@ pub fn update_pause_menu(
                 menu.hud_failed = true;
                 trace_readable_ui(|| format!("HUD failed epoch={epoch}: {error}"));
                 warn!("HUD movie unavailable: {error}");
-                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                if !menu.open && !menu.power_wheel_open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
             },
             Event::HudFailed(_, _) => {},
             Event::HudSound(epoch, id) | Event::ModalSound(epoch, id) if epoch == menu.hud_epoch && !super::loading_screen::is_loading(&loading) => {
@@ -1352,6 +1447,9 @@ pub fn update_pause_menu(
     }
     // The movie draws its own cursor; the OS cursor is released and hidden
     // while the pause state is open (whether the game hides it is not traced).
+    //The wheel owns its source slowdown/input lease and cursor while open.
+    //Do not replace those with the Pause state's complete game-clock pause.
+    if menu.power_wheel_open { return; }
     let ui_open = menu.open || menu.modal.active.is_some();
     if ui_open != paused.0 && !super::loading_screen::is_loading(&loading) {
         crate::platform::console::shared().write(|c| if ui_open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });

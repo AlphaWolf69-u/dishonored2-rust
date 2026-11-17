@@ -82,6 +82,31 @@ pub struct RuntimeTetrahedron {
     pub shader_index: usize,
     pub cell_index: u32,
     pub positions: [[f32; 3]; 4],
+    /// 382130 prepares these four oriented unit normals once, at load.
+    pub face_normals: [[f32; 3]; 4],
+}
+impl RuntimeTetrahedron {
+    fn face_normals(positions: [[f32; 3]; 4]) -> [[f32; 3]; 4] {
+        [(0, 1, 3), (1, 0, 2), (2, 3, 1), (3, 2, 0)].map(|(a, b, c)| {
+            let u: [f32; 3] = std::array::from_fn(|i| positions[b][i] - positions[a][i]);
+            let v: [f32; 3] = std::array::from_fn(|i| positions[c][i] - positions[a][i]);
+            let normal = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+            // Installed 141ae3c60 is 00800000: f32::MIN_POSITIVE.
+            let reciprocal = 1. / (normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2])
+                .max(f32::MIN_POSITIVE).sqrt();
+            normal.map(|v| v * reciprocal)
+        })
+    }
+    /// 382bb0 consumes the prepared planes; 3836c0 uses the same four dots
+    /// for the retained tetrahedron containment test.
+    pub fn plane_distance(&self, point: [f32; 3]) -> f32 {
+        let mut distance = -f32::MAX;
+        for (position, normal) in self.positions.iter().zip(&self.face_normals) {
+            let delta: [f32; 3] = std::array::from_fn(|i| point[i] - position[i]);
+            distance = distance.max(delta[0]*normal[0]+delta[1]*normal[1]+delta[2]*normal[2]);
+        }
+        distance
+    }
 }
 #[derive(Clone, Debug)]
 pub struct SpatialData {
@@ -195,7 +220,7 @@ fn read_spatial<R: Read>(input: &mut Input<R>) -> Result<SpatialData, String> {
         let mut positions = [[0.; 3]; 4];
         for i in 0..4 { for c in 0..3 { positions[i][c] = f32::from_bits(word(raw, 8 + (i * 3 + c) * 4)); } }
         runtime_tetrahedra.push(RuntimeTetrahedron { shader_index: word(raw, 0) as usize,
-            cell_index: word(raw, 4), positions });
+            cell_index: word(raw, 4), positions, face_normals: RuntimeTetrahedron::face_normals(positions) });
     })?;
     let tetrahedron_bytes = input.u32()? as usize;
     if tetrahedron_bytes % 24 != 0 { return Err(format!("tetrahedron shader buffer has invalid byte size {tetrahedron_bytes}")); }

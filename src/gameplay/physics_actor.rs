@@ -146,6 +146,14 @@ pub trait ActorMotionBody {
 }
 
 impl PhysicsActorLinks {
+    pub(crate) fn update_error(&self, actor: usize, phase: &str, error: String) -> String {
+        let record = self.actors.get_at(actor);
+        let body = record.and_then(|value| self.bodies.get(value.current_body));
+        format!("{phase}: actor={actor}, entity={:?}, current={:?}, default={:?}, interface={:?}: {error}",
+            record.and_then(|value| value.owner.entity), record.map(|value| value.current_body),
+            record.map(|value| value.default_body), body.map(|value| (value.actor, value.body_id)))
+    }
+
     /// Complete753a90. A body accepting velocity requests is a required virtual
     /// boundary. A rejecting body skips application but retains resolved requests
     /// and completes caching, as the machine-code warning branch does.
@@ -241,8 +249,19 @@ impl PhysicsActorLinks {
                 ActorUpdatePhase::PostPhysics => &mut actor.last_post_frame,
             };
             // Mutable owner access supplies exclusivity for source1581e0.
-            if std::mem::replace(marker, stamp) != stamp {
-                update(self, index, phase)?;
+            let previous = std::mem::replace(marker, stamp);
+            if previous != stamp {
+                if let Err(error) = update(self, index, phase) {
+                    // Host callbacks can fail; retain the actual request rather
+                    // than acknowledging the source's infallible callback.
+                    if let Some(actor) = self.actors.get_at_mut(index) {
+                        match phase {
+                            ActorUpdatePhase::PrePhysics => actor.last_queued_frame = previous,
+                            ActorUpdatePhase::PostPhysics => actor.last_post_frame = previous,
+                        }
+                    }
+                    return Err(error);
+                }
             }
             Ok(())
         })
@@ -282,7 +301,16 @@ impl PhysicsActorLinks {
             ActorUpdatePhase::PrePhysics => self.actors[actor].last_queued_frame = frame,
             ActorUpdatePhase::PostPhysics => self.actors[actor].last_post_frame = frame,
         }
-        enqueue(self, actor)?;
+        if let Err(error) = enqueue(self, actor) {
+            // A host queue allocation/admission can fail, unlike the native
+            // infallible queue. Keep this request eligible for the retained
+            // accepted-frame cursor's retry rather than silently losing it.
+            match phase {
+                ActorUpdatePhase::PrePhysics => self.actors[actor].last_queued_frame = previous,
+                ActorUpdatePhase::PostPhysics => self.actors[actor].last_post_frame = previous,
+            }
+            return Err(error);
+        }
         Ok(true)
     }
 

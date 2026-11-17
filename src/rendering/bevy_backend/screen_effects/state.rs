@@ -183,6 +183,7 @@ impl ScreenEffectState {
                     .filter(|q| q.stage == stage && q.blend.blend != 0.)
                     .take(4)
                     .map(|q| QuadDraw {
+                        stage: q.stage,
                         material: q.material,
                         blend: q.blend.blend,
                     }),

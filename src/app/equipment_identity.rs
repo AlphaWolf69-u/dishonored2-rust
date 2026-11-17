@@ -27,6 +27,8 @@ struct Entry {
     rendered: bool,
     identity_retired: bool,
     graph_retired: bool,
+    reference_retirement: Option<Box<super::physics_scene::lifetime::Retirement>>,
+    movable: Option<super::runtime_entities::actor_class::Movable>,
 }
 struct PendingRetirement {
     id: EntityId,
@@ -77,6 +79,7 @@ pub(super) fn admit_equipment(
     identity: &str,
     declaration: &str,
     class: &str,
+    ai_tampering_declared: bool,
 ) -> Result<EntityId, String> {
     // The native callback host temporarily borrows PlayerState out of World;
     // its constructed actor and this same managed generation remain alive.
@@ -99,6 +102,7 @@ pub(super) fn admit_equipment(
         class,
         parent,
         false,
+        ai_tampering_declared,
     )
 }
 
@@ -144,6 +148,9 @@ pub(super) fn admit_attachment(
         &descriptor.class,
         weapon,
         true,
+        //The canonical attachment reader admits only an actual AnimBasic
+        //component or a source component-less static-model constructor.
+        false,
     )?;
     world
         .resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
@@ -159,6 +166,7 @@ fn admit(
     class: &str,
     parent: EntityId,
     ammo: bool,
+    ai_tampering_declared: bool,
 ) -> Result<EntityId, String> {
     let key = Key {
         parent,
@@ -184,6 +192,16 @@ fn admit(
         return Err("equipment identity was not initialized during level publication".into());
     }
     let types = world.resource::<Identities>().types.clone();
+    //619380 and44dd00/62b240 copy the actual parent's current transform
+    //before registration. This is the same frame, not a camera/root fallback.
+    let birth_frame = world.get_resource::<super::physics_scene::PhysicsScene>()
+        .ok_or("equipment reference scene is absent")?
+        .equipment_parent_frame(world.resource::<LiveEntities>(), parent)?;
+    let timespace = if ammo { 0 } else {
+        world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .ok_or("equipment reference clock is absent")?.entity_time_state(parent)
+            .map_err(str::to_owned)?.0
+    };
     let classes = types.classes();
     let class_id = classes
         .hierarchy()
@@ -209,10 +227,15 @@ fn admit(
     if tag != main {
         return Err("equipment player spawn tag has no admitted spelling".into());
     }
-    let runtime_flags = if ammo { 0 } else { 8 };
+    //4e65a0's arkGrenade constructor precedes619380 equipment admission.
+    let constructor_flags = if class == "arkGrenade" { 0x20 } else { 0 };
+    let runtime_flags = constructor_flags | if ammo { 0 } else { 8 };
     let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
-        .initialized(id)
+        //619380 writes the actual inventory owner's ID at equipment+ac
+        //before8aecc0 registration. Ammo8ae9b0 leaves its own owner unset.
+        .set_owner(id, (!ammo).then_some(parent))
+        .and_then(|()| live.initialized(id))
         .and_then(|()| live.spawned(id))
         .and_then(|()| live.publish_spawn_tag(id, "MAIN"));
     if let Err(error) = publication {
@@ -223,31 +246,40 @@ fn admit(
         }
         return Err(error);
     }
-    let linked = live.link_child(parent, id);
-    if let Err(error) = linked {
-        if live.retire_for_world_shutdown(id).is_none() {
-            return Err(format!(
-                "equipment binding failed: {error}; rollback retained {id:?}"
-            ));
-        }
-        return Err(error);
-    }
     drop(live);
+    // Retain the true generation before entering fallible reference-actor
+    //construction. Its ordinary scoped retirement owns any partial payload.
     world.resource_mut::<Identities>().entries.insert(
         id,
         Entry {
             key,
-            linked: true,
-            runtime_flags: if ammo { 0x10 } else { runtime_flags },
-            frame: None,
+            linked: false,
+            runtime_flags: if ammo { constructor_flags | 0x10 } else { runtime_flags },
+            frame: Some(birth_frame),
             time_scale: 1.0,
             audio: None,
             audio_acknowledged: false,
             rendered: false,
             identity_retired: false,
             graph_retired: false,
+            reference_retirement: None,
+            movable: (class == "arkGrenade").then(super::runtime_entities::actor_class::Movable::new),
         },
     );
+    let admitted = super::runtime_entities::with_scene(world, |_, scene, live, events| {
+        scene.admit_equipment_reference(live, events, id, birth_frame, timespace)?;
+        scene.publish_external_tampering_presence(live, id, ai_tampering_declared)?;
+        scene.publish_equipment_runtime_flags(live, id, if ammo { constructor_flags | 0x10 } else { runtime_flags })?;
+        scene.bind_equipment_reference(live, events, id, parent)
+    });
+    if let Err(error) = admitted {
+        if let Err(cleanup) = await_unrendered_retirement(world, id) {
+            return Err(format!("equipment {declaration} admission failed: {error}; retained rollback {id:?}: {cleanup}"));
+        }
+        return Err(format!("equipment {declaration} admission failed: {error}"));
+    }
+    world.resource_mut::<Identities>().entries.get_mut(&id)
+        .ok_or("equipment admission journal disappeared")?.linked = true;
     Ok(id)
 }
 
@@ -262,6 +294,17 @@ pub(super) fn runtime_flags(world: &World, id: EntityId) -> Option<u8> {
         .entries
         .get(&id)
         .map(|entry| entry.runtime_flags)
+}
+pub(super) fn mark_movable_picked_up(world: &mut World, id: EntityId) -> Result<bool, String> {
+    let Some(mut owner) = world.get_resource_mut::<Identities>() else { return Ok(false); };
+    let Some(entry) = owner.entries.get_mut(&id) else { return Ok(false); };
+    let Some(state) = entry.movable.as_mut() else { return Ok(false); };
+    state.picked_up(true);
+    entry.runtime_flags |= 4;
+    Ok(true)
+}
+pub(super) fn movable_linked_entity(world:&World,id:EntityId)->Option<Option<EntityId>> {
+    world.get_resource::<Identities>()?.entries.get(&id)?.movable.as_ref().map(|state|state.linked_entity())
 }
 
 pub(super) fn equipment(world: &World, identity: &str) -> Option<EntityId> {
@@ -333,7 +376,13 @@ pub(super) fn publish_frame(
     }
     entry.frame = Some(frame);
     entry.time_scale = time_scale;
-    Ok(())
+    drop(owner);
+    super::runtime_entities::with_scene(world, |world, scene, live, _| {
+        let clock = world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .ok_or("equipment publication clock is absent")?;
+        let timespace = clock.entity_time_state(id).map_err(str::to_owned)?.0;
+        scene.publish_equipment_reference(live, id, frame, timespace, clock.clock().map_err(str::to_owned)?)
+    })
 }
 
 pub(super) fn frame(
@@ -355,14 +404,12 @@ pub(super) fn detach(world: &mut World, id: EntityId) -> Result<(), String> {
         .entries
         .get(&id)
         .ok_or("equipment generation is not owned")?;
-    if !entry.linked {
-        return Ok(());
-    }
-    let parent = entry.key.parent;
-    world
-        .get_resource_mut::<LiveEntities>()
-        .ok_or("equipment managed owner is absent")?
-        .unlink_child(parent, id)?;
+    let _ = entry;
+    // Also handles partial birth: an entered canonical binding may exist
+    //before the equipment journal marks the accepted linkage complete.
+    super::runtime_entities::with_scene(world, |_, scene, live, _| {
+        scene.detach_equipment_reference(live, id)
+    })?;
     let mut owner = world.resource_mut::<Identities>();
     owner
         .entries
@@ -374,12 +421,12 @@ pub(super) fn detach(world: &mut World, id: EntityId) -> Result<(), String> {
 
 /// Called only after the existing PlayerArms submitted-work acknowledgement.
 /// Source/model leases stay with the retired render payload through that ack.
-pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<(), String> {
+pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<bool, String> {
     let owner = world
         .get_resource::<Identities>()
         .ok_or("equipment identity owner is absent")?;
     let Some(entry) = owner.entries.get(&id) else {
-        return Ok(());
+        return Ok(true);
     };
     if entry.linked {
         return Err("equipment retirement preceded hierarchy detach".into());
@@ -401,6 +448,19 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<(),
     let identity_retired = entry.identity_retired;
     let audio = entry.audio;
     retire_graph(world, id)?;
+    let mut state = world.resource_mut::<Identities>().entries.get_mut(&id)
+        .ok_or("equipment reference retirement journal disappeared")?
+        .reference_retirement.take().unwrap_or_default();
+    let retired = super::runtime_entities::with_scene(world, |world, scene, live, events| {
+        scene.retire_equipment_reference(world, live, events, id, &mut state)
+    });
+    world.resource_mut::<Identities>().entries.get_mut(&id)
+        .ok_or("equipment reference retirement journal disappeared")?.reference_retirement = Some(state);
+    if !retired? { return Ok(false); }
+    //80e050 must still be able to resolve the actual actor headers and roots.
+    if !identity_retired && world.contains_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>() {
+        super::time_sync::retire_entity_time(world, id)?;
+    }
     if !identity_retired && world.resource_mut::<LiveEntities>().retire(id).is_none() {
         return Err("equipment identity still owns children or managed references".into());
     }
@@ -410,16 +470,14 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<(),
         .get_mut(&id)
         .ok_or("equipment retirement record disappeared")?
         .identity_retired = true;
-    if let Some(mut clock) =
-        world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
-    {
-        clock.unregister_entity_time(id);
-    }
+    super::runtime_entities::with_scene(world, |_, scene, live, _| {
+        scene.finish_equipment_reference(live, id)
+    })?;
     if let Some(emitter) = audio {
         super::audio::forget_retired_component_object(world, emitter)?;
     }
     world.resource_mut::<Identities>().entries.remove(&id);
-    Ok(())
+    Ok(true)
 }
 
 /// Accept the exact renderer receipt after draw withdrawal; never make a
@@ -541,7 +599,7 @@ pub(super) fn poll_retirements(world: &mut World) -> Result<bool, String> {
         let Some(id) = next else {
             return Ok(owner.pending.is_empty());
         };
-        retire_acknowledged(world, id)?;
+        if !retire_acknowledged(world, id)? { return Ok(false); }
         let mut owner = world.resource_mut::<Identities>();
         let index = owner
             .pending

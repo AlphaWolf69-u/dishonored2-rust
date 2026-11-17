@@ -3,6 +3,14 @@
 pub mod distance;
 #[path = "convex_support/faces.rs"]
 pub mod faces;
+#[path = "convex_support/contact_faces.rs"]
+pub(crate) mod contact_faces;
+#[path = "convex_support/contact_faces_support.rs"]
+pub(crate) mod contact_faces_support;
+#[path = "convex_support/contact_capsule.rs"]
+pub(crate) mod contact_capsule;
+#[path = "convex_support/manifold.rs"]
+pub(crate) mod manifold;
 #[path = "convex_support/feature_query.rs"]
 pub mod feature_query;
 #[path = "convex_support/horizon.rs"]
@@ -11,6 +19,10 @@ pub mod horizon;
 pub mod hull;
 #[path = "convex_support/penetration.rs"]
 pub mod penetration;
+#[path = "convex_support/pair_distance.rs"]
+pub mod pair_distance;
+#[path = "convex_support/ray.rs"]
+pub mod ray;
 #[path = "convex_support/point_distance.rs"]
 pub mod point_distance;
 #[path = "convex_support/scaling.rs"]

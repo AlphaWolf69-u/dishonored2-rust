@@ -110,6 +110,7 @@ pub(super) fn prepare_level(
     let path = PathBuf::from(&level.world);
     let game_base = Some(base);
     let mut app = super::loading_screen::PreparedLevel::default();
+    let mut level_bodies = None;
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
     app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(&catalog)));
     app.insert_resource(SkeletalHistoryScope::new(&catalog));
@@ -187,12 +188,9 @@ pub(super) fn prepare_level(
     app.insert_resource(crate::assets::inventory_item::PickableSourceLease::for_catalog(catalog.as_ref().unwrap())
         .map_err(std::io::Error::other)?);
     let mut interactions = match entity_document.as_ref() {
-        Some(document) => match super::interactions::Interactions::load(
+        Some(document) => Some(super::interactions::Interactions::load(
             catalog.as_ref().unwrap().clone(), document, character,
-        ) {
-            Ok(interactions) => Some(interactions),
-            Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
-        },
+        ).map_err(|error| std::io::Error::other(format!("level interaction resources: {error}")))?),
         None => None,
     };
     let limits = if let Some(interactions) = interactions.as_ref() {
@@ -627,7 +625,7 @@ pub(super) fn prepare_level(
         let keep_details = env::var_os("DH2_DEBUG_KEEP_COLLISION_DETAILS").is_some_and(|value| value == "1");
         let trace_physics = env::var_os("DH2_DEBUG_PHYSICS_SIGNATURES").is_some_and(|value| value == "1");
         let physics = physworld::parse(&physics_bytes)?;
-        let (world_triangles, retained_source) = {
+        let world_triangles = {
             let shape_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
             let geometry = physics.collision_for_navigation(&physics_bytes, keep_details,
                 &|| cancelled(CancellationPoint::CollisionShapes))?;
@@ -636,7 +634,6 @@ pub(super) fn prepare_level(
                 eprintln!("MEMORY collision extraction: details={keep_details} detail_capacity_bytes={} cycles={cycles}",
                     geometry.detail_capacity_bytes());
             }
-            let retained_source = stage_triangles.then_some(physics_bytes);
             if profile {
                 println!(
                     "PERF authored physics parse and decode: {:.3}s",
@@ -650,7 +647,7 @@ pub(super) fn prepare_level(
                 geometry.triangles.len(),
                 geometry.compressed_decode_failures.len()
             );
-            (geometry.triangles, retained_source)
+            geometry.triangles
         };
         check_cancelled()?;
         let model_start = std::time::Instant::now();
@@ -796,10 +793,15 @@ pub(super) fn prepare_level(
                 0,
             )
         };
-        let retained_source_bytes = retained_source.as_ref().map_or(0, Vec::capacity);
-        drop(retained_source);
-        drop(physics);
-        drop(materials);
+        let retained_source_bytes = physics_bytes.capacity();
+        let world_materials = materials.into_iter().collect::<Result<Vec<_>,_>>()
+            .map_err(|()| "level physics material declaration unresolved")?;
+        let path = level.physics.clone().ok_or("loaded physics resource has no path")?;
+        let source = physworld::source::ShapeSource::from_world_read(
+            catalog.as_ref().unwrap().identity(), path.clone(), physics_bytes, physics);
+        level_bodies = Some(super::physics_scene::level_bodies::PreparedLevelBodies {
+            path, source, materials: world_materials,
+        });
         check_cancelled()?;
         if let Some(start) = index_cycles {
             let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
@@ -1004,18 +1006,12 @@ pub(super) fn prepare_level(
     let mut marker_positions = super::objective_markers::Positions::prepare(catalog_for_machinery, entity_document.as_ref(), objectives.as_ref(),
         &placed_models, &mut joint_frames, &machinery, &usable_animations).map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
-    app.insert_resource(super::model_motion::BoundModels::new(
+    let mut bound_models = super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
-            .map(|document| crate::entities::resolved_entity_binds(document).into_iter().filter(|binding| {
-                // These real rigid components own808880 attachment publication
-                // after the final joint pose. Do not also apply the old rigid
-                // parent delta to them before that sampled frame exists.
-                !interactions.as_ref().is_some_and(|interactions| interactions.readable.iter()
-                    .any(|readable| readable.entity == binding.entity_id && readable.rigid.is_some()))
-            }).collect())
+            .map(crate::entities::resolved_entity_binds)
             .unwrap_or_default(),
-    ));
+    );
     app.insert_resource(
         super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(), entity_document.as_ref())
             .map_err(std::io::Error::other)?,
@@ -1029,11 +1025,24 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
+        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref())
             .map_err(std::io::Error::other)?;
+        physics.admit_ai_section_owners(catalog, document, &mut live)
+            .map_err(std::io::Error::other)?;
+        app.insert_resource(super::ai_world::creation::CreationPlan::prepare(catalog, document, &level)
+            .map_err(std::io::Error::other)?);
+        bound_models.exclude_canonical_bindings(physics.bound_render_entities());
         let marker_targets = std::mem::take(&mut marker_positions.targets);
         physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
+        if !marker_targets.is_empty() {
+            physics.capture_removal_components(catalog, document).map_err(std::io::Error::other)?;
+        }
         drop(marker_targets);
+        if let Some(mut navigation)=app.take_resource::<NavigationWorld>(){
+            physics.publish_navigation_ownership(&mut navigation.0).map_err(std::io::Error::other)?;
+            app.insert_resource(navigation);
+        }
+        app.insert_resource(physics.worldspawn_identity(document,&live).map_err(std::io::Error::other)?);
         app.insert_resource(live);
         app.insert_resource(entity_events);
         app.insert_resource(physics);
@@ -1052,6 +1061,7 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(bound_models);
     app.insert_resource(marker_positions);
     app.insert_resource(joint_frames);
     if let Some(interactions) = interactions {
@@ -1095,6 +1105,7 @@ pub(super) fn prepare_level(
         // the shadow maps small enough to leave room for the mission assets.
         // Authored shadow flags remain intact.
         .insert_resource(PointLightShadowMap { size: 128 })
+        .insert_resource(super::fx_lights::FxLightAllocations::default())
         .insert_resource(DirectionalLightShadowMap { size: 512 })
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectFrames::load(

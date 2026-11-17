@@ -22,6 +22,8 @@ use bevy::{
 use std::collections::HashMap;
 use std::sync::Arc;
 mod textures;
+mod world_surfaces;
+pub use world_surfaces::{FlashWorldAcknowledgement, FlashWorldFrame, FlashWorldFrames, FlashWorldKey};
 
 pub const SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash.wgsl");
 pub const FILTER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash_filters.wgsl");
@@ -53,10 +55,14 @@ pub struct FlashUiPlugin;
 
 impl Plugin for FlashUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FlashUiFrame>().add_plugins(ExtractResourcePlugin::<FlashUiFrame>::default());
+        app.init_resource::<FlashUiFrame>()
+            .init_resource::<FlashWorldFrames>()
+            .add_plugins((ExtractResourcePlugin::<FlashUiFrame>::default(), ExtractResourcePlugin::<FlashWorldFrames>::default()));
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render
                 .init_resource::<FlashUiGpu>()
+                .add_systems(bevy::render::Render, world_surfaces::synchronize.in_set(bevy::render::RenderSystems::PrepareResources))
+                .add_systems(Core3d, world_surfaces::render.before(Core3dSystems::Prepass).before(Core3dSystems::MainPass))
                 .add_systems(Core3d, render_flash_ui.after(Core3dSystems::PostProcess).after(bevy::ui_render::render_pass::ui_pass).before(bevy::core_pipeline::upscaling::upscaling));
         }
     }
@@ -87,30 +93,39 @@ struct TargetPool {
 /// Targets kept unused at most (sizes change as layers animate).
 const POOL_LIMIT: usize = 32;
 
+/// One canonical renderer/cache shared by display and world movies.
 #[derive(Default, Resource)]
 struct FlashUiGpu {
+    common: FlashCommonGpu,
+    screen: MovieGpu,
+    worlds: HashMap<FlashWorldKey, world_surfaces::WorldGpu>,
+}
+
+#[derive(Default)]
+struct FlashCommonGpu {
     targets: std::sync::Mutex<TargetPool>,
     programs: Option<Programs>,
-    /// The scene-to-canvas and canvas-to-scene passes, by display format.
     transfer: Option<TransferPrograms>,
-    /// Movie ownership begins before its first successful vertex upload.
-    movie: Option<u64>,
-    /// The draw list whose vertices are in `vertices` (its serial).
-    uploaded: Option<(u64, u64)>,
-    /// The gamma-space canvas the UI is drawn on, and its size.
-    canvas: Option<(Texture, TextureView, (u32, u32))>,
     textures: textures::UiTextures,
-    vertices: Option<(Buffer, u64)>,
-    stage: Option<Buffer>,
-    stage_value: Option<[u32; 2]>,
     stage_submissions: u64,
     stage_uploads: u64,
     stage_temporary_allocations: u64,
-    /// The stencil attachment and its size.
+}
+
+/// Mutable buffers and mask/canvas attachments belong to one movie. Sharing
+/// these across simultaneously encoded movies would overwrite queued draws.
+#[derive(Default)]
+struct MovieGpu {
+    movie: Option<u64>,
+    uploaded: Option<(u64, u64)>,
+    canvas: Option<(Texture, TextureView, (u32, u32))>,
+    vertices: Option<(Buffer, u64)>,
+    stage: Option<Buffer>,
+    stage_value: Option<[u32; 2]>,
     stencil: Option<(Texture, TextureView, (u32, u32))>,
 }
 
-impl Drop for FlashUiGpu {
+impl Drop for FlashCommonGpu {
     fn drop(&mut self) {
         if self.textures.tracing() {
             eprintln!("MEMORY UI stage uploads: submissions={} uploads={} upload_bytes={} temporary_allocations={}",
@@ -463,43 +478,62 @@ fn render_flash_ui(
     mut context: RenderContext,
     view: ViewQuery<&ViewTarget>,
 ) {
-    let Some(frame) = &frame.0 else {
-        let before = gpu.textures.len();
-        gpu.textures.retire_unowned(&[]);
-        if gpu.movie.take().is_some() {
-            gpu.uploaded = None;
-            // A hidden movie may still own its image map and glyph page.
-            // Retire only entries whose real movie/frame leases have ended.
-            gpu.textures.begin_frame();
-            gpu.textures.trim();
-            gpu.textures.report("closed");
+    let FlashUiGpu {common,screen,..}=&mut *gpu;
+    let Some(frame)=&frame.0 else {
+        let before=common.textures.len();
+        common.textures.retire_unowned(&[]);
+        if screen.movie.take().is_some() {
+            screen.uploaded=None;
+            // Hidden movies and world-surface frames retain their real leases.
+            common.textures.begin_frame();
+            common.textures.trim();
+            common.textures.report("closed");
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                println!("MEMORY UI closed: released_textures={} retained_shared={}", before - gpu.textures.len(), gpu.textures.len());
+                println!("MEMORY UI closed: released_textures={} retained_shared={}", before-common.textures.len(),common.textures.len());
             }
         }
         return;
     };
+    let target=view.into_inner();
+    render_frame(frame,&device,&queue,common,screen,&images,context.command_encoder(),
+        target.main_texture().size(),target.main_texture_view(),Some(target.main_texture_format()));
+}
+
+/// One GDraw implementation for display composition and 4b0bc0's world target.
+/// The latter writes a raw UNORM view (31a600) of an SRGB-sampled image and
+/// has no display transfer pass.
+fn render_frame(
+    frame:&FlashFrame, device:&RenderDevice, queue:&RenderQueue,
+    gpu:&mut FlashCommonGpu, state:&mut MovieGpu,
+    images:&bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>,
+    encoder:&mut CommandEncoder, size:Extent3d, destination:&TextureView,
+    display:Option<TextureFormat>,
+)->bool {
     gpu.textures.begin_frame();
     // Vertex data is movie-specific. Bitmap and glyph ownership is tracked
     // independently, since another still-live movie may use the same image.
-    if gpu.movie.is_some_and(|generation| generation != frame.generation) {
-        gpu.uploaded = None;
+    if state.movie.is_some_and(|generation| generation != frame.generation) {
+        state.uploaded = None;
     }
-    gpu.movie = Some(frame.generation);
+    state.movie = Some(frame.generation);
     if frame.list.batches.is_empty() {
         gpu.textures.retire_unowned(&frame.list.glyph_pages);
         gpu.textures.trim();
-        return;
+        if display.is_none() {
+            clear_world_target(encoder, destination);
+            return true;
+        }
+        return false;
     }
     let _timing = debug_timing::Scope::new(frame.list.batches.len(), frame.list.layers.len());
-    let target = view.into_inner();
     let format = UI_FORMAT;
     if gpu.programs.is_none() {
         gpu.programs = Some(Programs::new(&device, format));
     }
-    let display = target.main_texture_format();
-    if gpu.transfer.as_ref().is_none_or(|t| t.display != display) {
-        gpu.transfer = Some(TransferPrograms::new(&device, display));
+    if let Some(display) = display {
+        if gpu.transfer.as_ref().is_none_or(|t| t.display != display) {
+            gpu.transfer = Some(TransferPrograms::new(&device, display));
+        }
     }
     // Library bitmaps use shared immutable image identity; gradient ramps use content.
     let key_started = gpu.textures.tracing().then(std::time::Instant::now);
@@ -512,7 +546,7 @@ fn render_flash_ui(
                 let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
                     gpu.textures.retire_unowned(&frame.list.glyph_pages);
                     gpu.textures.trim();
-                    return; // Keep the movie covered until its image is prepared.
+                    return false; // Keep the movie covered until its image is prepared.
                 };
                 // 1410150f0 binds the named wrapper's image. The frame's
                 // asset handle keeps this snapshot alive across scene replacement.
@@ -618,15 +652,15 @@ fn render_flash_ui(
         }
     }
     gpu.textures.trim();
-    if gpu.stage.is_none() {
-        gpu.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
-        gpu.stage_value = None;
+    if state.stage.is_none() {
+        state.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
+        state.stage_value = None;
     }
     let value = [frame.list.stage.0.to_bits(), frame.list.stage.1.to_bits()];
     static COPY_STAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let copied = *COPY_STAGE.get_or_init(|| std::env::var("DH2_DEBUG_COPY_UI_STAGE").as_deref() == Ok("1"));
     if gpu.textures.tracing() { gpu.stage_submissions += 1; }
-    if copied || gpu.stage_value != Some(value) {
+    if copied || state.stage_value != Some(value) {
         let words = [2.0 / frame.list.stage.0, -2.0 / frame.list.stage.1, -1.0, 1.0];
         let mut bytes = [0; 16];
         for (slot, word) in bytes.chunks_exact_mut(4).zip(words) {
@@ -634,18 +668,17 @@ fn render_flash_ui(
         }
         let upload: std::borrow::Cow<'_, [u8]> = if copied { std::borrow::Cow::Owned(bytes.to_vec()) }
             else { std::borrow::Cow::Borrowed(&bytes) };
-        queue.write_buffer(gpu.stage.as_ref().unwrap(), 0, &upload);
+        queue.write_buffer(state.stage.as_ref().unwrap(), 0, &upload);
         if gpu.textures.tracing() {
             gpu.stage_uploads += 1;
             gpu.stage_temporary_allocations += u64::from(copied);
-            if gpu.stage_value != Some(value) {
+            if state.stage_value != Some(value) {
                 eprintln!("MEMORY UI stage value: size_bits={value:?} words={:?}", words.map(f32::to_bits));
             }
         }
-        gpu.stage_value = Some(value);
+        state.stage_value = Some(value);
     }
-    let size = target.main_texture().size();
-    if gpu.stencil.as_ref().is_none_or(|s| s.2 != (size.width, size.height)) {
+    if state.stencil.as_ref().is_none_or(|s| s.2 != (size.width, size.height)) {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("flash stencil"),
             size: Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
@@ -657,9 +690,9 @@ fn render_flash_ui(
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
-        gpu.stencil = Some((texture, view, (size.width, size.height)));
+        state.stencil = Some((texture, view, (size.width, size.height)));
     }
-    if gpu.canvas.as_ref().is_none_or(|c| c.2 != (size.width, size.height)) {
+    if display.is_some() && state.canvas.as_ref().is_none_or(|c| c.2 != (size.width, size.height)) {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("flash canvas"),
             size: Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
@@ -671,7 +704,7 @@ fn render_flash_ui(
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
-        gpu.canvas = Some((texture, view, (size.width, size.height)));
+        state.canvas = Some((texture, view, (size.width, size.height)));
     }
     // The layers' render targets and composite quads.
     let target_size = (size.width as i32, size.height as i32);
@@ -692,18 +725,18 @@ fn render_flash_ui(
     let list_bytes = vertex_bytes(&frame.list.vertices);
     let needed = (list_bytes.len() + std::mem::size_of_val(quads.as_slice())) as u64;
     let identity = (frame.generation, frame.serial);
-    if gpu.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
+    if state.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
         let size = needed.next_power_of_two().max(4096);
         let buffer = device.create_buffer(&BufferDescriptor { label: Some("flash vertices"), size, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
-        gpu.vertices = Some((buffer, size));
-        gpu.uploaded = None;
+        state.vertices = Some((buffer, size));
+        state.uploaded = None;
     }
-    if gpu.uploaded != Some(identity) && !list_bytes.is_empty() {
-        queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, 0, list_bytes);
-        gpu.uploaded = Some(identity);
+    if state.uploaded != Some(identity) && !list_bytes.is_empty() {
+        queue.write_buffer(&state.vertices.as_ref().unwrap().0, 0, list_bytes);
+        state.uploaded = Some(identity);
     }
     if !quads.is_empty() {
-        queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, list_bytes.len() as u64, vertex_bytes(&quads));
+        queue.write_buffer(&state.vertices.as_ref().unwrap().0, list_bytes.len() as u64, vertex_bytes(&quads));
     }
     let mut keys_by_batch: Vec<PipelineKey> = frame
         .list
@@ -722,7 +755,7 @@ fn render_flash_ui(
 
     let gpu = &*gpu;
     let programs = gpu.programs.as_ref().unwrap();
-    let stage_group = device.create_bind_group(Some("flash stage"), &programs.stage_layout, &BindGroupEntries::single(gpu.stage.as_ref().unwrap().as_entire_binding()));
+    let stage_group = device.create_bind_group(Some("flash stage"), &programs.stage_layout, &BindGroupEntries::single(state.stage.as_ref().unwrap().as_entire_binding()));
     let groups: Vec<Option<BindGroup>> = frame
         .list
         .batches
@@ -740,7 +773,7 @@ fn render_flash_ui(
     let draw = Draw {
         device: &device,
         programs,
-        vertices: &gpu.vertices.as_ref().unwrap().0,
+        vertices: &state.vertices.as_ref().unwrap().0,
         batches: &frame.list.batches,
         groups: &groups,
         keys: &keys_by_batch,
@@ -751,13 +784,27 @@ fn render_flash_ui(
         format,
         targets: &gpu.targets,
     };
-    let encoder = context.command_encoder();
-    let transfer = gpu.transfer.as_ref().unwrap();
-    let canvas = &gpu.canvas.as_ref().unwrap().1;
-    transfer.run(&device, encoder, &transfer.to_canvas, target.main_texture_view(), canvas);
-    let main = TargetViews { color: canvas, stencil: &gpu.stencil.as_ref().unwrap().1, stage: &stage_group, clear: false };
-    draw.range(encoder, &main, 0, frame.list.batches.len() as u32, None);
-    transfer.run(&device, encoder, &transfer.to_display, canvas, target.main_texture_view());
+    if display.is_some() {
+        let transfer = gpu.transfer.as_ref().unwrap();
+        let canvas = &state.canvas.as_ref().unwrap().1;
+        transfer.run(&device, encoder, &transfer.to_canvas, destination, canvas);
+        let main = TargetViews { color: canvas, stencil: &state.stencil.as_ref().unwrap().1, stage: &stage_group, clear: false };
+        draw.range(encoder, &main, 0, frame.list.batches.len() as u32, None);
+        transfer.run(&device, encoder, &transfer.to_display, canvas, destination);
+    } else {
+        let main = TargetViews { color: destination, stencil: &state.stencil.as_ref().unwrap().1, stage: &stage_group, clear: true };
+        draw.range(encoder, &main, 0, frame.list.batches.len() as u32, None);
+    }
+    true
+}
+
+fn clear_world_target(encoder:&mut CommandEncoder,target:&TextureView) {
+    let _pass=encoder.begin_render_pass(&RenderPassDescriptor {
+        label:Some("flash world empty"),
+        color_attachments:&[Some(RenderPassColorAttachment{view:target,depth_slice:None,resolve_target:None,
+            ops:Operations{load:LoadOp::Clear(LinearRgba::NONE.into()),store:StoreOp::Store}})],
+        ..Default::default()
+    });
 }
 
 /// A layer's render target: its rectangle in display-target pixels, the
@@ -912,6 +959,10 @@ impl Draw<'_> {
     fn range(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, inside: Option<usize>) {
         let mut at = first;
         let mut clear = target.clear;
+        //1402e5b80 begins each movie render with clean stencil bits. The
+        //main target retains scene colour, but must not retain last frame's
+        //mask coverage (a shrinking gauge would otherwise only add coverage).
+        let mut clear_stencil = true;
         let mut index = inside.map_or(0, |i| i + 1);
         while index < self.layers.len() {
             let layer = &self.layers[index];
@@ -922,8 +973,8 @@ impl Draw<'_> {
                 index += 1;
                 continue;
             }
-            self.batches_pass(encoder, target, at, layer.first, &mut clear);
-            self.layer(encoder, target, index, &mut clear);
+            self.batches_pass(encoder, target, at, layer.first, &mut clear, &mut clear_stencil);
+            self.layer(encoder, target, index, &mut clear, &mut clear_stencil);
             at = layer.end;
             // Skip the layers nested in this one.
             index += 1;
@@ -931,16 +982,18 @@ impl Draw<'_> {
                 index += 1;
             }
         }
-        self.batches_pass(encoder, target, at, end, &mut clear);
+        self.batches_pass(encoder, target, at, end, &mut clear, &mut clear_stencil);
     }
 
 
-    fn batches_pass(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, clear: &mut bool) {
+    fn batches_pass(&self, encoder: &mut CommandEncoder, target: &TargetViews, first: u32, end: u32, clear: &mut bool, clear_stencil: &mut bool) {
         if first >= end && !*clear {
             return;
         }
-        let (colour_load, stencil_load) = if *clear { (LoadOp::Clear(LinearRgba::NONE.into()), LoadOp::Clear(0)) } else { (LoadOp::Load, LoadOp::Load) };
+        let colour_load = if *clear { LoadOp::Clear(LinearRgba::NONE.into()) } else { LoadOp::Load };
+        let stencil_load = if *clear || *clear_stencil { LoadOp::Clear(0) } else { LoadOp::Load };
         *clear = false;
+        *clear_stencil = false;
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("flash ui"),
             color_attachments: &[Some(RenderPassColorAttachment { view: target.color, depth_slice: None, resolve_target: None, ops: Operations { load: colour_load, store: StoreOp::Store } })],
@@ -959,7 +1012,7 @@ impl Draw<'_> {
         }
     }
 
-    fn layer(&self, encoder: &mut CommandEncoder, target: &TargetViews, index: usize, clear: &mut bool) {
+    fn layer(&self, encoder: &mut CommandEncoder, target: &TargetViews, index: usize, clear: &mut bool, clear_stencil: &mut bool) {
         let (layer, plan) = (&self.layers[index], &self.plans[index]);
         let size = (plan.rect[2] - plan.rect[0], plan.rect[3] - plan.rect[1]);
         if size.0 <= 0 || size.1 <= 0 {
@@ -980,8 +1033,10 @@ impl Draw<'_> {
         }
         // Draw the result back.
         let group = self.device.create_bind_group(Some("flash layer composite"), &self.programs.texture_layout, &BindGroupEntries::sequential((&source.1, &self.programs.samplers[1])));
-        let (colour_load, stencil_load) = if *clear { (LoadOp::Clear(LinearRgba::NONE.into()), LoadOp::Clear(0)) } else { (LoadOp::Load, LoadOp::Load) };
+        let colour_load = if *clear { LoadOp::Clear(LinearRgba::NONE.into()) } else { LoadOp::Load };
+        let stencil_load = if *clear || *clear_stencil { LoadOp::Clear(0) } else { LoadOp::Load };
         *clear = false;
+        *clear_stencil = false;
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("flash ui"),
             color_attachments: &[Some(RenderPassColorAttachment { view: target.color, depth_slice: None, resolve_target: None, ops: Operations { load: colour_load, store: StoreOp::Store } })],

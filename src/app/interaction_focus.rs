@@ -207,7 +207,10 @@ impl DiscoveredDocuments {
         let key = inventory::key(path);
         let current = self.quantities.get(&key).copied().unwrap_or(0);
         let admitted = quantity.min(maximum.saturating_sub(current));
-        if let Some(record) = self.records.get_mut(&key) { record.is_new = current == 0 && admitted > 0; }
+        if let Some(record) = self.records.get_mut(&key) {
+            record.is_new = current == 0 && admitted > 0;
+            record.ever_owned |= admitted > 0;
+        }
         if admitted != 0 { self.quantities.insert(key, current + admitted); }
         admitted
     }

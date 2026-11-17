@@ -11,6 +11,19 @@ var<storage, read> probe_sh: array<array<vec4<f32>, 9>>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(119)
 var<storage, read> probe_words: array<u32>;
 
+// bevy_backend: final SH alpha is unused by lighting/reflection/water. The
+// model owner publishes source319560's already-rounded elapsed time here.
+fn model_shader_time(tag:u32,fallback:f32)->f32 {
+#ifdef DH2_PARTICLE_INSTANCES
+    return fallback;
+#else
+    if (tag&0x80000000u)!=0u || tag>=arrayLength(&probe_sh){return fallback;}
+    let selected=probe_sh[tag][8].w;
+    if bitcast<u32>(selected)==0x7fc00000u{return probe_sh[0][8].w;}
+    return selected;
+#endif
+}
+
 struct PackedIrradiance {
     luminance: f32,
     chroma_a: vec4<f32>,

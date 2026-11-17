@@ -85,6 +85,7 @@ impl QueryShapes {
             } else if shape.header.flags & 1 != 0 {
                 let vertices = match &shape.geometry {
                     QueryGeometry::Polytope(polytope) => &polytope.vertices[..],
+                    QueryGeometry::Convex(convex) => &convex.vertices[..],
                     _ => return Err("convex alias child has unsupported source geometry".into()),
                 };
                 crate::gameplay::convex_support::scaled_bounds::bounds(shape.header.shape_type,

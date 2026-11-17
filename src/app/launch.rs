@@ -15,6 +15,15 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Adapt owner errors at the host schedule boundary. Keeping the callback
+/// generic preserves a distinct system identity for each registered function.
+fn gameplay_system<F>(mut callback: F) -> impl FnMut(&mut World) -> Result<(), bevy::ecs::error::BevyError>
+where
+    F: FnMut(&mut World) -> Result<(), String> + Send + Sync + 'static,
+{
+    move |world| callback(world).map_err(Into::into)
+}
+
 /// Host root for the immutable archive namespace. Declared before App so its
 /// world and workers release their leases before this session root retires.
 pub(super) struct CatalogSession(pub(super) u64);
@@ -40,6 +49,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let requested = env::args().nth(1)
         .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
+    // Host diagnostic: observe this executable's actual loading/render/exit
+    // schedules without a Winit window, focus changes or a second build.
+    if let Ok(mode) = env::var("DH2_DEBUG_RUNTIME_LIFECYCLE") {
+        return super::runtime_lifecycle_diagnostics::inspect_runtime_lifecycles(
+            &base, &[requested, mode],
+        );
+    }
     let mut runtime = build(base, requested, HostMode::Window)?;
     if let bevy::app::AppExit::Error(code) = runtime.app.run() {
         return Err(format!("Game runtime exited with error code {code}").into());
@@ -339,7 +355,15 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
+    super::projectiles::install(&mut app);
+    super::controller_feedback::install(&mut app);
+    super::explosions::install(&mut app);
+    super::breakables::install(&mut app);
+    super::entity_functions::install(&mut app);
+    app.add_systems(First, gameplay_system(super::time_sync::publish_transitions)
+        .after(game_clock_runtime::ClockSystems::Advance));
     super::player_arms::install_equipment_retirement(&mut app);
+    super::world_models::install(&mut app);
     crate::rendering::bevy_backend::entity_preparation::install(&mut app);
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
     app.insert_resource(super::player_statistics::PlayerStatistics::prepare());
@@ -388,7 +412,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .init_resource::<local_shadow_updates::LocalShadowDraws>()
         .init_resource::<shadow_updates::ParallelWorldDraws>()
         .init_resource::<shadow_updates::ModelCasterFrame>()
-        .init_resource::<shadow_updates::ParticleShadowCasters>()
+        .init_resource::<shadow_updates::RuntimeSurfaceCasters>()
         .init_resource::<shadow_updates::ParallelModelDraws>()
         .add_plugins(super::decal_pass::DecalPassPlugin)
         .add_plugins(super::projected_decals::ProjectedDecalPlugin)
@@ -413,22 +437,69 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             Update,
             (
               (
+                gameplay_system(super::power_wheel::before_ui).before(super::pause_menu::update_pause_menu),
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::interaction_focus::apply_inventory_modifiers,
                 super::player_actions::advance_selection,
                 super::runtime_materials::equipment_admission::advance,
+                super::runtime_entities::advance_frame,
+                super::ai_world::creation::update,
+                super::weapon_firing::prepare,
+                gameplay_system(super::fx_gameplay::prepare),
+                gameplay_system(super::water_impacts::prepare),
+                gameplay_system(super::physics_scene::grenades::prepare),
+                super::weapon_throwing::prepare,
+                super::carrying_resources::prepare,
+                super::player_actions::prepare_fx,
+                super::controller_feedback::prepare,
                 super::power_world::update,
+                gameplay_system(super::physics_scene::occluded_sensor::resolve_pending)
+                    .run_if(super::pause_menu::game_not_paused)
+                    .run_if(super::loading_screen::is_playing),
                 super::power_execution::before_frame,
               ).chain(),
               (
+                (
+                    gameplay_system(super::player::prepare_animation_frame),
+                    gameplay_system(super::player_animation_events::update),
+                    gameplay_system(super::power_execution::execute_animation_actions),
+                ).chain(),
+                gameplay_system(super::physics_scene::ai_managers::before_actors).run_if(super::loading_screen::is_playing),
+                (
                 super::player::update_player,
+                gameplay_system(super::power_wheel::after_player),
+                gameplay_system(super::physics_scene::damage::publish_player_context),
                 super::runtime_materials::equipment_admission::publish_callbacks,
+                gameplay_system(super::physics_scene::player_reference::update),
+                gameplay_system(super::heart::update_frame).run_if(super::loading_screen::is_playing),
+                gameplay_system(super::physics_scene::carrying_host::update_loot_pull).run_if(super::loading_screen::is_playing),
+                gameplay_system(super::pickups::update).run_if(super::loading_screen::is_playing),
+                super::physics_scene::carrying_host::update.run_if(super::loading_screen::is_playing),
+                super::weapon_firing::publish.run_if(super::loading_screen::is_playing),
+                super::weapon_throwing::publish.run_if(super::loading_screen::is_playing),
+                gameplay_system(super::projectiles::update).run_if(super::loading_screen::is_playing),
+                gameplay_system(super::physics_scene::ai_managers::update).run_if(super::loading_screen::is_playing),
                 super::power_execution::after_frame,
+                  gameplay_system(super::flash_surfaces::update),
                 super::entity_messages::update,
+                  gameplay_system(super::flash_surfaces::finish),
+                gameplay_system(super::breakables::update).run_if(super::loading_screen::is_playing),
+                gameplay_system(super::physics_scene::lifetime::advance).run_if(super::loading_screen::is_playing),
+                ).chain(),
+                (
                 super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
+                //State/partial-cast changes can enqueue accepted timed exits
+                //after the pre-component drain. Deliver those without another
+                //animation advance, before querying the newly published blade.
+                gameplay_system(super::player_animation_events::finish_accepted),
+                //Preparation and actual FX/audio retirement must also progress
+                //behind loading and while paused; the canonical entity delta
+                //inside this owner gates the gameplay contact/submit phase.
+                gameplay_system(super::melee::update),
+                ).chain(),
               ).chain(),
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
@@ -443,9 +514,22 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(
             PostUpdate,
-            super::physics_scene::rigid_actor::update_rigid_actors
+            (gameplay_system(super::damage_zones::gather),
+             gameplay_system(super::damage_zones::update),
+             super::physics_scene::simulation::update,
+             gameplay_system(super::physics_scene::water_publication::update),
+             gameplay_system(super::water_impacts::update),
+             gameplay_system(super::explosions::update),
+             super::entity_messages::update,
+             gameplay_system(super::breakables::update),
+             gameplay_system(super::physics_scene::lifetime::advance),
+             super::entity_messages::update,
+             gameplay_system(super::entity_functions::update),
+             gameplay_system(super::entity_removal::update),
+             super::physics_scene::runtime_animation::update).chain()
                 .before(super::model_motion::publish_model_poses)
-                .run_if(super::pause_menu::game_not_paused),
+                .run_if(super::pause_menu::game_not_paused)
+                .run_if(super::loading_screen::is_playing),
         )
         .add_systems(
             PostUpdate,
@@ -498,6 +582,32 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             // equipment admission, which this coordinator publishes: it runs
             // once the scene is published, not only after loading ends.
             .run_if(super::loading_screen::scene_published))
+        .add_systems(PostUpdate, super::world_models::advance_after_materials
+            .after(super::runtime_materials::coordinate)
+            .before(super::world_models::publish_poses)
+            .before(bevy::asset::AssetEventSystems)
+            .run_if(super::loading_screen::scene_published))
+        .add_systems(PostUpdate, super::world_models::publish_poses
+            .after(stream_visible_models)
+            .after(super::world_models::advance_after_materials)
+            .before(VisibilitySystems::VisibilityPropagate)
+            .before(VisibilitySystems::CheckVisibility)
+            .before(shadow_updates::collect_particle_casters)
+            .before(shadow_updates::prepare_parallel_shadow_cpu)
+            .before(bevy::asset::AssetEventSystems))
+        .add_systems(PostUpdate, super::model_motion::publish_shader_clocks
+            .after(super::world_models::publish_poses)
+            .after(game_clock_runtime::ClockSystems::PublishView)
+            .before(shadow_updates::collect_particle_casters)
+            .before(shadow_updates::prepare_parallel_model_draws)
+            .before(local_shadow_updates::publish_local_shadow_draws)
+            .before(super::vegetation_wind::update_vegetation_wind)
+            .before(bevy::asset::AssetEventSystems))
+        .add_systems(PostUpdate, super::projected_decals::sync_model_projections
+            .after(super::world_models::publish_poses)
+            .after(crate::rendering::bevy_backend::camera_scene::simulate_effects))
+        .add_systems(PostUpdate, super::world_models::observe_visibility
+            .after(VisibilitySystems::CheckVisibility))
         .add_systems(
             PostUpdate,
             publish_initial_whole_view_depth
@@ -634,6 +744,8 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             PostUpdate,
             super::particle_view::publish
                 .after(super::water_scene::publish_water_frame)
+                .after(super::usable_effects::publish)
+                .after(super::world_models::publish_poses)
                 .after(super::visibility_queries::stream_visible_models),
         )
         .add_systems(
@@ -644,6 +756,20 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 .after(super::fog_scene::publish_fog_frame)
                 .after(super::water_scene::publish_water_frame)
                 .after(super::usable_effects::publish),
+        )
+        .add_systems(
+            PostUpdate,
+            (super::fx_lights::publish, bevy::ecs::schedule::ApplyDeferred).chain()
+                .after(crate::rendering::bevy_backend::camera_scene::simulate_effects)
+                .before(cull_small_local_lights)
+                .run_if(super::loading_screen::scene_published),
+        )
+        .add_systems(
+            PostUpdate,
+            gameplay_system(super::fx_gameplay::consume_after_simulation)
+                .after(crate::rendering::bevy_backend::camera_scene::simulate_effects)
+                .run_if(super::pause_menu::game_not_paused)
+                .run_if(super::loading_screen::is_playing),
         )
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
         .add_systems(
@@ -657,6 +783,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             Update,
             super::pause_fx::update_pause_screen_fx
                 .after(super::pause_menu::update_pause_menu)
+                .after(gameplay_system(super::power_wheel::after_player))
                 .run_if(resource_exists::<super::pause_fx::PauseScreenFx>),
         );
     bevy::asset::load_internal_asset!(

@@ -14,6 +14,10 @@ impl EffectPoolLinks {
     pub fn environment() -> Self {
         Self::ascending(64)
     }
+    ///19a250/19f4a0:64 shared FSDisto parameter-family slots.
+    pub fn screen_distortion() -> Self { Self::ascending(64) }
+    ///19a650/19fa50:32 shared rumble-family slots.
+    pub fn rumble() -> Self { Self::ascending(32) }
 
     /// 19a470 -> 19f7e0: shared parent FX-instance storage.
     pub fn instances() -> Self {
@@ -23,6 +27,12 @@ impl EffectPoolLinks {
     /// 19a5b0 -> 19f980: shared particle-system family storage.
     pub fn particles() -> Self {
         Self::ascending(1024)
+    }
+
+    ///19a510 ->19f8b0: 128 shared light-family slots. Runtime slots retain
+    ///their renderer allocation across releases; links are reused in source order.
+    pub fn lights() -> Self {
+        Self::ascending(128)
     }
 
     /// 19a0b0 -> 19f230: 256 live decal-FX entries. This family pool is

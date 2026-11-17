@@ -1033,6 +1033,9 @@ pub(crate) fn specialize_prepass_material_meshes(
                     continue;
                 }
                 let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                    view_pending_prepass_mesh_material_queues
+                        .current_frame
+                        .insert((*render_entity, *visible_entity));
                     continue;
                 };
 
@@ -1352,6 +1355,9 @@ pub fn queue_prepass_material_meshes(
                 continue;
             };
             let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+                view_pending_prepass_mesh_material_queues
+                    .current_frame
+                    .insert((*render_entity, *visible_entity));
                 continue;
             };
 

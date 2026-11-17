@@ -91,7 +91,62 @@ impl LevelPointQueries {
 
     fn shape(&self, index: usize) -> Result<WorldQueryShape<'_>, String> {
         let shape = self.geometry.shapes.get(index).and_then(Option::as_ref).ok_or("published query body has no retained geometry")?;
-        Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: None })
+        Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: Some(self) })
+    }
+
+    /// Borrow the same retained geometry used by point queries and body creation.
+    pub(crate) fn ray_hits(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+        hits: &mut Vec<crate::gameplay::shape_ray_query::ShapeRayContact>,
+    ) -> Result<(), String> {
+        self.storage.ray_query(executor, request, query_flags, |index| self.shape(index), hits)
+    }
+
+    pub(crate) fn ray_closest_hit(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+    ) -> Result<Option<crate::gameplay::shape_ray_query::ShapeRayContact>, String> {
+        self.storage.ray_closest_hit(executor, request, |index| self.shape(index))
+    }
+
+    pub(crate) fn ray_any_hit(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+    ) -> Result<Option<crate::gameplay::shape_ray_query::ShapeRayContact>, String> {
+        self.storage.ray_any_hit(executor, request, query_flags, |index| self.shape(index))
+    }
+
+    pub(crate) fn convex_hits(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+        start_hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        self.storage.convex_query(executor, request, |index| self.shape(index), hits, start_hits)
+    }
+
+    pub(crate) fn convex_hits_each(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        submit: &mut dyn FnMut(crate::gameplay::shape_convex_query::ConvexContact, bool),
+    ) -> Result<(), String> {
+        self.storage.convex_query_each(executor, request, |index| self.shape(index), submit)
+    }
+
+    /// Append the actual closest witnesses for an already admitted body pair.
+    pub(crate) fn convex_body_closest(
+        &self, executor: &mut crate::gameplay::shape_convex_query::ShapeConvexQuery,
+        request: &crate::gameplay::shape_convex_query::ConvexClosestQuery<'_>, target_id: u32,
+        contacts: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        self.storage.convex_body_closest(executor,request,target_id,|index|self.shape(index),contacts)
+    }
+
+    pub(crate) fn point_hits(
+        &self,executor:&mut WorldPointQuery,request:&WorldPointRequest,
+        contacts:&mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    )->Result<(),String>{
+        self.storage.point_query_geometry(executor,request,|index|self.shape(index),contacts)
     }
 
     /// 677ec0/678070 keep native hit order when two wind priorities are equal.
@@ -179,6 +234,21 @@ impl LevelPointQueries {
         eprintln!("LEVEL_POINT_QUERY_OBSERVATION samples={} wind_hits={wind_hits} water_hits={water_hits} signature={}",
             bodies.len(), digest.finalize());
         Ok(())
+    }
+}
+
+impl crate::gameplay::shape_tags::ShapeTagSource for LevelPointQueries {
+    fn mapped_material(&self, _index: usize) -> Result<u16, String> {
+        Err("level material mapping requires actual collision body context".into())
+    }
+    fn mapped_material_for_hit(&self, hit: &crate::gameplay::collision_hit::ShapeHitInfo, index: usize) -> Result<u16, String> {
+        use crate::gameplay::physics_world::storage::material_sources::MaterialSourceView;
+        use crate::gameplay::shape_tags::ShapeTagSource;
+        MaterialSourceView { sources: &self.storage.material_sources, materials: &self.storage.materials }
+            .mapped_material_for_hit(hit, index)
+    }
+    fn material_flags(&self, material: u16) -> Result<u16, String> {
+        self.storage.materials.shape_filter_flags(material)
     }
 }
 

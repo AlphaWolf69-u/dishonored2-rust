@@ -36,6 +36,8 @@ pub struct AcousticWorld {
     /// zone_at results by exact point: the zone world is built once in new
     /// and never changes, and most queried sources do not move.
     zones: hashbrown::HashMap<[u32; 3], Option<usize>>,
+    ///0b8c20's graph invalidation reaches each retained object's path query.
+    volume_revision:u64,
 }
 
 /// Bound on remembered zone_at points; moving sources would grow it forever.
@@ -100,7 +102,20 @@ impl AcousticWorld {
             contacts: Vec::new(),
             signals,
             zones: hashbrown::HashMap::new(),
+            volume_revision:0,
         })
+    }
+
+    pub fn volume_revision(&self)->u64{self.volume_revision}
+    ///0ba670/0ba680 write native zone+24/+28, then0b8c20 invalidates
+    ///path calculations. Geometry and route resources remain canonical.
+    pub fn set_volume_strengths(&mut self,zone:usize,occlusion:f32,ai_occlusion:f32)->Result<(),String>{
+        let revision=self.volume_revision.checked_add(1).ok_or("acoustic volume revision exhausted")?;
+        let zone=self.graph.zones.get_mut(zone).ok_or("SoundVolumeControl acoustic zone retired")?;
+        zone.properties[1]=occlusion.to_bits();
+        zone.properties[2]=ai_occlusion.to_bits();
+        self.volume_revision=revision;
+        Ok(())
     }
 
     /// 1400b92e0 overwrites the stored hit and zeroes the distance threshold,
@@ -264,7 +279,7 @@ impl BodyCreationGeometry for Geometry<'_> {
     fn is_mutable(&self, shape: usize) -> Result<bool, String> {
         Ok(match &self.root(shape)?.geometry {
             QueryGeometry::Compound(shape) => shape.is_mutable,
-            QueryGeometry::Polytope(_) => false,
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) | QueryGeometry::CompressedMesh(_) => false,
         })
     }
     fn rotation_limit_measure(&self, _: usize) -> Result<f32, String> {

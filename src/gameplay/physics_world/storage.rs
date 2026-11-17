@@ -23,8 +23,15 @@ use crate::gameplay::{
     signal::Signal,
     space_cells::SpaceCells,
     world_point_query::{WorldPointQuery, WorldPointRequest, WorldQueryShape},
+    world_ray_query::{WorldRayQuery, WorldRayRequest},
+    shape_ray_query::ShapeRayContact,
+    ray_query::RayQuantization,
 };
 mod motion_type;
+mod body_policy;
+pub(crate) mod material_sources;
+pub(crate) mod collision_pairs;
+pub(crate) mod simulation;
 
 pub(crate) struct WorldStorage {
     pub info: WorldInfo,
@@ -34,12 +41,15 @@ pub(crate) struct WorldStorage {
     pub broadphase: HybridBroadphase,
     pub quantization: BroadphaseQuantization,
     pub qualities: BodyQualityLibrary,
+    pub(crate) lod_variants: crate::gameplay::body_lod::LodVariants,
     pub cells: SpaceCells,
     pub step: SweptBoundsStep,
     pub phase: u32,
     pub step_index: u32,
     pub properties: Vec<BodyPropertyBits>,
     pub materials: MaterialOwner<usize, usize>,
+    pub(crate) material_sources: material_sources::MaterialSources,
+    pub(crate) collision_pairs: collision_pairs::CollisionPairs,
     pub motion_properties: crate::gameplay::motion_properties::MotionPropertiesLibrary<usize, usize>,
     pub(crate) motion_timespaces: Option<crate::gameplay::motion_timespaces::MotionTimespaces>,
     /// Per-body event chains (world+9e8). The source's signal-head word is an
@@ -59,7 +69,10 @@ pub(crate) struct WorldStorage {
     disabled_creation: Option<DisabledCreationProgress>,
     disabled_creation_busy: bool,
     body_mode_progress: Option<motion_type::BodyModeProgress>,
+    policy_progress: Option<body_policy::PolicyProgress>,
     activation_scratch: crate::gameplay::body_activation::BodyActivationController,
+    simulation: simulation::SimulationScratch,
+    simulation_busy: bool,
 }
 
 struct TransformProgress {
@@ -244,6 +257,8 @@ impl WorldStorage {
             }
             if progress.abort_step == 5 {
                 if progress.body != u32::MAX {
+                    self.material_sources.remove(progress.body);
+                    self.collision_pairs.retire_body(progress.body);
                     if progress.step < 9 { self.bodies.cancel_uninitialized_reservation(progress.body)?; }
                     else { self.bodies.release_detached(progress.body)?; }
                 }
@@ -487,7 +502,7 @@ impl WorldStorage {
 
     /// Host mutation fence for resumable owner operations.
     pub(crate) fn publication_idle(&self) -> bool {
-        self.removal_scratch.is_idle() && self.destruction.is_none()
+        self.removal_scratch.is_idle() && self.destruction.is_none() && self.policy_progress.is_none()
             && self.body_mode_progress.is_none() && self.activation_scratch.is_idle()
             && self.disabled_creation.is_none() && !self.disabled_creation_busy
             && self.motion_properties.removal_idle()
@@ -616,6 +631,8 @@ impl WorldStorage {
         if mutable {
             self.registry.remove_body(shape, id, geometry)?;
         }
+        self.material_sources.remove(id);
+        self.collision_pairs.retire_body(id);
         Ok(())
     }
 
@@ -650,6 +667,7 @@ impl WorldStorage {
             enable_welding_for_critical_objects: info.enable_welding_for_critical_objects,
             enable_contact_caching: info.enable_contact_caching,
         });
+        let lod_variants = crate::gameplay::body_lod::LodVariants::new(info.lod);
         let cells = if info.simulation_type == 1 {
             SpaceCells::dynamic(info.num_splitter_cells as usize)?
         } else {
@@ -672,14 +690,20 @@ impl WorldStorage {
             disabled_creation: None,
             disabled_creation_busy: false,
             body_mode_progress: None,
+            policy_progress: None,
             activation_scratch: Default::default(),
+            simulation: Default::default(),
+            simulation_busy: false,
             qualities,
+            lod_variants,
             cells,
             step: SweptBoundsStep::initial(),
             phase: 0,
             step_index: 0,
             properties: Vec::new(),
             materials,
+            material_sources: Default::default(),
+            collision_pairs: Default::default(),
             motion_properties,
             motion_timespaces: None,
             body_events: BodyProperties::default(),
@@ -836,6 +860,108 @@ impl WorldStorage {
             offset: self.quantization.offset[..3].try_into().unwrap(),
             scale: self.quantization.inverse_scale[..3].try_into().unwrap(),
         }, request.point, request.hit, request.filter, resolve, contacts)
+    }
+
+    pub fn point_query_geometry<'a>(
+        &self,executor:&mut WorldPointQuery,request:&WorldPointRequest,
+        resolve:impl FnMut(usize)->Result<WorldQueryShape<'a>,String>,
+        contacts:&mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    )->Result<(),String>{
+        contacts.clear();
+        executor.hits_with_geometry(&self.bodies,&self.broadphase.query_trees(),PointQuantization {
+            offset:self.quantization.offset[..3].try_into().unwrap(),
+            scale:self.quantization.inverse_scale[..3].try_into().unwrap(),
+        },request.point,request.hit,request.filter,resolve,&mut |contact,geometry|contacts.push(crate::gameplay::shape_convex_query::ConvexContact {
+            query:request.hit,target:contact.target,position:geometry.point,normal:geometry.normal,
+            distance:geometry.distance[0],fraction:0.,flags:4,
+        }))
+    }
+
+    /// 1287c70/128ed70 query the canonical published bodies and retained shapes.
+    pub fn ray_query<'a>(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        contacts: &mut Vec<ShapeRayContact>,
+    ) -> Result<(), String> {
+        executor.all_hits_with_flags(
+            &self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, query_flags, resolve, contacts,
+        )
+    }
+
+    pub fn ray_closest_hit<'a>(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<ShapeRayContact>, String> {
+        executor.closest_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, resolve)
+    }
+
+    /// 0966e0's any-hit collector over this canonical world's published trees.
+    pub fn ray_any_hit<'a>(
+        &self, executor: &mut WorldRayQuery, request: &WorldRayRequest,
+        query_flags: u32,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<ShapeRayContact>, String> {
+        executor.any_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, query_flags, resolve)
+    }
+
+    pub fn convex_query<'a>(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+        start_hits: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        executor.all_hits(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, resolve, hits, start_hits)
+    }
+
+    pub fn convex_query_each<'a>(
+        &self, executor: &mut crate::gameplay::world_convex_query::WorldConvexQuery,
+        request: &crate::gameplay::world_convex_query::WorldConvexRequest<'_>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        submit: &mut dyn FnMut(crate::gameplay::shape_convex_query::ConvexContact, bool),
+    ) -> Result<(), String> {
+        executor.for_each_hit(&self.bodies, &self.broadphase.query_trees(),
+            RayQuantization {
+                offset: self.quantization.offset[..3].try_into().unwrap(),
+                scale: self.quantization.scale[..3].try_into().unwrap(),
+            }, request, resolve, submit)
+    }
+
+    /// Resolve a broadphase-admitted body pair against its retained geometry.
+    /// Keep the generation in `target_id`; a recycled body slot is not a hit.
+    pub fn convex_body_closest<'a>(
+        &self, executor: &mut crate::gameplay::shape_convex_query::ShapeConvexQuery,
+        request: &crate::gameplay::shape_convex_query::ConvexClosestQuery<'_>,
+        target_id: u32,
+        mut resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        contacts: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
+    ) -> Result<(), String> {
+        let body=self.bodies.get(target_id).ok_or("closest target body generation absent")?;
+        let resource=resolve(body.shape)?;
+        executor.closest_hits(crate::gameplay::shape_convex_query::ConvexQueryTarget {
+            shapes:resource.shapes,transform:body.transform,
+            hit:crate::gameplay::collision_hit::ShapeHitInfo {
+                body_id:Some(body.id),material_id:body.material_id,shape_key:u32::MAX,
+                filter_info:body.filter_info,user_data:body.user_data,
+            },materials:resource.materials,
+        },request,&mut |contact|contacts.push(contact))
     }
 
     /// Resolve queued requests against these actual published bodies/trees.

@@ -70,6 +70,17 @@ fn path(name: &str) -> String {
 fn owner(catalog: &Catalog) -> &Mutex<Registry<Definition>> {
     catalog.midnight_scenes.get_or_init(Default::default)
 }
+/// SmartObject slot resource pointer5b2f40/5b5b80. Declaration identity is
+/// leased independently of the eventual NPC/Player playback projection.
+pub(crate) fn acquire_reference(catalog: &Catalog, name: &str) -> Result<Arc<Definition>, Error> {
+    let path=path(name);
+    if !catalog.contains(&path) {return Err(Error::Absent(path));}
+    let shared=!catalog.has_overlays()
+        && std::env::var("DH2_DEBUG_SEPARATE_MIDNIGHT_RESOURCES").as_deref()!=Ok("1");
+    owner(catalog).lock().map_err(|_|Error::Source("Midnight resource registry is poisoned".into()))?
+        .acquire_with_sharing(&path,0,shared,|_|Ok(Arc::new(Definition::new(&path))))
+        .map_err(Error::Source)
+}
 fn projected<T>(definition: &Arc<Definition>, catalog: &Catalog, cancelled: Option<&dyn Fn() -> bool>,
     select: fn(&Definition) -> &Projection<T>, parse: fn(&str) -> Result<T, String>, view_name: &str)
     -> Result<Arc<SceneView<T>>, Error> {

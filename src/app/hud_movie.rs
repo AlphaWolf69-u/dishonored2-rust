@@ -5,6 +5,9 @@
 //! kept alive for the in-game state, unlike the per-open journal movie.
 mod objectives;
 mod markers;
+mod equipment;
+pub(in crate::app) mod notifications;
+pub(super) use equipment::{Snapshot as Equipment, snapshot as equipment_snapshot};
 use crate::assets::archive::Catalog;
 use crate::flash::{Player, bitmap_resources::MovieBitmaps, render};
 use crate::gameplay::pause_state;
@@ -29,6 +32,8 @@ pub(super) struct HudMovie {
     oxygen_input: Option<Oxygen>,
     oxygen_displayed: Option<f32>,
     mana_low_level: Option<f32>,
+    equipment_input: Option<Equipment>,
+    currency_labels: Option<notifications::CurrencyLabels>,
     starting_powers: Option<Vec<String>>,
     inactivity_delay: Option<f64>,
     inactivity_elapsed: f64,
@@ -82,7 +87,7 @@ pub(super) struct Mana {
     pub has_mark: bool,
 }
 
-fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
+fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64, notifications::CurrencyLabels), String> {
     use crate::gameplay::options::decl::{atom, list_items, scope, unquote};
     use crate::assets::entities::Value;
     let state = crate::assets::entities::player::resolved_decl("gamelogicstateingame", "ui/gamelogic/state_ingame.gamelogicstateingame", |path| {
@@ -97,6 +102,17 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
         None => 0.0,
     };
     let hud_elements = scope(&state, "m_hudElements").ok_or("in-game state has no HUD elements")?;
+    let equipment_name=atom(hud_elements,"enumItem[ARK_HUD_ELEMENT_EQUIPMENT]")
+        .ok_or("in-game state has no equipment HUD")?;
+    let equipment=crate::assets::entities::player::resolved_decl("ui_hudelementequipment",equipment_name,|path|{
+        Ok(catalog.read(path).map_err(|error|error.to_string())?.map(crate::assets::entities::owned_declaration_text))
+    })?;
+    let currency_labels=notifications::CurrencyLabels {
+        single:atom(&equipment,"m_pickuplogCoinName").unwrap_or("").to_owned(),
+        plural:atom(&equipment,"m_pickuplogCoinsName").unwrap_or("").to_owned(),
+        image:atom(&equipment,"m_pickuplogCoinImage").filter(|image|!image.is_empty()&&!image.eq_ignore_ascii_case("NULL"))
+            .ok_or("currency pickup HUD declaration has no actual image")?.to_owned(),
+    };
     let mana_name = atom(hud_elements, "enumItem[ARK_HUD_ELEMENT_MANA]").ok_or("in-game state has no mana HUD")?;
     let mana = crate::assets::entities::player::resolved_decl("ui_hudelementmana", mana_name, |path| {
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::assets::entities::owned_declaration_text))
@@ -113,7 +129,7 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
     let powers = scope(&component, "m_startingPowers").map(|list| list_items(list).into_iter().filter_map(|v| match v {
         Value::Atom(path) => Some(unquote(path).to_owned()), _ => None,
     }).collect()).unwrap_or_default();
-    Ok((low, powers, inactivity))
+    Ok((low, powers, inactivity, currency_labels))
 }
 
 impl HudMovie {
@@ -180,9 +196,9 @@ impl HudMovie {
         screen: (i32, i32),
         generation: u64,
     ) -> Result<Self, String> {
-        let (mana_low_level, starting_powers, inactivity_delay) = match mana_config(catalog) {
-            Ok((low, powers, inactivity)) => (Some(low), Some(powers), Some(inactivity)),
-            Err(e) => { bevy::log::warn!("HUD mana configuration unavailable: {e}"); (None, None, None) }
+        let (mana_low_level, starting_powers, inactivity_delay,currency_labels) = match mana_config(catalog) {
+            Ok((low, powers, inactivity,currency)) => (Some(low), Some(powers), Some(inactivity),Some(currency)),
+            Err(e) => { bevy::log::warn!("HUD declaration configuration unavailable: {e}"); (None, None, None,None) }
         };
         let path = super::pause_menu::state_movie(
             catalog,
@@ -241,6 +257,8 @@ impl HudMovie {
             oxygen_input: None,
             oxygen_displayed: None,
             mana_low_level,
+            equipment_input: None,
+            currency_labels,
             starting_powers,
             inactivity_delay,
             inactivity_elapsed: 0.0,
@@ -408,6 +426,7 @@ impl HudMovie {
         let settings_generation = crate::platform::console::shared().generation();
         if self.settings_generation != settings_generation {
             Self::settings(&mut self.player)?;
+            if let Some(input) = self.equipment_input { self.apply_equipment(input)?; }
             self.settings_generation = settings_generation;
             self.master_visible = None;
             self.interaction(self.current_interaction.clone())?;

@@ -14,10 +14,8 @@ pub enum EquipmentInput {
     /// The authored animleaf with WRAP_REPEAT, not the animBasic executor's
     /// loop (which subtracts its separate end margin).
     DefaultAnimation {
-        /// None when the authored default alias names no clip of the
-        /// model's animsets (gun.cpntweapongun's "gun_idle" exists in no
-        /// installed animset, yet the original equips the gun): the leaf then
-        /// yields the rest pose, as an empty animBasic input does.
+        /// None for an empty default input. A later unresolved alias does
+        /// not replace this input or its live clip (53f4f0).
         clip: Option<usize>,
         time: f32,
     },
@@ -58,6 +56,23 @@ pub struct EquipmentTree {
 }
 
 impl EquipmentTree {
+    ///61b3a0/53f4f0 changes the declared defaultAnim input. Reposting its
+    ///unchanged alias preserves the live leaf clock instead of restarting it.
+    pub fn set_default_alias(&mut self, alias: &str) -> Result<bool, String> {
+        let Some(&clip) = self.animation_aliases.get(alias) else {
+            //53f4f0:1cb780 returns the invalid alias ID and1c7030 returns
+            //no typed clip. The caller leaves its current input unchanged.
+            if self.rig.alias(alias).is_none() { return Ok(false); }
+            return Err(format!("equipment default animation is not prepared: {alias}"));
+        };
+        match &mut self.input {
+            EquipmentInput::DefaultAnimation { clip: current, time } => {
+                if *current != Some(clip) { *current = Some(clip); *time = 0.0; }
+                Ok(true)
+            }
+            EquipmentInput::Basic(_) => Err("equipment defaultAnim alias was routed to an AnimBasic input".into()),
+        }
+    }
     /// 61aed0 binds to the actual arm tag; 61b010 rebinds the retained owned
     /// entity to the actual body tag. These are entity frames before MD6 root
     /// offsets, and remain available for holstered audio/effect ownership.

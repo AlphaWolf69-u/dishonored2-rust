@@ -15,6 +15,13 @@ use super::{component_state::entity::ComponentHandle, entity_lifetime::EntityId}
 /// and its concrete handler, rather than by an entity name or placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Listener {
+    ///GameLocal rumble manager7b64e0's normal11a/11b callbacks.
+    ControllerFeedback { generation: u64 },
+    ///458d00/58a560/608be0: actual AIWorld startup-manager receivers.
+    AIWorldStartup { world: EntityId, handle: ComponentHandle, generation: u32, handler: u16 },
+    AIStatistics { handle: ComponentHandle, generation:u32, handler:u16 },
+    ///41e220's actual AIDangerZone receiver on one full-generation AIWorld.
+    AIWorldDanger { world: EntityId, handle: ComponentHandle, generation: u32 },
     SwarmManager { owner: usize, handler: u16 },
     Component {
         owner: usize,
@@ -29,6 +36,11 @@ pub enum Listener {
     },
     /// The mantle state's 8608e0 listener, bound to its real player and dummy.
     MantleState { player: EntityId, dummy: EntityId },
+    ///8558e0 normal11d receiver owned by the live UseHeart player state.
+    HeartState { player: EntityId },
+    ///611fd0's actual Heart component End-of-speech receiver.
+    HeartComponent { entity:EntityId },
+    PlayerChaos { player: EntityId },
     /// One 854fd0 Action-state callback; the same state ID in another mode
     /// has a distinct source-owned instance and event binding.
     PlayerStateAction { owner: usize, handle: ComponentHandle, generation: u32, mode: usize, state_id: i32 },
@@ -62,7 +74,45 @@ pub struct Event {
 /// connected; they must not introduce a second registry or declaration cache.
 #[derive(Clone, Debug)]
 pub enum Payload {
+    /// 875ba0 -> 70a030: signed joint and the actual SoundEvent declaration lease.
+    AnimationSound { joint:i16, event:std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>, placement:usize },
+    ///458490's76 packet owns its managed NPC list; no process-pointer list
+    ///header is serialized into Bytes across the rewrite's receiver boundary.
+    AICueRequest{kind:u32,position:[f32;3],perceivers:Vec<EntityId>,midnight_handle:u32},
+    ///458490/458600/458730's77 packet, with both full managed generations.
+    AICueGranted{cue:EntityId,instigator:EntityId},
+    ///57b470/57b580: the CrewCore48 managed binding and50 atomic name.
+    CrewBinding { entity:Option<EntityId>, name:std::sync::Arc<str> },
+    ///588a90/588950: a real compiled-tree lease replaces the native pointer.
+    CrewTree(Option<std::sync::Arc<crate::assets::ai_world::crew_tree::Definition>>),
+    ///588950's27 packet preserves the default-tree comparison and result.
+    CrewTreeComplete { default_tree:bool, result:i32, entity:EntityId },
+    ///5dbfb0's50 request packet: handler tag, actual trigger and managed target.
+    BarkRequest {tag:std::sync::Arc<str>,trigger:u32,target:Option<EntityId>},
+    ///5ff2d0/600490: real Observable component, not an NPC-name proxy.
+    AIObservable { entity: EntityId, component: super::pickable_component::CheckedComponent, category: u8 },
+    ///431c90's3B packet: managed body reference and source mode word.
+    AIStatisticsBodyFound { body:Option<EntityId>, kind:i32 },
+    ///490510/491b00: source mode, velocity, sphere and actual grenade owner.
+    AIDangerSphere(super::ai_world::SphereDanger),
     None,
+    ///4d86c1 posts the normal numeric14c packet consumed by626ff0:
+    ///six velocity floats, keep-finite byte and a real culprit entity ID.
+    ProjectileDeflection { linear:[f32;3], angular:[f32;3], keep_finite:bool,
+        culprit:Option<EntityId> },
+    ///6dd740's C6 and6dfa50/6df8c0's29 retain the canonical sound
+    ///object identity instead of copying a process pointer across owners.
+    SoundStimulus { object:super::sound::Emitter, position:[f32;3],
+        context:i32, distance:f32, attention_meter:i32,
+        vertical_attenuation:bool, call_for_help:bool },
+    ///779e00: ARK_MSG_TRIGGER_TOUCH (d2), owned by the actual trigger.
+    TriggerTouch { trigger: ComponentHandle, other: EntityId, entered: bool },
+    ///779e00: ARK_MSG_TRIGGER_CONTACT (d3), delivered to the other entity.
+    TriggerContact { trigger: ComponentHandle, entered: bool },
+    ///77ff90 ->80bc60: actual Wind component and full-generation body ID.
+    WindContact { wind: ComponentHandle, body: u32, entered: bool,
+        ///Host projection of the same immutable Wind declaration and payload.
+        source_index: usize, priority: i32 },
     Use { instigator: Option<EntityId> },
     Bytes(Vec<u8>),
     Entity(EntityId),
@@ -75,6 +125,8 @@ pub enum Payload {
     Damaging { target: EntityId, params: super::damage::Parameters, result: super::damage::DamageResult },
     /// 8769f0/717950: A5 incapacitation or 1A6 damage after death.
     DamageParameters(super::damage::Parameters),
+    ///8769f0 snapshots parameters+88 bit0 before subsequent context changes.
+    Incapacitation { params:super::damage::Parameters, non_counting:bool },
     /// 6170b0, message1AD: the actual item declaration and quantity change.
     InventoryQuantity { item: std::sync::Arc<crate::assets::inventory_item::PickableItem>, previous: u32, current: u32 },
     /// 615840/6147f0, messages9B/9C: transferred count and resulting total.
@@ -185,6 +237,9 @@ impl Drop for EntityEvents {
 }
 
 impl EntityEvents {
+    /// Inspect the existing normal FIFO/deferred listener edits without
+    /// dispatching the post-removal queue during whole-world destruction.
+    pub(crate) fn normal_pending(&self)->bool{!self.queues[Phase::Normal.index()].is_empty()||!self.pending.is_empty()}
     /// Final game-local owner teardown, after entity callbacks have detached.
     /// Do not dispatch the secondary queue here: 810200 belongs to ordinary
     /// removal batches, not whole-world destruction.

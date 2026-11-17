@@ -187,6 +187,9 @@ pub struct WaterFrame {
     /// Current and previous logical rows in game coordinates, published with
     /// the actual main-world frame marker rather than per-draw observations.
     pub matrices: crate::rendering::view_history::ViewMatrixFrame,
+    /// 358ad9..358af6: `time` always uses view group1, independently of
+    /// definition byte4's selection of the `localTime` clock below.
+    pub shader_time: f32,
     pub local_time: [f32; 2],
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]

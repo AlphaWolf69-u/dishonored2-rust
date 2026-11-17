@@ -5,6 +5,130 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+Screen quad parameter staging, 2026-11-17:
+
+- Existing `screen_effects::passes::DistortionPasses::record_vectors` allocates
+  the stride-padded material byte vector plus a temporary byte vector for each
+  underwater quad. An owner-retained eight-slot staging array can eliminate at
+  least `1 + draws.len()` temporary allocations on frames with quads, preserving
+  the 224-byte material records and alignment exactly. The added fullscreen FX
+  contribution already uploads a fixed 368-byte stack block with no heap
+  allocation. This existing quad staging optimization waits for separately
+  measured CPU upload costs and numerical/material regression checks; no
+  performance claim is made by the current fidelity change.
+
+FX light receiver transport, 2026-11-17:
+
+- `app/setup` reserves the existing local-shadow sampling buffer for the placed
+  sources plus the native 128 FX light slots. `shadow_pass/local` still clears
+  and uploads the whole buffer. Relative to the placed-only allocation, each
+  existing upload adds exactly `64 * (next_power_of_two(placed_count + 128) -
+  next_power_of_two(max(placed_count, 1)))` bytes, even when FX slots are idle.
+  Reusing `ShaderBufferPatches` could eliminate unchanged suffix writes; the
+  possible transport saving is that byte count per upload, not a measured time
+  or FPS gain. It waits for verification of source-index stability, withdrawal
+  and stale-tail safety in the completed dynamic-light path. The initial fixed
+  reservation avoids replacing buffers at flash start; no separate light
+  buffer or per-flash allocation was added. Measure only this clear/upload
+  function before keeping a later optimization.
+
+SurfaceImpact resource-demand audit, 2026-11-17:
+
+- Implemented, pending combined validation (2026-11-17): `app/water_impacts` no longer scans all material/water combinations or reserves their FX during startup. Source651020 selects only the accepted first-submersion pair: body material-table entry0 or body+6a through092c10, and water declaration+68/+70 according to isOcean+8c. NULL explicitly uses08b6d0/142283fd8's `default_preset` declaration (descriptor142283fc8;0932d0 binds the same lease to materialID0); this correct fallback is preserved. Accepted packets retain the actual two canonical `Arc<Definition>` leases. The existing ContactFX owner resolves only encountered pairs through002c60 and starts them through the same EffectRequests/ticket/tail path. ContactDatabase is borrowed from the actual ContactSounds result prepared on the existing background map worker; no second acquire on the UI thread, metadata worker/hop, reread or additional resource cache occurs. Audio output/mute do not gate metadata, and absent PhysicsScene means genuinely no water-impact work rather than fabricated readiness. Prediction: zero Cartesian startup reservations and zero impact-time material metadata reads, with identical source/default identities, selected effects, packet/RNG/force order, acknowledgment and activation/tails. No FPS/CPU-time/MB gain is measured. Coordinating-worker compilation and full loading/gameplay verification remain pending; this worker ran no builds, tests or launches.
+
+GPU regression audit, 2026-11-17 (read-only renderer review):
+
+- Current release walking sample with GPU timeline enabled:
+  `analysis/gameplay-repair-20261116/gpu-passes.log`,
+  317 measured frames at 1920x1080. GPU timeline reports 16.976 ms busy and
+  6.942 ms between measured systems (23.918 ms total). Broad system costs are
+  `render_atmosphere` 4.380 ms, `prepare_scene_depth` 1.882 ms,
+  `render_screen_shadow` 1.805 ms, directional shadows 2.264 ms and main opaque
+  3.487 ms. These are system boundaries, not individual effect timings. In
+  particular, atmosphere includes ocean/water colour, refraction/SSR,
+  underwater effects, radial rays and composition; scene-depth preparation
+  includes water depth, ocean work, boat masks and alpha-depth copies. The gap
+  is not identified as CPU work or diagnostic overhead by this measurement.
+  The saved original 5.19 ms fixture is not a matched walking comparison.
+- Profiling overhead is uncontrolled in this sample. In
+  `vendor/bevy_render-0.19.1/src/renderer/gpu_timeline.rs`, each `mark` creates
+  and finishes its own command encoder containing a timestamp. The
+  `render_context.rs` system flush adds two such command buffers around every
+  system that emitted commands. Frame start additionally submits a standalone
+  timestamp buffer directly; frame end adds query resolve, readback copy and
+  asynchronous mapping through a four-buffer ring. This changes command-list
+  count, submission shape, CPU work and potentially driver/GPU synchronization.
+  The implementation does not explicitly wait for GPU completion, but absence
+  of an explicit wait does not establish negligible overhead. These system
+  intervals and gaps describe the instrumented submission stream; neither its
+  observed FPS nor its busy/gap split proves a normal-game GPU bottleneck or
+  reproduces the user's FPS loss without an otherwise identical
+  timeline-disabled control. `RUNTIME_VIEW`
+  counters advance three times per image frame in the observed run and must
+  not be used as FPS counters.
+- One same-executable timeline-disabled control completed at
+  `analysis/gameplay-repair-20261116/gpu-disabled-control.log` (SHA256
+  D33D552654F9087E8EC528661D23F7BCBEC56DF7CE9FBA1FD804F74966F67256).
+  Existing timeline-on application benchmark: 317 frames / 9.00 s, 35.2 FPS;
+  disabled: 324 / 9.02 s, 35.9 FPS. Median/p95/p99 frame times changed from
+  27.220/35.002/40.883 ms to 26.715/33.854/38.405 ms. This one control did not
+  restore high application throughput; it does not quantify normal GPU busy
+  time or prove a particular bottleneck. Both used the same 1920x1080 walking
+  route, 6-second warmup and 15-second total timer (about 9 measured seconds).
+  Final camera Y differed (188.853 vs 189.902) and visible instances differed
+  (4,606 vs 4,773), limiting a fine-grained overhead estimate. The disabled log
+  has zero timestamps/resolves/readbacks and a completed benchmark without an
+  invalid-rendering report. The result helper retained an unavailable/null
+  process exit code and incorrectly rejected the expected zero-sample timeline
+  summary; its raw `valid_control: false` is preserved rather than relabeled as
+  a verified clean exit. Helper bookkeeping was corrected afterward without
+  another run. This is not a comparison with the original game.
+- No excessive fog sample count or resolution was established: the active
+  downsample default is 1 (half-size world fog), projected shadow sampling is
+  eight taps, local scattering traverses actual tile lists capped at 32 lights
+  per type with eight shadow steps, and the two-direction filter follows
+  original `307530`. The old 64-ray experiment is not active. Screen shadows
+  retain the original full-resolution output. The historical second opaque
+  colour pass is absent: `ensure_screen_depth_source` inserts a depth prepass,
+  then the normal opaque colour pass runs once. Lowering quality is not an
+  optimization justified by this audit.
+- Proven unused work: `bevy_backend/sun_rays.rs` constructs a private
+  `DepthPyramid` from `alpha.full` in `SunRays::new`, creates a view restricted
+  to mip 0 (`mip_level_count: Some(1)`), and rebuilds all four mips in
+  `SunRays::prepare` on each active frame. Both actual consumers bind that
+  single-mip view: `dh2_fog_sun_mask.wgsl:57` and
+  `dh2_fog_rays.wgsl:58` sample level 0 only. The installed shader evidence in
+  `analysis/fog-rays-shaders.decl:61` and `:195` likewise explicitly samples
+  level 0 for sun depth and turbulence depth. This proves no lower-mip
+  consumer in this owner; it does not prove that its current depth arithmetic
+  is interchangeable with another owner's depth target.
+- Candidate same-output change: give this owner a first-mip-only producer,
+  preserving the current first-level texel arithmetic, RGBA16F rounding,
+  allocation padding, active extent, scale and sampling. The shared producer
+  in `coarse_depth.rs:237` currently dispatches one fused four-level kernel;
+  this is not three removable dispatches. Remove its unused lower-level
+  reductions/stores only in the SunRays variant; keep the common four-level
+  owner for actual mip consumers. Do not alias the opaque coarse pyramid:
+  this owner's source is the post-water alpha depth. Prediction: identical
+  SunRays inputs/output with fewer lower-mip operations/stores and less private
+  texture storage. No GPU-time saving has been measured, and this small
+  finding does not explain the reported halving of FPS. Implementation waits
+  for the renderer owner and targeted measurement.
+- Existing deeper measurement paths: `analysis/renderdoc_timings.py` already
+  captures an injected original-game target and replays `EventGPUDuration`
+  counters into per-event/marker-path CSV without screenshots; it accepts
+  `DH2_RDC_MODE`, `DH2_RDC_PID`, `DH2_RDC_CAPTURE` and target-name overrides.
+  This is an external capture path, not a resident per-effect timestamp hook,
+  and requires an already instrumented compatible process. Existing
+  `analysis/record_rgp_capture.ps1` can collect per-pass RGP data, but currently
+  launches a visible process and terminates it afterward, so must not be used
+  unchanged for an unattended hidden run. `DH2_GPU_TIMELINE=1` and
+  `analysis/gameplay-repair-20261116/profile-gpu-passes.ps1` provide only the
+  broad system timings above. Fog and screen-shadow render-pass descriptors
+  have `timestamp_writes: None`; no existing effect-specific internal timer
+  was found in those owners. GPU event capture can subdivide their existing
+  labeled passes without generating renderer code or changing effect quality.
+
 Resource lifetime audit follow-ups (full owner inventory and evidence in
 `resource-lifetimes.md`):
 
@@ -2381,3 +2505,53 @@ Audiograph/objective integration sweep (2026-11-15):
   below the run-to-run noise of the shadow pass and does not pay for a
   second instanced rigid and vegetation shadow pipeline. Revisit only if a
   level measures particle shadow draws above about 5% of its shadow draws.
+
+- Projectile629590 collector sorting currently uses stable Rust slice sorting to retain collector-order ties after initial-point/ray merge. The hit vectors and query scratch are retained, but stable sort may use temporary storage for larger hit sets. Port the source collector sorting implementation or supply a retained sorting workspace after source tie behavior is resolved; expected effect is only per-projectile collision collector scratch allocation, not a measured frame-time or memory saving. No performance test was run at user instruction.
+
+
+- Rigid wind807680 host integration currently takes one canonical read guard
+  per registered body before18d020 publication. It allocates no frame buffers
+  and borrows cached aero faces. A single world-guard batch would remove these
+  locks, but needs the canonical velocity publication adapter to accept a
+  borrowed world without nesting its guard; expected gain is only lock-call
+  overhead per wind-registered dynamic body. Deferred until parent completes
+  shared frame publication integration; no measured timing claim.
+
+- Implemented (2026-11-16): Breakable per-actor retirement now checks only its canonical target component list before admitting the existing global pending-effect dispatcher. Prediction: eliminate idle Nactors x Nscene-components shutdown scans. Evidence: Dust loaded, then exceeded the120-second runtime-retirement diagnostic deadline; sampled main stack was in pending_breakable_effect from begin_entity_retirement. Actual command ordering and effect acknowledgement remain unchanged. No post-change CPU number yet: the running diagnostic used the old binary and this worker did not build/test; parent owns combined verification.
+
+- Historical prediction and final measurement (2026-11-16/17, Breakable retirement borrowing): the initial 261 memcpy samples (~32.625 CPU ms/s over eight seconds) were incorrectly attributed to this callsite and steady walking. That capture included retirement, and the shared Scene scope helpers have other callers. The unchanged raw evidence is retained with this classification correction. Valid steady-walking A/B windows contain zero samples in either affected arm; no steady-play CPU or FPS gain is claimed. Full-process traces of the same release then exercised 6,255 actual retirement calls per variant, with successful normal exits. Exact callsite regions show 9 inclusive sampled CPU ms in the legacy Scene arm versus 0 samples in the borrowed Scene arm: about 1.44 observed CPU microseconds per legacy call, with the new arm below the sampling evidence, not literally zero CPU. Nine samples imply sparse, roughly 33% or greater counting uncertainty, before run variability; no precise speedup percentage is justified. The broad caller measured 103 versus 92 sample-ms; removing the arm samples leaves common work at 94 versus 92 ms. Both arms call the same retirement kernel and preserve its acknowledgements. Keep this only as a small host teardown-copy optimization. Whole-run logical transfers fall from 165,632,400 to 17,013,600 bytes (89.728%); this is data movement, not resident RAM/VRAM saved. Evidence: main analysis/gameplay-repair-20261116/retirement-borrowing-comparison.json and the hash-matched raw ETW stores.
+
+- Verified steady-walking opportunity (2026-11-17): PhysicsScene::pending_breakable_effect scans every scene entity/component although only Breakable journals can yield work. The valid8-second release trace contains47 exclusive samples in its exact function range (5.875CPUms/s), separate from teardown. A canonical pending-journal admission index could remove the idle scene scan, but it must preserve existing entity/component command ordering, generation reuse and every enqueue/acknowledgement path. Estimated upper bound at this view is that measured function cost; actual savings require a controlled affected-function A/B. Deferred while the larger gameplay batch receives compiler/runtime acceptance; this finding does not explain half the frame rate.
+
+
+- The earlier walking-only borrowing report remains historical evidence at analysis/gameplay-repair-20261116/borrowing-ab-analysis.json. The final retirement result and corrected attribution are recorded above; neither supports a resident-memory, steady-play CPU or FPS claim.
+
+- Valid walking profile (2026-11-17): main thread105.25CPUms/s and audio-output callback197.125CPUms/s, recorded separately over8seconds. The source-global pending_breakable_effect scan costs5.875exclusiveCPUms/s; world_models::update5.125; wgpu Queue::submit6.625. The unnamed string-keyed lookup atRVA3e8c5d0 costs8.25exclusiveCPUms/s but has no proved source name. These are targeted CPU measurements, not whole-frame/FPS or GPU bottleneck claims. No new optimization was implemented from them. Evidence: analysis/gameplay-repair-20261116/walking-live-valid-hotspots.json.
+
+### Attached FX snapshot extraction (2026-11-17)
+
+`WorldEffectFrames::clone` already clones its mutable pose maps during render
+extraction. Publishing demanded managed equipment/projectile references adds
+entries and, for actual tagged attachments, small per-target tag maps. The
+main-world snapshot reuses stable name/tag allocations across frames and
+prunes withdrawn demands, but extraction still clones those maps/strings
+each frame. The incremental allocation/copy work is proportional to current
+named targets and demanded tags; it is not zero, and no timing, memory-saving
+or FPS improvement is claimed. No whole-level scan or second rig/palette cache
+was introduced. Measure this existing clone boundary after the functional FX
+validation; possible `clone_from` reuse must preserve snapshot separation and
+generation withdrawal. Do not replace it with a new Arc/cache owner without
+evidence of meaningful cost and a verified extraction/lifetime design.
+
+
+### Voronoi CPU query: spatial index and immutable tetra planes (2026-11-17)
+
+Before implementation, the immutable main db5bf17b release (SHA256 11BEFC94E3809D5A770F8E75DDABD773EEF64F5DEDD891F117F364BE3ACA65A9) was sampled for eight seconds on the saved EotW waterfront walking route at 1920x1080. All 21,553 actual Profile events were recovered, with no lost ETW events; 51 absent stacks and 12 first-IP mismatches retain the authoritative sampled leaf only. Exact unwind/PDB ownership gives `ProbeLightingSet::interpolate_query_sh` 189.875 aggregate CPU ms/s inclusive, nested `ProbeQuery::select` 175.750. The private `select_cell` body at RVA456e830..456eee1 costs125.250 exclusive:742 samples (92.750 CPU ms/s) lie in the all-centers scan/prologue before456ea00,260 (32.500) in four-candidate classification. These overlapping worker CPU costs do not establish a serial frame bottleneck or explain the user's entire FPS loss.
+
+Prediction recorded before the change: replacing the all-centers scan with the actual original packed tree should lower select_cell to45–60 aggregate CPU ms/s at comparable query count/input distribution, preserving the approximately32.5 classification cost. Verify actual candidate visits and matching output, and investigate a result outside30% of this model before accepting. `DH2_DEBUG_PROBE_QUERY=linear|spatial` selects both sides in one build; `verify` performs both selections from identical retained query state and compares every output shader-record word, with position-keyed signatures and mismatch counts. `ProbeLightingSet::write_query_diagnostics(phase)` allows phase deltas; final-drop totals include loading and cannot be described as walking-only timing. ETW should scope the affected query functions, not whole-frame time.
+
+Original381cd0 builds three temporary sorted coordinate arrays,385a10 sorts with tie-sensitive swaps,381730 builds eight-byte preorder nodes with cyclic axes and equal-coordinate median adjustment,3856c0 performs near-first four-nearest traversal and split-distance pruning.382d90 classifies those four candidates;385da0 retains cell/tetrahedron state.382130 prepares four unit face normals once;3836c0/382bb0 consume those planes. The rewrite had scanned all cell centers and regenerated tetra normals during every query. The canonical map ProbeLightingSet now owns the tree and PNW runtime tetra records own their48-byte plane backing. Construction sort/partition scratch drops at load completion; final map leases release all backing. No global query cache or per-query allocation is introduced.
+
+Mapped-original oracle `DH2/analysis/performance-20261117/oracle-probe-tree.py` reuses the installed PE with only the already declared RenderDoc patch normalization. The original machine code passed156 tie-sensitive sorting cases,52 exact packed-node comparisons and932 nearest-result cases, including identical centers. This validates the algorithm transcription, not uncompiled Rust or full rendered frames. With `DH2_DEBUG_PROBE_QUERY_FIXTURE=<local binary path>`, actual compiled map loading emits tree/centers/runtime tetra normals for the same oracle's `--fixture` mode, which checks actual Rust tree bytes and every tetra normal against original machine code. Raw installed data remains local and must not be committed. Compilation, actual map fixture/SH verification and same-build scoped timing remain the acceptance gates; no measured improvement is claimed yet.
+
+Scope limits: windowless production diagnostics disable PipelinedRenderingPlugin, so their frame rate is not a visible-session FPS measurement. GPU timeline markers add timestamp command encoders and can perturb work. Current broad atmosphere4.485ms includes more than fog; no per-effect GPU regression or original matched-walk parity is established. Static source sweep: model_motion already memoizes unchanged position/query state and projected_decals already keys lighting by bank generation/position. Particle publication and rigid/arm lighting still repeat queries for unchanged inputs; any additional memoization needs actual caller attribution and its own scoped A/B rather than being bundled into this algorithm change. Parent-object initial-cell borrowing in385da0 is omitted until an actual canonical parent query is supplied; no invented parent cache was added.

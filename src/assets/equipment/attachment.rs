@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+#[derive(Clone)]
 pub(crate) struct Descriptor {
     pub entity: String,
     pub class: String,
@@ -19,6 +20,7 @@ pub(crate) struct Descriptor {
     pub name_source: String,
 }
 
+#[derive(Clone)]
 pub(crate) enum Geometry {
     Rigid(Arc<bmodel::ModelSource>),
     Animated {
@@ -74,6 +76,38 @@ impl Descriptor {
     }
 }
 
+/// Geometry projection for an entity already admitted by its actual runtime
+/// class owner. This does not reinterpret a projectile/chunk as idEntity and
+/// never admits its components. All source geometry and clips use their
+/// existing format registries, not a second world-model cache.
+pub(crate) fn project_world(catalog:&Catalog, definition:&entities::Definition, animation:Option<&str>, cancelled:Option<&dyn Fn()->bool>)->Result<Arc<Descriptor>,String>{
+    check_active(cancelled)?;
+    let mut source=SourceRead{catalog,cancelled,texts:HashMap::new()};
+    if let Some(tree)=animation{
+        let path=format!("generated/decls/animtree/{tree}.decl");
+        let text=source.read(&path)?.ok_or_else(||format!("world actor animation tree missing: {path}"))?;
+        super::tree::anim_basic_only(&text)?;
+    }
+    let mut fields=definition.fields.clone();
+    let edit=entities::scene_motion::child(&fields,"edit");
+    let info=entities::scene_motion::child(edit,"renderModelInfo");
+    let model=entities::scene_motion::atom(info,"model").ok_or("world actor has no authored render model")?.to_owned();
+    let cast_shadows=match entities::scene_motion::atom(info,"m_castShadows"){None|Some("true")=>true,Some("false")=>false,Some(value)=>return Err(format!("invalid world model cast-shadow flag {value}"))};
+    // Runtime spawn parameters supply position separately. The projection
+    // only needs the ordinary placement parser for authored scale/materials.
+    for (key,value) in &mut fields {if key=="edit" {if let entities::Value::Scope(edit)=value {if !edit.iter().any(|(key,_)|key=="spawnPosition"){edit.push(("spawnPosition".into(),entities::Value::Scope(Vec::new())));}}}}
+    let projected=entities::Definition{kind:definition.kind.clone(),class:definition.class.clone(),id:definition.id.clone(),fields};
+    let placement=entities::model_descriptor(&projected,|path|source.read(path))?.ok_or("world actor render model descriptor is absent")?;
+    let geometry=if model.ends_with(".lwo") && animation.is_none(){
+        Geometry::Rigid(Arc::new(bmodel::acquire(catalog,&placement.resource_path,bmodel::CommonModels::shared(catalog))?.ok_or_else(||format!("world model missing: {}",placement.resource_path))?))
+    }else if model.ends_with(".md6") && animation.is_some(){
+        let rig=Arc::new(BasicRig::load_cancellable(catalog,&model,cancelled)?);
+        Geometry::Animated{rig,model:bmd6::ModelSources::new(catalog).acquire(catalog,&placement.resource_path)?}
+    }else{return Err(format!("world model {model}: actual animation component pairing is unsupported"));};
+    check_active(cancelled)?;
+    Ok(Arc::new(Descriptor{entity:definition.id.clone(),class:definition.class.clone(),model,cast_shadows,placement,geometry,name_source:definition.id.clone()}))
+}
+
 /// 1419f8ee0 / upgradeInfo+68. Native61a650 filters this exact value before
 /// issuing input-index-zero commands; STATIC is the constructor's zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,11 +137,118 @@ impl Animation {
 }
 pub(crate) struct Upgrade {
     pub declaration: String,
+    /// DeclEquipmentUpgrade+64/+70, used by6396f0's actual ammo override.
+    pub name: String,
+    pub description: String,
     /// Native upgrade record +10/+18: static-model entity and entitydef
     /// entity are separate optional children, not mutually exclusive.
     pub attachments: [Option<Arc<Descriptor>>; 2],
     pub tag: String,
     pub animation: Animation,
+    pub ammunition: Vec<AmmoUpgrade>,
+}
+
+///141703ee0/638190: only records matching the selected inventory ammo item
+///participate; ordered projectile overrides precede the remaining records.
+#[derive(Clone, Debug)]
+pub(crate) struct AmmoUpgrade {
+    pub item: String,
+    pub static_model: Option<String>,
+    pub materials: Vec<Option<String>>,
+    pub projectile: Option<String>,
+    pub grenade: Option<String>,
+    pub mine: Option<String>,
+    pub muzzle_fx: Option<String>,
+    pub explosion_fx: Option<String>,
+    pub flags: u32,
+}
+impl AmmoUpgrade {
+    fn read(fields: &[(String, entities::Value)]) -> Result<Self, String> {
+        use entities::scene_motion::{atom, child};
+        let text = |name| atom(fields, name).filter(|value| !value.is_empty() && *value != "NULL").map(str::to_owned);
+        let mut flags = 0;
+        //Accessor/setter pairs registered1417037a0 write these14bits.
+        for (bit, name) in ["m_burstMode", "m_firelockMode", "m_chargedMode", "m_spreadReduced", "m_spreadUpgraded",
+            "m_noBullet", "m_canPinLimbs", "m_ignoreArmor", "m_ignoreKnockedOffArmor", "m_passThroughNPCs",
+            "m_electrifiedDamage", "m_bounceOnceInsteadOfBreaking", "m_explodeOnHitNPC", "m_overridePowerWheelDesc"].into_iter().enumerate() {
+            match atom(child(fields, "m_flags"), name) {
+                Some("true" | "1") => flags |= 1 << bit,
+                None | Some("false" | "0") => {},
+                Some(value) => return Err(format!("invalid ammo upgrade flag {name}={value}")),
+            }
+        }
+        //637e40 replaces the whole indexed material array. Null entries are
+        //real surface slots, so compacting them assigns later materials to
+        //the wrong surface.
+        let overrides = child(fields, "m_materialOverrides");
+        let count = atom(overrides, "num").map(str::parse::<usize>).transpose()
+            .map_err(|_| "invalid ammo material override count")?.unwrap_or(0);
+        let mut materials = vec![None; count];
+        for (key, value) in overrides {
+            let Some(index) = key.strip_prefix("m_materialOverrides[").or_else(|| key.strip_prefix("item[")).and_then(|key| key.strip_suffix(']')) else { continue };
+            let index: usize = index.parse().map_err(|_| "invalid ammo material override index")?;
+            let slot = materials.get_mut(index).ok_or("ammo material override index exceeds count")?;
+            let entities::Value::Atom(value) = value else { return Err("ammo material override is not a reference".into()) };
+            let value = value.trim_matches('"');
+            *slot = (!value.is_empty() && !value.eq_ignore_ascii_case("NULL")).then(|| value.to_owned());
+        }
+        Ok(Self { item: text("m_targetAmmoItem").ok_or("ammo upgrade has no target inventory item")?,
+            static_model: text("m_staticModelOverride"), materials,
+            projectile: text("m_projectileDeclOverride"), grenade: text("m_grenadeDeclOverride"), mine: text("m_mineDeclOverride"),
+            muzzle_fx: text("m_muzzleWorldFxOverride"), explosion_fx: text("m_explosionFxOverride"), flags })
+    }
+}
+
+///637e40 is shared by the visible loaded-ammo child and the fired entity
+///(639970). Retain the actual placement/class while replacing only authored
+///render geometry and the last nonempty whole material array.
+pub(crate) fn ammo_model_variant(catalog: &Catalog, base: Arc<Descriptor>, upgrades: &[AmmoUpgrade],
+    cancelled: Option<&dyn Fn() -> bool>) -> Result<Arc<Descriptor>, String> {
+    let model = upgrades.iter().rev().find_map(|upgrade| upgrade.static_model.as_deref());
+    let materials = upgrades.iter().rev().find(|upgrade| !upgrade.materials.is_empty()).map(|upgrade| &upgrade.materials);
+    if model.is_none() && materials.is_none() { return Ok(base); }
+    check_active(cancelled)?;
+    let mut descriptor = (*base).clone();
+    if let Some(model) = model {
+        descriptor = (*static_model_variant(catalog, &descriptor.entity, &descriptor.class,
+            Some(Arc::new(descriptor.clone())), model, cancelled)?).clone();
+    }
+    if let Some(materials) = materials { descriptor.placement.custom_materials = materials.clone(); }
+    check_active(cancelled)?;
+    Ok(Arc::new(descriptor))
+}
+
+/// The actual static-model format owner used by2679a0/87bcb0 and637e40.
+/// Existing actor placement/class remains its own; no entitydef is fabricated.
+pub(crate) fn static_model_variant(
+    catalog: &Catalog, entity: &str, class: &str, base: Option<Arc<Descriptor>>,
+    model: &str, cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Arc<Descriptor>, String> {
+    check_active(cancelled)?;
+    let resource = if let Some(stem) = model.strip_suffix(".lwo") {
+        format!("generated/model/{stem}.bmodel")
+    } else if model.ends_with(".bmodel") {
+        format!("generated/model/{model}")
+    } else {
+        return Err(format!("static model {model} is not a supported rigid source model"));
+    };
+    let geometry = Geometry::Rigid(Arc::new(bmodel::acquire(catalog, &resource,
+        bmodel::CommonModels::shared(catalog))?.ok_or_else(||format!("static model missing: {resource}"))?));
+    let descriptor = if let Some(base) = base {
+        let mut descriptor = (*base).clone();
+        descriptor.model = model.to_owned();
+        descriptor.geometry = geometry;
+        descriptor.placement.resource_path = resource;
+        descriptor
+    } else {
+        Descriptor {entity:entity.to_owned(),class:class.to_owned(),model:model.to_owned(),
+            cast_shadows:true,name_source:entity.to_owned(),geometry,
+            placement:entities::PlacedModel{id:entity.to_owned(),resource_path:resource,
+                position:[0.;3],rotation:[[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]],scale:[1.;3],
+                custom_materials:Vec::new(),max_visible_range:None}}
+    };
+    check_active(cancelled)?;
+    Ok(Arc::new(descriptor))
 }
 
 /// Weak declaration projections only. Geometry acquisition stays with the
@@ -340,9 +481,13 @@ impl Sources {
         check_active(cancelled)?;
         let value = Arc::new(Upgrade {
             declaration: key.clone(),
+            name: entities::scene_motion::atom(&fields, "m_name").unwrap_or("").to_owned(),
+            description: entities::scene_motion::atom(&fields, "m_description").unwrap_or("").to_owned(),
             attachments: [attachment, entity],
             tag,
             animation,
+            ammunition: entities::scene_motion::items(entities::scene_motion::child(&fields, "m_ammoUpgradeInfo"))
+                .into_iter().map(AmmoUpgrade::read).collect::<Result<_, _>>()?,
         });
         if !catalog.has_overlays() {
             self.upgrades.insert(key, Arc::downgrade(&value));

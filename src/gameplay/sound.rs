@@ -2,6 +2,7 @@
 pub mod mix;
 pub mod music_clip;
 pub mod music;
+pub mod bark_history;
 pub mod containers;
 pub mod states;
 pub mod switches;
@@ -12,6 +13,7 @@ pub mod properties;
 pub mod resampler;
 pub mod gain;
 pub mod component;
+pub mod volume_control;
 pub mod admission;
 pub mod propagation;
 pub mod acoustic_world;
@@ -56,21 +58,40 @@ pub enum Emitter {
     /// Host audio object for an actual managed equipment generation. The
     /// authored casting bit is retained for scene cancellation/retirement.
     Equipment { entity: crate::gameplay::entity_lifetime::EntityId, part: u8 },
+    /// 708340 owns one sound object per actual animation joint. Equipment
+    /// identity includes the full managed generation, never just its slot.
+    PlayerJoint { entity: Option<crate::gameplay::entity_lifetime::EntityId>, part: u8, joint: u16 },
     Effect(u64),
     Component { handle: u64, generation: u32 },
+    ///708340: actual component-generation slot joint+1, retained until708620.
+    ComponentJoint { handle: u64, generation: u32, joint: i16 },
 }
 
 impl Emitter {
     /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
     pub fn player_part(self) -> u8 {
         match self {
-            Self::Menu | Self::Effect(_) | Self::Component { .. } => 0,
+            Self::Menu | Self::Effect(_) | Self::Component { .. } | Self::ComponentJoint { .. } => 0,
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,
             Self::PlayerLeftEquipment => 8,
             Self::PlayerRightEquipment => 16,
             Self::Equipment { part, .. } => part,
+            Self::PlayerJoint { part, .. } => part,
+        }
+    }
+
+    pub fn player_owner(self) -> Self {
+        match self {
+            Self::ComponentJoint { handle, generation, .. } => Self::Component { handle, generation },
+            Self::PlayerJoint { entity: Some(entity), part, .. } => Self::Equipment { entity, part },
+            Self::PlayerJoint { part: 1, .. } => Self::PlayerBody,
+            Self::PlayerJoint { part: 2, .. } => Self::PlayerLeftArm,
+            Self::PlayerJoint { part: 4, .. } => Self::PlayerRightArm,
+            Self::PlayerJoint { part: 8, .. } => Self::PlayerLeftEquipment,
+            Self::PlayerJoint { part: 16, .. } => Self::PlayerRightEquipment,
+            _ => self,
         }
     }
 }

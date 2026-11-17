@@ -13,6 +13,7 @@ pub fn equipment_scene_paths(declarations: &crate::entities::player::PlayerDecla
     for (kind, fields) in &declarations.states {
         let names: &[&str] = match kind.as_str() {
             "playerstateslash" => &["m_midnight"],
+            "playerstaterecoil" => &["m_midnight"],
             "playerstateblock" => &["m_midnightIn", "m_midnightSneakIn", "m_midnightIdle", "m_midnightOut", "m_midnightSneakOut"],
             "playerstatecatfall" => &["m_lowDamageMidnightRightArmWithSword", "m_lowDamageMidnightRightArmWithSwordSneaking"],
             _ => continue,
@@ -138,6 +139,9 @@ impl ActionRuntime {
     pub fn executed(&self) -> bool { self.executed }
     /// Slash's focus animation clears bit4 after starting its real scene.
     pub fn set_wait_for_midnight(&mut self, wait: bool) { self.waiting_scene = wait; }
+    /// Derived UsePower virtuals delegate these decisions to the actual power
+    /// component, independently of the shared action declaration's bits.
+    pub fn set_wait_for_execute(&mut self, wait: bool) { self.waiting_execute = wait; }
     /// 1408551c0, called by derived actions after their execute-finished
     /// callback. FireWeapon deliberately does not call this helper.
     pub fn finish_execution(&mut self, decl: &ActionDecl) -> ActionStep {
@@ -151,6 +155,10 @@ impl ActionRuntime {
     }
     pub fn update(&mut self, dt: f32, decl: &ActionDecl, button_down: bool,
         scene_finished: bool, wall_uncrouch_busy: bool) -> ActionStep {
+        self.update_with_type(dt, decl, button_down, scene_finished, wall_uncrouch_busy, decl.kind)
+    }
+    pub fn update_with_type(&mut self, dt: f32, decl: &ActionDecl, button_down: bool,
+        scene_finished: bool, wall_uncrouch_busy: bool, kind: ActionType) -> ActionStep {
         if self.waiting_uncrouch {
             if wall_uncrouch_busy { return ActionStep::None; }
             self.waiting_uncrouch = false;
@@ -159,8 +167,8 @@ impl ActionRuntime {
         let result = if self.waiting_scene {
             if scene_finished { ActionStep::Quit } else { ActionStep::None }
         } else {
-            self.execute_requested |= decl.kind == ActionType::Press
-                || decl.kind == ActionType::Release && !button_down
+            self.execute_requested |= kind == ActionType::Press
+                || kind == ActionType::Release && !button_down
                 || decl.max_hold_duration > 0.0 && self.elapsed >= decl.max_hold_duration;
             if self.execute_requested && (!self.waiting_execute || scene_finished) {
                 ActionStep::Execute
@@ -171,7 +179,10 @@ impl ActionRuntime {
     }
     /// Message 0xf6, 140855750: only the matching scene executes ONMSG.
     pub fn message(&self, decl: &ActionDecl, handle: u32) -> ActionStep {
-        if decl.kind == ActionType::Message && self.scene == handle { ActionStep::Execute }
+        self.message_with_type(decl.kind, handle)
+    }
+    pub fn message_with_type(&self, kind: ActionType, handle: u32) -> ActionStep {
+        if kind == ActionType::Message && self.scene == handle { ActionStep::Execute }
         else { ActionStep::None }
     }
     /// 1408550d0 clears the scene identity without stopping its animation.
@@ -282,6 +293,8 @@ pub struct SlashRuntime {
     pub last_type: i32,
     pub last_time: f64,
     pub chained_scene: u32,
+    /// 86c6a0's separate left-equipment response, stopped on focus entry.
+    pub secondary_scene: u32,
     pub focus_ready: bool,
     pub focus_active: bool,
     pub focused: bool,
@@ -295,7 +308,7 @@ impl Default for SlashRuntime {
     fn default() -> Self {
         // 14086a810 initializes last slash to LEFT (2), timestamp to zero.
         Self { action: Default::default(), last_type: 2, last_time: 0.0,
-            chained_scene: 0, focus_ready: false, focus_active: false,
+            chained_scene: 0, secondary_scene: 0, focus_ready: false, focus_active: false,
             focused: false, can_focus: false, release_seen: false,
             press_again: false, selected: None, dispersion_active: false }
     }
@@ -332,4 +345,11 @@ pub struct BlockRuntime {
     pub phase: u8,
     /// +54: 0 equipped, 1 lower requested, 2 hidden.
     pub left_hand_phase: u8,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecoilRuntime {
+    pub action: ActionRuntime,
+    pub selection: Option<super::slash_rules::Selection>,
+    pub kind: usize,
 }

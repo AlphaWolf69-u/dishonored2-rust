@@ -53,16 +53,27 @@ pub(super) struct ModelShadowCaster {
     pub dynamic: bool,
 }
 
-/// One renderer surface of a particle system: its proxy mesh, the resolved
-/// material owning its shadow programs and the game-space rows of each of
-/// its instances.
+/// A runtime renderer surface: FX instances or an actual world actor. Shared
+/// mesh/material handles use the same ordinary source shadow programs.
 #[derive(Clone)]
-pub(super) struct ParticleShadowSurface {
+pub(super) struct RuntimeShadowSurface {
     pub mesh: Handle<Mesh>,
     pub material: super::MaterialHandle,
     pub models: Vec<[[f32; 4]; 4]>,
     /// Game-space bounds of each instance, for the per-instance cull.
     pub bounds: Vec<[[f32; 3]; 2]>,
+    pub skin: Option<RuntimeSurfaceSkin>,
+    pub clock: Option<(u8,f32)>,
+}
+
+#[derive(Clone)]
+pub(super) struct RuntimeSurfaceSkin {
+    pub palette: Handle<ShaderBuffer>,
+    pub matrix_offset: u32,
+    pub influences: u8,
+    /// Host color/shadow palette includes the world frame; preserve its source
+    /// model transform separately for native MVP winding/raster selection.
+    pub raster_model: [[f32; 4]; 4],
 }
 
 /// A particle system as the model caster it is: each FX system is a render
@@ -74,25 +85,26 @@ pub(super) struct ParticleShadowSurface {
 /// surface in the parallel cascades (8287, 12954, 32193) and the
 /// local-light atlas (20259-27780).
 #[derive(Clone)]
-pub(super) struct ParticleShadowCaster {
+pub(super) struct RuntimeSurfaceCaster {
     pub bounds: [[f32; 3]; 2],
     pub flags: u8,
     pub sort_distance: f32,
     /// The system bounds' camera clip byte, as model casters publish it.
     pub camera_clip_mask: u8,
-    pub surfaces: Vec<ParticleShadowSurface>,
+    pub surfaces: Vec<RuntimeShadowSurface>,
+    pub dynamic: bool,
 }
 
 /// Local-light caster lists address particle systems above the model
 /// source range: entry `usize::MAX - index` is system `index`.
-pub(super) fn particle_caster_index(source: usize, count: usize) -> Option<usize> {
+pub(super) fn runtime_surface_caster_index(source: usize, count: usize) -> Option<usize> {
     let index = usize::MAX - source;
     (index < count).then_some(index)
 }
 
 #[derive(Resource, Default)]
-pub(super) struct ParticleShadowCasters {
-    pub current: Option<(u32, Arc<Vec<ParticleShadowCaster>>)>,
+pub(super) struct RuntimeSurfaceCasters {
+    pub current: Option<(u32, Arc<Vec<RuntimeSurfaceCaster>>)>,
     error: Option<String>,
 }
 
@@ -107,9 +119,13 @@ pub(super) fn collect_particle_casters(
     )>,
     scene: Res<SceneData>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
-    mut output: ResMut<ParticleShadowCasters>,
+    mut output: ResMut<RuntimeSurfaceCasters>,
     mut reported: Local<bool>,
     mut debug_frames: Local<u64>,
+    world_models: Option<Res<super::world_models::WorldModels>>,
+    materials: Res<ShadowMaterials>,
+    frame_count: Res<bevy::diagnostic::FrameCount>,
+    model_shader_data: Res<super::model_motion::ModelShaderData>,
 ) {
     if std::env::var_os("DH2_DEBUG_PARTICLE_SHADOWS").is_some() {
         *debug_frames += 1;
@@ -120,9 +136,11 @@ pub(super) fn collect_particle_casters(
         }
     }
     output.current = None;
-    let Some((frame, draws)) = publication.world_meshes() else { return };
-    let result = (|| -> Result<Vec<ParticleShadowCaster>, String> {
-        if draws.is_empty() { return Ok(Vec::new()); }
+    let (frame, draws) = publication.world_meshes().map_or((frame_count.0, &[][..]), |(frame, draws)| (frame, draws));
+    let result = (|| -> Result<Vec<RuntimeSurfaceCaster>, String> {
+        if draws.is_empty() && world_models.as_deref().is_none_or(|models| models.shadow_bounds().next().is_none()) {
+            return Ok(Vec::new());
+        }
         let (transform, projection) = cameras.single().map_err(|error| error.to_string())?;
         let camera_view = tome::render_query_base_rows(
             Mat4::IDENTITY.to_cols_array_2d(),
@@ -141,7 +159,7 @@ pub(super) fn collect_particle_casters(
         let camera_clip = render_shadow::multiply_rows(projection.rows(), camera_view);
         let camera_clip: [f32; 16] = std::array::from_fn(|i| camera_clip[i / 4][i % 4]);
         let cull_distance = scene.shadow_quality.as_ref().ok_or("caster quality is unavailable")?.cull_distance;
-        let mut systems: Vec<(usize, [[f32; 3]; 2], Vec<ParticleShadowSurface>)> = Vec::new();
+        let mut systems: Vec<(usize, [[f32; 3]; 2], Vec<RuntimeShadowSurface>)> = Vec::new();
         for draw in draws {
             let Some((_, mesh, shadow)) = proxies.iter()
                 .find(|(proxy, _, _)| proxy.source == draw.source && proxy.material == draw.material) else {
@@ -176,11 +194,13 @@ pub(super) fn collect_particle_casters(
                 }
                 world
             }).collect();
-            systems[at].2.push(ParticleShadowSurface {
+            systems[at].2.push(RuntimeShadowSurface {
                 mesh: mesh.0.clone(),
                 material: material.clone(),
                 models,
                 bounds,
+                skin: None,
+                clock: None,
             });
         }
         let mut casters = Vec::new();
@@ -193,7 +213,10 @@ pub(super) fn collect_particle_casters(
             let Some(sort_distance) = render_model::model_caster_sort_distance(info.flags, sphere, &inverse_view, cull_distance)
                 else { continue };
             let camera_clip_mask = render_model::transformed_aabb_clip_cull(&camera_clip, bounds[0], bounds[1]).output_byte;
-            casters.push(ParticleShadowCaster { bounds, flags: info.flags, sort_distance, camera_clip_mask, surfaces });
+            casters.push(RuntimeSurfaceCaster { bounds, flags: info.flags, sort_distance, camera_clip_mask, surfaces, dynamic: false });
+        }
+        if let Some(models) = world_models.as_deref() {
+            models.collect_shadow_casters(&materials, &model_shader_data, &inverse_view, &camera_clip, cull_distance, &mut casters)?;
         }
         Ok(casters)
     })();
@@ -222,12 +245,12 @@ pub(super) fn collect_particle_casters(
 /// disables the per-instance cull for A/B comparison.
 static DEBUG_PARTICLE_SHADOW_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Rigid shadow instances of the given particle system surfaces. The caller
-/// has admitted and culled their systems.
+/// Rigid or current-palette MD6 shadows of admitted runtime surfaces. The
+/// caller uses the source model bounds and static/dynamic bucket rules.
 /// bevy_backend: one draw per particle instance where the original issues one
 /// direct-instanced draw per renderer surface, with the same depth.
-pub(super) fn prepare_particle_shadow_instances<'a>(
-    surfaces: impl IntoIterator<Item = &'a ParticleShadowSurface>,
+pub(super) fn prepare_runtime_surface_shadows<'a>(
+    surfaces: impl IntoIterator<Item = &'a RuntimeShadowSurface>,
     clip: render_shadow::ShadowMatrix,
     hardware_bias: [f32; 3],
     margin: f32,
@@ -246,8 +269,8 @@ pub(super) fn prepare_particle_shadow_instances<'a>(
             .as_ref().map_err(Clone::clone)?;
         let program = inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
             .as_ref().ok_or("particle surface material has no resolved default slot10")?;
-        if program.skin_influences != 0 {
-            return Err("particle surface shadow program is skinned".into());
+        if program.skin_influences != surface.skin.as_ref().map_or(0, |skin| skin.influences) {
+            return Err("runtime surface skin stream and selected shadow program disagree".into());
         }
         let parameters = inputs.parameters.as_ref().map_err(Clone::clone)?
             .as_ref().ok_or("particle surface parameter block is absent")?;
@@ -268,21 +291,31 @@ pub(super) fn prepare_particle_shadow_instances<'a>(
             continue;
         }
         let mvp = render_shadow::multiply_rows(clip, *model);
+        let raster_model = surface.skin.as_ref().map_or(model, |skin| &skin.raster_model);
+        let raster_mvp = render_shadow::multiply_rows(clip, *raster_model);
         let state = render_model::selected_shadow_model_draw_state(
             inputs.source.shadow_draw_flags49(),
             inputs.source.main_render_state.ok_or("particle surface MAIN draw state is absent")?,
             hardware_bias,
             margin,
-            render_shadow::model_mvp_winding_flipped(&mvp),
+            render_shadow::model_mvp_winding_flipped(&raster_mvp),
         );
-        let determinant = model[0][0] * (model[1][1] * model[2][2] - model[1][2] * model[2][1])
-            - model[0][1] * (model[1][0] * model[2][2] - model[1][2] * model[2][0])
-            + model[0][2] * (model[1][0] * model[2][1] - model[1][1] * model[2][0]);
+        let determinant = raster_model[0][0] * (raster_model[1][1] * raster_model[2][2] - raster_model[1][2] * raster_model[2][1])
+            - raster_model[0][1] * (raster_model[1][0] * raster_model[2][2] - raster_model[1][2] * raster_model[2][0])
+            + raster_model[0][2] * (raster_model[1][0] * raster_model[2][1] - raster_model[1][1] * raster_model[2][0]);
         let (front_face, cull_mode) = shadow_pipeline::shadow_mesh_raster(&state, determinant >= 0.0);
         let class = program.class;
         let alpha = shadow_alpha_material(inputs, class, parameters, images, queue, "particle surface")?;
         let rigid = || shadow_pass::ShadowInstanceConstants::Rigid(shadow_pass::shadow_instance_cb(&mvp, multiplier));
-        let (program, constants) = match class {
+        let (program, constants) = if let Some(skin) = &surface.skin {
+            (shadow_pass::ShadowProgram::Skinned {
+                influences: skin.influences, alpha: alpha.is_some(), dither: program.alpha_dither,
+            }, shadow_pass::ShadowInstanceConstants::Skinned {
+                constants: shadow_pass::skin_shadow_instance_cb(&mvp, skin.matrix_offset, multiplier,
+                    alpha.as_ref().map_or([0.; 4], |alpha| alpha.uv_scale_bias)),
+                palette: skin.palette.clone(),
+            })
+        } else { match class {
             shader_cache::CachedRigidShadowClass::Opaque => (shadow_pass::ShadowProgram::RigidOpaque, rigid()),
             shader_cache::CachedRigidShadowClass::AlphaTested => (shadow_pass::ShadowProgram::RigidAlphaTested, rigid()),
             shader_cache::CachedRigidShadowClass::VistaAlpha => (shadow_pass::ShadowProgram::RigidVistaAlpha, rigid()),
@@ -291,14 +324,15 @@ pub(super) fn prepare_particle_shadow_instances<'a>(
                     .ok_or("particle surface wind channels are absent")?
                     .as_ref().map_err(Clone::clone)?;
                 // As model surfaces: group 0 with zero model-time offset.
-                let time = clocks.model_local_time(0.0, 4).ok_or("particle surface model clock is unavailable")?;
+                let (group,offset)=surface.clock.unwrap_or((0,0.));
+                let time = clocks.model_local_time(offset,group<<4).ok_or("runtime surface model clock is unavailable")?;
                 (shadow_pass::ShadowProgram::Vegetation, shadow_pass::ShadowInstanceConstants::Vegetation(
                     shadow_pass::vegetation_shadow_instance_cb(
                         alpha.as_ref().ok_or("particle surface vegetation program has no cutout")?.uv_scale_bias,
                         &parameters.vegetation(None)?, &mvp, time, multiplier),
                 ))
             }
-        };
+        }};
         instances.push(shadow_pass::ShadowInstance {
             mesh: surface.mesh.clone(),
             per_instance_cb: constants,
@@ -393,6 +427,7 @@ pub(super) fn collect_model_casters(
             .cull_distance;
         let mut collected = Vec::new();
         for (source_index, source) in sources.0.iter().enumerate() {
+            if source.flags_18bc&8==0 {continue;}
             if retired.as_ref().is_some_and(|retired| retired.0.contains(&source.placement)) { continue; }
             let surfaces = source
                 .surfaces
@@ -1012,11 +1047,14 @@ pub(super) fn prepare_model_shadow_instances(
     images: &Assets<Image>,
     vegetation: &VegetationMeshInputs,
     queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
+    model_data: Option<&super::model_motion::ModelProbeLighting>,
 ) -> Result<Vec<shadow_pass::ShadowInstance>, String> {
     let mut instances = Vec::with_capacity(records.len());
     for &(source_id, index) in records {
         let source = &sources.0[source_id];
+        if source.flags_18bc&8==0 {continue;}
         let instance = &queue.instances[index];
+        let probe_index = instance.probe_index;
         let mesh = instance.mesh.clone();
         let provenance = instance
             .source
@@ -1181,9 +1219,8 @@ pub(super) fn prepare_model_shadow_instances(
                     // Initial model constructor selects group0, with
                     // zero model-time offset. Later setter events must
                     // update the actual owner before changing this path.
-                    let time = clocks
-                        .model_local_time(0.0, 4)
-                        .ok_or("game initial model clock is unavailable")?;
+                    let default_time=clocks.model_local_time(0.0,4).ok_or("game initial model clock is unavailable")?;
+                    let time=model_data.map_or(default_time,|data|data.shader_clock(probe_index,default_time));
                     (
                         shadow_pass::ShadowProgram::Vegetation,
                         shadow_pass::ShadowInstanceConstants::Vegetation(
@@ -1297,10 +1334,11 @@ pub(super) fn prepare_parallel_model_draws(
     images: Res<Assets<Image>>,
     vegetation: Res<VegetationMeshInputs>,
     queue: Res<SceneRenderQueue>,
-    particles: Res<ParticleShadowCasters>,
+    runtime_surfaces: Res<RuntimeSurfaceCasters>,
     mut commands: Commands,
     mut output: ResMut<ParallelModelDraws>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
+    model_data: Option<Res<super::model_motion::ModelProbeLighting>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(23));
     output.current = None;
@@ -1361,15 +1399,15 @@ pub(super) fn prepare_parallel_model_draws(
                 // FUN_140328260 runs separately for both model buckets. Both
                 // follow static WORLD cache restoration in the preserve pass;
                 // neither model bucket may be saved into the world static cache.
-                let particles = particles.current.as_ref().map(|(_, casters)| casters.as_slice()).unwrap_or(&[]);
+                let runtime_surfaces = runtime_surfaces.current.as_ref().map(|(_, casters)| casters.as_slice()).unwrap_or(&[]);
                 for dynamic in [false, true] {
                     let mut records = Vec::new();
                     let mut keys = Vec::new();
                     // FX systems are static-bucket model casters (201480):
                     // their renderer surfaces sort with the static models.
                     // Their records use the high source range.
-                    if !dynamic {
-                        for (index, caster) in particles.iter().enumerate() {
+                    {
+                        for (index, caster) in runtime_surfaces.iter().enumerate().filter(|(_, caster)| caster.dynamic == dynamic) {
                             if caster.sort_distance > maximum {
                                 continue;
                             }
@@ -1419,14 +1457,14 @@ pub(super) fn prepare_parallel_model_draws(
                         }
                     }
                     render_model::sort_model_shadow_records(&mut records, &mut keys)?;
-                    let particle_record = |source: usize| usize::MAX - source < particles.len();
+                    let runtime_record = |source: usize| usize::MAX - source < runtime_surfaces.len();
                     let mut at = 0;
                     while at < records.len() {
-                        let end = records[at..].iter().position(|&(source, _)| particle_record(source) != particle_record(records[at].0))
+                        let end = records[at..].iter().position(|&(source, _)| runtime_record(source) != runtime_record(records[at].0))
                             .map_or(records.len(), |offset| at + offset);
-                        if particle_record(records[at].0) {
-                            instances.extend(prepare_particle_shadow_instances(
-                                records[at..end].iter().map(|&(source, surface)| &particles[usize::MAX - source].surfaces[surface]),
+                        if runtime_record(records[at].0) {
+                            instances.extend(prepare_runtime_surface_shadows(
+                                records[at..end].iter().map(|&(source, surface)| &runtime_surfaces[usize::MAX - source].surfaces[surface]),
                                 cascade.clip,
                                 owner.hardware_bias,
                                 margin,
@@ -1451,6 +1489,7 @@ pub(super) fn prepare_parallel_model_draws(
                                 &images,
                                 &vegetation,
                                 &mut requests,
+                                model_data.as_deref(),
                             )?);
                         }
                         at = end;
@@ -1650,7 +1689,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
     queue: Res<SceneRenderQueue>,
     world: Option<Res<TomeWorld>>,
     caster_world: Option<Res<ShadowCasterWorld>>,
-    model_bounds: Res<ShadowModelBoundsSources>,
+    model_bounds: (Res<ShadowModelBoundsSources>, Option<Res<super::world_models::WorldModels>>),
     retired: Option<Res<super::interaction_focus::RetiredPlacements>>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     coarse: Res<coarse_depth::CoarseDepthMailbox>,
@@ -1879,7 +1918,8 @@ pub(super) fn prepare_parallel_shadow_cpu(
             radius: scale,
             override_center: false,
         });
-        let dynamic_bounds = model_bounds.active_bounds(&queue, retired.as_deref())?;
+        let mut dynamic_bounds = model_bounds.0.active_bounds(&queue, retired.as_deref())?;
+        if let Some(models) = &model_bounds.1 { dynamic_bounds.extend(models.shadow_bounds()); }
         let ray = toward_sun.map(|value| f32::from_bits(value.to_bits() ^ 0x8000_0000));
         let mut depth_projection = ReceiverDepthProjection {
             receiver_rows: [[0.0; 4]; 4],

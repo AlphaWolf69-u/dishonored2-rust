@@ -64,6 +64,7 @@ mod resource_diagnostics;
 mod preparation_diagnostics;
 mod scene_acquisition_diagnostics;
 mod runtime_lifecycle_diagnostics;
+mod gameplay_action_diagnostics;
 mod fx_lifecycle_diagnostics;
 mod ui_lifecycle_diagnostics;
 pub use runtime_lifecycle_diagnostics::inspect_runtime_lifecycles;
@@ -83,6 +84,7 @@ mod world_instances;
 mod water_objects;
 mod water_scene;
 mod physics_scene;
+mod time_sync;
 mod state;
 mod interaction_focus;
 mod interactions;
@@ -190,9 +192,13 @@ mod player_actions;
 mod powers;
 mod power_world;
 mod player_lifetime;
+mod player_chaos;
 mod power_execution;
 mod player_damage;
 mod entity_messages;
+mod damage_zones;
+mod flash_surfaces;
+mod flash_surface_movie;
 mod player_statistics;
 mod blink;
 mod far_reach;
@@ -200,6 +206,15 @@ mod windblast;
 mod equipment_identity;
 mod equipment_attachment_admission;
 mod player_arm_capture;
+mod player_animation_events;
+mod ai_world;
+mod heart;
+mod controller_feedback;
+mod heart_context;
+mod melee;
+mod power_wheel;
+mod power_wheel_movie;
+mod weapon_throwing;
 mod player_arms;
 mod hud_movie;
 mod pause_menu;
@@ -219,3 +234,28 @@ mod projected_decals;
 mod rigid_body;
 
 mod entity_graphs;
+
+mod world_models;
+
+mod runtime_entities;
+
+mod throwable;
+
+mod carrying;
+mod pickups;
+use physics_scene::carrying_resources;
+
+mod projectiles;
+
+mod weapon_firing;
+
+mod explosions;
+
+mod breakables;
+
+mod entity_functions;
+
+mod entity_removal;
+mod fx_gameplay;
+mod fx_lights;
+mod water_impacts;

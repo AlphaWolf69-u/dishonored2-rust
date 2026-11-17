@@ -297,8 +297,22 @@ group 0.
 - States also cover Sliding (distance-based 7 → 2.5 m/s curve, uphill
   shortening, side steering, blend-out, resume from short falls), Slipping
   (controller slope thresholds every frame, slip-fall) and AutoCrouch with
-  its sensor (`sensors.rs`). The WallCrouch sensor starts disabled and no
-  enabling caller was found, so WALLCROUCH stays unreachable as in the game.
+  its sensor (`sensors.rs`). WallCrouch is a separate low-cover duck: the
+  original sensor compares body sweeps against three eye-level rays, requires
+  clear space above the obstacle, and normally gates entry on pushing toward
+  it while facing its normal (FUN_1403d5060 / FUN_1403d4950). Constructor
+  defaults are a 45-degree facing limit, 0.1-second push duration, and 2 m
+  minimum clear distance beyond the body obstruction; these are not a
+  2 m obstacle-height test (FUN_1403d4350 / FUN_141774390). Installed physics
+  gives sneaking / wallcrouching / autocrouching heights of 1.2 / 1 / 0.68 m.
+  The state uses the Wallcrouching stance, temporarily returns to Sneaking
+  for actions, and restores the lower posture afterward; under-obstacle
+  AutoCrouch takes priority (FUN_140887f80 through FUN_140888330,
+  FUN_140854e50 / FUN_1408550d0). The installed WallCrouch sensor decl is
+  empty and its constructor explicitly disables it; base, Emily and Corvo
+  body definitions do not override that setting. No normal enabling caller
+  was found. WALLCROUCH is not ported and remains unreachable in the rewrite;
+  universal unreachability in the original game has not been established.
 - `camera.rs` / `body.rs` / `animation.rs`: the view is `camera_jnt` of the
   body pose, pitched through the spine03/neck/head split and kept inside the
   capsule. The body anim tree subset runs the loco nodes for the body and
@@ -362,8 +376,28 @@ Inventory quantities and ownership remain in `app/inventory.rs`, nested under
 requests, owned-equipment preparation and source state callbacks. Every owned
 equipment actor is prepared before loading completes, retained when unequipped,
 and retired on depletion through managed identity, renderer and audio receipts.
-Ammunition and upgrade children share those resource owners and use their actual
-entity clocks and bindings. They do not create a second model/material cache.
+The selected ammunition is prepared on demand; visiting a weapon does not load
+every projectile variant. Ammunition and upgrade children share those resource
+owners and use their actual entity clocks and bindings. They do not create a
+second model/material cache.
+
+`app/player_animation_events` is the single consumer of accepted Midnight
+callbacks. It captures real equipment recipients before state changes and
+keeps them until melee and throwing acknowledge the event. `app/melee`,
+`weapon_throwing` and `heart` compose existing collision, damage, FX and audio
+owners; their gameplay state remains in `gameplay/player`. Heart speech shares
+the canonical RuleHandler and Speech resources and the AIWorld Coordination
+blackboard. The weapon wheel shares the existing Iggy worker and waits for its
+actual clear acknowledgement at level retirement.
+
+`app/ai_world/creation` prepares the authored default and section-world demand.
+The runtime entity factory constructs their real component sets and children
+through the same registry as placed objects. `gameplay/ai_world` holds their
+identity/area and manager state; `physics_scene` supplies concrete lifecycle
+callbacks. Navigation metadata is acquired once by its resource owner and
+shared with those managers. Constructor-owned child identities remain valid
+through parent Stop/Deinit, then ordinary level retirement releases their
+resources. These startup dependencies do not implement NPC behavior.
 
 `gameplay/damage` supplies typed damage parameters and receiver rules;
 `player_damage` publishes real player health/death notifications. The existing
@@ -378,12 +412,33 @@ physics, clock, FX, audio and damage owners. Far Reach's hand additives and beam
 use the ordinary clip banks and canonical particle beam endpoint pipeline.
 Swimming and counted physics impulses also use the shared player state owners.
 
-Remaining boundaries include projectile actor/contact/bounce integration (ranged
-fire is not admitted without a real projectile consumer), NPC-dependent powers
-and damage receivers, Breakable destruction, dynamic Far Reach targets,
+Remaining boundaries include NPC-dependent powers and damage receivers,
+unadmitted projectile component families, dynamic Far Reach targets,
 hit-reaction camera additives, and the mantle-dummy Midnight group. The detailed
 source addresses, host differences and verification status are tracked in
 `resource-parity.md`; compilation does not establish gameplay or visual parity.
+
+`app/runtime_entities.rs` owns scoped preparation and construction journals for
+projectiles and breakable chunks. The actors use the same managed identities,
+component registry, bodies and immutable resources as placed objects.
+`app/physics_scene` supplies their typed lifecycle callbacks; its frame driver
+owns contact preparation, solving, callbacks and pose publication. Carrying
+binds the existing object to the actual player and releases that same body when
+thrown. Breakable steps activate preconstructed chunk actors rather than loading
+replacement geometry during the impact.
+HealthDoor retains its own typed factory and damage behavior. SoundVolumeControl
+initializes against the shared acoustic world before Breakable startup; broken
+steps update its zone coefficients and invalidate existing propagation paths.
+Projectile recovery uses the player LootObject state, the same physical pull
+owner and the existing inventory, followed by named pickup notifications.
+
+`app/entity_removal.rs` advances the sole managed removal batch. Component Stop,
+contact and trigger retirement, accepted FX/audio notifications and renderer
+acknowledgements finish before identity reuse. Level shutdown finishes accepted
+work, closes acquisition, drains its workers and releases the canonical resource
+scopes; an asynchronous request cannot outlive its source owner. Host journals
+retain failed callback positions so retry does not repeat damage, impulses,
+random draws or asset acquisition already acknowledged by their owner.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):

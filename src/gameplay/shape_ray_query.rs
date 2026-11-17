@@ -8,7 +8,7 @@ use super::{
     constraint_solver::reciprocal,
     ray_query::RayQueryControl,
     shape_tags::{decode_shape_tag, ShapeTagSource},
-    shape_transform::inverse_rotate_vector,
+    shape_transform::{inverse_rotate_vector, rotate_vector, transform_point, ShapeMatrix},
 };
 use crate::{
     assets::physworld::{
@@ -27,11 +27,44 @@ pub struct RayQueryTarget<'a> {
 pub struct ShapeRayContact {
     pub target: ShapeHitInfo,
     pub fraction: f32,
+    /// Geometry is expressed in the receiving query owner's frame.
+    pub position: [f32; 4],
+    pub normal: [f32; 4],
+    /// cb0fd0 hit/inside-exit bits, separate from body/filter flags.
+    pub flags: u32,
+}
+impl ShapeRayContact {
+    /// 123ec60 transports the witness by scale then pose; normals use
+    /// reciprocal scale then pose and one RSQRTPS/Newton normalization.
+    /// All identity/fraction fields pass through unchanged.
+    pub fn transformed_scaled(mut self, pose: ShapeMatrix, scale: [f32; 4]) -> Self {
+        self.position = transform_point(
+            pose,
+            std::array::from_fn(|i| multiply(self.position[i], scale[i])),
+        );
+        let normal = rotate_vector(
+            pose,
+            std::array::from_fn(|i| multiply(self.normal[i], reciprocal(scale[i]))),
+        );
+        let squared = (normal[1] * normal[1] + normal[0] * normal[0]) + normal[2] * normal[2];
+        let estimate = super::convex_support::faces::reciprocal_sqrt_estimate(squared);
+        let correction = 3.0 - estimate * squared * estimate;
+        self.normal = normal.map(|lane| ((lane * correction) * estimate) * 0.5);
+        self
+    }
+    pub fn transformed_rigid(mut self, pose: ShapeMatrix) -> Self {
+        self.position = transform_point(pose, self.position);
+        self.normal = rotate_vector(pose, self.normal);
+        self
+    }
 }
 #[derive(Default)]
 pub struct ShapeRayQuery {
     pending: Vec<Vec<u16>>,
     active: Vec<usize>,
+    query_flags: u32,
+    mesh: super::compressed_mesh_query::CompressedMeshQuery,
+    mesh_convex: Vec<[f32; 4]>,
 }
 fn min(a: f32, b: f32) -> f32 {
     if a < b {
@@ -71,8 +104,7 @@ fn interval(bounds: [[f32; 3]; 2], origin: [f32; 3], inverse: [f32; 3], limit: f
 
 impl ShapeRayQuery {
     /// Origin/direction are in the body's rigid local frame. 123ec60 copies
-    /// the hit's fraction/identity unchanged while transporting geometry; this
-    /// caller consumes exactly that projection, not normal/witness geometry.
+    /// the hit's fraction/identity unchanged while transporting geometry.
     pub fn cast(
         &mut self,
         target: RayQueryTarget<'_>,
@@ -83,7 +115,21 @@ impl ShapeRayQuery {
         control: &mut RayQueryControl,
         submit: &mut dyn FnMut(ShapeRayContact, &mut RayQueryControl),
     ) -> Result<(), String> {
+        self.cast_with_flags(target, origin, direction, query, filter, 0, control, submit)
+    }
+    pub fn cast_with_flags(
+        &mut self,
+        target: RayQueryTarget<'_>,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        query_flags: u32,
+        control: &mut RayQueryControl,
+        submit: &mut dyn FnMut(ShapeRayContact, &mut RayQueryControl),
+    ) -> Result<(), String> {
         self.active.clear();
+        self.query_flags = query_flags;
         let key = ShapeKey {
             value: target.hit.shape_key,
             bits: 0,
@@ -121,6 +167,44 @@ impl ShapeRayQuery {
         self.active.push(item);
         let result = (|| {
             match &target.shapes.get(item)?.geometry {
+                QueryGeometry::Convex(shape) => {
+                    //The base ConvexShape has no authored planes. Its ray
+                    //virtual uses the existing1412151a0 support GSK kernel.
+                    if let Some(candidate) = super::convex_support::ray::cast(
+                        &shape.vertices,
+                        [origin[0], origin[1], origin[2], 0.],
+                        [direction[0], direction[1], direction[2], 0.],
+                        shape.radius,
+                        control.fraction,
+                        self.query_flags,
+                    )? {
+                        submit(
+                            ShapeRayContact {
+                                target: hit,
+                                fraction: candidate.fraction,
+                                position: [
+                                    crate::float::add(
+                                        origin[0],
+                                        multiply(direction[0], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[1],
+                                        multiply(direction[1], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[2],
+                                        multiply(direction[2], candidate.fraction),
+                                    ),
+                                    0.,
+                                ],
+                                normal: candidate.normal,
+                                flags: candidate.flags,
+                            },
+                            control,
+                        );
+                    }
+                    Ok(())
+                }
                 QueryGeometry::Polytope(shape) => {
                     // World requests carry query flags separately from the
                     // collision-filter packet; the water cast uses flags0.
@@ -129,17 +213,224 @@ impl ShapeRayQuery {
                         origin,
                         direction,
                         control.fraction,
-                        0,
+                        self.query_flags,
                     )? {
                         submit(
                             ShapeRayContact {
                                 target: hit,
                                 fraction: candidate.fraction,
+                                position: [
+                                    crate::float::add(
+                                        origin[0],
+                                        multiply(direction[0], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[1],
+                                        multiply(direction[1], candidate.fraction),
+                                    ),
+                                    crate::float::add(
+                                        origin[2],
+                                        multiply(direction[2], candidate.fraction),
+                                    ),
+                                    0.0,
+                                ],
+                                normal: [
+                                    candidate.normal[0],
+                                    candidate.normal[1],
+                                    candidate.normal[2],
+                                    0.0,
+                                ],
+                                flags: candidate.flags,
                             },
                             control,
                         );
                     }
                     Ok(())
+                }
+                QueryGeometry::CompressedMesh(mesh) => {
+                    use crate::assets::physworld::compressed_mesh::PrimitiveKind;
+                    let header = target.shapes.get(item)?.header;
+                    let query_flags = self.query_flags;
+                    let padded = &mut self.mesh_convex;
+                    self.mesh.visit_swept(
+                        mesh,
+                        super::compressed_mesh_query::MeshSweep {
+                            center: origin,
+                            half_extent: [0.; 3],
+                            direction,
+                        },
+                        header.radius,
+                        control,
+                        &mut |leaf, control| {
+                            let mut child_hit = hit;
+                            decode_shape_tag(
+                                leaf.tag,
+                                target.materials.filter(|_| hit.body_id.is_some()),
+                                &mut child_hit,
+                            )?;
+                            if filter.is_some_and(|f| {
+                                !f.accepts_pair(query.filter_info, child_hit.filter_info, true)
+                            }) {
+                                return Ok(());
+                            }
+                            let mut publish = |fraction: f32,
+                                               normal: [f32; 4],
+                                               flags: u32,
+                                               triangle: u32,
+                                               control: &mut RayQueryControl|
+                             -> Result<(), String> {
+                                child_hit.shape_key =
+                                    key.child(leaf.key | triangle, header.key_bits)?.value;
+                                submit(
+                                    ShapeRayContact {
+                                        target: child_hit,
+                                        fraction,
+                                        position: [
+                                            origin[0] + direction[0] * fraction,
+                                            origin[1] + direction[1] * fraction,
+                                            origin[2] + direction[2] * fraction,
+                                            0.,
+                                        ],
+                                        normal,
+                                        flags,
+                                    },
+                                    control,
+                                );
+                                Ok(())
+                            };
+                            match leaf.kind {
+                                PrimitiveKind::Empty => {}
+                                PrimitiveKind::Triangle | PrimitiveKind::Quad => {
+                                    if let Some(candidate) =
+                                        super::compressed_mesh_query::triangle::cast(
+                                            [leaf.vertices[0], leaf.vertices[1], leaf.vertices[2]],
+                                            origin,
+                                            direction,
+                                            control.fraction,
+                                            query_flags,
+                                            0.,
+                                        )
+                                    {
+                                        publish(
+                                            candidate.fraction,
+                                            candidate.normal,
+                                            candidate.flags,
+                                            0,
+                                            control,
+                                        )?;
+                                    }
+                                    if leaf.kind == PrimitiveKind::Quad && !control.early_out {
+                                        if let Some(candidate) =
+                                            super::compressed_mesh_query::triangle::cast(
+                                                [
+                                                    leaf.vertices[0],
+                                                    leaf.vertices[2],
+                                                    leaf.vertices[3],
+                                                ],
+                                                origin,
+                                                direction,
+                                                control.fraction,
+                                                query_flags,
+                                                0.,
+                                            )
+                                        {
+                                            publish(
+                                                candidate.fraction,
+                                                candidate.normal,
+                                                candidate.flags,
+                                                1,
+                                                control,
+                                            )?;
+                                        }
+                                    }
+                                }
+                                PrimitiveKind::Convex => {
+                                    if leaf.convex_kind == Some(0) {
+                                        if let Some(candidate) =
+                                            super::compressed_mesh_query::convex_ray::sphere(
+                                                *leaf
+                                                    .vertices
+                                                    .first()
+                                                    .ok_or("compressed sphere center absent")?,
+                                                origin,
+                                                direction,
+                                                leaf.radius,
+                                                control.fraction,
+                                                query_flags,
+                                            )
+                                        {
+                                            publish(
+                                                candidate.fraction,
+                                                candidate.normal,
+                                                candidate.flags,
+                                                0,
+                                                control,
+                                            )?;
+                                        }
+                                        return Ok(());
+                                    }
+                                    if leaf.convex_kind == Some(1) {
+                                        if let Some(candidate) =
+                                            super::compressed_mesh_query::capsule_ray::capsule(
+                                                leaf.vertices,
+                                                origin,
+                                                direction,
+                                                leaf.radius,
+                                                control.fraction,
+                                                query_flags,
+                                            )?
+                                        {
+                                            publish(
+                                                candidate.fraction,
+                                                candidate.normal,
+                                                candidate.flags,
+                                                0,
+                                                control,
+                                            )?;
+                                        }
+                                        return Ok(());
+                                    }
+                                    if leaf.convex_kind != Some(2) {
+                                        return Err(
+                                            "invalid compressed convex ray primitive".into()
+                                        );
+                                    }
+                                    //126c750 duplicates the final support to a four-wide
+                                    //count before calling12151a0; preserve its W ID.
+                                    padded.clear();
+                                    padded.extend_from_slice(leaf.vertices);
+                                    if let Some(&last) = padded.last() {
+                                        while padded.len() & 3 != 0 {
+                                            padded.push(last);
+                                        }
+                                    }
+                                    let limit = control.fraction;
+                                    if let Some(candidate) = super::convex_support::ray::cast(
+                                        padded,
+                                        [origin[0], origin[1], origin[2], 0.],
+                                        [
+                                            direction[0] * limit,
+                                            direction[1] * limit,
+                                            direction[2] * limit,
+                                            0.,
+                                        ],
+                                        leaf.radius,
+                                        1.,
+                                        query_flags,
+                                    )? {
+                                        publish(
+                                            candidate.fraction * limit,
+                                            candidate.normal,
+                                            candidate.flags,
+                                            0,
+                                            control,
+                                        )?;
+                                    }
+                                }
+                            }
+                            Ok(())
+                        },
+                    )
                 }
                 QueryGeometry::Compound(shape) => self.compound(
                     target, shape, origin, direction, key, hit, query, filter, control, submit,
@@ -277,7 +568,15 @@ impl ShapeRayQuery {
                                     query,
                                     filter,
                                     control,
-                                    submit,
+                                    &mut |contact, control| {
+                                        submit(
+                                            contact.transformed_scaled(
+                                                instance.transform,
+                                                instance.scale,
+                                            ),
+                                            control,
+                                        )
+                                    },
                                 )?;
                                 if control.early_out {
                                     break;

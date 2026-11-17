@@ -5,6 +5,8 @@ use super::component_state::{ComponentInstance, ComponentOwner};
 /// reference it. Inline declarations have their own owner.
 #[derive(Debug)]
 pub struct PickableDefinition {
+    /// Same Pickable_Simple component; holding never creates inventory data.
+    pub(crate) hold: Option<HoldProperties>,
     pub item: String,
     pub quantity: i32,
     pub(crate) begin_pickup_sound: Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>,
@@ -12,7 +14,22 @@ pub struct PickableDefinition {
     pub usable_by_player: bool,
     pub invisible_npc_loot: bool,
     pub(crate) pickup_interaction: super::interaction_definition::InteractionDef,
+    /// Authored localization keys retained once with the shared declaration.
+    pub(crate) interaction_labels: [String; 2],
+    pub(crate) interaction_state: String,
     pub scheduling: super::component_state::declaration::DeclarationScheduling,
+}
+
+/// arkDeclCpntPickable_Simple::holdAndThrowProps_t, ctor 14076e0e0.
+#[derive(Debug)]
+pub(crate) struct HoldProperties {
+    pub center_offset: [f32; 3],
+    pub angle_offset: [[f32; 3]; 3],
+    pub encumbrance: i32,
+    pub both_hands: bool,
+    pub attach_tag: String,
+    pub collide_with_sword: bool,
+    pub throw_factor: f32,
 }
 
 /// A checked component reference carries the factory generation, not just a
@@ -43,6 +60,9 @@ pub struct PickableComponent {
     /// The component and interaction owner share one immutable declaration.
     pub item: Option<std::sync::Arc<crate::assets::inventory_item::PickableItem>>,
     pub references: Option<PickableReferences>,
+    ///76e030's +28 starts at managed-null0x3fff0010;76e2b0 saves a
+    ///previous real binding parent here. Managed-null is NOT all-ones(-1).
+    pub(crate) pickup_parent:Option<crate::gameplay::entity_lifetime::EntityId>,
     /// Outer None means the game-local player lookup has not been supplied.
     pub player: Option<Option<crate::gameplay::entity_lifetime::EntityId>>,
     /// 76ee70 updates this checked pointer when a loot owner associates the
@@ -60,7 +80,7 @@ impl PickableComponent {
         // the declaration UID along with its other fields.
         let interaction = super::interaction_definition::InteractionDef::new();
         Self { owner, definition, interaction_enabled: true, interaction, interaction_flags: 0,
-            item: None, references: None, player: None, loot_owner: None }
+            item: None, references: None, pickup_parent:None, player: None, loot_owner: None }
     }
 
     /// 76e750's virtual record callback. The host supplies the live

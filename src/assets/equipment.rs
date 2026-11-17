@@ -18,6 +18,7 @@ use std::{
 
 pub(crate) mod attachment;
 mod tree;
+mod firing;
 
 /// Immutable selected-entity projection. No live playback state or independent
 /// material/geometry cache lives here. The host retains this lease while the
@@ -25,11 +26,19 @@ mod tree;
 pub struct Metadata {
     pub entity: String,
     pub class_name: String,
+    /// Complete inherited component admission, used by6dfa50's mode1 lookup.
+    pub ai_tampering_declared: bool,
     pub model: Option<String>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     pub component_kind: String,
     pub equipment: Equipment,
     pub ranged: Option<Ranged>,
+    pub melee: Option<Arc<crate::gameplay::player::melee::Declaration>>,
+    pub heart: Option<Arc<crate::gameplay::player::weapons::heart::Definition>>,
+    pub heart_barks: Option<Arc<crate::gameplay::player::weapons::heart::barks::Definition>>,
+    pub throwable: Option<Arc<crate::gameplay::player::weapons::throwable::Definition>>,
+    pub grenade: Option<Arc<crate::assets::grenades::Definition>>,
+    pub grenade_scheduling: Option<Arc<crate::gameplay::component_state::declaration::DeclarationScheduling>>,
 }
 
 pub struct Descriptor {
@@ -50,6 +59,8 @@ pub struct Visual {
     pub animations: Vec<crate::edge_animation::EdgeAnimation>,
     pub animation_aliases: HashMap<String, usize>,
     default_clip: Option<usize>,
+    ///62ba10 cached model-local bolt socket sampled at the Fire scene key.
+    pub projectile_offset: Option<bevy_math::Vec3>,
 }
 
 impl std::ops::Deref for Descriptor {
@@ -235,7 +246,10 @@ impl Sources {
         };
         let mut class_name = None;
         let mut entity_model = None;
-        for layer in entities::player::entity_chain(&key, &mut |path| sources.read(path))? {
+        let chain = entities::player::entity_chain(&key, &mut |path| sources.read(path))?;
+        let ai_tampering_declared = entities::player::entity_component_from_chain(
+            &chain, "cpntaitampering", |path| sources.read(path))?.is_some();
+        for layer in chain {
             if let Some(class) = entities::scene_motion::atom(&layer, "class") {
                 class_name = Some(class.to_owned());
             }
@@ -300,6 +314,8 @@ impl Sources {
             }
         };
         let equipment = Equipment::read(fields, archetype, slot, &mut enumeration)?;
+        let melee = (kind == "cpntweaponmeleeplayer")
+            .then(|| crate::gameplay::player::melee::Declaration::acquire(catalog, fields)).transpose()?;
         let ranged = is_ranged
             .then(|| {
                 Ranged::read(
@@ -319,14 +335,42 @@ impl Sources {
             entities::player::entity_component(&key, "cpntaudio", |path| sources.read(path))?
                 .map(|fields| crate::gameplay::sound::component::Settings::read(&fields))
                 .transpose()?;
+        let heart = (kind == "cpntheart").then(||
+            crate::gameplay::player::weapons::heart::Definition::read(fields).map(Arc::new))
+            .transpose()?;
+        let heart_barks = if heart.is_some() {
+            entities::player::entity_component(&key, "cpntaibarksdevice", |path| sources.read(path))?
+                .map(|fields| {
+                    let speech = entities::player::entity_component(&key, "cpntspeech", |path| sources.read(path))?
+                        .ok_or_else(|| format!("{key}: AIBarks_Device requires its actual Speech component"))?;
+                    crate::gameplay::player::weapons::heart::barks::Definition::read(catalog, &fields, &speech).map(Arc::new)
+                }).transpose()?
+        } else { None };
+        let throwable = (kind == "cpntweaponthrowable").then(||
+            crate::gameplay::player::weapons::throwable::Definition::read(fields).map(Arc::new))
+            .transpose()?;
+        let grenade_fields = entities::player::entity_component(&key, "cpntgrenade", |path| sources.read(path))?;
+        let grenade = grenade_fields.as_ref()
+            .map(|fields| crate::assets::grenades::Definition::read(fields).map(Arc::new)).transpose()?;
+        let grenade_scheduling = grenade_fields.as_ref().map(|fields| {
+            entities::components::scheduling(fields,
+                crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0)).map(Arc::new)
+        }).transpose()?;
         let metadata = Arc::new(Metadata {
             entity: key.clone(),
             class_name,
+            ai_tampering_declared,
             model: entity_model,
             sound_settings,
             component_kind: kind.clone(),
             equipment,
+            melee,
             ranged,
+            heart,
+            heart_barks,
+            throwable,
+            grenade,
+            grenade_scheduling,
         });
         if !catalog.has_overlays() {
             self.metadata.insert(key, Arc::downgrade(&metadata));
@@ -404,7 +448,7 @@ impl Sources {
         check_active(cancelled)?;
         let rig = Rig::acquire(catalog, &model)?;
         check_active(cancelled)?;
-        let (default_clip, animations, animation_aliases) = {
+        let (default_clip, projectile_offset, animations, animation_aliases) = {
             let mut clips = Clips {
                 catalog,
                 rig: &rig,
@@ -417,7 +461,11 @@ impl Sources {
             } else {
                 None
             };
-            (default_clip, clips.animations, clips.loaded)
+            let projectile_offset = if let Some(settings) = metadata.ranged.as_ref().filter(|settings| settings.family == RangedFamily::Crossbow) {
+                if let Some(alias) = settings.fired_animation.as_deref() { clips.clip_cancellable(alias, cancelled)?; }
+                Some(firing::crossbow_offset(&mut sources, settings, &rig, &mut clips, cancelled)?)
+            } else { None };
+            (default_clip, projectile_offset, clips.animations, clips.loaded)
         };
         check_active(cancelled)?;
         let stem = model
@@ -428,7 +476,7 @@ impl Sources {
         check_active(cancelled)?;
         let descriptor = Arc::new(Descriptor {
             metadata,
-            visual: Some(Visual { model, rig, geometry, animation_tree, animations, animation_aliases, default_clip }),
+            visual: Some(Visual { model, rig, geometry, animation_tree, animations, animation_aliases, default_clip, projectile_offset }),
             sound_settings,
         });
         if !catalog.has_overlays() {
@@ -441,6 +489,17 @@ impl Sources {
 /// Enum constants registered by1419fb190/1419fb470. Callers use this same
 /// table for numeric/declaration metadata instead of inferring a hand/type.
 pub fn enumeration(kind: &str, value: &str) -> Option<i32> {
+    //141a1b2e0's explicit -1 sentinel precedes the eight Flash types.
+    if kind == "arkUIElementUICrosshairType_t" {
+        const TYPES: [&str; 9] = [
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_NULL", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_POWER",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GUN", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_CROSSBOW",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_MINE", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GRENADE",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_STICKY_GRENADE", "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_GRENADE_LOB",
+            "ARK_HUD_ELEMENT_CROSSHAIR_TYPE_STICKY_GRENADE_LOB",
+        ];
+        return value.parse().ok().or_else(|| TYPES.iter().position(|name| *name == value).map(|index| index as i32 - 1));
+    }
     if kind == "arkPlayerStateId_t" {
         // The existing complete registration table141a13470 is shared with
         // interaction rules; equipment quick-use states keep the same enum.
@@ -510,7 +569,18 @@ struct SourceRead<'a> {
 impl SourceRead<'_> {
     fn read(&mut self, path: &str) -> Result<Option<String>, String> {
         check_active(self.cancelled)?;
-        let key = path.replace('\\', "/").to_ascii_lowercase();
+        let mut key = path.replace('\\', "/").to_ascii_lowercase();
+        //Component source suffixes and serialized declaration-manager names
+        //differ (for example AIBarks_Device). Resolve through the same catalog
+        //type metadata as the runtime factory, never a directory alias.
+        if let Some((kind, source)) = key.strip_prefix("generated/decls/").and_then(|value| value.split_once('/')) {
+            if kind.starts_with("cpnt") {
+                let suffix = source.strip_suffix(".decl").and_then(|value| value.rsplit_once('.')).map(|(_, suffix)| suffix)
+                    .ok_or_else(|| format!("equipment component source has no declaration suffix: {key}"))?;
+                let actual = self.catalog.component_declaration_kind(suffix)?;
+                key = format!("generated/decls/{}/{source}", actual.to_ascii_lowercase());
+            }
+        }
         if let Some(text) = self.texts.get(&key) {
             return Ok(text.clone());
         }

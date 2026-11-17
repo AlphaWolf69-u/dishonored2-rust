@@ -3,6 +3,8 @@
 pub mod curve;
 pub mod decal;
 pub mod environment;
+pub mod screen_distortion;
+pub mod rumble;
 pub mod envelope;
 pub mod groups;
 pub mod parameters;
@@ -17,6 +19,9 @@ pub mod values;
 pub mod pool;
 pub mod sound;
 pub mod timing;
+pub mod light;
+pub mod standard_events;
+pub(crate) mod gameplay;
 pub mod vector_curve;
 
 use crate::float::add;

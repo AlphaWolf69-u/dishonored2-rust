@@ -15,11 +15,19 @@ use std::{
     sync::Arc,
 };
 
+#[path = "model_projections.rs"]
+mod model_projections;
+pub(super) use model_projections::{ModelKey, ModelProjectionContexts, copy_parent_projection_contexts};
+pub(super) use model_projections::sync as sync_model_projections;
+
 type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>;
 #[derive(Resource, Default)]
 pub(super) struct GeometryLayouts {
     ids: HashMap<AssetId<Mesh>, u32>,
     samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
+    keys: HashMap<Vec<(bevy::mesh::MeshVertexAttributeId, bevy::render::render_resource::VertexFormat)>, u32>,
+    revision: u64,
+    runtime: HashMap<bevy::asset::AssetId<Mesh>, (std::sync::Weak<()>,Handle<Mesh>,bool)>,
 }
 impl GeometryLayouts {
     pub(super) fn sample_handle_count(&self) -> usize { self.samples.len() }
@@ -35,6 +43,24 @@ pub(super) struct RuntimeDecalProxies {
     owned: HashMap<(String, bool), RuntimeDecalProxySet>,
     cube: Option<Handle<Mesh>>,
     owns_scene_geometry: bool,
+    layout_revision: u64,
+    binding_revision: u64,
+}
+#[derive(Clone, Default)]
+pub(super) struct PreparedProxyBindings {
+    layout: u64,
+    entries: HashMap<(String, bool), (Vec<Entity>, AssetId<super::DecalMaterial>)>,
+}
+impl RuntimeDecalProxies {
+    pub(super) fn binding_revision(&self) -> u64 { self.binding_revision }
+    pub(super) fn capture_bindings<'a>(&self, keys: impl Iterator<Item = &'a (String, bool)>) -> PreparedProxyBindings {
+        PreparedProxyBindings { layout: self.layout_revision, entries: keys.filter_map(|key| self.owned.get(key)
+            .map(|value| (key.clone(), (value.entities.clone(), value._prepared.handle.id())))).collect() }
+    }
+    pub(super) fn binding_matches(&self, prepared: &PreparedProxyBindings, key: &(String, bool)) -> bool {
+        self.layout_revision == prepared.layout && prepared.entries.get(key).zip(self.owned.get(key))
+            .is_some_and(|((entities, material), current)| *entities == current.entities && *material == current._prepared.handle.id())
+    }
 }
 
 #[derive(Default)]
@@ -51,7 +77,7 @@ impl Plugin for ProjectedDecalPlugin {
 }
 pub(super) fn register(app: &mut App) {
     crate::rendering::bevy_backend::projected_decals::register(app);
-    app.init_resource::<GeometryLayouts>();
+    app.init_resource::<GeometryLayouts>().init_resource::<ModelProjectionContexts>();
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
             .init_resource::<DecalReceivers>()
@@ -94,7 +120,42 @@ fn receiver_layouts(
                 mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX)));
         }
     }
+    layouts.keys = keys;
     layouts
+}
+
+/// Register a shared runtime prototype's actual vertex layout, not another
+/// geometry upload. The weak prototype lease gates removal of dynamic samples.
+pub(super) fn register_model_layouts(world: &mut World, meshes: &[(Handle<Mesh>,bool)], lease: std::sync::Weak<()>) {
+    world.resource_scope(|world, mut layouts: Mut<GeometryLayouts>| {
+        let assets=world.resource::<Assets<Mesh>>();
+        for (handle,skinned) in meshes {
+            if layouts.ids.contains_key(&handle.id()){continue}
+            let Some(mesh)=assets.get(handle)else{continue};
+            let key=mesh.attributes().map(|(attribute,_)|(attribute.id,attribute.format)).collect::<Vec<_>>();
+            let next=layouts.keys.len() as u32;
+            let id=*layouts.keys.entry(key).or_insert(next);
+            layouts.ids.insert(handle.id(),id);
+            layouts.runtime.insert(handle.id(),(lease.clone(),handle.clone(),*skinned));
+            if !layouts.samples.iter().any(|(layout,world,_,_)|*layout==id && !*world){
+                layouts.samples.push((id,false,handle.clone(),*skinned));
+                layouts.revision=layouts.revision.wrapping_add(1);
+            }
+        }
+    });
+}
+pub(super) fn prune_model_layouts(world:&mut World){
+    let Some(mut layouts)=world.get_resource_mut::<GeometryLayouts>()else{return};
+    let dead=layouts.runtime.iter().filter_map(|(id,(lease,_,_))|(lease.strong_count()==0).then_some(*id)).collect::<Vec<_>>();
+    if dead.is_empty(){return}
+    let old=layouts.samples.len();
+    let removed_layouts=layouts.samples.iter().filter_map(|(layout,world,mesh,_)|(!*world && dead.contains(&mesh.id())).then_some(*layout)).collect::<Vec<_>>();
+    for id in dead{layouts.runtime.remove(&id);layouts.ids.remove(&id);layouts.samples.retain(|(_,_,mesh,_)|mesh.id()!=id);}
+    for &layout in &removed_layouts{
+        let replacement=layouts.runtime.iter().find_map(|(id,(_,handle,skinned))|(layouts.ids.get(id)==Some(&layout)).then(||(handle.clone(),*skinned)));
+        if let Some((handle,skinned))=replacement{layouts.samples.push((layout,false,handle,skinned));}
+    }
+    if layouts.samples.len()!=old || !removed_layouts.is_empty(){layouts.revision=layouts.revision.wrapping_add(1);}
 }
 
 pub(super) fn prepare(
@@ -222,7 +283,9 @@ pub(super) fn publish_runtime(
 ) {
     let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
         (request, state, scene_data, queue, materials) else { return };
-    if state.revision == Some(request.prepared_revision) { return; }
+    if state.revision == Some(request.prepared_revision) && state.layout_revision == layouts.revision { return; }
+    let layouts_changed = state.layout_revision != layouts.revision;
+    let previous_binding_revision = state.binding_revision;
     let ready = request.prepared_generation == Some(request.generation);
     if !ready && state.owned.is_empty() { return; }
     if ready && !request.prepared.is_empty() && scene.tree.is_none() {
@@ -241,7 +304,7 @@ pub(super) fn publish_runtime(
     }
     let wanted: std::collections::HashSet<_> = request.prepared.iter().map(|item| (item.name.clone(), item.world)).collect();
     let obsolete: Vec<_> = state.owned.iter().filter(|(key, current)| {
-        !wanted.contains(*key) || request.prepared.iter().find(|item| item.name == key.0 && item.world == key.1)
+        layouts_changed || !wanted.contains(*key) || request.prepared.iter().find(|item| item.name == key.0 && item.world == key.1)
             .is_some_and(|item| item.handle.id() != current._prepared.handle.id()
                 || !Arc::ptr_eq(&item.program, &current._prepared.program))
     }).map(|(key, _)| key.clone()).collect();
@@ -250,6 +313,7 @@ pub(super) fn publish_runtime(
     }
     for key in obsolete {
         if let Some(old) = state.owned.remove(&key) {
+            state.binding_revision = state.binding_revision.wrapping_add(1);
             for entity in old.entities { commands.entity(entity).try_despawn(); }
             if let Some(variants) = Arc::make_mut(&mut scene.programs).get_mut(&key.0) {
                 variants[usize::from(key.1)] = None;
@@ -300,6 +364,7 @@ pub(super) fn publish_runtime(
             [usize::from(item.world)] = Some(item.program.clone());
         expected.extend(entities.iter().copied());
         state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
+        state.binding_revision = state.binding_revision.wrapping_add(1);
     }
     // Only owned dynamic depth-box proxies use this cube. Static proxies have
     // their own setup mesh, and other dynamic projections borrow receivers.
@@ -319,6 +384,11 @@ pub(super) fn publish_runtime(
         };
     }
     state.revision = Some(request.prepared_revision);
+    state.layout_revision = layouts.revision;
+    if state.binding_revision != previous_binding_revision {
+        request.gpu_completed.store(0, std::sync::atomic::Ordering::Release);
+        request.completed.store(0, std::sync::atomic::Ordering::Release);
+    }
 }
 
 fn extract_receivers(
@@ -332,6 +402,9 @@ fn extract_receivers(
     transforms: Extract<Query<&GlobalTransform>>,
     model_bounds: Extract<Option<Res<super::ShadowModelBoundsSources>>>,
     mut bounds_owners: Local<BoundsOwners>,
+    model_contexts: Extract<Res<ModelProjectionContexts>>,
+    runtime_models: Extract<Option<Res<super::world_models::WorldModels>>>,
+    visibility: Extract<Query<&ViewVisibility>>,
 ) {
     receivers.0.clear();
     if layouts.ids.is_empty() || decal_scene.tree.is_none() {
@@ -417,6 +490,11 @@ fn extract_receivers(
             },
             bounds,
             layout,
+            surface: match source.surface { RenderModelSurface::Bmodel{surface,..}|RenderModelSurface::Bmd6{surface,..}=>surface,_=>0 },
+            model_projections: placement.and_then(|placement|model_contexts.rows(ModelKey::Placed(placement)).cloned()),
         });
     });
+    if let Some(models)=runtime_models.as_deref(){
+        models.projection_receivers(&layouts.ids,&materials,&visibility,&model_contexts,&mut receivers.0);
+    }
 }

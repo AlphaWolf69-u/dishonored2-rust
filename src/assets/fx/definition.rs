@@ -1,7 +1,7 @@
 //! Immutable FX descriptor data, before map-specific material/image resolution.
 //! idDeclFX registration1413630d0, inherited acquisition140022fd0 and release
 //! 1401c5990. Child parser errors stay deferred until their consumer admits them.
-use super::{EffectGroupAsset, decal::{decal, DecalAsset}, particle_system::{particle_system, ParticleSystemAsset}, screen_quad::{screen_quad, ScreenQuadAsset}};
+use super::{EffectGroupAsset, decal::{decal, DecalAsset}, particle_system::{particle_system, ParticleSystemAsset}, screen_quad::{screen_quad, ScreenQuadAsset}, light::{light, LightAsset}};
 use crate::assets::entities::Value;
 use crate::gameplay::options::decl::{atom, list_items, scope};
 use std::{borrow::Cow, sync::{Arc, OnceLock}};
@@ -26,7 +26,10 @@ pub(crate) struct Group {
     pub asset: Arc<EffectGroupAsset>,
     pub particles: OnceLock<Family<ParticleSystemAsset>>,
     pub decals: OnceLock<Family<DecalAsset>>,
+    pub lights: OnceLock<Family<LightAsset>>,
     pub quads: OnceLock<Family<ScreenQuadAsset>>,
+    pub screen_distortions: OnceLock<Family<super::screen_distortion::Asset>>,
+    pub rumbles: OnceLock<Family<super::rumble::Asset>>,
     /// Preserve the world consumer's independent family-admission boundary.
     /// This contains no generic syntax, image data, GPU handle or playback state.
     pub world_other_families: OnceLock<WorldAdmission>,
@@ -57,7 +60,7 @@ fn syntax_bytes(value: &Value) -> usize {
 fn other_families(fields: &Fields) -> WorldAdmission {
     let mut result = WorldAdmission { families: Vec::new(), syntax_bytes: 0, payload_bytes: 0 };
     for (name, value) in fields.iter().filter(|(name, value)| {
-        !matches!(name.as_str(), "m_particleSystems" | "m_sounds" | "m_decals" | "m_subFXs")
+        !matches!(name.as_str(), "m_particleSystems" | "m_lights" | "m_sounds" | "m_decals" | "m_subFXs" | "m_entityDefs" | "m_explosions" | "m_fsDistoParms" | "m_rumbles")
             && matches!(value, Value::Scope(_))
             && scope(fields, name).is_some_and(|entries| !list_items(entries).is_empty()
                 || atom(entries, "num").is_some_and(|count| count != "0"))
@@ -75,7 +78,10 @@ fn other_families(fields: &Fields) -> WorldAdmission {
 struct PendingGroup {
     particles: Option<Family<ParticleSystemAsset>>,
     decals: Option<Family<DecalAsset>>,
+    lights: Option<Family<LightAsset>>,
     quads: Option<Family<ScreenQuadAsset>>,
+    screen_distortions: Option<Family<super::screen_distortion::Asset>>,
+    rumbles: Option<Family<super::rumble::Asset>>,
     other: Option<WorldAdmission>,
 }
 impl Definition {
@@ -84,8 +90,8 @@ impl Definition {
         let sources = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?;
         let groups = sources.iter().map(|fields| Ok(Group {
                 asset: Arc::new(super::effect_group(fields)?),
-                particles: OnceLock::new(), decals: OnceLock::new(),
-                quads: OnceLock::new(), world_other_families: OnceLock::new(),
+                particles: OnceLock::new(), decals: OnceLock::new(), lights: OnceLock::new(),
+                quads: OnceLock::new(), screen_distortions: OnceLock::new(), rumbles: OnceLock::new(), world_other_families: OnceLock::new(),
             })).collect::<Result<Vec<_>, String>>()?;
         let result = Self { groups_present: scope(fields, "m_groups").is_some(), source_paths: Vec::new(), groups };
         result.prepare_sources(&sources, consumer, cancelled)?;
@@ -95,7 +101,7 @@ impl Definition {
         self.groups.iter().filter(|group| group.asset.enabled).any(|group|
             (consumer.particles() && group.particles.get().is_none())
                 || (matches!(consumer, Consumer::World)
-                    && (group.decals.get().is_none() || group.world_other_families.get().is_none()))
+                    && (group.decals.get().is_none() || group.lights.get().is_none() || group.screen_distortions.get().is_none() || group.rumbles.get().is_none() || group.world_other_families.get().is_none()))
                 || (matches!(consumer, Consumer::Screen) && group.quads.get().is_none()))
     }
     /// Stage every newly requested family before publication. A cancelled
@@ -119,8 +125,14 @@ impl Definition {
                     .then(|| family(fields, "m_particleSystems", particle_system)),
                 decals: (active && matches!(consumer, Consumer::World) && group.decals.get().is_none())
                     .then(|| family(fields, "m_decals", decal)),
+                lights: (active && matches!(consumer, Consumer::World) && group.lights.get().is_none())
+                    .then(|| family(fields, "m_lights", light)),
                 quads: (active && matches!(consumer, Consumer::Screen) && group.quads.get().is_none())
                     .then(|| family(fields, "m_fullScreenQuads", screen_quad)),
+                screen_distortions: (active && matches!(consumer, Consumer::World) && group.screen_distortions.get().is_none())
+                    .then(|| family(fields, "m_fsDistoParms", super::screen_distortion::descriptor)),
+                rumbles: (active && matches!(consumer, Consumer::World) && group.rumbles.get().is_none())
+                    .then(|| family(fields, "m_rumbles", super::rumble::descriptor)),
                 other: (active && matches!(consumer, Consumer::World) && group.world_other_families.get().is_none())
                     .then(|| other_families(fields)),
             });
@@ -129,7 +141,10 @@ impl Definition {
         for (group, pending) in self.groups.iter().zip(pending) {
             if let Some(value) = pending.particles { let _ = group.particles.set(value); }
             if let Some(value) = pending.decals { let _ = group.decals.set(value); }
+            if let Some(value) = pending.lights { let _ = group.lights.set(value); }
             if let Some(value) = pending.quads { let _ = group.quads.set(value); }
+            if let Some(value) = pending.screen_distortions { let _ = group.screen_distortions.set(value); }
+            if let Some(value) = pending.rumbles { let _ = group.rumbles.set(value); }
             if let Some(value) = pending.other { let _ = group.world_other_families.set(value); }
         }
         Ok(())

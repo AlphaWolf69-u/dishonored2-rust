@@ -26,6 +26,9 @@ pub struct BodyInfo {
     pub angular_velocity: [f32; 4],
     pub mass: f32,
     pub mass_distribution: usize,
+    ///Runtime Cinfo's real ref-counted distribution, distinct from a serialized
+    ///HKX item index. No fabricated resource index represents this pointer.
+    pub mass_distribution_lease: Option<std::sync::Arc<MassDistribution>>,
     pub motion_properties_id: u16,
     pub reserved_body_id: u32,
     pub reserved_motion_id: u32,
@@ -54,6 +57,7 @@ impl Default for BodyInfo {
             angular_velocity: [0.; 4],
             mass: -1.,
             mass_distribution: 0,
+            mass_distribution_lease: None,
             motion_properties_id: u16::MAX,
             reserved_body_id: 0x00ff_ffff,
             reserved_motion_id: 0x7fff_ffff,
@@ -188,6 +192,7 @@ impl PhysWorld {
                 angular_velocity: vector(12)?,
                 mass: float(data, offsets[13])?,
                 mass_distribution: word(14)? as usize,
+                mass_distribution_lease: None,
                 motion_properties_id: short(15)?,
                 reserved_body_id: word(16)?,
                 reserved_motion_id: word(17)?,

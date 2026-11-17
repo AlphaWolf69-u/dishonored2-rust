@@ -1,6 +1,6 @@
 #define_import_path dh2_surface
 
-#import dh2_indirect::{material_lighting_values,evaluate_mapped_diffuse_response}
+#import dh2_indirect::{material_lighting_values,evaluate_mapped_diffuse_response,model_shader_time}
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
 #ifdef DH2_DECAL_INSTANCES
 #import dh2_decal_projection::{decal_diffuse_dx, decal_diffuse_dy}
@@ -125,10 +125,11 @@ fn filling_plane_alpha(alpha:f32,world:vec3<f32>,clip_w:f32)->f32 {
     if plane<0.0 {discard;}
     return faded_alpha*p[8].x*filling_step(0.0,p[10].x,plane);
 }
-fn filling_colour(uv:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> {
+fn filling_colour(uv:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>,model_tag:u32)->vec4<f32> {
     let p=surface.filling;
-    let one=filling_pan_uv(uv,uv1.y*p[4].z+globals.time,p[4].x,p[0].xy,p[2].xy);
-    let two=filling_pan_uv(-uv,-uv1.y*p[4].z+globals.time,p[4].y,p[1].xy,p[3].xy);
+    let local_time=model_shader_time(model_tag,globals.time);
+    let one=filling_pan_uv(uv,uv1.y*p[4].z+local_time,p[4].x,p[0].xy,p[2].xy);
+    let two=filling_pan_uv(-uv,-uv1.y*p[4].z+local_time,p[4].y,p[1].xy,p[3].xy);
     let a=textureSampleGrad(filling_distortion1,surface_sampler,one,dpdx(one),dpdy(one)).x;
     let b=textureSampleGrad(filling_distortion2,surface_sampler,two,dpdx(two),dpdy(two)).x;
     let distorted=uv+vec2(a*b);
@@ -233,7 +234,7 @@ fn decal_diffuse(uv0:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> 
     return colour;
 }
 
-fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> SurfaceResult {
+fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>,model_tag:u32) -> SurfaceResult {
     let dx0 = dpdx(uv0);
     let dy0 = dpdy(uv0);
     let dx1 = dpdx(uv1);
@@ -377,7 +378,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         let dy = select(dy0, dy1, surface.uv_sets[0].x != 0u) * surface.uv[0].xy;
         out.occlusion = textureSampleGrad(occlusion_texture, occlusion_sampler, scaled_uv(uv, surface.uv[0]), dx, dy).r;
     }
-    if compiled_misc.z==6u {out.albedo=filling_colour(uv0,uv1,vertex_color);}
+    if compiled_misc.z==6u {out.albedo=filling_colour(uv0,uv1,vertex_color,model_tag);}
     out.roughness = 1.0 - g;
     if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }

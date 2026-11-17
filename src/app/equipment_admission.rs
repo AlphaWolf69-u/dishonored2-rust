@@ -211,7 +211,7 @@ fn withdraw_model(
 /// Source EntityStop: children withdraw before the parent. Keep CPU leases and
 /// the exact managed generation reachable until every fallible detach accepted
 /// its real renderer/audio retirement cursor.
-fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
+fn retire_owned(world: &mut World, identity: &str) -> Result<bool, String> {
     let id = world
         .get_resource::<RuntimeMaterialCoordinator>()
         .and_then(|owner| owner.equipment.stopping.get(identity).copied())
@@ -224,6 +224,13 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
             .insert(identity.to_owned(), id);
     }
     if let Some(id) = id {
+        if super::super::player_animation_events::blocks_retirement(world, id) { return Ok(false); }
+        if !super::super::weapon_firing::retired(world, identity) { return Ok(false); }
+        super::super::weapon_throwing::remove_owned(world, identity);
+        super::super::melee::remove_owned(world, identity);
+        if !super::super::weapon_throwing::retired(world, identity)
+            || !super::super::melee::retired(world, identity) { return Ok(false); }
+        if !super::super::heart::retire(world, id)? { return Ok(false); }
         super::super::equipment_attachment_admission::remove(world, id)?;
     }
     let receipt = id.and_then(|entity| withdraw_model(world, entity));
@@ -245,7 +252,7 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
             owner.equipment.upgrade_starts.retain(|entry| entry.0 != id);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Withdraw only the actual inventory actor; declarations/models may be shared
@@ -294,7 +301,7 @@ pub(in crate::app) fn shutdown(world: &mut World) -> Result<bool, String> {
                 player.retire_equipment(&identity);
             }
         }
-        retire_owned(world, &identity)?;
+        if !retire_owned(world, &identity)? { return Ok(false); }
     }
     if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
         owner.equipment.ammo_starts.clear();
@@ -435,6 +442,9 @@ pub(super) fn failed(world: &World, state: &mut RuntimeMaterialCoordinator, erro
 /// Native staged draws advance after continue on the normal game clock.
 pub(in crate::app) fn startup_pending(world: &World) -> bool {
     super::super::equipment_attachment_admission::startup_pending(world)
+        || super::super::weapon_throwing::startup_pending(world)
+        || super::super::melee::startup_pending(world)
+        || super::super::heart::startup_pending(world)
         || world
             .get_resource::<RuntimeMaterialCoordinator>()
             .is_some_and(|owner| {
@@ -449,6 +459,30 @@ pub(in crate::app) fn startup_pending(world: &World) -> bool {
                 })
             })
 }
+///Read only from the existing opt-in loading diagnostic; ordinary gameplay
+///does not format owner state or retain a second readiness certificate.
+pub(in crate::app) fn debug_startup_pending(world: &World) -> String {
+    let coordinator = world.get_resource::<RuntimeMaterialCoordinator>();
+    let models = coordinator.map_or(0, |owner|owner.equipment.requested.iter().filter(|(id,lease)|
+        lease.strong_count()!=0&&!admitted(world,**id)).count());
+    let attachments = coordinator.map_or(0, |owner|owner.equipment.attachments.iter().filter(|(id,lease)|
+        lease.strong_count()!=0&&!attachment_admitted(world,**id)).count());
+    let mut report=format!("attachments={} throwable={} melee={} Heart={} models_pending={} attachment_models_pending={}",
+        super::super::equipment_attachment_admission::startup_pending(world),
+        super::super::weapon_throwing::startup_pending(world),
+        super::super::melee::startup_pending(world),
+        super::super::heart::startup_pending(world),models,attachments);
+    if let (Some(actions),Some(player))=(world.get_resource::<super::super::player_actions::PlayerActions>(),
+        world.get_resource::<super::super::player::PlayerState>().and_then(|state|state.player.as_ref())) {
+        report.push_str("\n  ");report.push_str(&actions.debug_ready_targets(player));
+    }
+    for details in [super::super::equipment_attachment_admission::debug_startup_pending(world),
+        super::super::weapon_throwing::debug_startup_pending(world),super::super::melee::debug_startup_pending(world),
+        super::super::fx_gameplay::debug_pending(world)] {
+        report.push('\n');report.push_str(&details);
+    }
+    report
+}
 
 pub(in crate::app) fn startup_error(world: &World) -> Option<String> {
     world
@@ -462,6 +496,9 @@ pub(in crate::app) fn startup_error(world: &World) -> Option<String> {
         })
         .cloned()
         .or_else(|| super::super::equipment_attachment_admission::startup_error(world))
+        .or_else(|| super::super::weapon_throwing::startup_error(world).map(str::to_owned))
+        .or_else(|| super::super::melee::startup_error(world).map(str::to_owned))
+        .or_else(|| super::super::heart::startup_error(world))
 }
 
 fn take_staged(world: &mut World, identity: &str) -> Option<Arc<Descriptor>> {
@@ -483,6 +520,7 @@ fn retain_metadata(
         identity,
         &metadata.entity,
         &metadata.class_name,
+        metadata.ai_tampering_declared,
     )?;
     // Own the declaration before fallible component registration, so Stop can
     // unwind the exact managed generation even if audio registration fails.
@@ -513,6 +551,12 @@ fn retain_metadata(
         };
         super::super::equipment_identity::bind_audio(world, entity, part)?;
     }
+    if let Some(definition) = &metadata.heart {
+        super::super::heart::prepare(world, entity, definition.clone())?;
+    }
+    if let Some(definition) = &metadata.heart_barks {
+        super::super::heart::prepare_barks(world, entity, definition.clone())?;
+    }
     Ok(entity)
 }
 
@@ -538,6 +582,14 @@ fn retain_owned(
         .insert(identity.to_owned(), descriptor.clone());
     request(world, entity, descriptor.clone())?;
     if !existed {
+        super::super::melee::request_owned(world, Arc::from(identity), descriptor.clone())?;
+        if let Some(definition) = &descriptor.throwable {
+            for ammunition in &definition.ammunition {
+                inventory.bind_ammunition(identity, &ammunition.item);
+            }
+            player.register_throwable(identity, entity, definition.clone(), inventory)?;
+            super::super::weapon_throwing::request_owned(world, Arc::from(identity), descriptor.clone())?;
+        }
         world
             .resource_mut::<RuntimeMaterialCoordinator>()
             .equipment
@@ -550,6 +602,8 @@ fn retain_owned(
                 Arc::new(settings.clone()),
                 inventory,
             )?;
+            player.bind_ranged_entity(identity, entity)?;
+            super::super::weapon_firing::request_owned(world, Arc::from(identity), descriptor.clone())?;
             let component = player
                 .registered_ranged(identity)
                 .ok_or("owned ranged Start did not retain its runtime")?;
@@ -636,9 +690,24 @@ pub(in crate::app) fn advance(world: &mut World) {
                 .auto_admissions = false;
         }
 
-        for path in std::mem::take(&mut actions.removed_equipment) {
+        let mut removals = std::mem::take(&mut actions.removed_equipment);
+        for identity in world.resource::<RuntimeMaterialCoordinator>().equipment.stopping.keys() {
+            if !removals.contains(identity) { removals.push(identity.clone()); }
+        }
+        for path in removals {
+            //Collect already accepted runtime messages before removing the
+            //runtime. Normalpublish drains them after PlayerState is restored.
+            if let Err(error) = super::super::weapon_firing::begin_retirement(world, player, &path) {
+                actions.removed_equipment.push(path);
+                world.resource_mut::<RuntimeMaterialCoordinator>().equipment.load_error.get_or_insert(error);
+                continue;
+            }
+            //Remove the player's presentation immediately, as before. The
+            //retire_owned fence below retains the actual actor/children and
+            //prepared scopes through accepted callbacks and their tails.
             player.retire_equipment(&path);
             player.retire_ranged(&path);
+            player.retire_throwable(&path);
             for side in 0..2 {
                 let removed = world
                     .resource::<RuntimeMaterialCoordinator>()
@@ -786,6 +855,22 @@ pub(in crate::app) fn advance(world: &mut World) {
                 continue;
             }
             let descriptor = ready.descriptor.clone();
+            let dependencies_ready = (|| {
+                if descriptor.throwable.is_some() {
+                    if let Some(item) = actions.selected_ammunition.get(&identity).and_then(Option::as_deref) {
+                        super::super::weapon_throwing::request_ammunition(world, &identity, item)?;
+                    }
+                }
+                if descriptor.heart.is_some() && !super::super::heart::ready(world, entity)? { return Ok(false); }
+                if descriptor.melee.is_some() && !super::super::melee::ready_owned(world, &identity)? { return Ok(false); }
+                if descriptor.throwable.is_some() && !super::super::weapon_throwing::ready_owned(world, &identity)? { return Ok(false); }
+                Ok::<_, String>(true)
+            })();
+            match dependencies_ready {
+                Ok(true) => {},
+                Ok(false) => { actions.requeue(ready); continue; },
+                Err(error) => { record_error(world, error); continue; },
+            }
             let slot = descriptor.equipment.slot;
             match ready.stage(player) {
                 Ok(mut target) => {
@@ -957,8 +1042,27 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                             } else {
                                 player.unequip_ranged();
                             }
+                            if descriptor.throwable.is_some() {
+                                if let Some(item) = actions.selected_ammunition.get(&identity).and_then(Option::as_deref) {
+                                    if let Err(error) = player.select_throwable_ammunition(&identity, item, &inventory) {
+                                        bevy::log::error!("Equipment {identity} ammunition selection failed: {error}");
+                                    }
+                                }
+                                if let Err(error) = player.equip_throwable(&identity) {
+                                    bevy::log::error!("Equipment {identity} throwable activation failed: {error}");
+                                }
+                            } else { player.unequip_throwable(); }
                         }
-                        inventory.equip(&identity, descriptor.equipment.slot, true);
+                        if descriptor.heart.is_some() {
+                            if let Some(id) = super::super::equipment_identity::id(world, &identity) {
+                                player.bind_heart_entity(Some(id));
+                                if let Err(error) = super::super::heart::equip(world, id) {
+                                    bevy::log::error!("Heart {identity} activation failed: {error}");
+                                }
+                            }
+                            player.equip_heart_state(true);
+                        }
+                        inventory.equip(&identity, descriptor.equipment.slot, false);
                         player.set_equipped_archetype(side, Some(descriptor.equipment.archetype));
                         actions.accepted(side, descriptor);
                     } else {
@@ -996,6 +1100,16 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                     if let Some(descriptor) =
                         selected.then(|| actions.remove_active(side)).flatten()
                     {
+                        if descriptor.throwable.is_some() { player.unequip_throwable(); }
+                        if descriptor.heart.is_some() {
+                            player.bind_heart_entity(None);
+                            if let Some(id) = super::super::equipment_identity::id(world, &identity) {
+                                if let Err(error) = super::super::heart::unequip(world, id) {
+                                    bevy::log::error!("Heart {identity} deactivation failed: {error}");
+                                }
+                            }
+                            player.equip_heart_state(false);
+                        }
                         if descriptor.ranged.is_some() {
                             if inventory.quantity(&identity) == 0 {
                                 player.retire_ranged(&identity);

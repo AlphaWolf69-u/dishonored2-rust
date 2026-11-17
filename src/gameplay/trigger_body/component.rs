@@ -2,7 +2,7 @@
 //! same body-interface table used by reference-frame actors.
 use crate::gameplay::{
     collision_user_data::velocity::CollisionVelocities,
-    component_state::{entity::ComponentHandle, ComponentInstance, ComponentOwner},
+    component_state::{ComponentInstance, ComponentOwner, entity::ComponentHandle},
     physics_actor::ActorBody,
 };
 
@@ -16,6 +16,11 @@ pub struct TriggerComponent {
     pub wind: Option<ComponentHandle>,
     /// Source+d0: initialized false, copied from owner bit30 by779530.
     pub spawn_owner_bit30: bool,
+    /// Compact retained declaration inputs for779f90; no world/shape lock or
+    /// declaration acquisition is needed while dispatching body transitions.
+    pub collision: Option<super::TriggerCollisionSettings>,
+    ///Host retry cursor for779d30's ordered native/event/wind/water callbacks.
+    pub(crate) transition_delivery: Option<(u32, bool, u8)>,
     /// Host retry state: actor detach precedes fallible body unpublication.
     pub(crate) actor_detached: bool,
 }
@@ -37,6 +42,8 @@ impl TriggerComponent {
             water: None,
             wind: None,
             spawn_owner_bit30: false,
+            collision: None,
+            transition_delivery: None,
             actor_detached: false,
         })
     }

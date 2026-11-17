@@ -8,15 +8,16 @@ pub type Counts = [i32; COUNT];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Statistic { HealthPotion = 0x16, ManaPotion = 0x17 }
+pub enum Statistic { BodyFound = 10, HealthPotion = 0x16, ManaPotion = 0x17 }
 impl Statistic {
     pub fn from_id(id: u32) -> Result<Self, String> {
-        match id { 0x16 => Ok(Self::HealthPotion), 0x17 => Ok(Self::ManaPotion),
+        match id { 10=>Ok(Self::BodyFound),0x16 => Ok(Self::HealthPotion), 0x17 => Ok(Self::ManaPotion),
             _ => Err(format!("ordinary potion statistics owner does not handle statistic {id:#x}")) }
     }
     pub fn id(self) -> u32 { self as u32 }
     pub fn profile_key(self) -> &'static str {
         match self {
+            Self::BodyFound=>"ARK_PLAYER_STATISTIC_BODYFOUND",
             Self::HealthPotion => "ARK_PLAYER_STATISTIC_USE_HEALTH_POTION",
             Self::ManaPotion => "ARK_PLAYER_STATISTIC_USE_MANA_POTION",
         }
@@ -90,7 +91,7 @@ impl PlayerStatistics {
 
     pub fn load_profile(&mut self, profile: &impl Profile) {
         if !profile.available() { return; }
-        for statistic in [Statistic::HealthPotion, Statistic::ManaPotion] {
+        for statistic in [Statistic::BodyFound,Statistic::HealthPotion, Statistic::ManaPotion] {
             self.cumulative[statistic as usize] = profile.read(statistic).unwrap_or(0);
         }
     }

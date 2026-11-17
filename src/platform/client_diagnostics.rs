@@ -90,7 +90,6 @@ impl<'a> bevy::log::tracing_subscriber::fmt::MakeWriter<'a> for SessionOutput {
 /// waiting. A redirected console or file then never stalls the frame.
 #[cfg(windows)]
 mod standard_streams {
-    use std::sync::OnceLock;
     type Handle = isize;
     unsafe extern "system" {
         fn GetStdHandle(id: u32) -> Handle;
@@ -98,14 +97,11 @@ mod standard_streams {
         fn CreatePipe(read: *mut Handle, write: *mut Handle, attributes: *const core::ffi::c_void, size: u32) -> i32;
         fn ReadFile(file: Handle, buffer: *mut u8, length: u32, read: *mut u32, overlapped: *mut core::ffi::c_void) -> i32;
         fn WriteFile(file: Handle, buffer: *const u8, length: u32, written: *mut u32, overlapped: *mut core::ffi::c_void) -> i32;
-        fn PeekNamedPipe(pipe: Handle, buffer: *mut u8, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
     }
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
     const STD_ERROR_HANDLE: u32 = -12i32 as u32;
-    static PIPES: OnceLock<Vec<Handle>> = OnceLock::new();
 
     pub fn decouple() {
-        let mut pipes = Vec::new();
         for id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
             // SAFETY: plain Win32 calls on handles owned by this process.
             unsafe {
@@ -114,7 +110,6 @@ mod standard_streams {
                 let (mut read, mut write) = (0, 0);
                 if CreatePipe(&mut read, &mut write, std::ptr::null(), 1 << 20) == 0 { continue; }
                 if SetStdHandle(id, write) == 0 { continue; }
-                pipes.push(read);
                 let _ = std::thread::Builder::new().name("Console Writer".into()).spawn(move || {
                     let mut buffer = vec![0u8; 1 << 16];
                     loop {
@@ -130,18 +125,6 @@ mod standard_streams {
                 });
             }
         }
-        let _ = PIPES.set(pipes);
-    }
-
-    /// Waits up to `limit` for the pipes to empty (panics).
-    pub fn drain(limit: std::time::Duration) {
-        let started = std::time::Instant::now();
-        let pending = || PIPES.get().is_some_and(|pipes| pipes.iter().any(|&pipe| {
-            let mut available = 0u32;
-            // SAFETY: PIPES holds this process's pipe read handles.
-            unsafe { PeekNamedPipe(pipe, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) != 0 && available != 0 }
-        }));
-        while pending() && started.elapsed() < limit { std::thread::sleep(std::time::Duration::from_millis(1)); }
     }
 }
 
@@ -195,16 +178,16 @@ pub fn initialize() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         drain_log(Duration::from_millis(500));
-        #[cfg(windows)]
-        standard_streams::drain(Duration::from_millis(500));
+        // Console Writer can be blocked in a synchronous ReadFile. Peeking
+        // that same pipe from this thread can wait indefinitely on its read
+        // lock. Persist the panic directly to the session log instead; it
+        // does not depend on the asynchronous console's progress.
         record(&format!(
             "PANIC on thread {:?}: {info}\n{}",
             std::thread::current().name(),
             std::backtrace::Backtrace::force_capture()
         ));
         previous(info);
-        #[cfg(windows)]
-        standard_streams::drain(Duration::from_millis(500));
     }));
 }
 

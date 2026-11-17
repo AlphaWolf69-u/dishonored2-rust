@@ -51,6 +51,18 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    /// Read the last completed canonical FX parameter publication; never
+    /// advances an effect or samples its random stream.
+    pub(crate) fn observe_rumble(&self) -> Option<(u32,[f32;4])> { self.world_particles.rumble_frame() }
+    pub(crate) fn observe_screen_distortion(&self) -> crate::gameplay::effects::screen_distortion::Frame {
+        self.world_particles.screen_distortion_frame()
+    }
+    pub(crate) fn story_boolean(&self, worldspawn: crate::gameplay::entity_lifetime::EntityId, qualified: &str) -> Result<Option<bool>, String> {
+        self.world_particles.story_boolean(worldspawn, qualified)
+    }
+    pub(crate) fn pending_gameplay(&self) -> Option<&crate::gameplay::effects::gameplay::Request> { self.world_particles.pending_gameplay() }
+    pub(crate) fn acknowledge_gameplay(&mut self) -> Result<(),String> { self.world_particles.acknowledge_gameplay() }
+    pub(crate) fn clear_gameplay(&mut self) { self.world_particles.clear_gameplay(); }
     pub(crate) fn set_gameflow(&mut self, mailbox: std::sync::Arc<crate::gameplay::gameflow::program::Mailbox>) {
         self.world_particles.set_gameflow(mailbox);
     }
@@ -72,17 +84,32 @@ impl FxSimulation {
     pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
         self.world_particles.retire_entity_graph(entity)
     }
+    pub(crate) fn dispatch_broken(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        step: i32, removed: bool, location: [f32; 3], live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
+        self.world_particles.dispatch_broken(entity, step, removed, location, live)
+    }
     pub(crate) fn dispatch_picked_up(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
         successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
         self.world_particles.dispatch_picked_up(entity, successful, from_grapple, live)
     }
+    pub(crate) fn dispatch_picked_up_receipt(&mut self,entity:crate::gameplay::entity_lifetime::EntityId,
+        successful:bool,from_grapple:bool,live:&crate::gameplay::entity_lifetime::LiveEntities,
+        receipt:&mut crate::gameplay::effects::instances::PickupReceipt)->Result<(),String>{
+        self.world_particles.dispatch_picked_up_receipt(entity,successful,from_grapple,live,receipt)
+    }
     /// Diagnostic snapshots borrow the actual manager without starting or
     /// advancing another simulation. No ordinary-frame observer is installed.
+    pub(crate) fn light_publication(&self) -> impl Iterator<Item=(u16,Option<&crate::gameplay::effects::light::LightSample>)> {
+        self.world_particles.light_publication()
+    }
     pub(crate) fn observe_started_fx(&self) -> Vec<String> {
         self.world_particles.observe_started_fx()
     }
     pub(crate) fn observe_fx_owner(&self, owner: &str) -> super::world_particle_state::OwnerSnapshot {
         self.world_particles.observe_owner(owner)
+    }
+    pub(crate) fn observe_fx_owner_audio(&self,owner:&str)->Result<Vec<crate::gameplay::sound::Emitter>,String>{
+        self.world_particles.observe_owner_audio(owner)
     }
     pub(crate) fn observe_fx_pools(&self) -> (usize, usize, u16, u16, u16) {
         let (instances, pending, sounds, decals) = self.world_particles.observe_pool_counts();
@@ -139,8 +166,11 @@ impl FxPublication {
     /// Read-only lifecycle diagnostic; absence is published by the ordinary
     /// view producer, never manufactured by the observer.
     pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
-    /// This frame's world-material particle surface draws, for consumers
-    /// outside the FX passes (the model shadow casters).
+    /// Borrow the existing committed projection owners for model-local rows.
+    pub(crate) fn model_decals(&self) -> Option<&[(u32, u64, crate::rendering::decals::CommittedDecal<std::sync::Arc<crate::assets::decal::DecalMaterials<String>>>)]> {
+        Some(&self.0.as_ref()?.decals)
+    }
+    /// This frame's world-material particle surface draws (model shadows).
     pub(crate) fn world_meshes(&self) -> Option<(u32, &[super::particle_system::WorldMeshDraw])> {
         let frame = self.0.as_ref()?;
         Some((frame.frame, frame.particles.as_ref().map_or(&[][..], |particles| particles.world_meshes.as_slice())))
@@ -152,6 +182,7 @@ pub(super) struct FxFrame {
     pub generation: u64,
     pub capacity: (usize, usize),
     pub retired: u64,
+    pub screen_distortion: crate::gameplay::effects::screen_distortion::Frame,
     pub screen_draws: Option<Vec<super::screen_effects::QuadDraw>>,
     pub particles: Option<ParticlePublicationFrame>,
     pub decals: Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>,
@@ -1130,10 +1161,16 @@ pub(crate) fn simulate_effects(
             }
         }
     };
+    let mut screen_distortion = simulation.observe_screen_distortion();
+    //8911f0's final option override (cvar393030, value1439a4248).
+    match crate::platform::console::shared().read().cvars.int("r_skipCameraMotionBlur") {
+        Some(skip) => { if skip != 0 { screen_distortion.camera_blur = false; } }
+        None => { published.0 = None; warn!("FSDisto publication pending: r_skipCameraMotionBlur is not registered"); return; }
+    }
     published.0 = Some(std::sync::Arc::new(FxFrame {
         camera: water.camera, frame: water.matrices.frame, generation: simulation.generation,
         capacity: simulation.particle_systems.capacity(), retired: simulation.world_particles.dynamic_retired(),
-        screen_draws, particles, decals,
+        screen_draws, particles, decals, screen_distortion,
     }));
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
@@ -1365,17 +1402,24 @@ fn render_camera<const PREPARE_ALPHA: bool>(
             .as_ref()
             .map_or_else(|| target.main_texture_view(), |w| w.destination);
         if let Some(sources) = screen_sources.0.as_deref() {
-            let draws = publication.0
+            let published = publication.0
                 .as_ref()
                 .filter(|published| published.camera == frame.camera && published.frame == water.matrices.frame)
-                .and_then(|published| published.screen_draws.as_ref())
                 .ok_or("player FX commands await current atmosphere")?;
+            let draws = published.screen_draws.as_deref()
+                .ok_or("player FX screen commands await current atmosphere")?;
             gpu.screen_effects.record(
                 &device,
                 &queue,
                 context.command_encoder(),
                 sources,
                 draws,
+                super::screen_effects::FullscreenInputs {
+                    frame: &published.screen_distortion,
+                    matrices: &water.matrices,
+                    shader_time: water.shader_time,
+                    local_time: water.local_time[0],
+                },
                 water.local_time[0],
                 colour,
                 &depth.alpha.full_sample,
@@ -1413,6 +1457,8 @@ pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
         .and_then(|frame| frame.lens.as_ref()).is_some_and(|lens| lens.settings.skip_post_process);
     let expected = (water.camera, water.matrices.frame);
     let mut rows = vec![format!("owner=camera expected={expected:?} completed={:?} skipped={skipped}", gpu.completed)];
+    rows.push(format!("owner=fullscreen-distortion expected={expected:?} camera_completed={} commands_recorded={} gpu_execution_verified=false",
+        gpu.completed == Some(expected), gpu.completed == Some(expected) && gpu.screen_effects.fullscreen_recorded()));
     if let Some((camera, view)) = &gpu.current {
         view.visit_owned_targets(&mut |role, texture| {
             rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?} mips={} samples={}", texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));

@@ -79,7 +79,12 @@ fn fragment(input: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragm
         uv=projected_uv; uv1=projected_uv;
 #endif
 #endif
-        let authored = evaluate_surface(uv, uv1, color);
+#ifdef DH2_DECAL_INSTANCES
+        let model_tag=projection.receiver.indices.x;
+#else
+        let model_tag=mesh[vertex_output.instance_index].tag;
+#endif
+        let authored = evaluate_surface(uv, uv1, color,model_tag);
         var direct_diffuse=authored.direct_diffuse;
         var direct_ior=authored.direct_ior;
         var fresnel_strength=authored.fresnel_strength;

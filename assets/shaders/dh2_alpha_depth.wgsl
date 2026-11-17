@@ -1,3 +1,4 @@
+#import bevy_pbr::mesh_bindings::mesh
 #import bevy_pbr::forward_io::VertexOutput
 #import dh2_alpha_clip::clip_surface
 #import dh2_surface::{surface,compiled_misc,evaluate_surface,unpack_bc5_normal_map}
@@ -26,7 +27,7 @@ fn glass_distortion(v:VertexOutput,is_front:bool)->f32 {
 #ifdef VERTEX_COLORS
         colour=v.color;
 #endif
-        let authored=evaluate_surface(uv0,uv1,colour);
+        let authored=evaluate_surface(uv0,uv1,colour,mesh[v.instance_index].tag);
         let bump=unpack_bc5_normal_map(authored.normal_xy);
         let t=v.world_tangent;
 #ifdef DH2_AUTHORED_BASIS
@@ -65,7 +66,7 @@ fn clip_vertex(vertex_output:VertexOutput) {
 #ifdef VERTEX_COLORS
     colour=vertex_output.color;
 #endif
-    clip_surface(uv0,uv1,vertex_output.world_position,colour);
+    clip_surface(uv0,uv1,vertex_output.world_position,colour,mesh[vertex_output.instance_index].tag);
 }
 
 // Nonrefractive alpha slots disable colour writes; the value is unobservable.

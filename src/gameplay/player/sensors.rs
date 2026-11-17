@@ -4,8 +4,10 @@
 //! submit FUN_1403a2f60, results FUN_1403a2730) finds an overhang the player
 //! can only pass crouched. Its queries run synchronously on the previous
 //! frame's movement request, as the async submit/result pair reads it. The
-//! WallCrouch sensor's decl starts disabled and no enabling caller was found,
-//! so it is not ported (WALLCROUCH stays unreachable, as in the game).
+//! WallCrouch detects low cover with clear space above it (FUN_1403d4950).
+//! Its installed decl inherits the disabled constructor default; no normal
+//! enabling caller was found. It is not ported, so WALLCROUCH is unreachable
+//! in the rewrite; this does not prove every original-game path is unreachable.
 use super::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::collision_filter::{layer, QueryFilter};
 
@@ -751,7 +753,7 @@ impl MantleSensor {
                 let p = e.position - nxy * (nz * step + d.destination_depth);
                 let start = Vec3::new(p.x, p.y, e.position.z + step + 0.01);
                 if let Some(hit) = world.cast_ray(QueryFilter::layers(self.decl.collision_mask, PLAYER_FLAG), start, -Vec3::Z, 2.0 * step) {
-                    let surface = WorldHit { position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
+                    let surface = WorldHit { user_data: hit.user_data, body_flags: hit.body_flags, material_id: hit.material_id, position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
                     if world.surface(&surface).allow_mantle {
                         // 1403bcb00 uses the hit owner's positive vertical
                         // displacement, not the player's. This host admits

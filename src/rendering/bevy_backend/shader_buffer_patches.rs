@@ -103,7 +103,9 @@ fn apply(
     // write, later patches overwrite earlier ones as their own writes would.
     let mut ready: HashMap<AssetId<ShaderBuffer>, Vec<(usize, u64, u64)>> = HashMap::new();
     for (order, (id, offset, bytes)) in pending.0.iter().enumerate() {
-        if buffers.get(*id).is_some() {
+        // A growth event can reach extraction after its first patch. Retain
+        // that patch until the actual replacement buffer covers its range.
+        if buffers.get(*id).is_some_and(|gpu| *offset + bytes.len() as u64 <= gpu.buffer_descriptor.size) {
             ready.entry(*id).or_default().push((order, *offset, *offset + bytes.len() as u64));
         }
     }
@@ -129,5 +131,6 @@ fn apply(
             end = end.max(range_end);
         }
     }
-    pending.0.retain(|(id, ..)| buffers.get(*id).is_none());
+    pending.0.retain(|(id, offset, bytes)| buffers.get(*id)
+        .is_none_or(|gpu| *offset + bytes.len() as u64 > gpu.buffer_descriptor.size));
 }

@@ -21,6 +21,17 @@ use std::{
 // Subscription callbacks must never alias a graph from an earlier level.
 static NEXT_GRAPH_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// One883d10 receiver snapshot, owned by the actual fallible pickup action.
+/// Graph generations stay in the canonical manager; no definition is copied.
+#[derive(Default)]
+pub(crate) struct PickupReceipt {
+    pub(crate) arguments: Option<(crate::gameplay::entity_lifetime::EntityId,bool,bool)>,
+    pub(crate) receivers: Vec<(u64,u32)>,
+    pub(crate) next: usize,
+    pub(crate) errors: Vec<String>,
+    pub(crate) failure: Option<String>,
+}
+
 pub enum GraphEvent {
     Action { graph: usize, node: u32, port: u32 },
     LoadingEnd { graph: usize, node: u32 },
@@ -58,6 +69,35 @@ impl IndexMut<usize> for FxGraphInstances {
     }
 }
 impl FxGraphInstances {
+    ///5134e0 locates the current bool in a named story declaration instance;
+    ///6cbf20 uses the engine's zero-initialized bool only for a null lookup.
+    ///Borrow the same variable owner that receives graph writes, not a second
+    ///snapshot of declaration defaults. Missing graph/variable remains None.
+    pub(crate) fn story_boolean(&self, root: u64, qualified: &str) -> Result<Option<bool>, String> {
+        let root = self.instance_index(root).ok_or("story worldspawn graph generation stale")?;
+        let (path, name) = qualified.rsplit_once('/').ok_or("story bool lacks declaration/name")?;
+        //Follow the same already-owned authored child order as7bc1d0. Do
+        //not scan unrelated actors' graph instances on every rule condition.
+        fn find(owner: &FxGraphInstances, index: usize, path: &str) -> Result<Option<usize>, String> {
+            if !owner.live[index] { return Ok(None); }
+            let runtime = owner.runtimes[index].as_ref().ok_or("story graph is executing")?;
+            if runtime.definition().owner.eq_ignore_ascii_case(path) { return Ok(Some(index)); }
+            for node in &runtime.definition().nodes {
+                if let Some(&child) = owner.children.get(&(index,node.id)) {
+                    if let Some(found) = find(owner,child,path)? { return Ok(Some(found)); }
+                }
+            }
+            Ok(None)
+        }
+        let Some(index) = find(self, root, path)? else { return Ok(None) };
+        let runtime = self.runtimes[index].as_ref().ok_or("story graph is executing")?;
+        let value = runtime.variables.read().map_err(|_| "story variable owner poisoned")?.get(name)?;
+        match value {
+            None => Ok(None),
+            Some(super::variables::GraphValue::Bool(value)) => Ok(Some(value)),
+            Some(_) => Err(format!("story variable {qualified} is not bool")),
+        }
+    }
     pub fn poll_gameflow(&mut self)->Vec<String>{
         let mut errors=Vec::new();
         let Some(mailbox)=self.gameflow.as_ref() else{return errors};
@@ -281,6 +321,19 @@ impl FxGraphInstances {
             }
         }
         Ok(())
+    }
+    pub fn broken(&mut self, id: u64, node: u32, entity: crate::gameplay::event_graph::EntityReference, step: i32, removed: bool, location: [f32; 3]) -> Result<Vec<String>, String> {
+        let index = self.instance_index(id).ok_or("breakable graph retired")?;
+        self.runtimes[index].as_mut().ok_or("breakable graph busy")?.broken(node, entity, step, removed, location)?;
+        Ok(self.collect(index))
+    }
+    pub fn breakable_subscriptions(&self, graph: u64) -> Result<(Vec<(u32, crate::gameplay::event_graph::EntityReference)>, Vec<String>), String> {
+        let index = self.instance_index(graph).ok_or("breakable graph retired")?;
+        Ok(self.runtimes[index].as_ref().ok_or("breakable graph busy")?.breakable_subscriptions())
+    }
+    pub fn breakable_subscription(&self, graph: u64, node: u32) -> Result<Option<crate::gameplay::event_graph::EntityReference>, String> {
+        let index = self.instance_index(graph).ok_or("breakable graph retired")?;
+        self.runtimes[index].as_ref().ok_or("breakable graph busy")?.breakable_subscription(node)
     }
     pub fn picked_up(&mut self, id: u64, node: u32, successful: bool, from_grapple: bool)
         -> Result<Vec<String>, String> {

@@ -112,15 +112,15 @@ pub fn static_ground_truth(
         let distance = if tuning.minimum_distance > distance { tuning.minimum_distance } else { distance };
         let early_out = add(distance, body_radius);
         // The map is in view axes (x, z, -y); distances are unchanged.
-        let centre = bevy::math::Vec3::new(p[0], p[1], p[2]);
-        let view_centre = bevy::math::Vec3::new(p[0], p[2], -p[1]);
-        let reach = bevy::math::Vec3::splat(distance);
+        let centre = bevy_math::Vec3::new(p[0], p[1], p[2]);
+        let view_centre = bevy_math::Vec3::new(p[0], p[2], -p[1]);
+        let reach = bevy_math::Vec3::splat(distance);
         world.map.triangles_in(view_centre - reach, view_centre + reach, filter, world.owners, &mut scratch.found, &mut triangles);
         // hkfxClosestHitCollector: the nearest hit under the early-out.
-        let mut best: Option<(f32, bevy::math::Vec3, Option<&crate::assets::entities::physics_material::PhysicsMaterial>)> = None;
+        let mut best: Option<(f32, bevy_math::Vec3, Option<&crate::assets::entities::physics_material::PhysicsMaterial>)> = None;
         for (_, vertices, material) in &triangles {
             let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(*vertices, view_centre);
-            let point = bevy::math::Vec3::new(point.x, -point.z, point.y);
+            let point = bevy_math::Vec3::new(point.x, -point.z, point.y);
             let gap = (centre - point).length();
             let limit = best.map_or(early_out, |(gap, ..)| gap);
             if gap < limit {
@@ -392,14 +392,14 @@ pub fn static_cached(
         // hkfxClosestHitCollector (140fe31e0) over the leaf primitives: the
         // nearest centre distance and the second nearest, under the query
         // distance; a quad's two map triangles are one leaf.
-        let centre = bevy::math::Vec3::new(p[0], p[1], p[2]);
-        let view_centre = bevy::math::Vec3::new(p[0], p[2], -p[1]);
-        let span = bevy::math::Vec3::splat(distance);
+        let centre = bevy_math::Vec3::new(p[0], p[1], p[2]);
+        let view_centre = bevy_math::Vec3::new(p[0], p[2], -p[1]);
+        let span = bevy_math::Vec3::splat(distance);
         world.map.triangles_in(view_centre - span, view_centre + span, filter, world.owners, &mut scratch.found, &mut triangles);
-        let mut primitives: Vec<(u32, f32, bevy::math::Vec3, u32)> = Vec::new();
+        let mut primitives: Vec<(u32, f32, bevy_math::Vec3, u32)> = Vec::new();
         for (key, vertices, _) in &triangles {
             let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(*vertices, view_centre);
-            let point = bevy::math::Vec3::new(point.x, -point.z, point.y);
+            let point = bevy_math::Vec3::new(point.x, -point.z, point.y);
             let gap = (centre - point).length();
             let (group, ..) = world.map.primitive(*key);
             match primitives.iter_mut().find(|found| found.0 == group) {
@@ -411,7 +411,7 @@ pub fn static_cached(
                 None => primitives.push((group, gap, point, *key)),
             }
         }
-        let mut best = None::<(f32, bevy::math::Vec3, u32)>;
+        let mut best = None::<(f32, bevy_math::Vec3, u32)>;
         let mut second = far;
         for &(_, gap, point, key) in &primitives {
             if !(gap < minps(distance, second)) {

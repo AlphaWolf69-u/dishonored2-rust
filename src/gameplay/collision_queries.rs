@@ -121,6 +121,10 @@ impl<Request, Hit: Copy> Default for CollisionQueries<Request, Hit> {
     }
 }
 impl<Request, Hit: Copy> CollisionQueries<Request, Hit> {
+    /// Includes canceled requests until the canonical worker dequeues them.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
     pub fn set_submission_allowed(&mut self, allowed: bool) {
         self.submission_allowed = allowed;
     }

@@ -29,29 +29,29 @@ fn refined_inverse_length(squared: f32) -> f32 {
 /// 14008b830: triangles in shape space, in hkGeometry order. Degenerate
 /// (zero-cross) triangles are dropped, as the original pops their record.
 pub fn aero_faces(triangles: impl IntoIterator<Item = [[f32; 3]; 3]>) -> Vec<AeroFace> {
-    triangles
-        .into_iter()
-        .filter_map(|[a, b, c]| {
-            let z = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-            let x = (b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2]);
-            let y = (b[2] - a[2]) * (c[0] - a[0]) - (c[2] - a[2]) * (b[0] - a[0]);
-            let squared = z * z + (y * y + x * x);
-            if squared == 0. {
-                return None;
-            }
-            let inverse = refined_inverse_length(squared);
-            let third = f32::from_bits(0x3eaaaaab);
-            Some(AeroFace {
-                normal: [inverse * x, inverse * y, inverse * z, 0.],
-                center: [
-                    (b[0] + a[0] + c[0]) * third,
-                    (b[1] + a[1] + c[1]) * third,
-                    (b[2] + a[2] + c[2]) * third,
-                    inverse * squared * 0.5,
-                ],
-            })
-        })
-        .collect()
+    triangles.into_iter().filter_map(aero_face).collect()
+}
+
+/// One08b830 triangle, borrowed by the canonical shape-property builder.
+pub fn aero_face([a, b, c]: [[f32; 3]; 3]) -> Option<AeroFace> {
+    let z = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    let x = (b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2]);
+    let y = (b[2] - a[2]) * (c[0] - a[0]) - (c[2] - a[2]) * (b[0] - a[0]);
+    let squared = z * z + (y * y + x * x);
+    if squared == 0. {
+        return None;
+    }
+    let inverse = refined_inverse_length(squared);
+    let third = f32::from_bits(0x3eaaaaab);
+    Some(AeroFace {
+        normal: [inverse * x, inverse * y, inverse * z, 0.],
+        center: [
+            (b[0] + a[0] + c[0]) * third,
+            (b[1] + a[1] + c[1]) * third,
+            (b[2] + a[2] + c[2]) * third,
+            inverse * squared * 0.5,
+        ],
+    })
 }
 
 /// hknpBody transform columns; each w lane holds the body-space mass center.
@@ -91,7 +91,7 @@ pub struct MotionMass {
 }
 
 /// 14077f050 for one wind-registered body. `wind` is 77edf0's velocity at
-/// the motion center; `linear` is the body's current world velocity. Returns
+/// the motion center; `linear` is collision-data+40's requested world velocity. Returns
 /// the world linear and angular velocity changes the original adds through
 /// setBodyVelocity, or None below its thresholds for an inactive body.
 pub fn wind_velocity_change(
@@ -107,7 +107,12 @@ pub fn wind_velocity_change(
     let air = (0. - f32::from_bits(0x3f9ccccd)) * 0.5;
     let local_wind = transpose_apply(
         columns,
-        [wind[0] * speed_factor, wind[1] * speed_factor, wind[2] * speed_factor, 0.],
+        [
+            wind[0] * speed_factor,
+            wind[1] * speed_factor,
+            wind[2] * speed_factor,
+            0.,
+        ],
     );
     let local_linear = transpose_apply(columns, linear);
     let center = [columns[0][3], columns[1][3], columns[2][3], columns[2][3]];
@@ -116,15 +121,15 @@ pub fn wind_velocity_change(
     for face in faces {
         let offset: [f32; 4] = std::array::from_fn(|i| face.center[i] - center[i]);
         let swept = cross_lanes(offset, local_linear);
-        let relative: [f32; 4] =
-            std::array::from_fn(|i| ((swept[i] + local_linear[i]) - local_wind[i]) * face.normal[i]);
+        let relative: [f32; 4] = std::array::from_fn(|i| {
+            ((swept[i] + local_linear[i]) - local_wind[i]) * face.normal[i]
+        });
         let negative = 0. - ((relative[1] + relative[0]) + relative[2]);
-        if negative >= 0. {
+        if !(negative < 0.) {
             continue;
         }
-        let push: [f32; 4] = std::array::from_fn(|i| {
-            face.center[3] * air * negative * negative * face.normal[i]
-        });
+        let push: [f32; 4] =
+            std::array::from_fn(|i| face.center[3] * air * negative * negative * face.normal[i]);
         for i in 0..4 {
             force[i] += push[i];
         }
@@ -196,8 +201,7 @@ pub fn velocity_change(
 ) -> ([f32; 4], [f32; 4]) {
     let t: [f32; 3] = std::array::from_fn(|i| torque[i] * seconds);
     let local = half_rotate_inverse(motion.orientation, t);
-    let b: [f32; 3] =
-        std::array::from_fn(|i| (local[i] + local[i]) * half(motion.inverse_mass[i]));
+    let b: [f32; 3] = std::array::from_fn(|i| (local[i] + local[i]) * half(motion.inverse_mass[i]));
     let world = rotate(motion.orientation, b);
     let inverse_mass = half(motion.inverse_mass[3]);
     (
@@ -237,17 +241,40 @@ mod tests {
             // inverse inertia 1 on all axes, inverse mass 0.5.
             inverse_mass: [0x3f80, 0x3f80, 0x3f80, 0x3f00],
         };
-        let (linear, angular) =
-            wind_velocity_change(&columns, &faces, &motion, [0.; 4], [2., 0., 0.], 1., 0.1, true)
-                .unwrap();
+        let (linear, angular) = wind_velocity_change(
+            &columns,
+            &faces,
+            &motion,
+            [0.; 4],
+            [2., 0., 0.],
+            1.,
+            0.1,
+            true,
+        )
+        .unwrap();
         // F = -0.6125 * area * d^2 * n with d = -wind.x * n.x = 2.
         let expected = 0.6125 * 4.;
-        assert!((linear[0] - 0.5 * expected * 0.1).abs() < 1e-5, "{linear:?}");
-        assert!((angular[2] + 0.5 * expected * 0.1).abs() < 1e-5, "{angular:?}");
+        assert!(
+            (linear[0] - 0.5 * expected * 0.1).abs() < 1e-5,
+            "{linear:?}"
+        );
+        assert!(
+            (angular[2] + 0.5 * expected * 0.1).abs() < 1e-5,
+            "{angular:?}"
+        );
         // Leeward faces receive nothing.
-        assert!(wind_velocity_change(
-            &columns, &faces, &motion, [0.; 4], [-2., 0., 0.], 1., 0.1, false
-        )
-        .is_none());
+        assert!(
+            wind_velocity_change(
+                &columns,
+                &faces,
+                &motion,
+                [0.; 4],
+                [-2., 0., 0.],
+                1.,
+                0.1,
+                false
+            )
+            .is_none()
+        );
     }
 }

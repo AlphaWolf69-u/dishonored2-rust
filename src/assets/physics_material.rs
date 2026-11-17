@@ -4,6 +4,9 @@ use super::executable::{word, Image};
 use std::{path::Path, sync::{Arc, OnceLock}};
 
 pub(crate) struct MaterialConstants {
+    /// 140cb07d0's authored face min-half-angle decode table (1423f0f30).
+    /// Shared with the level's contact/material owner, never per body.
+    pub face_half_angle_cosines: [f32; 256],
     pub distances: [u16; 256],
     pub maximum_distance: f32,
     pub trigger_distance: f32,
@@ -37,6 +40,7 @@ impl MaterialConstants {
                 .map_or(0, |(start, end)| end.saturating_sub(start));
             let mut signature = blake3::Hasher::new();
             for value in constants.distances { signature.update(&value.to_le_bytes()); }
+            for value in constants.face_half_angle_cosines { signature.update(&value.to_bits().to_le_bytes()); }
             for value in [constants.maximum_distance, constants.trigger_distance] {
                 signature.update(&value.to_bits().to_le_bytes());
             }
@@ -64,10 +68,12 @@ impl MaterialConstants {
         }
         let image = Image::parse(&bytes)?;
         let table = image.read(0x1e9b130, 512)?;
+        let face_cosines = image.read(0x23f0f30, 1024)?;
         let float = |rva| -> Result<f32, String> {
             Ok(f32::from_bits(word(image.read(rva, 4)?, 0, 4)? as u32))
         };
         Ok(Self {
+            face_half_angle_cosines: std::array::from_fn(|i| f32::from_bits(u32::from_le_bytes(face_cosines[i*4..i*4+4].try_into().unwrap()))),
             distances: std::array::from_fn(|i| {
                 u16::from_le_bytes(table[i * 2..i * 2 + 2].try_into().unwrap())
             }),

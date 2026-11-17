@@ -20,6 +20,9 @@ pub(crate) mod level;
 /// Read-only body projection shared by the live physics owner and its
 /// query consumers. All use the same traversal.
 pub trait PointQueryBodies {
+    /// Borrowed consumer admission, before geometry traversal. The body and
+    /// its generation remain owned by the canonical storage.
+    fn accepts_body(&self, _body: &super::collision_body::CollisionBody) -> bool { true }
     fn body(&self, index: u32) -> Option<&super::collision_body::CollisionBody>;
 }
 impl PointQueryBodies for BodyStorage {
@@ -198,6 +201,33 @@ impl WorldPointQuery {
         resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
         submit: &mut dyn FnMut(ShapePointContact, f32),
     ) -> Result<(), String> {
+        self.hits_with_geometry(
+            bodies,
+            trees,
+            quantization,
+            point,
+            query,
+            filter,
+            resolve,
+            &mut |contact, geometry| submit(contact, geometry.distance[0]),
+        )
+    }
+
+    /// Preserve the witness and normal produced by the original point kernel.
+    pub fn hits_with_geometry<'a>(
+        &mut self,
+        bodies: &dyn PointQueryBodies,
+        trees: &[PointQueryTree<'_>],
+        quantization: PointQuantization,
+        point: [f32; 3],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        submit: &mut dyn FnMut(
+            ShapePointContact,
+            super::convex_support::distance::ConvexClosestPoint,
+        ),
+    ) -> Result<(), String> {
         let mut visitor = Bodies {
             bodies,
             shapes: &mut self.shapes,
@@ -231,7 +261,8 @@ struct Bodies<'a, F> {
     query: ShapeHitInfo,
     filter: Option<CollisionQueryFilter>,
     resolve: F,
-    submit: &'a mut dyn FnMut(ShapePointContact, f32),
+    submit:
+        &'a mut dyn FnMut(ShapePointContact, super::convex_support::distance::ConvexClosestPoint),
     error: Option<String>,
 }
 
@@ -260,7 +291,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> PointQueryVisit
                 .body(index & 0xffffff)
                 .ok_or("point query body disappeared")?;
             let resource = (self.resolve)(body.shape)?;
-            self.shapes.hits_with_distance(
+            self.shapes.hits_with_geometry(
                 PointQueryTarget {
                     shapes: resource.shapes,
                     state: CompoundShapeState {

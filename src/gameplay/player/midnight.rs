@@ -18,6 +18,8 @@ use crate::entities::midnight::{FloatCurve, MidnightScene, Next};
 use crate::gameplay::sound::{Emitter, Request as SoundRequest};
 use bevy_math::{Mat3, Quat, Vec3};
 use std::sync::Arc;
+mod animation_sounds;
+pub use animation_sounds::{AnimationSound, AnimationSoundBank, AnimationSoundReceipt};
 
 /// A scene decl with its anim names resolved to body clips.
 #[derive(Debug)]
@@ -31,6 +33,7 @@ pub struct PreparedScene {
     pub equipment_clips: [Vec<Vec<usize>>; 2],
     /// SFX keys resolved to installed event IDs and their cast audio owners.
     pub sounds: Vec<Vec<PreparedSound>>,
+    pub animation_sounds: AnimationSoundBank,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +203,7 @@ struct Clip {
     priority: i32,
     curve: Option<FloatCurve>,
     main: bool,
+    sounds: Arc<[AnimationSound]>,
 }
 
 /// One clip of the frame's midnightData.
@@ -235,7 +239,7 @@ struct Instance {
 #[derive(Clone, Copy)]
 struct RandomState { count: u32, used: u32, auto_disable: bool, looping: bool }
 
-struct GraphState { booleans: Vec<bool>, ints: Vec<i32>, randoms: Vec<Option<RandomState>>, loops: Vec<i32> }
+struct GraphState { booleans: Vec<bool>, ints: Vec<i32>, randoms: Vec<Option<RandomState>>, loops: Vec<i32>, loop_limits: Vec<i32> }
 impl GraphState {
     fn new(scene: &PreparedScene) -> Self {
         use crate::entities::midnight::IntCondition;
@@ -250,7 +254,7 @@ impl GraphState {
                     Some(RandomState { count: first.outputs.len() as u32, used: 0, auto_disable: *auto_disable, looping: *looping }),
                 _ => None,
             }).collect(),
-            loops: vec![-1; scene.decl.loops.len()] }
+            loops: vec![-1; scene.decl.loops.len()], loop_limits: scene.decl.loops.iter().map(|node| node.count).collect() }
     }
     fn int_slot(scene: &PreparedScene, index: usize) -> usize {
         scene.decl.int_nodes.iter().position(|node| node.name == scene.decl.int_nodes[index].name).unwrap()
@@ -300,6 +304,7 @@ pub struct Midnight {
     instances: Vec<Instance>,
     next_handle: u32,
     sound_requests: Vec<SoundRequest>,
+    animation_sound_receipts: Vec<AnimationSoundReceipt>,
     equipment_emitters: [Option<Emitter>; 2],
     point_events: Vec<PointEvent>,
     nodes: [Node; TARGETS],
@@ -349,9 +354,31 @@ pub struct PointEvent {
     pub target: usize,
     pub class: String,
     pub properties: Arc<[(String, crate::entities::Value)]>,
+    /// None is a point; timed-event tracks deliver true on entry and false
+    /// on exit, including an interruption (84e0c0).
+    pub active: Option<bool>,
 }
 
 impl Midnight {
+    pub(super) fn write_combat_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "  current Midnight instances={} (first 8):", self.instances.len());
+        for instance in self.instances.iter().take(8) {
+            let _ = writeln!(report, "    handle={} node={} time_ms={} absolute_ms={} rate={} parts={:#x} clips={:?} queued_events={} scheduled_sounds={}", instance.handle, instance.current, instance.time, instance.abs, instance.rate, instance.parts, instance.clips.each_ref().map(Vec::len), instance.events.len(), instance.sounds.len());
+            for (target, clips) in instance.clips.iter().enumerate() {
+                for clip in clips.iter().take(2) {
+                    let _ = writeln!(report, "      target={} animation={} scene_ms={}..{} animation_ms={}..{} priority={} main={}", target, clip.anim, clip.scene_from, clip.scene_to, clip.anim_from, clip.anim_to, clip.priority, clip.main);
+                }
+            }
+        }
+    }
+    ///7d8fe0 resolves the live instance;7d1740 writes its playback rate.
+    ///A finished or absent handle is a normal false result.
+    pub fn set_rate(&mut self, handle: u32, rate: f32) -> Result<bool, String> {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.handle == handle) else { return Ok(false); };
+        instance.rate = rate;
+        Ok(true)
+    }
     /// 7d9050 -> 7d1770 only updates an existing named instance variable.
     /// It neither adds undeclared variables nor advances the graph.
     pub fn set_bool(&mut self, handle: u32, name: &str, value: bool) -> bool {
@@ -359,6 +386,16 @@ impl Midnight {
         let mut found = false;
         for (index, node) in instance.scene.decl.bool_nodes.iter().enumerate() {
             if node.name == name { instance.graph.booleans[index] = value; found = true; }
+        }
+        found
+    }
+    /// 7d7180 changes the existing named loop's iteration limit. Its current
+    /// progress and authored break outputs belong to the same instance.
+    pub fn set_loop_count(&mut self, handle: u32, name: &str, count: i32) -> bool {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.handle == handle) else { return false };
+        let mut found = false;
+        for (index, node) in instance.scene.decl.loops.iter().enumerate() {
+            if node.name == name { instance.graph.loop_limits[index] = count; found = true; }
         }
         found
     }
@@ -381,6 +418,7 @@ impl Midnight {
             md6.each_ref().map(String::as_str), &mut instance.graph, random)?;
         let entered = next.map(|index| self.enter(&prepared, index, cast, parts, md6.each_ref().map(String::as_str))
             .map(|(clips, events)| (index, clips, events))).transpose()?;
+        Self::exit_events(&self.instances[i], None, &mut self.point_events);
         Self::interrupt_sounds(&self.instances[i], &mut self.sound_requests);
         if let Some((index, clips, events)) = entered {
             let instance = &mut self.instances[i];
@@ -416,6 +454,7 @@ impl Midnight {
         let part = 1u8 << target;
         self.point_events.retain(|event| event.target != target);
         for instance in &mut self.instances {
+            Self::exit_events(instance, Some(target), &mut self.point_events);
             for (&(event, emitter), &stop) in &instance.playing_sounds {
                 if stop && emitter.player_part() & part != 0 { self.sound_requests.push(SoundRequest::Stop { event, emitter }); }
             }
@@ -452,9 +491,18 @@ impl Midnight {
     /// containing zero. Zero-duration SFX clips fire on the next time step.
     fn initial_events(inst: &Instance, out: &mut Vec<PointEvent>) {
         // 7dfbd0 selects forward point keys at the scene's initial time.
-        out.extend(inst.events.iter().filter(|(event, _)| event.time_ms == inst.time).map(|(event, target)|
+        out.extend(inst.events.iter().filter(|(event, _)| event.duration_ms.map_or(event.time_ms == inst.time,
+            |duration| event.time_ms <= inst.time && inst.time < event.time_ms.saturating_add(duration))).map(|(event, target)|
             PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
-                class: event.class.clone(), properties: event.properties.clone() }));
+                class: event.class.clone(), properties: event.properties.clone(), active: event.duration_ms.map(|_| true) }));
+    }
+
+    fn exit_events(inst: &Instance, target: Option<usize>, out: &mut Vec<PointEvent>) {
+        out.extend(inst.events.iter().filter(|(event, owner)| target.is_none_or(|target| target == *owner)
+            && event.duration_ms.is_some_and(|duration| event.time_ms <= inst.time
+                && inst.time < event.time_ms.saturating_add(duration))).map(|(event, target)|
+            PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
+                class: event.class.clone(), properties: event.properties.clone(), active: Some(false) }));
     }
 
     fn initial_sounds(inst: &mut Instance, out: &mut Vec<SoundRequest>) {
@@ -576,10 +624,12 @@ impl Midnight {
                     if let Some((index, node)) = scene.decl.loops.iter().enumerate().find(|(_, node)| node.uid == uid) {
                         // 7cd040 /813280: break markers -3/-2 leave the
                         // loop; ordinary visits increment before count test.
-                        let state = &mut graph.loops[GraphState::loop_slot(scene, index)];
+                        let slot = GraphState::loop_slot(scene, index);
+                        let limit = graph.loop_limits[slot];
+                        let state = &mut graph.loops[slot];
                         let broken = matches!(*state, -3 | -2);
                         if !broken { *state = state.saturating_add(1); }
-                        if broken || (node.count >= 0 && *state >= node.count) {
+                        if broken || (limit >= 0 && *state >= limit) {
                             *state = -1;
                             next = node.end;
                         } else { next = node.looping; }
@@ -630,6 +680,7 @@ impl Midnight {
                     priority,
                     curve: key.curve.clone(),
                     main: key.main_clip,
+                    sounds: prepared.animation_sounds.get(target, anim),
                 });
             }
             // Every group cast to this tree keeps its own event track.
@@ -661,9 +712,18 @@ impl Midnight {
     /// 8549c0 invokes OnSceneStarted before Start resolves its first node.
     /// These named values therefore apply before the initial graph walk.
     pub fn start_with_bools(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, booleans: &[(&str, bool)], random: &mut u32) -> Result<u32, String> {
+        self.start_with_variables(prepared, md6, rate, cast, parts, seconds, booleans, &[], random)
+    }
+    /// Scene-start callbacks63a7c0 set Burst/BurstLoop before graph Start,
+    /// just as Windblast initializes its bool before conditional resolution.
+    pub fn start_with_variables(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast,
+        parts: u8, seconds: f32, booleans: &[(&str, bool)], loop_counts: &[(&str, i32)], random: &mut u32) -> Result<u32, String> {
         let mut graph = GraphState::new(prepared);
         for (index, node) in prepared.decl.bool_nodes.iter().enumerate() {
             if let Some((_, value)) = booleans.iter().rev().find(|(name, _)| *name == node.name) { graph.booleans[index] = *value; }
+        }
+        for (index, node) in prepared.decl.loops.iter().enumerate() {
+            if let Some((_, count)) = loop_counts.iter().rev().find(|(name, _)| *name == node.name) { graph.loop_limits[index] = *count; }
         }
         let Some(index) = Self::resolve_graph(prepared, prepared.decl.first, md6, &mut graph, random)? else { return Ok(0) };
         let time = (seconds * 1000.0) as i32;
@@ -672,7 +732,7 @@ impl Midnight {
         // A scene on a tree another instance plays interrupts it there.
         let handles: Vec<u32> = self.instances.iter().filter(|i| i.parts & parts != 0).map(|i| i.handle).collect();
         for handle in handles {
-            self.stop(handle);
+            self.interrupt_parts(handle, parts);
         }
         self.next_handle = self.next_handle.wrapping_add(1).max(1);
         let sounds = Self::schedule_sounds(prepared, index, parts, self.equipment_emitters);
@@ -695,6 +755,7 @@ impl Midnight {
         self.point_events.retain(|event| event.handle != handle);
         if let Some(i) = self.instances.iter().position(|i| i.handle == handle) {
             let inst = self.instances.remove(i);
+            Self::exit_events(&inst, None, &mut self.point_events);
             Self::interrupt_sounds(&inst, &mut self.sound_requests);
             for (target, node) in self.nodes.iter_mut().enumerate() {
                 if inst.parts & 1 << target != 0 {
@@ -703,6 +764,33 @@ impl Midnight {
                 }
             }
         }
+    }
+
+    /// 7d2160/7d9270 replace the overlapping cast trees, not every tree
+    /// belonging to their scene.86c6a0's left-arm response must leave the
+    /// body's/right-arm sword scene running on those other trees.
+    fn interrupt_parts(&mut self, handle: u32, parts: u8) {
+        let Some(index) = self.instances.iter().position(|instance| instance.handle == handle) else { return };
+        let instance = &mut self.instances[index];
+        let removed = instance.parts & parts;
+        self.point_events.retain(|event| event.handle != handle || removed & (1 << event.target) == 0);
+        for target in 0..TARGETS {
+            if removed & (1 << target) == 0 { continue; }
+            Self::exit_events(instance, Some(target), &mut self.point_events);
+            instance.clips[target].clear();
+            self.nodes[target].data.clear();
+            self.nodes[target].pending_snapshot = Some(instance.scene.decl.blend_out_time);
+        }
+        for (&(event, emitter), &stop) in &instance.playing_sounds {
+            if stop && emitter.player_part() & removed != 0 {
+                self.sound_requests.push(SoundRequest::Stop { event, emitter });
+            }
+        }
+        instance.playing_sounds.retain(|(_, emitter), _| emitter.player_part() & removed == 0);
+        instance.sounds.retain(|sound| sound.sound.emitter.player_part() & removed == 0);
+        instance.events.retain(|(_, target)| removed & (1 << target) == 0);
+        instance.parts &= !removed;
+        if instance.parts == 0 { self.instances.remove(index); }
     }
 
     /// The manager update before the component stages: the time step, the
@@ -731,9 +819,16 @@ impl Midnight {
                 let k = event.time_ms;
                 let entered = (from <= k && k < to) || (k == to && ended);
                 if entered && !(k == from && first_step) {
-                    messages.push((event.event.clone(), inst.handle));
+                    if event.duration_ms.is_none() { messages.push((event.event.clone(), inst.handle)); }
                     self.point_events.push(PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
-                        class: event.class.clone(), properties: event.properties.clone() });
+                        class: event.class.clone(), properties: event.properties.clone(), active: event.duration_ms.map(|_| true) });
+                }
+                if let Some(duration) = event.duration_ms {
+                    let end = k.saturating_add(duration);
+                    if (from < end && end <= to) || (ended && k <= to && to < end) {
+                        self.point_events.push(PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
+                            class: event.class.clone(), properties: event.properties.clone(), active: Some(false) });
+                    }
                 }
             }
             // The SFX track uses the same forward key crossing as 1407dfdd0.
@@ -774,6 +869,7 @@ impl Midnight {
             }
         }
         self.write(cast);
+        animation_sounds::cross(&self.instances, &self.nodes, &mut self.animation_sound_receipts);
         Ok(messages)
     }
 

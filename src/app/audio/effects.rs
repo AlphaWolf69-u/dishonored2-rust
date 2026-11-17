@@ -66,8 +66,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             decodes.release(id, super::DecodeClient::Effects);
             match result {
                 Some(Ok(actions)) => {
-                    if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(id) {
-                        entry.insert(actions);
+                    registry.publish_dynamic_source(id, actions, super::DecodeClient::Effects);
+                    if registry.claim_dynamic_source(id, super::DecodeClient::Effects) {
                         state.dynamic_decodes.insert(id);
                     }
                 }
@@ -111,7 +111,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                         let declaration = &event.declaration;
                         if !registry.sources.contains_key(&declaration.id)
                             && !state.failed_events.contains_key(&declaration.id)
-                            && !declaration.game_defined && declaration.game_properties.is_none() {
+                            && !declaration.game_defined {
                             waiting = true;
                             decodes.request(declaration.id, super::DecodeClient::Effects, &registry);
                             state.pending_events.insert(declaration.id);
@@ -119,11 +119,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                         }
                         references.insert(event.name.clone(), (|| {
                             let declaration = &event.declaration;
-                            if declaration.game_defined || declaration.game_properties.is_some() {
-                                return Err(format!("FX declaration {} requires its game sound handler", event.name));
-                            }
                             if let Some(error) = state.failed_events.get(&declaration.id) { return Err(error.clone()); }
-                            let actions = registry.sources.get(&declaration.id).ok_or("prepared FX sound event is absent")?;
+                            let actions = if declaration.game_defined { Arc::new(Vec::new()) }
+                                else { registry.sources.get(&declaration.id).cloned().ok_or("prepared FX sound event is absent")? };
                             if actions.iter().any(|action| match action {
                                 SourceAction::Play { definition, .. } => !definition.can_route(),
                                 SourceAction::Stop { .. } | SourceAction::SetState { .. } => false,
@@ -133,7 +131,10 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                 appended += 1;
                                 index
                             };
-                            events.push((reference, PreparedEvent { declaration: event.clone(), actions: actions.clone() }));
+                            if !declaration.game_defined && registry.claim_dynamic_source(declaration.id, super::DecodeClient::Effects) {
+                                state.dynamic_decodes.insert(declaration.id);
+                            }
+                            events.push((reference, PreparedEvent { declaration: event.clone(), actions }));
                             Ok(reference)
                         })());
                     }
@@ -157,6 +158,15 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                     let Some(event) = event else { continue };
                     if active_names.contains(&event.declaration.name) { state.retiring_events.remove(&(index as u32)); }
                     else { state.retiring_events.insert(index as u32); }
+                }
+                // Failed routes have no PreparedEvent row to retire below.
+                // Release their source lease once the real FX definition leaves.
+                let abandoned = state.dynamic_decodes.iter().copied().filter(|id|
+                    !active_ids.contains(id) && !state.events.iter().flatten()
+                        .any(|event| event.declaration.declaration.id == *id)).collect::<Vec<_>>();
+                for id in abandoned {
+                    state.dynamic_decodes.remove(&id);
+                    registry.release_dynamic_source(id, super::DecodeClient::Effects);
                 }
                 state.source = Some(sources.0.clone());
                 state.reported_playback = false;
@@ -199,7 +209,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 state.free_events.push(index);
                 if !state.events.iter().flatten().any(|event| event.declaration.declaration.id == id)
                     && state.dynamic_decodes.remove(&id) {
-                    registry.sources.remove(&id);
+                    registry.release_dynamic_source(id, super::DecodeClient::Effects);
                 }
                 released.push(index);
             }
@@ -280,12 +290,12 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             for action in prepared.actions.iter() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state_with_ticket(*action, target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
+                        if let Err(error) = engine.post_state_with_ticket(*action, target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone()), scene.frozen(event.object)) {
                             warn!("FX event {} Set State unavailable: {error}", prepared.declaration.name);
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop_with_ticket(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
+                        if let Err(error) = engine.post_stop_with_ticket(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone()), scene.frozen(event.object)) {
                             warn!("FX event {} Stop unavailable: {error}", prepared.declaration.name);
                         }
                     },
@@ -305,7 +315,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                                 object.position, prepared.declaration.declaration.max_distance);
                                         }
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
-                                            emitter: event.object, paused: false, world_paused: false };
+                                            emitter: event.object, paused: false, world_paused: false,
+                                            clock_frozen: scene.frozen(event.object), clock_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone(), super::StreamedMedia(holds.clone()))).id();
                                         spawned.push((entity, target, control));
                                     }

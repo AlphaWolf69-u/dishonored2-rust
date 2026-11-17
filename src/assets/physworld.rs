@@ -9,8 +9,10 @@ pub mod body;
 pub mod polytope;
 pub mod shape;
 pub mod query_geometry;
+pub mod compressed_mesh;
 pub mod properties;
 pub mod source;
+pub(crate) mod navmesh;
 #[cfg(test)]
 #[path = "physworld/shape_names_tests.rs"]
 mod shape_names_tests;

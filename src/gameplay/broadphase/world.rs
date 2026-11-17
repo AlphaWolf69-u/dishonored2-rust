@@ -92,16 +92,99 @@ impl Default for HybridBroadphase {
 }
 
 impl HybridBroadphase {
+    /// Host spatial-index maintenance for1286530's marked body slots. Refit
+    /// the existing leaves/ancestor bounds without making a second collision
+    /// world; changes of the source's five-layer classification relocate the
+    /// actual body through the same insertion owner as initial publication.
+    /// Internal tree topology is host state, not collision geometry.
+    pub(crate) fn update_marked_bodies(
+        &mut self,
+        bodies: &mut crate::gameplay::body_storage::BodyStorage,
+        packing: &PackedQuantization,
+    ) -> Result<(), String> {
+        let Some([first, last]) = self.pending_body_range() else {
+            return Ok(());
+        };
+        let mut slot = first;
+        while slot <= last {
+            let word = self
+                .pending_bodies
+                .words()
+                .get(slot as usize >> 5)
+                .copied()
+                .unwrap_or(0);
+            let mask = word & (u32::MAX << (slot & 31));
+            if mask == 0 {
+                let Some(next) = (slot | 31).checked_add(1) else {
+                    break;
+                };
+                slot = next;
+                continue;
+            }
+            slot = (slot & !31) + mask.trailing_zeros();
+            if slot > last {
+                break;
+            }
+            if let Some(body) = bodies.get_by_index(slot) {
+                let id = body.id;
+                let location = body.broadphase_id;
+                if location != u32::MAX {
+                    let previous_layer = (location >> 29) as usize;
+                    let leaf = (location & 0x1fff_ffff) as usize;
+                    let layer = body_layer(body.flags, body.status);
+                    let entry = PointQueryBody {
+                        index: id,
+                        bounds: packing.query_bounds(body.bounds),
+                    };
+                    if previous_layer == layer {
+                        self.trees[layer].refit_body(id, leaf, entry.bounds)?;
+                    } else {
+                        let mut missing = false;
+                        self.trees[layer].insert(entry, |id, leaf| {
+                            if let Some(record) = bodies.get_mut(id) {
+                                record.broadphase_id = ((layer as u32) << 29) | leaf as u32;
+                            } else {
+                                missing = true;
+                            }
+                        })?;
+                        if missing {
+                            return Err("relocated broadphase body is stale".into());
+                        }
+                        self.trees[previous_layer].remove_body(id, leaf)?;
+                        self.trees[previous_layer].refit_ancestors(leaf)?;
+                        self.dirty[previous_layer] = true;
+                    }
+                    self.dirty[layer] = true;
+                }
+            }
+            self.pending_bodies.reset(slot as usize)?;
+            let Some(next) = slot.checked_add(1) else {
+                break;
+            };
+            slot = next;
+        }
+        self.first_pending_body = u32::MAX;
+        self.last_pending_body = 0;
+        Ok(())
+    }
+
     pub(crate) fn remove_bodies(&mut self, bodies: &[(u32, u32)]) -> Result<(), String> {
         for &(id, location) in bodies {
-            if location & 0x1fff_ffff == 0x1fff_ffff { continue; }
+            if location & 0x1fff_ffff == 0x1fff_ffff {
+                continue;
+            }
             let layer = (location >> 29) as usize;
             let leaf = (location & 0x1fff_ffff) as usize;
-            let tree = self.trees.get_mut(layer).ok_or("broadphase removal layer is missing")?;
+            let tree = self
+                .trees
+                .get_mut(layer)
+                .ok_or("broadphase removal layer is missing")?;
             tree.remove_body(id, leaf)?;
             self.dirty[layer] = true;
             let slot = (id & 0x00ff_ffff) as usize;
-            if slot < self.pending_bodies.len() { self.pending_bodies.reset(slot)?; }
+            if slot < self.pending_bodies.len() {
+                self.pending_bodies.reset(slot)?;
+            }
         }
         Ok(())
     }
@@ -178,6 +261,73 @@ impl HybridBroadphase {
             }
         }
         Ok(())
+    }
+}
+
+impl HybridTree {
+    fn refit_body(&mut self, id: u32, leaf: usize, bounds: QuantizedBounds) -> Result<(), String> {
+        let PointNodeChildren::Leaf { block } = self
+            .nodes
+            .get(leaf)
+            .ok_or("refit broadphase leaf is absent")?
+            .children
+        else {
+            return Err("refit broadphase body does not reference a leaf".into());
+        };
+        let entries = self
+            .blocks
+            .get_mut(block)
+            .ok_or("refit broadphase block is absent")?;
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.index == id)
+            .ok_or("refit broadphase body is absent from its leaf")?;
+        entry.bounds = bounds;
+        sort_leaf_bodies(entries);
+        let mut bounds = QuantizedBounds {
+            min: [u16::MAX; 3],
+            max: [0; 3],
+        };
+        for entry in entries {
+            for axis in 0..3 {
+                bounds.min[axis] = bounds.min[axis].min(entry.bounds.min[axis]);
+                bounds.max[axis] = bounds.max[axis].max(entry.bounds.max[axis]);
+            }
+        }
+        self.nodes[leaf].bounds = bounds;
+        self.refit_ancestors(leaf)
+    }
+
+    fn refit_ancestors(&mut self, mut node: usize) -> Result<(), String> {
+        for _ in 0..self.nodes.len() {
+            let Some(parent) = self.parents.get(node).copied().flatten() else {
+                return Ok(());
+            };
+            let PointNodeChildren::Branch { left, right } = self
+                .nodes
+                .get(parent)
+                .ok_or("refit broadphase parent is absent")?
+                .children
+            else {
+                return Err("refit broadphase parent is not a branch".into());
+            };
+            let a = self
+                .nodes
+                .get(left)
+                .ok_or("refit broadphase left child is absent")?
+                .bounds;
+            let b = self
+                .nodes
+                .get(right)
+                .ok_or("refit broadphase right child is absent")?
+                .bounds;
+            self.nodes[parent].bounds = QuantizedBounds {
+                min: std::array::from_fn(|axis| a.min[axis].min(b.min[axis])),
+                max: std::array::from_fn(|axis| a.max[axis].max(b.max[axis])),
+            };
+            node = parent;
+        }
+        Err("refit broadphase parent chain does not end".into())
     }
 }
 

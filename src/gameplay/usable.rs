@@ -46,6 +46,14 @@ impl Usable {
         }
     }
 
+    ///77b3b0: a regular Start returns to the authored initial state;
+    ///the component's retained bit30 resumes its previously selected state.
+    pub fn start(&mut self, preserve_state: bool) -> Changes<'_> {
+        if !preserve_state { self.state = self.definition.initial_step; }
+        self.transition_remaining = None;
+        self.initial()
+    }
+
     /// 14077aec0 wraps to the next state and ignores input during a transition.
     pub fn interact(&mut self) -> Changes<'_> {
         if self.transition_remaining.is_some() || self.definition.steps.is_empty() {

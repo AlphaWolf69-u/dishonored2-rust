@@ -12,6 +12,7 @@ pub(super) fn vector<const N: usize>(value: &mut [f32; N], fields: &Fields) -> R
             "x" => 0,
             "y" => 1,
             "z" => 2,
+            "w" if N == 4 => 3,
             _ => return Err(format!("unknown particle vector field {name}")),
         };
         *value

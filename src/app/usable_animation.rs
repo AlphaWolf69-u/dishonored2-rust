@@ -8,6 +8,14 @@ use crate::{assets::animation_rig::BasicRig, gameplay::player::animation::{AnimB
 struct Asset {
     rig: BasicRig,
     model: crate::bmd6::SkinModel,
+    sounds: Box<[Box<[AnimationSound]>]>,
+    audio_joints: Box<[(i16, super::physics_skinning::Affine, f32)]>,
+    has_sounds: bool,
+}
+struct AnimationSound {
+    frame: i16,
+    joint: i16,
+    event: Arc<crate::assets::wwise::SoundEventDeclaration>,
 }
 impl Asset {
     fn load(catalog: &crate::archive::Catalog, path: &str, cancelled: impl Fn() -> bool) -> Result<Arc<Self>, String> {
@@ -19,7 +27,42 @@ impl Asset {
         let rig = BasicRig::load_cancellable(catalog, rig_name, Some(&cancelled))?;
         if cancelled() { return Err("usable animation acquisition cancelled".into()); }
         let model = crate::bmd6::ModelSources::acquire_skin_for_rig(catalog, path, &rig, Some(&cancelled))?;
-        Ok(Arc::new(Self { rig, model }))
+        // 875ba0 resolves the signed joint once. Missing/empty names retain
+        // -1 (166830 returns in the installed PE), selecting default Audio.
+        // Metadata and initial matrices share this actual acquisition worker.
+        let mut initial = None;
+        let mut sounds = Vec::with_capacity(rig.template.items.len());
+        let mut audio_joints: Vec<(i16, super::physics_skinning::Affine, f32)> = Vec::new();
+        for item in rig.template.items.iter() {
+            if cancelled() { return Err("usable animation acquisition cancelled".into()); }
+            let mut bindings = Vec::new();
+            for sound in rig.animation_sound_events(&item.alias)? {
+                let joint = if sound.joint.is_empty() { -1 } else {
+                    rig.skeleton.joint_names.iter().position(|name| name == sound.joint.as_ref())
+                        .map(i16::try_from).transpose().map_err(|_| "usable sound joint exceeds source signed index")?
+                        .unwrap_or(-1)
+                };
+                if joint >= 0 {
+                    if let Some(existing) = audio_joints.iter_mut().find(|entry| entry.0 == joint) {
+                        existing.2 = existing.2.max(sound.event.max_distance);
+                    } else {
+                        if initial.is_none() {
+                            initial = Some(crate::edge_skeleton::pose_matrices(&rig.skeleton.rest,
+                                &rig.skeleton.hierarchy, &rig.root)?);
+                        }
+                        let matrix = *initial.as_ref().expect("actual joint demanded initial pose")
+                            .get(joint as usize).ok_or("usable sound joint has no initial matrix")?;
+                        audio_joints.push((joint, matrix, sound.event.max_distance.max(0.0)));
+                    }
+                }
+                bindings.push(AnimationSound { frame: sound.frame, joint, event: sound.event.clone() });
+            }
+            bindings.sort_by_key(|sound| sound.frame);
+            sounds.push(bindings.into_boxed_slice());
+        }
+        let has_sounds = sounds.iter().any(|sounds| !sounds.is_empty());
+        Ok(Arc::new(Self { rig, model, sounds: sounds.into_boxed_slice(),
+            audio_joints: audio_joints.into_boxed_slice(), has_sounds }))
     }
     fn instantiate(&self) -> AnimBasicNode { self.rig.template.clone() }
 }
@@ -49,13 +92,17 @@ struct Placement {
     local_pose: Option<crate::gameplay::player::animation::Pose>,
     /// Dependency-driven startup sample, consumed by the ordinary publisher.
     prepared_pose: Option<Vec<super::physics_skinning::Affine>>,
+    audio_entity: Option<Arc<str>>,
+    audio_scope: Option<Arc<str>>,
+    audio_ready: bool,
 }
 
 impl Placement {
     fn new(actor: usize, model: String, physics_owned: bool) -> Self {
         Self { actor, model, source_index: None, asset: None, node: None,
             publication: Default::default(), requested: false, failed: false, command: None,
-            initialized: false, physics_owned, animation_pose: None, local_pose: None, prepared_pose: None }
+            initialized: false, physics_owned, animation_pose: None, local_pose: None, prepared_pose: None,
+            audio_entity: None, audio_scope: None, audio_ready: false }
     }
     fn stop(&mut self) {
         self.asset = None;
@@ -67,7 +114,41 @@ impl Placement {
         self.requested = false;
         self.failed = false;
         self.initialized = false;
+        self.audio_entity = None;
+        self.audio_scope = None;
+        self.audio_ready = false;
     }
+}
+
+/// Source Audio admission precedes consuming a usable command. The shared
+/// component helper owns reservation and joint leases through Stop/Deinit;
+/// dropping an invisible settled pose never truncates its playing voices.
+/// No repeated metadata decode, frame allocation or I/O occurs here.
+pub(super) fn prepare_audio(world: &mut World) -> Result<(), String> {
+    if !world.get_resource::<UsableAnimations>().is_some_and(|owner| owner.audio_pending) { return Ok(()); }
+    world.resource_scope(|world, mut owner: Mut<UsableAnimations>| {
+        let mut pending = false;
+        for (&index, slot) in &mut owner.placements {
+            if slot.audio_ready || slot.failed { continue; }
+            let Some(asset) = slot.asset.as_ref() else { continue; };
+            if !asset.has_sounds { slot.audio_ready = true; continue; }
+            let Some(interactions) = world.get_resource::<super::interactions::Interactions>() else { continue; };
+            let actor = interactions.actors.get(slot.actor).ok_or("usable audio actor is absent")?;
+            if !actor.started { continue; }
+            if slot.audio_entity.is_none() { slot.audio_entity = Some(Arc::from(actor.entity.as_str())); }
+            let placements = world.get_resource::<super::RenderSourcePlacements>()
+                .ok_or("usable audio placements are absent")?;
+            let scale = placements.0.get(index).ok_or("usable audio placement is absent")?.scale;
+            let ready = super::audio::prepare_usable_animation_audio(world,
+                slot.audio_entity.as_deref().expect("actual actor identity retained"), index,
+                asset.sounds.iter().flat_map(|sounds| sounds.iter().map(|sound| sound.event.clone())),
+                &asset.audio_joints, scale, &mut slot.audio_scope)?;
+            slot.audio_ready = ready.unwrap_or(true);
+            pending |= !slot.audio_ready;
+        }
+        owner.audio_pending = pending;
+        Ok(())
+    })
 }
 
 #[derive(Resource, Default)]
@@ -78,6 +159,9 @@ pub(super) struct UsableAnimations {
     completed: Vec<(String, Result<Arc<Asset>, String>)>,
     playing: Vec<Option<bool>>,
     initialized: bool,
+    /// Dirty only while an actual acquired asset has Audio admission work.
+    /// Asset arrivals and the existing started-placement pass rearm it.
+    audio_pending: bool,
 }
 
 impl UsableAnimations {
@@ -120,7 +204,11 @@ impl UsableAnimations {
             slot.requested = true;
             slot.initialized = true;
             slot.prepared_pose = Some(matrices);
+            //Keep the actual initialized lower tree for the scene layer;
+            //the same pose becomes its live lower input after publication.
+            slot.local_pose = if machinery.scene_layer_active(index) { pose } else { None };
             owner.placements.insert(index, slot);
+            owner.audio_pending = true;
         }
         Ok(owner)
     }
@@ -129,13 +217,13 @@ impl UsableAnimations {
         Some(&self.placements.get(&placement)?.asset.as_ref()?.rig.rig)
     }
 
-    pub(super) fn initial_joint_matrix(&self, placement: usize, joint: i16,
+    pub(super) fn initial_joint_matrices(&self, placement: usize,
         skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>)
-        -> Result<Option<super::physics_skinning::Affine>, String> {
+        -> Result<Option<&[super::physics_skinning::Affine]>, String> {
         let Some(slot) = self.placements.get(&placement) else { return Ok(None); };
         let asset = slot.asset.as_ref().ok_or("bound animation asset was retired during preparation")?;
         if !Arc::ptr_eq(&asset.rig.skeleton, skeleton) { return Err("attachment and usable skeleton owners differ".into()); }
-        Ok(usize::try_from(joint).ok().and_then(|joint| slot.prepared_pose.as_ref()?.get(joint)).copied())
+        Ok(slot.prepared_pose.as_deref())
     }
     /// 77b610/77bda0: stop the usable layer, retaining the last published
     /// palette with its existing placement rather than resetting its pose.
@@ -143,11 +231,14 @@ impl UsableAnimations {
         for slot in self.placements.values_mut().filter(|slot| slot.actor == actor) {
             slot.stop();
         }
+        self.audio_pending = self.placements.values().any(|slot|
+            slot.asset.is_some() && !slot.audio_ready && !slot.failed);
         self.lookup.retain(|_, asset| asset.strong_count() != 0);
     }
 
     pub(super) fn stop_all(&mut self) {
         for slot in self.placements.values_mut() { slot.stop(); }
+        self.audio_pending = false;
         self.lookup.clear();
     }
     fn request_asset(&mut self, key: String, path: String, interactions: &super::interactions::Interactions) {
@@ -193,6 +284,9 @@ pub(super) fn advance(
     mut buffers: ResMut<Assets<super::ShaderBuffer>>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
     mut joint_frames: Option<ResMut<super::joint_frames::JointFrames>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
+    mut events: Option<ResMut<crate::gameplay::entity_events::EntityEvents>>,
+    mut exit: MessageWriter<bevy::app::AppExit>,
 ) {
     let Some(mut interactions) = interactions else { return };
     if !owner.initialized {
@@ -217,8 +311,10 @@ pub(super) fn advance(
         }
     }
     let mut load = Vec::new();
+    let mut audio_pending = false;
     for (&index, slot) in &mut owner.placements {
         if !interactions.actors[slot.actor].started { continue; }
+        audio_pending |= slot.asset.is_some() && !slot.audio_ready && !slot.failed;
         let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
         if slot.asset.is_none() && !slot.requested && (visible || slot.command.is_some()) {
@@ -226,12 +322,15 @@ pub(super) fn advance(
             load.push((index, slot.model.clone()));
         }
     }
+    owner.audio_pending |= audio_pending;
     for (index, model) in load {
         let key = if interactions.catalog.has_overlays() { format!("{model}#{index}") } else { model.clone() };
         if let Some(asset) = owner.lookup.get(&key).and_then(Weak::upgrade) {
             let slot = owner.placements.get_mut(&index).unwrap();
             slot.node = Some(asset.instantiate());
             slot.asset = Some(asset);
+            let pending = !slot.audio_ready;
+            owner.audio_pending |= pending;
         } else {
             owner.request_asset(key, model, &interactions);
         }
@@ -255,16 +354,19 @@ pub(super) fn advance(
                     if interactions.actors[slot.actor].started && slot.requested && slot.asset.is_none() && matches {
                         slot.node = Some(asset.instantiate());
                         slot.asset = Some(asset.clone());
+                        owner.audio_pending |= !slot.audio_ready;
                     }
                 }
                 if Arc::strong_count(&asset) == 1 { owner.lookup.remove(&key); }
             }
             Err(error) => {
-                bevy::log::warn!("Usable animation acquisition failed for {key}: {error}");
+                bevy::log::error!("Usable animation acquisition failed for {key}: {error}");
                 for (&index, slot) in &mut owner.placements {
                     let matches = if interactions.catalog.has_overlays() { key == format!("{}#{index}", slot.model) } else { key == slot.model };
                     if interactions.actors[slot.actor].started && slot.requested && matches { slot.failed = true; }
                 }
+                exit.write(bevy::app::AppExit::error());
+                return;
             }
         }
     }
@@ -282,13 +384,14 @@ pub(super) fn advance(
         if !actor.started { owner.playing[index] = None; }
     }
     for slot in owner.placements.values() {
-        if slot.asset.is_none() && !slot.failed {
+        if (slot.asset.is_none() || !slot.audio_ready) && !slot.failed {
             owner.playing[slot.actor] = None;
         }
     }
     let playing = &mut owner.playing;
     for (&index, slot) in &mut owner.placements {
         let (Some(asset), Some(node)) = (&slot.asset, &mut slot.node) else { continue };
+        if !slot.audio_ready || !interactions.actors[slot.actor].started { continue; }
         if !slot.initialized {
             if slot.command.is_none() {
                 if let Some(state) = &interactions.actors[slot.actor].state { slot.command = state.initial().animation; }
@@ -298,6 +401,7 @@ pub(super) fn advance(
         let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
         let prepared = slot.prepared_pose.take();
         let changed = slot.command.is_some() || !node.is_settled() || (scene_active && slot.local_pose.is_none());
+        let previous = (changed && asset.has_sounds).then(|| node.sound_witnesses(&asset.rig.animations));
         if changed {
             node.update(dt, slot.command.take(), &asset.rig.animations);
         }
@@ -311,8 +415,30 @@ pub(super) fn advance(
                 let pose = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
                     Ok(Some(pose)) => pose,
                     Ok(None) => continue,
-                    Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
+                    Err(error) => {
+                        bevy::log::error!("Usable animation evaluation: {error}");
+                        exit.write(bevy::app::AppExit::error());
+                        return;
+                    }
                 };
+                if let Some(previous) = previous {
+                    let target = live.as_deref().and_then(|live| live.find(&interactions.actors[slot.actor].entity));
+                    let (Some(target), Some(events)) = (target, events.as_deref_mut()) else {
+                        bevy::log::error!("Usable animation sound has no actual live entity/event owner");
+                        exit.write(bevy::app::AppExit::error());
+                        return;
+                    };
+                    node.visit_sound_crossings(&previous, &asset.rig.animations, |item, old, new| {
+                        for sound in asset.sounds[item].iter() {
+                            let key = i32::from(sound.frame);
+                            if if old <= new { old < key && key <= new } else { old < key || key <= new } {
+                                events.post(crate::gameplay::entity_events::Event { id: 0xa9, target: Some(target),
+                                    payload: crate::gameplay::entity_events::Payload::AnimationSound {
+                                        joint: sound.joint, event: sound.event.clone(), placement: index } });
+                            }
+                        }
+                    });
+                }
                 if scene_active {
                     slot.local_pose = Some(pose);
                     continue;

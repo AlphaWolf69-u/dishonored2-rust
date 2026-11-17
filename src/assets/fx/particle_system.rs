@@ -63,7 +63,7 @@ fn reference(value: &Value) -> Result<Option<String>, String> {
     Ok((!text.is_empty() && !text.eq_ignore_ascii_case("NULL")).then(|| text.to_owned()))
 }
 
-fn scalar(envelope: &mut ScalarEnvelope, name: &str, value: &Value) -> Result<bool, String> {
+pub(super) fn scalar(envelope: &mut ScalarEnvelope, name: &str, value: &Value) -> Result<bool, String> {
     match name {
         "m_max" => envelope.range[0] = number(value)?,
         "m_min" => envelope.range[1] = number(value)?,
@@ -89,7 +89,7 @@ fn vector_curve_pair(
     Ok(())
 }
 
-fn vector(envelope: &mut VectorEnvelope, name: &str, value: &Value) -> Result<bool, String> {
+pub(super) fn vector(envelope: &mut VectorEnvelope, name: &str, value: &Value) -> Result<bool, String> {
     match name {
         "m_max" => particles::vector(&mut envelope.range[0], scope(value)?)?,
         "m_min" => particles::vector(&mut envelope.range[1], scope(value)?)?,

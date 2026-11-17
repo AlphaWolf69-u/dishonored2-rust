@@ -1494,6 +1494,13 @@ impl Playback {
         // separately from command acceptance or predecoding its media.
         let count = self.audio.control.source_ready.swap(0, Ordering::Relaxed);
         if let Some(event) = &self.audio.event {
+            //Observe the actual source-processing witness without requesting
+            //new middleware/gameplay notifications or changing callback masks.
+            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if count != 0 && *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref() == Ok("1")) {
+                eprintln!("AUDIO_SOURCE_PROCESSED event={:#010x} playing_id={} object={:?} sources={count} source_frame={}",
+                    event.event().declaration, event.id().value(), event.event().object, self.frame);
+            }
             for _ in 0..count { event.source_ready(); }
         }
     }

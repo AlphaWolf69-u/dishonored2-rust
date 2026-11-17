@@ -3,10 +3,7 @@
 use super::definition::ParticleDefinition;
 use crate::{
     archive::Catalog,
-    assets::{
-        entities::effects::FxGraph,
-        fx::EffectGroupAsset,
-    },
+    assets::{entities::effects::FxGraph, fx::EffectGroupAsset},
     shader_cache::ProgramLibrary,
 };
 use hashbrown::HashMap;
@@ -16,10 +13,29 @@ pub struct WorldEffectGroup {
     pub asset: Arc<EffectGroupAsset>,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
+    pub lights: Vec<Result<Arc<crate::assets::fx::light::LightAsset>, String>>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
+    pub(crate) rumbles: Vec<Result<Arc<crate::assets::fx::rumble::Asset>, String>>,
+    pub(crate) screen_distortions: Vec<Result<Arc<crate::assets::fx::screen_distortion::Prepared>, String>>,
+    pub(crate) entity_defs: Vec<Arc<WorldEntityDef>>,
+    pub(crate) explosions: Vec<Arc<WorldExplosion>>,
     /// Index in the shared source generation, including disabled source groups.
     /// Deferred admission borrows that generation rather than copying names.
     source_group: usize,
+}
+pub(crate) struct WorldEntityDef {
+    pub lifetime: Arc<()>,
+    pub asset: Arc<EffectGroupAsset>,
+    pub index: usize,
+    pub declarations: Vec<Option<Arc<crate::assets::runtime_entity::Definition>>>,
+    pub prepared: std::sync::atomic::AtomicBool,
+}
+pub(crate) struct WorldExplosion {
+    pub lifetime: Arc<()>,
+    pub asset: Arc<EffectGroupAsset>,
+    pub index: usize,
+    pub declaration: Arc<crate::assets::explosions::Declaration>,
+    pub prepared: std::sync::atomic::AtomicBool,
 }
 
 pub struct WorldSoundDefinition {
@@ -69,9 +85,27 @@ pub struct WorldEffectDefinition {
 }
 
 impl WorldEffectDefinition {
-    pub(crate) fn other_families(&self, group: &WorldEffectGroup) -> &[(String, Result<bool, String>)] {
-        &self.source.groups[group.source_group].world_other_families.get()
-            .expect("world FX families acquired").families
+    pub(crate) fn gameplay_ready(&self) -> bool {
+        self.groups.iter().all(|group| {
+            group
+                .entity_defs
+                .iter()
+                .all(|entry| entry.prepared.load(std::sync::atomic::Ordering::Acquire))
+                && group
+                    .explosions
+                    .iter()
+                    .all(|entry| entry.prepared.load(std::sync::atomic::Ordering::Acquire))
+        })
+    }
+    pub(crate) fn other_families(
+        &self,
+        group: &WorldEffectGroup,
+    ) -> &[(String, Result<bool, String>)] {
+        &self.source.groups[group.source_group]
+            .world_other_families
+            .get()
+            .expect("world FX families acquired")
+            .families
     }
 }
 
@@ -92,7 +126,9 @@ pub fn sprite_grid_source(level: u32) -> String {
 
 /// The FX of the enabled, valid m_fxEvents entries of loaded particle
 /// definitions.
-fn fx_event_effects(particles: &[Result<super::definition::ParticleDefinition, String>]) -> Vec<String> {
+fn fx_event_effects(
+    particles: &[Result<super::definition::ParticleDefinition, String>],
+) -> Vec<String> {
     particles
         .iter()
         .filter_map(|particle| particle.as_ref().ok())
@@ -104,17 +140,32 @@ fn fx_event_effects(particles: &[Result<super::definition::ParticleDefinition, S
 }
 
 impl WorldFxSources {
+    pub(crate) fn gameplay_ready(&self) -> bool {
+        self.effects
+            .values()
+            .filter_map(|effect| effect.as_ref().ok())
+            .all(|effect| effect.gameplay_ready())
+    }
     /// Reference one already prepared effect and its declared sub-effects
     /// without retaining every unrelated effect in the level.
     pub fn subset(&self, name: &str) -> Result<Self, String> {
         let mut result = Self::default();
         let mut pending = vec![name.to_owned()];
         while let Some(name) = pending.pop() {
-            if result.effects.contains_key(&name) { continue; }
-            let definition = self.effects.get(&name).ok_or_else(|| format!("effect {name} was not prepared"))?;
+            if result.effects.contains_key(&name) {
+                continue;
+            }
+            let definition = self
+                .effects
+                .get(&name)
+                .ok_or_else(|| format!("effect {name} was not prepared"))?;
             let loaded = definition.as_ref().map_err(Clone::clone)?;
-            for child in loaded.groups.iter().flat_map(|group| &group.asset.sub_effects)
-                .flat_map(|sub| sub.effects.iter().flatten()) {
+            for child in loaded
+                .groups
+                .iter()
+                .flat_map(|group| &group.asset.sub_effects)
+                .flat_map(|sub| sub.effects.iter().flatten())
+            {
                 pending.push(child.clone());
             }
             for group in &loaded.groups {
@@ -132,79 +183,141 @@ impl WorldFxSources {
         let mut effects = base.effects.clone();
         for addition in additions {
             for (name, definition) in &addition.effects {
-                effects.entry(name.clone()).or_insert_with(|| definition.clone());
+                effects
+                    .entry(name.clone())
+                    .or_insert_with(|| definition.clone());
             }
         }
-        Self { effects, declarations: base.declarations.clone(),
+        Self {
+            effects,
+            declarations: base.declarations.clone(),
             deferred_syntax_bytes: base.deferred_syntax_bytes,
-            deferred_admission_bytes: base.deferred_admission_bytes }
+            deferred_admission_bytes: base.deferred_admission_bytes,
+        }
     }
 
     /// Every particle material of the level's world FX.
     /// Names of the materials the level's FX draw as trail strips.
     pub fn strip_materials(&self) -> std::collections::HashSet<String> {
-        self.effects.values().filter_map(|e| e.as_ref().ok())
-            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+        self.effects
+            .values()
+            .filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups)
+            .flat_map(|g| &g.particles)
+            .filter_map(|p| p.as_ref().ok())
             .flat_map(|p| p.strip_materials.iter().cloned())
             .collect()
     }
 
-    pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
-        self.effects.values().filter_map(|e| e.as_ref().ok())
-            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+    pub fn particle_materials(
+        &self,
+    ) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
+        self.effects
+            .values()
+            .filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups)
+            .flat_map(|g| &g.particles)
+            .filter_map(|p| p.as_ref().ok())
             .flat_map(|p| p.materials.values())
     }
 
     /// Every (PMODEL resource, world material) pair the level's world FX can
     /// draw as a material surface, with its model, in a stable order.
-    pub fn world_meshes(&self) -> Vec<(String, String, Arc<crate::assets::particle_model::ParticleModel>)> {
+    pub fn world_meshes(
+        &self,
+    ) -> Vec<(
+        String,
+        String,
+        Arc<crate::assets::particle_model::ParticleModel>,
+    )> {
         let mut pairs = std::collections::BTreeMap::new();
-        for definition in self.effects.values().filter_map(|e| e.as_ref().ok())
-            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+        for definition in self
+            .effects
+            .values()
+            .filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups)
+            .flat_map(|g| &g.particles)
+            .filter_map(|p| p.as_ref().ok())
         {
             for declaration in definition.declarations.iter().flatten() {
                 let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
-                for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
+                for stage in declaration
+                    .stages
+                    .iter()
+                    .chain(havok_stages)
+                    .filter(|stage| stage.enabled)
+                {
                     for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
-                        let (Some(material), Some(source), Some(model)) = (&mesh.material, &mesh.source, &mesh.model) else {
+                        let (Some(material), Some(source), Some(model)) =
+                            (&mesh.material, &mesh.source, &mesh.model)
+                        else {
                             continue;
                         };
                         if definition.world_mesh_materials.contains(material) {
-                            pairs.entry((source.clone(), material.clone())).or_insert_with(|| model.clone());
+                            pairs
+                                .entry((source.clone(), material.clone()))
+                                .or_insert_with(|| model.clone());
                         }
                     }
                     // A sprite renderer's surface is the shared grid its
                     // tessellation distance selects (1eee40): level 0 unless
                     // the distance can select finer ones.
                     for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
-                        let Some(material) = sprite.material.as_ref().filter(|material| definition.world_mesh_materials.contains(*material)) else {
+                        let Some(material) = sprite
+                            .material
+                            .as_ref()
+                            .filter(|material| definition.world_mesh_materials.contains(*material))
+                        else {
                             continue;
                         };
-                        let levels = if 0. < sprite.tessellation_distance { 0..=5 } else { 0..=0 };
+                        let levels = if 0. < sprite.tessellation_distance {
+                            0..=5
+                        } else {
+                            0..=0
+                        };
                         for level in levels {
-                            pairs.entry((sprite_grid_source(level), material.clone())).or_insert_with(|| {
-                                Arc::new(crate::assets::particle_model::ParticleModel { vertices: Vec::new(), bytes_after_vertices: 0 })
-                            });
+                            pairs
+                                .entry((sprite_grid_source(level), material.clone()))
+                                .or_insert_with(|| {
+                                    Arc::new(crate::assets::particle_model::ParticleModel {
+                                        vertices: Vec::new(),
+                                        bytes_after_vertices: 0,
+                                    })
+                                });
                         }
                     }
                 }
             }
         }
-        pairs.into_iter().map(|((source, material), model)| (source, material, model)).collect()
+        pairs
+            .into_iter()
+            .map(|((source, material), model)| (source, material, model))
+            .collect()
     }
 
     /// Material variants required by enabled projected decals, deduplicated
     /// in the same order-independent form used by scene preparation.
     pub fn decal_materials(&self) -> Vec<(String, bool)> {
         let mut names = std::collections::BTreeSet::new();
-        for decal in self.effects.values().filter_map(|effect| effect.as_ref().ok())
-            .flat_map(|effect| &effect.groups).flat_map(|group| &group.decals)
-            .filter_map(|decal| decal.as_ref().ok()).filter(|decal| decal.asset.enabled)
+        for decal in self
+            .effects
+            .values()
+            .filter_map(|effect| effect.as_ref().ok())
+            .flat_map(|effect| &effect.groups)
+            .flat_map(|group| &group.decals)
+            .filter_map(|decal| decal.as_ref().ok())
+            .filter(|decal| decal.asset.enabled)
         {
             for references in decal.declarations.iter().flatten() {
-                for (name, world) in [(&references.opaque, false), (&references.alpha, false),
-                    (&references.opaque_instanced, true), (&references.alpha_instanced, true)] {
-                    if let Some(name) = name { names.insert((name.clone(), world)); }
+                for (name, world) in [
+                    (&references.opaque, false),
+                    (&references.alpha, false),
+                    (&references.opaque_instanced, true),
+                    (&references.alpha_instanced, true),
+                ] {
+                    if let Some(name) = name {
+                        names.insert((name.clone(), world));
+                    }
                 }
             }
         }
@@ -213,9 +326,14 @@ impl WorldFxSources {
 
     /// Every sound event the level's world FX post.
     pub fn sound_events(&self) -> impl Iterator<Item = u32> + '_ {
-        self.effects.values().filter_map(|e| e.as_ref().ok())
-            .flat_map(|e| &e.groups).flat_map(|g| &g.sounds)
-            .flat_map(|s| [&s.start, &s.stop]).filter_map(|e| e.as_ref()).map(|e| e.declaration.id)
+        self.effects
+            .values()
+            .filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups)
+            .flat_map(|g| &g.sounds)
+            .flat_map(|s| [&s.start, &s.stop])
+            .filter_map(|e| e.as_ref())
+            .map(|e| e.declaration.id)
     }
 
     pub fn load(
@@ -338,7 +456,9 @@ impl WorldFxSources {
         // reference order after the declarations that name them.
         let mut next = 0;
         while next < names.len() {
-            if cancelled() { return false; }
+            if cancelled() {
+                return false;
+            }
             let name = names[next].clone();
             let name = &name;
             next += 1;
@@ -347,13 +467,27 @@ impl WorldFxSources {
             }
             let mut children = Vec::new();
             let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
-                let source = crate::assets::fx::declaration::acquire(catalog, name,
-                    crate::assets::fx::definition::Consumer::World, cancellation)?;
+                let source = crate::assets::fx::declaration::acquire(
+                    catalog,
+                    name,
+                    crate::assets::fx::definition::Consumer::World,
+                    cancellation,
+                )?;
+                //0041a0's ContactSystemDB descriptor keeps the SAME canonical
+                //typed declaration. Only metadata is retained by that owner;
+                //this prepared world bundle and all GPU dependencies still
+                //follow their existing instance/tail weak-lease lifetimes.
+                let contacts = catalog.contact_database.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                if let Some(contacts) = contacts { contacts.retain_definition(name, source.clone()); }
                 let mut groups = Vec::new();
                 for (source_group, group) in source.groups.iter().enumerate() {
-                    if cancelled() { return Err("effect acquisition cancelled".into()); }
+                    if cancelled() {
+                        return Err("effect acquisition cancelled".into());
+                    }
                     let asset = group.asset.clone();
-                    if !asset.enabled { continue; }
+                    if !asset.enabled {
+                        continue;
+                    }
                     let sounds = asset
                         .sounds
                         .iter()
@@ -379,29 +513,60 @@ impl WorldFxSources {
                             })
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    let particle_assets = group.particles.get().expect("world FX families acquired")
-                        .as_ref().map_err(Clone::clone)?;
+                    let particle_assets = group
+                        .particles
+                        .get()
+                        .expect("world FX families acquired")
+                        .as_ref()
+                        .map_err(Clone::clone)?;
                     let mut particles = Vec::with_capacity(particle_assets.len());
                     for asset in particle_assets {
-                        if cancelled() { return Err("effect acquisition cancelled".into()); }
-                        particles.push(asset.as_ref().map_err(Clone::clone).and_then(|asset|
-                            ParticleDefinition::from_asset_cancellable(asset.clone(), catalog, library, resources, cancellation)));
+                        if cancelled() {
+                            return Err("effect acquisition cancelled".into());
+                        }
+                        particles.push(asset.as_ref().map_err(Clone::clone).and_then(|asset| {
+                            ParticleDefinition::from_asset_cancellable(
+                                asset.clone(),
+                                catalog,
+                                library,
+                                resources,
+                                cancellation,
+                            )
+                        }));
                     }
-                    if cancelled() { return Err("effect acquisition cancelled".into()); }
+                    if cancelled() {
+                        return Err("effect acquisition cancelled".into());
+                    }
                     let decals = match group.decals.get().expect("world FX families acquired") {
                         Ok(descriptors) => {
                             let mut decals = Vec::with_capacity(descriptors.len());
                             for asset in descriptors {
-                                if cancelled() { return Err("effect acquisition cancelled".into()); }
-                                decals.push(asset.as_ref().map_err(Clone::clone).and_then(|asset|
-                                    crate::assets::fx::decal::DecalDefinition::from_asset(asset.clone(), catalog,
-                                        &mut resources.decal_resources).map(Arc::new)));
+                                if cancelled() {
+                                    return Err("effect acquisition cancelled".into());
+                                }
+                                decals.push(asset.as_ref().map_err(Clone::clone).and_then(
+                                    |asset| {
+                                        crate::assets::fx::decal::DecalDefinition::from_asset(
+                                            asset.clone(),
+                                            catalog,
+                                            &mut resources.decal_resources,
+                                        )
+                                        .map(Arc::new)
+                                    },
+                                ));
                             }
                             decals
                         }
                         Err(error) => vec![Err(error.clone())],
                     };
-                    let admission = group.world_other_families.get().expect("world FX families acquired");
+                    let lights = match group.lights.get().expect("world FX families acquired") {
+                        Ok(lights) => lights.clone(),
+                        Err(error) => vec![Err(error.clone())],
+                    };
+                    let admission = group
+                        .world_other_families
+                        .get()
+                        .expect("world FX families acquired");
                     result.deferred_syntax_bytes += admission.syntax_bytes;
                     result.deferred_admission_bytes += admission.payload_bytes;
                     children.extend(
@@ -413,21 +578,91 @@ impl WorldFxSources {
                     // The FX the particle declarations' m_fxEvents start
                     // (their idDeclFX references load with the declaration).
                     children.extend(fx_event_effects(&particles));
+                    let mut entity_defs = Vec::new();
+                    for (index, descriptor) in
+                        asset
+                            .entity_defs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, descriptor)| {
+                                descriptor.enabled
+                                    && descriptor.declarations.iter().any(Option::is_some)
+                            })
+                    {
+                        let declarations = descriptor
+                            .declarations
+                            .iter()
+                            .map(|name| {
+                                name.as_deref()
+                                    .map(|name| {
+                                        crate::assets::runtime_entity::Definition::acquire(
+                                            catalog,
+                                            name,
+                                            cancellation,
+                                        )
+                                    })
+                                    .transpose()
+                            })
+                            .collect::<Result<Vec<_>, String>>()?;
+                        entity_defs.push(Arc::new(WorldEntityDef {
+                            lifetime: Arc::new(()),
+                            asset: asset.clone(),
+                            index,
+                            declarations,
+                            prepared: false.into(),
+                        }));
+                    }
+                    let mut explosions = Vec::new();
+                    for (index, descriptor) in asset
+                        .explosions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, descriptor)| descriptor.enabled)
+                    {
+                        let Some(name) = descriptor.explosion.as_deref() else {
+                            continue;
+                        };
+                        explosions.push(Arc::new(WorldExplosion {
+                            lifetime: Arc::new(()),
+                            asset: asset.clone(),
+                            index,
+                            declaration: crate::assets::explosions::Declaration::acquire(
+                                catalog, name,
+                            )?,
+                            prepared: false.into(),
+                        }));
+                    }
+                    let rumbles = group.rumbles.get().ok_or("world rumble family not acquired")?.as_ref().map_err(Clone::clone)?.iter().cloned().collect();
+                    let screen_distortions = group.screen_distortions.get()
+                        .ok_or("world FSDisto family not acquired")?.as_ref().map_err(Clone::clone)?
+                        .iter().map(|asset| asset.as_ref().map_err(Clone::clone)
+                            .and_then(|asset| crate::assets::fx::screen_distortion::Prepared::new(asset.clone(), catalog).map(Arc::new)))
+                        .collect();
                     groups.push(WorldEffectGroup {
                         asset,
                         particles,
                         sounds,
+                        lights,
                         decals,
+                        entity_defs,
+                        screen_distortions,
+                        rumbles,
+                        explosions,
                         source_group,
                     });
                 }
                 Ok(Arc::new(WorldEffectDefinition { source, groups }))
             };
             let loaded = load().map_err(|error| format!("{name}: {error}"));
-            if cancelled() { return false; }
+            if cancelled() {
+                return false;
+            }
             if trace {
                 match &loaded {
-                    Ok(definition) => eprintln!("World FX definition acquired: {name} groups={}", definition.groups.len()),
+                    Ok(definition) => eprintln!(
+                        "World FX definition acquired: {name} groups={}",
+                        definition.groups.len()
+                    ),
                     Err(error) => eprintln!("World FX definition rejected: {error}"),
                 }
             }

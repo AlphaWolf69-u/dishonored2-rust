@@ -8,11 +8,11 @@ impl PhysicsScene {
         if live.stage(id) != Some(Stage::Spawned) { return Ok(None); }
         let Some(&index) = self.shared_indices.get(&id) else { return Ok(None) };
         let entity = &self.entities[index];
-        let class = self.classes[8];
-        let Some(handle) = entity.components.find_component([class,class], [0x20,0], |handle| {
-            let component = self.rigid_bodies.get(handle.slot).ok_or("Blink rigid component is absent")?;
+        let range = self.rigid_class_range()?;
+        let Some(handle) = entity.components.find_component(range, [0x20,0], |handle| {
+            let component = self.rigid_component(handle)?;
             Ok(ComponentLookupState { flags: component.owner.flags, start_phases: self.declarations.get(&handle.packed()).map(|decl| decl.scheduling.start_phases) })
         })? else { return Ok(None) };
-        Ok(self.rigid_bodies.get(handle.slot).ok_or("Blink rigid component retired during lookup")?.body())
+        Ok(self.rigid_component(handle)?.body())
     }
 }

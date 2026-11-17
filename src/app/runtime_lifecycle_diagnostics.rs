@@ -78,6 +78,7 @@ pub fn inspect_runtime_lifecycles(
             | "fx"
             | "audio"
             | "music"
+            | "actions"
             | "objectives"
             | "paused-exit"
             | "loading-audio"
@@ -164,6 +165,7 @@ pub fn inspect_runtime_lifecycles(
     let mut fx = None;
     let mut audio: Option<super::audio::observation::Scenario> = None;
     let mut readable = None;
+    let mut actions: Option<super::gameplay_action_diagnostics::Observation> = None;
     let mut ui_transition = (mode == "ui-transition").then(||
         super::ui_lifecycle_diagnostics::TransitionObservation::new(level, args.get(2).map(String::as_str)));
     let mut last_frame = 0;
@@ -198,6 +200,9 @@ pub fn inspect_runtime_lifecycles(
                         None => { failure.get_or_insert_with(|| "audio scenario exited before it began".into()); }
                     }
                 }
+                if mode == "actions" && !actions.as_ref().is_some_and(|actions|actions.completed()) {
+                    failure.get_or_insert_with(|| "actual action sequence exited before completion".into());
+                }
                 match super::audio::observation::validate_shutdown(runtime.app.world_mut()) {
                     Ok(snapshot) => eprintln!("RUNTIME_AUDIO_LIFETIME phase=shutdown validated=true snapshot={snapshot:?}"),
                     Err(error) => { failure.get_or_insert(error); }
@@ -231,6 +236,12 @@ pub fn inspect_runtime_lifecycles(
             let progress = (|| -> Result<bool, String> {
                 let mut complete = false;
                 match mode.as_str() {
+                    "actions" if playing => {
+                        if actions.is_none() {
+                            actions=Some(super::gameplay_action_diagnostics::Observation::begin(runtime.app.world_mut())?);
+                        }
+                        complete=actions.as_mut().unwrap().poll(runtime.app.world_mut())?;
+                    }
                     "ui-transition" => {
                         complete = ui_transition.as_mut().expect("UI transition mode owner").poll(playing)?;
                     }

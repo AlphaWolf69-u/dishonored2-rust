@@ -102,6 +102,7 @@ fn installed_ocean_submits_depth_and_colour() {
             previous: matrices,
         },
         local_time: [1., 0.],
+        shader_time: 1.,
     };
     assert!(
         frame.ocean_environment.view.enabled,

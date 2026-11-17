@@ -172,6 +172,9 @@ pub(super) struct Acquisition {
     input: Option<(Arc<Catalog>, LevelResources, PathBuf)>,
     result: Option<Mutex<mpsc::Receiver<Result<PreparedLevel, String>>>>,
     map_worker: Option<std::thread::JoinHandle<()>>,
+    ///Host worker cancellation is map-scoped; session audio remains available
+    ///to accepted outgoing component operations until their actual fence.
+    map_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     frames: u32,
     startup: Option<Schedule>,
     published: bool,
@@ -284,6 +287,8 @@ pub(super) fn install(
     crate::loading::gate("initial view texture residency");
     crate::loading::gate("initial forward and shadow submissions");
     crate::loading::gate("initial player resources");
+    crate::loading::gate("initial runtime resources");
+    crate::loading::gate("initial world movies");
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.insert_resource(gpu.clone()).add_systems(
@@ -306,6 +311,7 @@ pub(super) fn install(
         input: Some((catalog, level, base)),
         result: None,
         map_worker: None,
+        map_cancel: None,
         frames: 0,
         startup,
         published: false,
@@ -347,7 +353,7 @@ pub(super) fn install(
         PostUpdate,
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
-    .add_systems(Last, (initial_render_ready, finish_loading).chain().run_if(session_exit::running))
+    .add_systems(Last, (initial_render_ready, world_movies_ready, finish_loading).chain().run_if(session_exit::running))
     .add_systems(PostUpdate, (super::texture_streaming::particle_images::publish,
         super::texture_streaming::environment_images::publish_ocean)
         .before(bevy::asset::AssetEventSystems))
@@ -403,7 +409,14 @@ fn retire_map_worker(state: &mut Acquisition) -> Result<bool, String> {
             format!("map acquisition worker failed during retirement: {detail}")
         })?;
     }
+    state.map_cancel = None;
     Ok(true)
+}
+
+fn cancel_map_worker(state: &mut Acquisition) {
+    if let Some(cancel) = &state.map_cancel {
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 fn acquire(world: &mut World) {
@@ -454,29 +467,13 @@ fn acquire(world: &mut World) {
                     for mut visibility in overlays.iter_mut(world) {
                         *visibility = Visibility::Hidden;
                     }
-                    // Stop outgoing view submission before the render-world
-                    // release acknowledgement. Merely gating our publishers
-                    // leaves Bevy's previous mesh phases drawable for another
-                    // frame, after their resource bindings have been released.
-                    for mut camera in world.query_filtered::<&mut Camera, (With<Camera3d>, Without<LoadingCamera>)>().iter_mut(world) {
-                        camera.is_active = false;
-                    }
-                    world.remove_resource::<crate::screen_shadow_pass::ScreenShadowFrame>();
-                    world.spawn((
-                        Camera3d::default(),
-                        bevy::core_pipeline::tonemapping::Tonemapping::None,
-                        Msaa::Off,
-                        bevy::camera::visibility::RenderLayers::none(),
-                        LoadingCamera,
-                    ));
-                    state.gpu.0.store(3, std::sync::atomic::Ordering::Release);
-                    world.resource_mut::<ScenePublished>().0 = false;
+                    //Retain the real preparation view until accepted component
+                    //operations finish; the loading presentation hides it.
                     world
                         .resource_mut::<crate::gameplay::game_clock_runtime::GamePaused>()
                         .0 = true;
-                    // Stop map producers now. Cleanup waits for the render
-                    // world and for the workers using outgoing identities.
-                    super::level_lifetime::close_level_acquisitions(world);
+                    cancel_map_worker(&mut state);
+                    super::level_lifetime::close_map_preparation(world);
                     world
                         .non_send_mut::<super::pause_menu::PauseMenu>()
                         .begin_level();
@@ -508,12 +505,6 @@ fn acquire(world: &mut World) {
     if state.movie_visible { state.movie_max_gap = state.movie_max_gap.max(gap); }
     state.last_loading_update = now;
     if state.next.is_some() {
-        if !super::level_lifetime::retire_level_acquisitions(world)
-            || state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4
-        {
-            world.insert_resource(state);
-            return;
-        }
         match retire_map_worker(&mut state) {
             Ok(true) => {},
             Ok(false) => { world.insert_resource(state); return; },
@@ -524,6 +515,32 @@ fn acquire(world: &mut World) {
                 world.insert_resource(state);
                 return;
             }
+        }
+        if !matches!(state.gpu.0.load(std::sync::atomic::Ordering::Acquire), 3 | 4) {
+            match state.lifetime.finish_producers(world) {
+                Ok(true) => {},
+                Ok(false) => { world.insert_resource(state); return; },
+                Err(error) => {
+                    error!("Outgoing component operations failed: {error}");
+                    crate::platform::client_diagnostics::record(&error);
+                    world.write_message(AppExit::error());
+                    world.insert_resource(state);
+                    return;
+                }
+            }
+            //Withdraw old views before releasing their actual render bindings.
+            world.resource_mut::<ScenePublished>().0 = false;
+            for mut camera in world.query_filtered::<&mut Camera, (With<Camera3d>, Without<LoadingCamera>)>().iter_mut(world) {
+                camera.is_active = false;
+            }
+            world.remove_resource::<crate::screen_shadow_pass::ScreenShadowFrame>();
+            world.spawn((Camera3d::default(), bevy::core_pipeline::tonemapping::Tonemapping::None,
+                Msaa::Off, bevy::camera::visibility::RenderLayers::none(), LoadingCamera));
+            state.gpu.0.store(3, std::sync::atomic::Ordering::Release);
+        }
+        if state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 {
+            world.insert_resource(state);
+            return;
         }
         {
             let _span = super::load_timing::Span::new("outgoing world release");
@@ -572,22 +589,56 @@ fn acquire(world: &mut World) {
         // instead of waiting on it forever.
         let player_error = world.get_resource::<super::player_actions::PlayerActions>()
             .and_then(|actions| actions.startup_error().map(str::to_owned));
-        if let Some(error) = player_error.or_else(|| super::runtime_materials::equipment_admission::startup_error(world)) {
+        if let Some(error) = player_error
+            .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
+            .or_else(|| super::power_wheel::startup_error(world))
+            .or_else(|| super::ai_world::creation::startup_error(world).map(str::to_owned))
+            .or_else(|| super::fx_lights::error(world).map(str::to_owned))
+            .or_else(|| super::carrying_resources::startup_error(world)) {
             fail_initial_images(world, &error);
             world.insert_resource(state);
             return;
         }
+        if let Some(error) = super::runtime_entities::startup_error(world) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
+        let grenade_pending=match super::physics_scene::grenades::startup_pending(world) {
+            Ok(pending)=>pending,
+            Err(error)=>{
+                fail_initial_images(world,&error);
+                world.insert_resource(state);
+                return;
+            }
+        };
         let has_player = world.get_resource::<super::player::PlayerState>()
             .is_some_and(|state| state.player.is_some());
         let player_pending = has_player && (
             world.get_resource::<super::player_actions::PlayerActions>()
                 .is_some_and(|actions| actions.startup_pending())
             || super::runtime_materials::equipment_admission::startup_pending(world));
+        if !player_pending && !super::weapon_firing::startup_pending(world)
+            && !super::runtime_entities::startup_pending(world)
+            && !super::ai_world::creation::startup_pending(world)
+            && !super::fx_gameplay::startup_pending(world)
+            && !super::power_wheel::startup_pending(world)
+            && !super::water_impacts::startup_pending(world)
+            && !grenade_pending
+            && !super::carrying_resources::startup_pending(world) {
+            crate::loading::complete("initial runtime resources");
+        }
+        if let Some(error) = super::weapon_firing::startup_error(world).map(str::to_owned) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
         if !player_pending { crate::loading::complete("initial player resources"); }
         else if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("LOAD player startup pending: actions[{}] equipment={}",
+            eprintln!("LOAD player startup pending: actions[{}] equipment={} admission[{}]",
                 world.get_resource::<super::player_actions::PlayerActions>().map_or(String::new(), |a| a.debug_startup_pending()),
-                super::runtime_materials::equipment_admission::startup_pending(world));
+                super::runtime_materials::equipment_admission::startup_pending(world),
+                super::runtime_materials::equipment_admission::debug_startup_pending(world));
         }
         match advance_initial_images(world, &state.catalog, &state.gpu) {
             Ok(true) => {
@@ -693,25 +744,28 @@ fn acquire(world: &mut World) {
             let initial_load = state.initial_load;
             let (send, receive) = mpsc::channel();
             state.result = Some(Mutex::new(receive));
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            state.map_cancel = Some(cancel.clone());
             let worker = std::thread::Builder::new()
                 .name("map acquisition".into())
                 .stack_size(32 << 20)
                 .spawn(move || {
                     let _audio_work = audio_work;
-                    if _audio_work.is_closing() { return; }
-                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory, initial_load, |_| _audio_work.is_closing())
+                    let cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire) || _audio_work.is_closing();
+                    if cancelled() { return; }
+                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory, initial_load, |_| cancelled())
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
-                            if _audio_work.is_closing() { return Err("audio session is closing".into()); }
+                            if cancelled() { return Err("map acquisition is closing".into()); }
                             let reader = if prepared.diagnostic_exit { None } else {
-                                preparation.prepare(&mut prepared, base_image_batch_bytes, || _audio_work.is_closing())?
+                                preparation.prepare(&mut prepared, base_image_batch_bytes, cancelled)?
                             };
                             Ok((prepared, reader))
                         });
                     match result {
                         Ok((prepared, reader)) => {
                             if send.send(Ok(prepared)).is_ok() {
-                                if let Some(reader) = reader { reader.read(|| _audio_work.is_closing()); }
+                                if let Some(reader) = reader { reader.read(cancelled); }
                             }
                         }
                         Err(error) => { let _ = send.send(Err(error)); }
@@ -762,6 +816,20 @@ fn acquire(world: &mut World) {
                 }
                 let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world, state.catalog.clone());
                 prepared.publish(world);
+                super::entity_removal::initialize(world);
+                world.insert_resource(super::carrying::Carrying::default());
+                world.insert_resource(super::physics_scene::carrying_host::CarryPhysics::default());
+                if let Err(error) = super::fx_gameplay::initialize(world)
+                    .and_then(|_| super::water_impacts::initialize(world))
+                    .and_then(|_| super::world_models::initialize(world))
+                    .and_then(|_| {super::flash_surface_movie::initialize(world);Ok(())})
+                    .and_then(|_| super::runtime_entities::initialize(world)) {
+                    lifetime.published(world, &resources);
+                    state.lifetime = lifetime;
+                    fail_initial_images(world, &format!("Runtime resource initialization failed: {error}"));
+                    world.insert_resource(state);
+                    return;
+                }
                 if let Some(mut startup) = state.startup.take() {
                     let _span = super::load_timing::Span::new("remaining startup");
                     startup.run(world);
@@ -815,6 +883,14 @@ fn acquire(world: &mut World) {
 /// Reuse the production renderer's readiness signals. The benchmark's 30
 /// consecutive-frame warmup is deliberately absent: one complete submission
 /// is enough, without an arbitrary loading delay.
+fn world_movies_ready(world:&mut World) {
+    if world.get_resource::<Acquisition>().is_some_and(|state|state.finished) {return}
+    if world.get_resource::<ScenePublished>().is_some_and(|state|state.0)
+        &&super::flash_surfaces::ready(world) {
+        crate::loading::complete("initial world movies");
+    }
+}
+
 fn initial_render_ready(
     mut state: ResMut<Acquisition>, published: Res<ScenePublished>,
     forward: Res<crate::shadow_pass::ShadowCaptureReadiness>,

@@ -11,13 +11,17 @@ use super::{
         CompoundQuery, CompoundQueryVisitor, CompoundTree,
     },
     convex_support::{
-        distance::query_point, ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
+        distance::{query_point, ConvexClosestPoint},
+        ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
     },
-    polytope_query::zero_distance_point_depth,
+    polytope_query::{inside_point_geometry, zero_distance_point_geometry},
     shape_tags::{decode_shape_tag, ShapeTagSource},
     shape_transform::{transform_bounds, transform_point, ScaledShapeTransform, ShapeMatrix},
 };
 use crate::assets::physworld::query_geometry::{QueryGeometry, QueryShapes};
+
+#[path = "shape_point_query/mesh.rs"]
+mod mesh;
 
 const IDENTITY: ShapeMatrix = [
     [1., 0., 0., 0.],
@@ -45,6 +49,7 @@ pub struct ShapePointQuery {
     traversals: Vec<CompoundQuery>,
     active: Vec<usize>,
     support: ConvexSupportWorkspace,
+    mesh: super::compressed_mesh_query::CompressedMeshQuery,
 }
 impl ShapePointQuery {
     pub fn new(enabled_shape_types: u32) -> Result<Self, String> {
@@ -53,6 +58,7 @@ impl ShapePointQuery {
             traversals: Vec::new(),
             active: Vec::new(),
             support: ConvexSupportWorkspace::default(),
+            mesh: Default::default(),
         })
     }
 
@@ -81,12 +87,35 @@ impl ShapePointQuery {
         filter: Option<CollisionQueryFilter>,
         submit: &mut dyn FnMut(ShapePointContact, f32),
     ) -> Result<(), String> {
+        self.hits_with_geometry(target, point, query, filter, &mut |contact, geometry| {
+            submit(contact, geometry.distance[0])
+        })
+    }
+
+    /// The same traversal and collector order with actual world witness data.
+    pub fn hits_with_geometry(
+        &mut self,
+        target: PointQueryTarget<'_>,
+        point: [f32; 4],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        submit: &mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
+    ) -> Result<(), String> {
         let root = target.shapes.get(target.shapes.root())?;
         let bounds = match &root.geometry {
             QueryGeometry::Compound(shape) => {
                 transform_bounds(target.state.transform.world_from_local, shape.bounds)
             }
+            QueryGeometry::CompressedMesh(shape) => transform_bounds(
+                target.state.transform.world_from_local,
+                shape.bounds().map(|v| [v[0], v[1], v[2], 0.]),
+            ),
             QueryGeometry::Polytope(shape) => super::convex_support::convex_bounds(
+                &shape.vertices,
+                target.state.transform.world_from_local,
+                shape.radius,
+            ),
+            QueryGeometry::Convex(shape) => super::convex_support::convex_bounds(
                 &shape.vertices,
                 target.state.transform.world_from_local,
                 shape.radius,
@@ -130,7 +159,7 @@ impl ShapePointQuery {
         sphere: &mut PointSphere,
         query: ShapeHitInfo,
         filter: Option<CollisionQueryFilter>,
-        submit: &mut dyn FnMut(ShapePointContact, f32),
+        submit: &mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
     ) -> Result<(), String> {
         let shape = target.shapes.get(item)?;
         let handler = self.dispatch.select(
@@ -149,20 +178,35 @@ impl ShapePointQuery {
         let depth = self.active.len();
         self.active.push(item);
         let result: Result<(), String> = (|| match (&shape.geometry, handler) {
-            (QueryGeometry::Polytope(polytope), ClosestPointHandler::ConvexConvex) => {
-                let distance = if !state.scaled && polytope.connectivity.is_some() {
+            (QueryGeometry::Polytope(_) | QueryGeometry::Convex(_), ClosestPointHandler::ConvexConvex) => {
+                let polytope = match &shape.geometry { QueryGeometry::Polytope(p) => Some(p), _ => None };
+                //Preserve d11cb0/12b7aa0's actual inside-face tie/witness.
+                //Host strategy: rounded outside-core cases use the existing
+                //full d10960 GSK owner on the SAME authored vertices/radius.
+                //None from the inside-only helper selects GSK, never no-hit.
+                let specialized = if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some() && p.radius == 0.) {
+                    let polytope = polytope.ok_or("polytope point connectivity absent")?;
                     let local = transform_point(relative, sphere.vertex);
-                    let distance =
-                        zero_distance_point_depth(polytope, [local[0], local[1], local[2]])?
-                            .ok_or(
-                            "specialized nonfinite/radius polytope point query is not implemented",
-                        )?;
-                    (distance < 0.).then_some(distance)
+                    if !local.iter().all(|v| v.is_finite())
+                        || !polytope.planes.iter().flatten().all(|v| v.is_finite())
+                    {
+                        return Err(
+                            "specialized nonfinite polytope point query is not implemented"
+                                .into(),
+                        );
+                    }
+                    Some(zero_distance_point_geometry(polytope, local)?)
+                } else if !state.scaled && polytope.is_some_and(|p| p.connectivity.is_some()) {
+                    inside_point_geometry(polytope.expect("connected polytope checked"),
+                        transform_point(relative, sphere.vertex))?.map(Some)
+                } else { None };
+                let geometry = if let Some(geometry) = specialized {
+                    geometry
                 } else {
                     let prepared = self.support.prepare(ConvexSupportInput {
                         shape_type: shape.header.shape_type,
-                        vertices: &polytope.vertices,
-                        radius: polytope.radius,
+                        vertices: shape.geometry.convex_vertices().ok_or("convex point vertices absent")?,
+                        radius: shape.geometry.convex_radius().ok_or("convex point radius absent")?,
                         scaled: state.scaled.then_some(ConvexSupportScale {
                             scale: [
                                 state.transform.scale[0],
@@ -185,13 +229,51 @@ impl ShapePointQuery {
                         prepared.radius,
                         0.,
                     )?
-                    .map(|geometry| geometry.distance[0])
                 };
-                if let Some(distance) = distance {
-                    submit(ShapePointContact { target: hit }, distance);
+                if let Some(geometry) = geometry {
+                    submit(
+                        ShapePointContact { target: hit },
+                        ConvexClosestPoint {
+                            point: transform_point(
+                                state.transform.world_from_local,
+                                geometry.point,
+                            ),
+                            normal: super::shape_transform::rotate_vector(
+                                state.transform.world_from_local,
+                                geometry.normal,
+                            ),
+                            distance: geometry.distance,
+                        },
+                    );
                 }
                 Ok(())
             }
+            (QueryGeometry::CompressedMesh(mesh), ClosestPointHandler::ConvexMesh) => self
+                .mesh_points(
+                    mesh,
+                    shape.header.radius,
+                    shape.header.key_bits,
+                    state,
+                    relative,
+                    key,
+                    sphere.vertex,
+                    sphere.radius,
+                    &mut 0.,
+                    &mut |shape_key, tag, geometry| {
+                        let mut child = ShapeHitInfo { shape_key, ..hit };
+                        decode_shape_tag(
+                            tag,
+                            target.materials.filter(|_| child.body_id.is_some()),
+                            &mut child,
+                        )?;
+                        if filter.is_none_or(|f| {
+                            f.accepts_pair(query.filter_info, child.filter_info, true)
+                        }) {
+                            submit(ShapePointContact { target: child }, geometry);
+                        }
+                        Ok(0.)
+                    },
+                ),
             (QueryGeometry::Compound(compound), ClosestPointHandler::ConvexCompound) => {
                 let prepared = prepare(
                     sphere,
@@ -262,7 +344,7 @@ struct InstanceVisitor<'a, 'b> {
     sphere: &'a mut PointSphere,
     query: ShapeHitInfo,
     filter: Option<CollisionQueryFilter>,
-    submit: &'a mut dyn FnMut(ShapePointContact, f32),
+    submit: &'a mut dyn FnMut(ShapePointContact, ConvexClosestPoint),
     error: Option<String>,
 }
 impl InstanceVisitor<'_, '_> {
@@ -293,6 +375,7 @@ impl InstanceVisitor<'_, '_> {
         let child = self.target.shapes.get(instance.shape)?;
         let vertices = match &child.geometry {
             QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+            QueryGeometry::Convex(p) => p.vertices.as_slice(),
             _ => &[],
         };
         let prepared = prepare_instance(
@@ -356,14 +439,31 @@ impl ShapePointQuery {
         submit: &mut dyn FnMut(LeafClosestPoint) -> f32,
     ) -> Result<(), String> {
         let state = CompoundShapeState {
-            transform: ScaledShapeTransform { world_from_local: transform, scale: [1.; 4], offset: [0.; 4] },
+            transform: ScaledShapeTransform {
+                world_from_local: transform,
+                scale: [1.; 4],
+                offset: [0.; 4],
+            },
             scaled: false,
             keep_radius: false,
             radius: 0.,
         };
         let relative = super::shape_transform::relative_rigid(IDENTITY, transform);
         let point = PointSphere::new([point[0], point[1], point[2], 1.], 0.).vertex;
-        self.closest_leaf(shapes, shapes.root(), state, relative, ShapeKey { value: u32::MAX, bits: 0 }, point, threshold, submit, 0)
+        self.closest_leaf(
+            shapes,
+            shapes.root(),
+            state,
+            relative,
+            ShapeKey {
+                value: u32::MAX,
+                bits: 0,
+            },
+            point,
+            threshold,
+            submit,
+            0,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -384,29 +484,65 @@ impl ShapePointQuery {
         }
         let shape = shapes.get(item)?;
         match &shape.geometry {
-            QueryGeometry::Polytope(polytope) => {
+            QueryGeometry::Polytope(_) | QueryGeometry::Convex(_) => {
                 let prepared = self.support.prepare(ConvexSupportInput {
                     shape_type: shape.header.shape_type,
-                    vertices: &polytope.vertices,
-                    radius: polytope.radius,
+                    vertices: shape.geometry.convex_vertices().ok_or("convex point vertices absent")?,
+                    radius: shape.geometry.convex_radius().ok_or("convex point radius absent")?,
                     scaled: state.scaled.then_some(ConvexSupportScale {
-                        scale: [state.transform.scale[0], state.transform.scale[1], state.transform.scale[2]],
-                        offset: [state.transform.offset[0], state.transform.offset[1], state.transform.offset[2]],
+                        scale: [
+                            state.transform.scale[0],
+                            state.transform.scale[1],
+                            state.transform.scale[2],
+                        ],
+                        offset: [
+                            state.transform.offset[0],
+                            state.transform.offset[1],
+                            state.transform.offset[2],
+                        ],
                         radius: state.radius,
                     }),
                 })?;
-                if let Some(hit) = query_point(point, prepared.vertices, relative, 0., prepared.radius, *threshold)? {
+                if let Some(hit) = query_point(
+                    point,
+                    prepared.vertices,
+                    relative,
+                    0.,
+                    prepared.radius,
+                    *threshold,
+                )? {
                     let world = state.transform.world_from_local;
                     *threshold = submit(LeafClosestPoint {
                         position: transform_point(world, hit.point),
                         normal: super::shape_transform::rotate_vector(world, hit.normal),
                         distance: hit.distance[0],
                         shape_key: key.value,
-                        connectivity: shape.header.flags & 2 != 0 && polytope.connectivity.is_some(),
+                        connectivity: shape.header.flags & 2 != 0
+                            && matches!(&shape.geometry, QueryGeometry::Polytope(p) if p.connectivity.is_some()),
                     });
                 }
                 Ok(())
             }
+            QueryGeometry::CompressedMesh(mesh) => self.mesh_points(
+                mesh,
+                shape.header.radius,
+                shape.header.key_bits,
+                state,
+                relative,
+                key,
+                point,
+                0.,
+                threshold,
+                &mut |shape_key, _, geometry| {
+                    Ok(submit(LeafClosestPoint {
+                        position: geometry.point,
+                        normal: geometry.normal,
+                        distance: geometry.distance[0],
+                        shape_key,
+                        connectivity: false,
+                    }))
+                },
+            ),
             QueryGeometry::Compound(compound) => {
                 for (index, instance) in compound.instances.iter().enumerate() {
                     if instance.flags & 64 == 0 {
@@ -415,6 +551,7 @@ impl ShapePointQuery {
                     let child = shapes.get(instance.shape)?;
                     let vertices = match &child.geometry {
                         QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                        QueryGeometry::Convex(p) => p.vertices.as_slice(),
                         _ => &[],
                     };
                     let prepared = prepare_instance(
@@ -429,7 +566,17 @@ impl ShapePointQuery {
                         },
                     )?;
                     let child_key = key.compound_child(index as u16, compound.key_bits)?;
-                    self.closest_leaf(shapes, instance.shape, prepared.state, prepared.relative, child_key, point, threshold, submit, depth + 1)?;
+                    self.closest_leaf(
+                        shapes,
+                        instance.shape,
+                        prepared.state,
+                        prepared.relative,
+                        child_key,
+                        point,
+                        threshold,
+                        submit,
+                        depth + 1,
+                    )?;
                 }
                 Ok(())
             }

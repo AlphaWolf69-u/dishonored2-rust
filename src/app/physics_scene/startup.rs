@@ -2,7 +2,6 @@
 use super::*;
 #[path = "activation_events.rs"]
 mod activation_events;
-pub(super) use activation_events::{install as install_activation_observers, WorldActivationObserver};
 use crate::gameplay::{
     body_activation::ActivationOwners,
     physics_world::PublicationEvent,
@@ -10,7 +9,9 @@ use crate::gameplay::{
     trigger_body::initialization::physics::TriggerLevelInitialization,
     trigger_body::initialization::{LoadedTriggerShape, TriggerDependency},
     water_component::startup::physics::WaterLevelStartup,
-    water_contacts::{WaterContactState, WaterContactWorld, WaterDensityWorld},
+};
+pub(super) use activation_events::{
+    WorldActivationObserver, install as install_activation_observers,
 };
 
 pub(super) fn dispatch_observer(
@@ -49,9 +50,14 @@ impl<F> TriggerLevelInitialization<TriggerAssets, F> for TriggerLevel<'_> {
             shape: geometry
                 .shape_resources
                 .get(self.index)
-                  .copied().flatten()
+                .copied()
+                .flatten()
                 .ok_or("trigger shape resource absent")?,
-            basis: geometry.placements[self.index].as_ref().ok_or("trigger placement retired")?.shape.basis,
+            basis: geometry.placements[self.index]
+                .as_ref()
+                .ok_or("trigger placement retired")?
+                .shape
+                .basis,
         }))
     }
     fn dependency(
@@ -140,7 +146,7 @@ pub(super) struct WaterLevel<'a> {
     pub declarations: &'a HashMap<u64, ComponentDeclaration>,
     pub scheduling: &'a DeclarationScheduling,
     pub priority: i32,
-    pub contacts: &'a mut crate::gameplay::water_contacts::WaterContactManager,
+    pub notify_contacts: &'a mut bool,
 }
 impl<F> WaterLevelStartup<TriggerAssets, F> for WaterLevel<'_> {
     fn priorities(&self, _: ComponentHandle) -> Result<[i32; 2], String> {
@@ -176,56 +182,12 @@ impl<F> WaterLevelStartup<TriggerAssets, F> for WaterLevel<'_> {
     }
     fn notify_contacts(
         &mut self,
-        reference: ComponentHandle,
+        _reference: ComponentHandle,
         _: &mut WorldStorage,
         _: &mut TriggerAssets,
-        events: &mut ComponentPublicationEvents<'_, usize, usize, F>,
+        _events: &mut ComponentPublicationEvents<'_, usize, usize, F>,
     ) -> Result<(), String> {
-        self.contacts.notify_component(
-            reference,
-            &mut StartupContacts {
-                components: &events.components,
-            },
-        )
-    }
-}
-
-// No simulation step precedes level startup. Visit the real empty contact
-// manager; a retained body here is a lifecycle violation, not a zero-density
-// replacement for the body's mass, shape volume or collision user data.
-struct StartupContacts<'a, 'b> {
-    components: &'a TriggerComponentStore<'b>,
-}
-impl WaterDensityWorld for StartupContacts<'_, '_> {
-    fn prepare_body(&mut self, _: u32) -> Result<(), String> {
-        Err("retained body before water startup completed".into())
-    }
-    fn density_override(&self, _: u32) -> Result<f32, String> {
-        Err("retained body before water startup completed".into())
-    }
-    fn body_mass(&self, _: u32) -> Result<f32, String> {
-        Err("retained body before water startup completed".into())
-    }
-    fn shape_volume(&self, _: u32) -> Result<Option<[f32; 4]>, String> {
-        Err("retained body before water startup completed".into())
-    }
-    fn body_label(&self, _: u32) -> Result<String, String> {
-        Err("retained body before water startup completed".into())
-    }
-}
-impl WaterContactWorld for StartupContacts<'_, '_> {
-    fn water_state(&self, handle: ComponentHandle) -> Result<WaterContactState, String> {
-        if handle.class_id != self.components.water_class {
-            return Err("contact component is not water".into());
-        }
-        Ok(self
-            .components
-            .waters
-            .get(handle.slot)
-            .ok_or("water contact component absent")?
-            .into())
-    }
-    fn deactivate_body(&mut self, _: u32) -> Result<(), String> {
-        Err("retained body before water startup completed".into())
+        *self.notify_contacts = true;
+        Ok(())
     }
 }

@@ -357,6 +357,15 @@ impl ReadyEquipment {
             arm.install_equipment(prepared);
         }
         player.install_animation_scenes(self.scenes);
+        //53f4f0 cannot set a leaf before this actor's tree exists. Its
+        //prepared tree now receives the actual owned component's current
+        //magazine-dependent alias, including callbacks accepted while loading.
+        if let (Some(tree), Some(alias)) = (
+            self.tree.as_mut(),
+            player.registered_ranged(&self.item.path).and_then(player::weapons::Runtime::default_animation),
+        ) {
+            tree.set_default_alias(alias)?;
+        }
         Ok(player::equipment_states::Target {
             identity: self.item.path.to_string(),
             entity: self.descriptor.entity.clone(),
@@ -364,6 +373,16 @@ impl ReadyEquipment {
             tree: self.tree,
         })
     }
+}
+
+///684680's handle lives with the real PlayerFX manager. Source acquisition,
+///playing state and interruption tails remain in the shared WorldFX owner.
+struct MotionBlur {
+    path: Arc<str>,
+    scope: Option<Arc<str>>,
+    started: bool,
+    ready: bool,
+    closed: bool,
 }
 
 #[derive(Resource)]
@@ -387,6 +406,7 @@ pub(super) struct PlayerActions {
     pub prepared_owned_metadata: Vec<(String, Arc<crate::assets::equipment::Metadata>)>,
     equipment_admissions: HashSet<String>,
     startup_error: Option<String>,
+    motion_blur: Option<MotionBlur>,
     metadata: HashMap<String, Arc<crate::assets::equipment::Metadata>>,
     metadata_failed: HashSet<String>,
     metadata_order: VecDeque<String>,
@@ -408,6 +428,7 @@ pub(super) struct PlayerActions {
     retiring_far_reaches: Vec<FarReachOwner>,
     cached_far_reaches: HashMap<Arc<str>, FarReachOwner>,
     slash_scene_paths: Arc<[String]>,
+    heart_scene_paths: Arc<[String]>,
     power_activations: HashMap<String, PowerActivation>,
     power_reservations: HashMap<String, Arc<str>>,
     power_dependency_ids: HashMap<String, i32>,
@@ -417,6 +438,7 @@ pub(super) struct PlayerActions {
     active_power: Option<String>,
     active_power_generation: Option<Arc<str>>,
     pub potion_sounds: [Option<Arc<SoundEventDeclaration>>; 2],
+    pub(super) loot_full_sounds: [Option<Arc<SoundEventDeclaration>>; 2],
     pub potion_results: Vec<player::consumables::PotionResult>,
     pub selection_requests: Vec<ShortcutSelection>,
     pub removed_equipment: Vec<String>,
@@ -486,6 +508,16 @@ impl PlayerActions {
             &declarations.mana,
         )?;
         let grapple_body = Arc::new(player::body::grapple::Definition::read(&declarations.body));
+        let mut loot_full_sounds=[None,None];
+        for (mode,states) in [&declarations.states,&declarations.swimming_states].into_iter().enumerate(){
+            if let Some(path)=states.iter().filter(|(kind,fields)|kind=="playerstatelootobject"
+                &&crate::entities::scene_motion::atom(fields,"m_id").and_then(player::decls::state_id).unwrap_or(player::states::StateId::LOOT_OBJECT)==player::states::StateId::LOOT_OBJECT)
+                .find_map(|(_,fields)|crate::entities::scene_motion::atom(fields,"m_inventoryFullSoundEvent"))
+                .filter(|name|!name.is_empty()&&!name.eq_ignore_ascii_case("NULL")) {
+                loot_full_sounds[mode]=Some(crate::assets::wwise::event_resources::acquire_with(&catalog,path,
+                    |path|crate::assets::declaration_texts::read_common_or_catalog(&catalog,path))?);
+            }
+        }
         let shortcuts = Arc::new(ShortcutSettings::read(&declarations.controller)?);
         let mut slash_scene_paths = player::combat::equipment_scene_paths(declarations);
         if let Some(definition) = declarations
@@ -502,6 +534,23 @@ impl PlayerActions {
         slash_scene_paths.sort();
         slash_scene_paths.dedup();
         let slash_scene_paths = Arc::from(slash_scene_paths);
+        //844750's use scene and UseHeart's beat cast the actual owned Heart
+        //model. Startup's empty equipment cast cannot prepare those tracks.
+        let mut heart_scene_paths=Vec::new();
+        for (kind,fields) in declarations.states.iter().chain(&declarations.swimming_states) {
+            let names:&[&str]=match kind.as_str() {
+                "playerstateuseheart"=>&["m_beat"],
+                "playerstateplayheartbark"=>&["m_midnight","m_useMidnight"],
+                _=>continue,
+            };
+            for name in names {
+                if let Some(path)=crate::entities::scene_motion::atom(fields,name)
+                    .filter(|path|!path.is_empty()&&!path.eq_ignore_ascii_case("NULL")) {
+                    if !heart_scene_paths.iter().any(|existing|existing==path) {heart_scene_paths.push(path.to_owned());}
+                }
+            }
+        }
+        let heart_scene_paths=Arc::from(heart_scene_paths);
         let blink_player = declarations
             .states
             .iter()
@@ -546,6 +595,8 @@ impl PlayerActions {
             prepared_owned_metadata: Vec::new(),
             equipment_admissions: Default::default(),
             startup_error: None,
+            motion_blur: player::combat_fx::motion_blur_source(&declarations.fx).map(|path|
+                MotionBlur { path, scope: None, started: false, ready: false, closed: false }),
             metadata: Default::default(),
             metadata_failed: Default::default(),
             metadata_order: Default::default(),
@@ -557,6 +608,7 @@ impl PlayerActions {
             source_flags: Default::default(),
             selected_ammunition: Default::default(),
             potion_sounds,
+            loot_full_sounds,
             potion_results: Vec::new(),
             blink: None,
             active_blink: None,
@@ -569,6 +621,7 @@ impl PlayerActions {
             retiring_far_reaches: Vec::new(),
             cached_far_reaches: Default::default(),
             slash_scene_paths,
+            heart_scene_paths,
             power_activations: Default::default(),
             power_reservations: Default::default(),
             power_dependency_ids: Default::default(),
@@ -605,15 +658,17 @@ impl PlayerActions {
 
     /// The startup conditions still pending (load-timing diagnostics).
     pub fn debug_startup_pending(&self) -> String {
-        format!("rehydrated={} loading={:?} power_loading={} metadata_loading={:?} ready={} power_ready={} selections={} owned_loading={:?} prepared_owned={} prepared_metadata={} owned_targets={}",
+        format!("rehydrated={} loading={:?} power_loading={} metadata_loading={:?} ready={} power_ready={} selections={} owned_loading={:?} prepared_owned={} prepared_metadata={} owned_targets={} ready_items={:?}",
             self.rehydrated, self.loading.keys().collect::<Vec<_>>(), self.power_loading.len(),
             self.metadata_loading.keys().collect::<Vec<_>>(), self.ready.len(), self.power_ready.len(),
             self.selection_requests.len(), self.owned_loading.keys().collect::<Vec<_>>(),
-            self.prepared_owned_equipment.len(), self.prepared_owned_metadata.len(), self.owned_targets.len())
+            self.prepared_owned_equipment.len(), self.prepared_owned_metadata.len(), self.owned_targets.len(),
+            self.ready.iter().map(|ready|ready.item.path.as_ref()).collect::<Vec<_>>())
     }
 
     pub fn startup_pending(&self) -> bool {
         !self.rehydrated
+            || self.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed)
             || !self.loading.is_empty()
             || !self.power_loading.is_empty()
             || !self.metadata_loading.is_empty()
@@ -624,6 +679,12 @@ impl PlayerActions {
             || !self.prepared_owned_equipment.is_empty()
             || !self.prepared_owned_metadata.is_empty()
             || !self.owned_targets.is_empty()
+    }
+    pub(in crate::app) fn debug_ready_targets(&self,player:&Player)->String {
+        self.ready.iter().map(|ready|format!("ready[{}] side={} can_apply={} current={} visual={} Heart={} melee={} throwable={} wanted={}",
+            ready.item.path,ready.side(),ready.can_apply(player),ready.is_current(player),ready.descriptor.visual.is_some(),
+            ready.descriptor.heart.is_some(),ready.descriptor.melee.is_some(),ready.descriptor.throwable.is_some(),
+            self.wanted(ready.descriptor.equipment.slot,&ready.item.path))).collect::<Vec<_>>().join("\n  ")
     }
 
     /// Keep tasks alive until their synchronous archive reads have returned.
@@ -711,6 +772,12 @@ impl PlayerActions {
 
     pub fn accepted(&mut self, side: usize, descriptor: Arc<Descriptor>) {
         self.active[side] = Some(descriptor);
+    }
+    ///7fb350/7f8d60: shortcuts and the wheel enter the same source request
+    ///queue; actual equipment states own the eventual selection callbacks.
+    pub fn request_selection(&mut self, player: &Player, selection: ShortcutSelection) {
+        self.source_flags.insert(selection.equipment.clone(), player.shortcut_equipment_flags());
+        self.selection_requests.push(selection);
     }
     pub fn remove_active(&mut self, side: usize) -> Option<Arc<Descriptor>> {
         self.active.get_mut(side)?.take()
@@ -881,6 +948,8 @@ impl PlayerActions {
         player: &mut Player,
         clock: &mut crate::gameplay::game_clock_runtime::ClockRuntime,
         effects: &mut super::usable_effects::EffectRequests,
+        scene: &mut super::physics_scene::PhysicsScene,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
     ) -> Result<(), String> {
         if !self.needs_preparation() {
             return Ok(());
@@ -890,6 +959,7 @@ impl PlayerActions {
             owner.cleanup = false;
         }
         if let Some(owner) = self.far_reach.as_mut().filter(|owner| owner.cleanup) {
+            owner.cancel_acquisition(scene, live, player)?;
             owner.retire(player);
             owner.cleanup = false;
         }
@@ -898,6 +968,7 @@ impl PlayerActions {
             owner.cleanup = false;
         }
         for owner in &mut self.retiring_far_reaches {
+            owner.cancel_acquisition(scene, live, player)?;
             owner.retire(player);
             owner.cleanup = false;
         }
@@ -922,6 +993,14 @@ impl PlayerActions {
         }
         Ok(())
     }
+    fn retire_far_reach_queries(&mut self, scene: &mut super::physics_scene::PhysicsScene,
+        live: &crate::gameplay::entity_lifetime::LiveEntities, player: &Player) -> Result<(), String> {
+        for owner in self.far_reach.iter_mut().chain(self.active_far_reach.iter_mut())
+            .chain(self.retiring_far_reaches.iter_mut()).chain(self.cached_far_reaches.values_mut()) {
+            owner.cancel_acquisition(scene, live, player)?;
+        }
+        Ok(())
+    }
     pub fn wanted(&self, slot: u8, path: &str) -> bool {
         self.wanted.get(slot as usize).and_then(Option::as_deref) == Some(path)
     }
@@ -930,6 +1009,12 @@ impl PlayerActions {
     }
     pub(super) fn equipment_attachment_source(&self) -> (Arc<Catalog>, Arc<Mutex<Sources>>) {
         (self.catalog.clone(), self.sources.clone())
+    }
+
+    ///HUD and wheel borrow the actual admitted item's immutable component
+    ///metadata; presentation never reparses or acquires its declaration.
+    pub(super) fn equipment_metadata(&self, item: &str) -> Option<&crate::assets::equipment::Metadata> {
+        self.metadata.get(item).map(Arc::as_ref)
     }
 
     fn request_metadata(&mut self, item: &PickableItem, admit: bool) {
@@ -1238,7 +1323,7 @@ impl PlayerActions {
         let id = crate::assets::power_journal::power_id(&power.power_id)
             .ok_or("power has no registered ID")?;
         let mut settings = crate::gameplay::powers::Settings::read(id, &power.component)?;
-        let blink = if id == 2 {
+        let mut blink = if id == 2 {
             Some(super::blink::Prepared::with_power(
                 &power.component,
                 self.blink_player
@@ -1325,6 +1410,7 @@ impl PlayerActions {
         };
         let task = IoTaskPool::get().spawn(async move {
             // Retain the canonical metadata owner while acquiring its paths.
+            if let Some(blink) = blink.as_mut() { blink.acquire_damage(&catalog)?; }
             let power = definitions
                 .0
                 .get(index)
@@ -1567,6 +1653,7 @@ impl PlayerActions {
             .map(|arm| arm.equipment().to_owned())
             .collect::<Vec<_>>();
         let slash_scene_paths = self.slash_scene_paths.clone();
+        let heart_scene_paths = self.heart_scene_paths.clone();
         let arm_rigs = self.arms.clone();
         let closed = self.cancelled.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1643,8 +1730,12 @@ impl PlayerActions {
                 )?)
             };
             let mut paths: Vec<_> = descriptor.equipment.scenes.values().cloned().collect();
+            paths.extend(descriptor.equipment.slash_midnights.iter().flatten().cloned());
             if descriptor.equipment.archetype == 1 {
                 paths.extend(slash_scene_paths.iter().cloned());
+            }
+            if descriptor.heart.is_some() {
+                paths.extend(heart_scene_paths.iter().cloned());
             }
             paths.sort();
             paths.dedup();
@@ -1869,6 +1960,7 @@ fn prepare_scenes(
             arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             sounds,
+            animation_sounds: Default::default(),
         };
         for index in scene_indices(&scene, models)? {
             for target in 0..5 {
@@ -1892,6 +1984,9 @@ fn prepare_scenes(
                         )
                     })
                     .collect::<Result<Vec<_>, String>>()?;
+                for (key, &clip) in keys.iter().zip(&indices) {
+                    scene.animation_sounds.prepare(target, clip, &snapshot.rig, &key.anim)?;
+                }
                 match target {
                     0 => scene.clips[index] = indices,
                     1 | 2 => scene.arm_clips[target - 1][index] = indices,
@@ -1913,6 +2008,40 @@ pub(super) fn retire_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut actions| actions.retire_acquisitions())
 }
 
+///6846b0 ->8120b0: start the authored persistent, attached PlayerFX through
+///the same requested/playing source owner as other Player effects. This runs
+///during loading so its real resource admission participates in that barrier.
+pub(super) fn prepare_fx(world: &mut World) {
+    let Some(actions) = world.get_resource::<PlayerActions>() else { return };
+    if actions.cancelled.load(Ordering::Acquire) || actions.startup_error.is_some()
+        || !actions.motion_blur.as_ref().is_some_and(|fx| !fx.ready && !fx.closed) { return; }
+    let Some(player) = super::player_lifetime::id(world) else { return };
+    if !world.contains_resource::<super::usable_effects::EffectRequests>() { return; }
+    let result = world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
+        let fx = actions.motion_blur.as_mut().expect("pending PlayerFX");
+        if fx.scope.is_none() {
+            let scope: Arc<str> = Arc::from(format!("player-motion-blur:{player:?}"));
+            world.resource_mut::<super::usable_effects::EffectRequests>()
+                .reserve(scope.clone(), vec![fx.path.to_string()]);
+            fx.scope = Some(scope);
+            return Ok::<(), String>(());
+        }
+        let scope = fx.scope.as_ref().expect("reserved PlayerFX");
+        if !super::usable_effects::reservation_ready(world, scope)? { return Ok(()); }
+        if !fx.started {
+            world.resource_mut::<super::usable_effects::EffectRequests>()
+                .start_player(scope, &fx.path);
+            fx.started = true;
+            return Ok(());
+        }
+        fx.ready = super::usable_effects::player_published(world, scope, &fx.path)?;
+        Ok(())
+    });
+    if let Err(error) = result {
+        world.resource_mut::<PlayerActions>().startup_error = Some(format!("Player motion blur: {error}"));
+    }
+}
+
 /// Release owned time/FX requests before their shared managers are retired.
 /// Both the selected component and a detached, still-moving Blink are real
 /// consumers; equipment selection alone is not their completion signal.
@@ -1923,7 +2052,8 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
     let has_blinks = actions.has_family_work();
     let has_reservations =
         !actions.power_reservations.is_empty() || !actions.retiring_power_dependencies.is_empty();
-    if !has_blinks && !has_reservations {
+    let has_motion_blur = actions.motion_blur.as_ref().is_some_and(|fx| fx.scope.is_some() && !fx.closed);
+    if !has_blinks && !has_reservations && !has_motion_blur {
         return Ok(());
     }
     if !world.contains_resource::<super::usable_effects::EffectRequests>() {
@@ -1944,9 +2074,13 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
             world.resource_scope(|world, mut state: Mut<super::player::PlayerState>| {
                 world.resource_scope(
                     |world, mut clock: Mut<crate::gameplay::game_clock_runtime::ClockRuntime>| {
+                        let player = state.player.as_mut().expect("player retirement admission");
+                        world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                            actions.retire_far_reach_queries(&mut scene,
+                                world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(), player)
+                        })?;
                         let mut effects =
                             world.resource_mut::<super::usable_effects::EffectRequests>();
-                        let player = state.player.as_mut().expect("player retirement admission");
                         if let Some(blink) = actions.blink.as_mut() {
                             blink.retire(player, &mut clock, &mut effects)?;
                         }
@@ -1979,6 +2113,15 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
     }
     world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
         let mut effects = world.resource_mut::<super::usable_effects::EffectRequests>();
+        //683f10 ->812290 ->1a31f0: stop the same PlayerFX handle, then
+        //release only this producer's reservation. Shared FX tails drain later.
+        if let Some(fx) = actions.motion_blur.as_mut().filter(|fx| !fx.closed) {
+            if let Some(scope) = fx.scope.take() {
+                if fx.started { effects.stop_player(&scope); }
+                effects.release_reservation(scope);
+            }
+            fx.closed = true;
+        }
         for (_, key) in actions.power_reservations.drain() {
             effects.release_reservation(key);
         }
@@ -1995,5 +2138,5 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
 mod input;
 pub(super) use input::{
     advance_selection, dispatch_automatic_potion, dispatch_potions, dispatch_shortcuts,
-    install_ranged, player_frame, register_ranged,
+    install_ranged, player_frame, prepare_animation_frame, register_ranged,
 };

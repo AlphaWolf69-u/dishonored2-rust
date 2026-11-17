@@ -457,6 +457,10 @@ pub fn install(vm: &mut Vm) {
         ("MIDDLE_MOUSE_DOWN", "middleMouseDown".into()),
         ("MIDDLE_MOUSE_UP", "middleMouseUp".into()),
     ];
+    s.getters.extend([
+        ("stageX", mouse_stage_x as NativeFn),
+        ("stageY", mouse_stage_y as NativeFn),
+    ]);
     define(vm, s);
 
     let mut s = Spec::new("flash.events", "TimerEvent", Some(event.clone()));
@@ -501,4 +505,30 @@ fn mouse_init(vm: &mut Vm, this: &Value, a: &[Value]) -> Result<Value> {
         }
     }
     Ok(Value::Undefined)
+}
+
+///1410858c0/1410859a0 use the original target (not currentTarget), its
+///103a050 concatenated 2D transform and1088030 float point transform.
+fn mouse_stage(vm: &mut Vm, this: &Value) -> Result<(f64, f64)> {
+    let x = vm.to_number(&field(this, "localX"))? as f32;
+    let y = vm.to_number(&field(this, "localY"))? as f32;
+    let target = event_state(this, |event| event.target.clone())
+        .and_then(|target| target.as_object().cloned());
+    if let Some(target) = target.filter(|target| super::display::display_ref(target).is_some()) {
+        let matrix = if super::display::is_stage(&target) { super::geom::Affine::default() }
+            else { super::display::concatenated(&target) };
+        Ok(((x * matrix.a as f32 + y * matrix.c as f32 + matrix.tx as f32) as f64,
+            (x * matrix.b as f32 + y * matrix.d as f32 + matrix.ty as f32) as f64))
+    } else {
+        //1088c20 tests the localY float's NaN bits. A finite unattached
+        //event returns zero for both axes; an uninitialized one returns NaN.
+        let value = if y.is_nan() { f64::NAN } else { 0.0 };
+        Ok((value, value))
+    }
+}
+fn mouse_stage_x(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
+    Ok(mouse_stage(vm, this)?.0.into())
+}
+fn mouse_stage_y(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
+    Ok(mouse_stage(vm, this)?.1.into())
 }

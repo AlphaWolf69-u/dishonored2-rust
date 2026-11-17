@@ -164,6 +164,7 @@ pub struct Manager {
     pub mana_potion_factors: [f32; 3],
     pub mana_heal_factors: [f32; 3],
     pub health_regen_amount_scale: f32,
+    pub ammo_quantity_offsets: [i32; 3],
     /// Retain the exact declaration generation independently of registry purge.
     _definition: Arc<crate::assets::difficulty::Definition>,
 }
@@ -232,6 +233,7 @@ impl Manager {
             mana_potion_factors: definition.mana_potion_factors,
             mana_heal_factors: definition.mana_heal_factors,
             health_regen_amount_scale: definition.health_regen_amount_scale,
+            ammo_quantity_offsets: definition.ammo_quantity_offsets,
             custom: PRESET_DEFAULTS, current: 0, _definition: definition }
     }
     fn read_definition(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, catalog: Option<&crate::archive::Catalog>, marker: u8)
@@ -276,6 +278,11 @@ impl Manager {
         let health_potion_factors = factors("m_healthPotionEffect", [0.75, 1.0, 1.5]);
         let mana_potion_factors = factors("m_manaPotionEffect", [0.75, 1.0, 1.5]);
         let mana_heal_factors = factors("m_manaPotionSpeed", [3.0, 1.0, 0.1]);
+        //6472a0 initializes countOffset_t at174 to[1,0,-1]; reflection
+        //141802090 places m_parameters.m_ammoQuantity at114(+60).
+        let ammo = decl::scope(parameters, "m_ammoQuantity").unwrap_or(&[]);
+        let ammo_quantity_offsets = [decl::int(ammo, "m_offsetLvl1", 1),
+            decl::int(ammo, "m_offsetLvl2", 0), decl::int(ammo, "m_offsetLvl3", -1)];
         let ui = decl::scope(&edit, "m_uiInformation").unwrap_or(&[]);
         let slots: Vec<Slot> = SLOT_FIELDS[..ROWS + 1]
             .iter()
@@ -291,6 +298,7 @@ impl Manager {
             incoming_damage_back_factors, health_heal_factors, health_potion_factors,
             mana_potion_factors, mana_heal_factors,
             health_regen_amount_scale: decl::float(parameters, "m_healthRegenAmountScale", 1.0),
+            ammo_quantity_offsets,
             preset_leases,
         })
     }
@@ -337,6 +345,12 @@ impl Manager {
         } else {
             &self.custom
         }
+    }
+
+    ///647ee0 reads the current preset's ammo level, then declaration+174.
+    pub fn ammo_quantity_offset(&self, difficulty: i32) -> Result<i32> {
+        self.ammo_quantity_offsets.get(self.preset(difficulty)[8] as usize).copied()
+            .ok_or_else(|| "ammo difficulty level is outside the reflected three levels".into())
     }
 
     /// `FUN_140648350`.

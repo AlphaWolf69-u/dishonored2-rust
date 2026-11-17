@@ -13,7 +13,14 @@ use super::{
 use bevy::prelude::*;
 
 #[derive(Component, Clone, Copy)]
-pub(super) struct LocalLightSource(pub(super) usize);
+pub(super) enum LocalLightSource { Placed(usize), Fx(u16) }
+impl LocalLightSource {
+    pub(super) fn key(self, placed_count: usize) -> Result<usize, String> {
+        let key = match self { Self::Placed(index) => index, Self::Fx(slot) => placed_count.checked_add(usize::from(slot)).ok_or("local light registry overflow")? };
+        u16::try_from(key).map_err(|_| "local light registry exceeds16-bit identities")?;
+        Ok(key)
+    }
+}
 
 #[derive(Resource, Default)]
 pub(super) struct LocalShadowViewControls(
@@ -53,6 +60,7 @@ pub(super) struct LocalShadowOwner {
 
 pub(super) struct LocalProjectedLight {
     pub entity: Entity,
+    pub source_orientation: [[f32; 3]; 2],
     pub request: render_shadow::LocalShadowRequest,
     pub clips: Vec<render_shadow::ShadowMatrix>,
     pub crops: Vec<[f32; 4]>,
@@ -80,7 +88,7 @@ pub(super) struct LocalShadowSide {
 pub(super) struct LocalShadowCpu {
     pub current: Option<(u32, Vec<LocalProjectedLight>)>,
     /// The particle systems the current lights' caster lists address.
-    pub particles: Option<std::sync::Arc<Vec<shadow_updates::ParticleShadowCaster>>>,
+    pub runtime_surfaces: Option<std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
     error: Option<String>,
     reported: bool,
     verified_parallel: bool,
@@ -181,7 +189,7 @@ struct LocalStaticInputs {
     /// Particle system surfaces as of the cache entry's first source
     /// generation: like any static-bucket model they stay in the cached
     /// layer until it is rebuilt (the cache key is the light pose, 2cd500).
-    particles: Vec<shadow_updates::ParticleShadowSurface>,
+    runtime_surfaces: Vec<shadow_updates::RuntimeShadowSurface>,
     clocks: game_clock::GameplayViewClocks,
     dimensions: [u32; 2],
     prepared: Option<(Vec<shadow_pass::ShadowInstance>, bool)>,
@@ -206,6 +214,7 @@ fn local_side_models(
         .iter()
         .copied()
         .filter(|&(source, _)| source < sources.0.len())
+        .filter(|&(source, _)| sources.0[source].flags_18bc&8!=0)
         .filter(|&(source, _)| {
             let bounds = sources.0[source].bounds;
             !render_model::transformed_aabb_clip_cull(&clip, bounds[0], bounds[1]).culled
@@ -215,17 +224,17 @@ fn local_side_models(
 
 /// The particle system surfaces of a whole-light caster list inside one
 /// side, culled by system bounds as 329120 culls models.
-fn local_side_particles(
+fn local_side_runtime_surfaces(
     records: &[(usize, usize)],
     clip: render_shadow::ShadowMatrix,
-    particles: Option<&std::sync::Arc<Vec<shadow_updates::ParticleShadowCaster>>>,
-) -> Vec<shadow_updates::ParticleShadowSurface> {
-    let Some(particles) = particles else { return Vec::new() };
+    runtime_surfaces: Option<&std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
+) -> Vec<shadow_updates::RuntimeShadowSurface> {
+    let Some(runtime_surfaces) = runtime_surfaces else { return Vec::new() };
     let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
     records
         .iter()
-        .filter_map(|&(source, _)| shadow_updates::particle_caster_index(source, particles.len()))
-        .map(|index| &particles[index])
+        .filter_map(|&(source, _)| shadow_updates::runtime_surface_caster_index(source, runtime_surfaces.len()))
+        .map(|index| &runtime_surfaces[index])
         .filter(|caster| !render_model::transformed_aabb_clip_cull(&clip, caster.bounds[0], caster.bounds[1]).culled)
         .flat_map(|caster| caster.surfaces.iter().cloned())
         .collect()
@@ -247,7 +256,7 @@ pub(super) fn publish_local_shadow_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<LocalShadowDraws>,
     mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
-    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind)): (
+    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind), model_data): (
         Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
@@ -256,6 +265,7 @@ pub(super) fn publish_local_shadow_draws(
             Option<Res<super::vegetation_wind::VegetationWind>>,
             Option<Res<super::fog_scene::WorldWind>>,
         ),
+        Option<Res<super::model_motion::ModelProbeLighting>>,
     ),
 ) {
     let _span = profile.as_deref().map(|p| p.measure(25));
@@ -305,10 +315,10 @@ pub(super) fn publish_local_shadow_draws(
                             light.clips[side_index],
                             &model_sources,
                         ),
-                        particles: local_side_particles(
+                        runtime_surfaces: local_side_runtime_surfaces(
                             &light.model_casters[0],
                             light.clips[side_index],
-                            cpu.particles.as_ref(),
+                            cpu.runtime_surfaces.as_ref(),
                         ),
                         clocks,
                         dimensions: [
@@ -366,7 +376,7 @@ pub(super) fn publish_local_shadow_draws(
                     clip,
                     world: light.world_casters[side_index].clone(),
                     models: local_side_models(&light.model_casters[0], clip, &model_sources),
-                    particles: local_side_particles(&light.model_casters[0], clip, cpu.particles.as_ref()),
+                    runtime_surfaces: local_side_runtime_surfaces(&light.model_casters[0], clip, cpu.runtime_surfaces.as_ref()),
                     clocks,
                     dimensions,
                     prepared: None,
@@ -427,9 +437,10 @@ pub(super) fn publish_local_shadow_draws(
                         &images,
                         &vegetation,
                         &mut shadow_textures,
+                        model_data.as_deref(),
                     )?;
-                    let particles = shadow_updates::prepare_particle_shadow_instances(
-                        &input.particles,
+                    let runtime_surfaces = shadow_updates::prepare_runtime_surface_shadows(
+                        &input.runtime_surfaces,
                         input.clip,
                         bias,
                         0.0,
@@ -440,12 +451,12 @@ pub(super) fn publish_local_shadow_draws(
                         &vegetation,
                         &mut shadow_textures,
                     )?;
-                    let contains_models = !models.is_empty() || !particles.is_empty();
+                    let contains_models = !models.is_empty() || !runtime_surfaces.is_empty();
                     let mut built =
                         build_world_layer(plans, matrices.as_ref(), target, &mut buffers)
                             .instances;
                     built.extend(models);
-                    built.extend(particles);
+                    built.extend(runtime_surfaces);
                     input.prepared = Some((built, contains_models));
                 }
                 let static_prepared = !cache.is_some_and(|c| completed.contains_key(&c.id));
@@ -473,7 +484,16 @@ pub(super) fn publish_local_shadow_draws(
                     &images,
                     &vegetation,
                     &mut shadow_textures,
+                    model_data.as_deref(),
                 )?);
+
+                if light.refresh_dynamic {
+                    let surfaces = local_side_runtime_surfaces(&light.model_casters[1], clip, cpu.runtime_surfaces.as_ref());
+                    instances.extend(shadow_updates::prepare_runtime_surface_shadows(
+                        &surfaces, clip, bias, 0.0, dimensions, &clocks,
+                        &materials, &images, &vegetation, &mut shadow_textures,
+                    )?);
+                }
 
                 layers.push(shadow_pass::ShadowLayer {
                     ops: shadow_pass::ShadowLayerOps {
@@ -532,15 +552,15 @@ pub(super) fn publish_local_shadow_draws(
                     render_light::fill_tlf_shadow_packet(&descriptor, &mut packet);
                     receiver.shadows.push(packet);
                 }
-                let source = &scene.placed_lights[light.request.candidate.source];
+                let source = &light.source_orientation;
                 receiver
                     .lights
                     .push(shadow_pass::LocalShadowReceiverLight {
                         entity: light.entity,
                         kind: light.request.candidate.kind as u32,
-                        position: source.position,
-                        left: source.rotation[1],
-                        direction: source.rotation[0].map(|v| -v),
+                        position: light.request.candidate.position,
+                        left: source[0],
+                        direction: source[1].map(|v| -v),
                         first: first as u32,
                         count: count as u32,
                     });
@@ -761,21 +781,21 @@ pub(super) fn prepare_local_shadow_owner(
 pub(super) fn prepare_local_shadow_cpu(
     owner: Option<ResMut<LocalShadowOwner>>,
     scene: Res<SceneData>,
-    lights: Query<(Entity, &LocalLightSource, &Visibility)>,
+    lights: Query<(Entity, &LocalLightSource, &Visibility, Option<&super::fx_lights::FxLightRecord>)>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame: Res<bevy::diagnostic::FrameCount>,
     mut cpu: ResMut<LocalShadowCpu>,
     model_frame: Res<shadow_updates::ModelCasterFrame>,
     model_sources: Res<shadow_updates::ModelShadowSources>,
-    particle_casters: Res<shadow_updates::ParticleShadowCasters>,
+    runtime_casters: Res<shadow_updates::RuntimeSurfaceCasters>,
     completion: Res<shadow_pass::LocalShadowCompletion>,
     mut view_controls: ResMut<LocalShadowViewControls>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(24));
     cpu.current = None;
-    cpu.particles = None;
+    cpu.runtime_surfaces = None;
     let Some(mut owner) = owner else {
         return;
     };
@@ -848,28 +868,28 @@ pub(super) fn prepare_local_shadow_cpu(
         };
         let mut sources = HashMap::new();
         let mut candidates = Vec::new();
-        for (entity, source, visibility) in &lights {
+        for (entity, source, visibility, runtime) in &lights {
             if *visibility == Visibility::Hidden {
                 continue;
             }
-            let light = scene
-                .placed_lights
-                .get(source.0)
-                .ok_or("local light lost its authored source")?;
+            let key = source.key(scene.placed_lights.len())?;
+            let light = match *source {
+                LocalLightSource::Placed(index) => scene.placed_lights.get(index).ok_or("local light lost its authored source")?,
+                LocalLightSource::Fx(_) => &runtime.ok_or("FXLight source lost its retained record")?.descriptor,
+            };
             let kind = match light.kind {
                 entities::LightType::Point => 0,
                 entities::LightType::HalfPoint => 1,
                 entities::LightType::Spot => 2,
                 _ => continue,
             };
-            let color = Color::srgb(
-                light.color[0].max(0.0),
-                light.color[1].max(0.0),
-                light.color[2].max(0.0),
-            )
-            .to_linear();
-            let preset = light_preset(light, [color.red, color.green, color.blue])
-                .ok_or("local light preset is unresolved")?;
+            let range = if let Some(runtime) = runtime {
+                super::fx_lights::value(&runtime.base, 0x80)
+            } else {
+                let color = Color::srgb(light.color[0].max(0.0), light.color[1].max(0.0), light.color[2].max(0.0)).to_linear();
+                light_preset(light, [color.red, color.green, color.blue])
+                    .ok_or("local light preset is unresolved")?.range
+            };
             let quality = if kind != 2 || light.no_shadows {
                 0
             } else {
@@ -882,20 +902,20 @@ pub(super) fn prepare_local_shadow_cpu(
                     }
                 }
             };
-            let flags = [
+            let flags = if let Some(runtime) = runtime { [runtime.base[0], runtime.base[1]] } else { [
                 u8::from(!light.no_shadows) * 2
                     | u8::from(light.cast_volumetric_shadows) * 0x20
                     | u8::from(light.dont_alter_volumetric_dynamic_shadow) * 0x40,
                 u8::from(light.scatter_only),
-            ];
-            sources.insert(source.0, entity);
+            ] };
+            sources.insert(key, (entity, light));
             candidates.push(render_shadow::LocalShadowCandidate {
-                source: source.0,
+                source: key,
                 flags,
                 kind,
                 quality,
                 position: light.position,
-                range: preset.range,
+                range,
             });
         }
         // Runtime capture maps158 authored lights in strictly increasing
@@ -925,7 +945,7 @@ pub(super) fn prepare_local_shadow_cpu(
                 request.priority,
             );
         }
-        let particles = particle_casters.current.as_ref().map(|(_, casters)| casters.clone());
+        let runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters.clone());
         let model_inputs: LocalModelInputs = std::array::from_fn(|bucket| {
             let mut records = Vec::new();
             let mut inputs = Vec::new();
@@ -945,8 +965,9 @@ pub(super) fn prepare_local_shadow_cpu(
                 }
             }
             // FX systems are static-bucket model owners (201480).
-            if bucket == 0 {
-                for (index, caster) in particles.iter().flat_map(|p| p.iter()).enumerate() {
+            {
+                for (index, caster) in runtime_surfaces.iter().flat_map(|p| p.iter()).enumerate()
+                    .filter(|(_, caster)| caster.dynamic == (bucket != 0)) {
                     records.push(render_model::LocalModelCasterRecord {
                         bounds: caster.bounds,
                         camera_clip_mask: caster.camera_clip_mask,
@@ -965,7 +986,7 @@ pub(super) fn prepare_local_shadow_cpu(
             .max(1);
         let mut projected = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
             for (chunk, requests) in requests.chunks(chunk_size).enumerate() {
-                let scene = &*scene;
+                let source_lights = &sources;
                 let camera = &camera_fit;
                 let view_flags = owner.view_flags;
                 let model_inputs = &model_inputs;
@@ -976,7 +997,7 @@ pub(super) fn prepare_local_shadow_cpu(
                         requests
                             .iter()
                             .map(|request| {
-                                let light = &scene.placed_lights[request.candidate.source];
+                                let light = source_lights[&request.candidate.source].1;
                                 (
                                     project_local_shadow(
                                         request,
@@ -1026,14 +1047,14 @@ pub(super) fn prepare_local_shadow_cpu(
             {
                 let serial = project_local_shadow(
                     request,
-                    &scene.placed_lights[request.candidate.source],
+                    sources[&request.candidate.source].1,
                     owner.view_flags,
                     &camera_fit,
                     &mut scratch,
                 );
                 let serial_models = collect_local_light_models(
                     request,
-                    &scene.placed_lights[request.candidate.source],
+                    sources[&request.candidate.source].1,
                     owner.view_flags,
                     &vp,
                     &model_inputs,
@@ -1056,7 +1077,7 @@ pub(super) fn prepare_local_shadow_cpu(
             .into_iter()
             .zip(projected.into_iter().flat_map(|(_, results)| results))
         {
-            let light = &scene.placed_lights[request.candidate.source];
+            let light = sources[&request.candidate.source].1;
             //333570/332f20 reserve every face before doing any projection.
             //One failed reservation releases the entire light's partial bank.
             let mut allocations = Vec::with_capacity(request.side_count);
@@ -1179,7 +1200,8 @@ pub(super) fn prepare_local_shadow_cpu(
                 && quality.local_partial_squared_distance < squared;
             let refresh_dynamic = request.candidate.flags[0] & 0x40 != 0 || !skip_dynamic;
             output.push(LocalProjectedLight {
-                entity: sources[&request.candidate.source],
+                entity: sources[&request.candidate.source].0,
+                source_orientation: [light.rotation[1], light.rotation[0]],
                 request,
                 clips,
                 crops,
@@ -1248,7 +1270,7 @@ pub(super) fn prepare_local_shadow_cpu(
                 cpu.reported = true;
             }
             cpu.current = Some((frame.0, lights));
-            cpu.particles = particle_casters.current.as_ref().map(|(_, casters)| casters.clone());
+            cpu.runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters.clone());
         }
         Err(error) => {
             if cpu.error.as_ref() != Some(&error) {

@@ -6,16 +6,26 @@
 //! list order (new records at the head) is kept because later stages
 //! enumerate vertices and triangles in that order.
 use crate::float::{add, multiply, subtract};
+#[path = "convex_hull/geometry.rs"]
+mod geometry;
 
 const FAR: f32 = f32::from_bits(0x7f7f_ffee);
 
 /// MINPS / MAXPS lane semantics (the first operand when it compares).
 fn minps(a: f32, b: f32) -> f32 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 fn maxps(a: f32, b: f32) -> f32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 const NONE: usize = usize::MAX;
 
@@ -99,15 +109,38 @@ impl Domain {
         let extent: [f32; 4] = std::array::from_fn(|i| {
             let e = subtract(high[i], low[i]);
             let floor = f32::from_bits(0x37a7_c5ac);
-            if e > floor { e } else { floor }
+            if e > floor {
+                e
+            } else {
+                floor
+            }
         });
         let half: [f32; 4] = extent.map(|e| multiply(e, 0.5));
         let inverse_half: [f32; 4] = half.map(rcp_newton);
-        let origin = [add(half[0], low[0]), add(half[1], low[1]), add(half[2], low[2]), 0.];
+        let origin = [
+            add(half[0], low[0]),
+            add(half[1], low[1]),
+            add(half[2], low[2]),
+            0.,
+        ];
         let range = f32::from_bits(0x45ff_f800);
-        let scale = [multiply(range, inverse_half[0]), multiply(range, inverse_half[1]), multiply(range, inverse_half[2]), 0.];
-        let inverse = [rcp_newton(scale[0]), rcp_newton(scale[1]), rcp_newton(scale[2]), 0.];
-        Ok(Self { origin, scale, inverse })
+        let scale = [
+            multiply(range, inverse_half[0]),
+            multiply(range, inverse_half[1]),
+            multiply(range, inverse_half[2]),
+            0.,
+        ];
+        let inverse = [
+            rcp_newton(scale[0]),
+            rcp_newton(scale[1]),
+            rcp_newton(scale[2]),
+            0.,
+        ];
+        Ok(Self {
+            origin,
+            scale,
+            inverse,
+        })
     }
 
     /// The grid coordinate of `p` (140baba50's quantization loop).
@@ -118,7 +151,11 @@ impl Domain {
             let v = multiply(subtract(p[i], self.origin[i]), self.scale[i]);
             let v = if v < high { v } else { high };
             let v = if low > v { low } else { v };
-            let v = if v < 0. { subtract(v, 0.5) } else { add(v, 0.5) };
+            let v = if v < 0. {
+                subtract(v, 0.5)
+            } else {
+                add(v, 0.5)
+            };
             // CVTTPS2DQ; the 2^31 fix-up never applies inside [-8192, 8191].
             v as i32
         })
@@ -219,7 +256,10 @@ impl Hull {
     fn new_vertex(&mut self, point: Point) -> usize {
         let index = self.vertices.len();
         self.vertices.push(Vertex {
-            point: Point { extra: point.extra, ..point },
+            point: Point {
+                extra: point.extra,
+                ..point
+            },
             references: 0,
             next: self.vertex_head,
             previous: NONE,
@@ -288,7 +328,10 @@ impl Hull {
 
     pub fn evaluate(&self, triangle: usize, q: [i32; 3]) -> i64 {
         let t = &self.triangles[triangle];
-        t.normal[2] as i64 * q[2] as i64 + t.normal[1] as i64 * q[1] as i64 + q[0] as i64 * t.normal[0] as i64 + t.offset
+        t.normal[2] as i64 * q[2] as i64
+            + t.normal[1] as i64 * q[1] as i64
+            + q[0] as i64 * t.normal[0] as i64
+            + t.offset
     }
 
     fn connect(&mut self, a: Link, b: Link) {
@@ -346,9 +389,24 @@ impl Hull {
         let attach = |hull: &mut Self, at: Link, previous: usize| -> usize {
             let t = hull.triangles[at.triangle].vertices;
             let cone = hull.new_triangle([vertex, t[next_edge(at.edge)], t[at.edge]]);
-            hull.connect(at, Link { triangle: cone, edge: 1 });
+            hull.connect(
+                at,
+                Link {
+                    triangle: cone,
+                    edge: 1,
+                },
+            );
             if previous != NONE {
-                hull.connect(Link { triangle: previous, edge: 0 }, Link { triangle: cone, edge: 2 });
+                hull.connect(
+                    Link {
+                        triangle: previous,
+                        edge: 0,
+                    },
+                    Link {
+                        triangle: cone,
+                        edge: 2,
+                    },
+                );
             }
             cone
         };
@@ -370,7 +428,16 @@ impl Hull {
             previous = cone;
         }
         let last = attach(self, current, previous);
-        self.connect(Link { triangle: last, edge: 0 }, Link { triangle: first, edge: 2 });
+        self.connect(
+            Link {
+                triangle: last,
+                edge: 0,
+            },
+            Link {
+                triangle: first,
+                edge: 2,
+            },
+        );
     }
 
     /// 140bad720: false when every point is coplanar.
@@ -384,14 +451,23 @@ impl Hull {
                     let (pj, pk) = (points[j].grid, points[k].grid);
                     let a = [pj[0] - pi[0], pj[1] - pi[1], pj[2] - pi[2]];
                     let b = [pk[0] - pi[0], pk[1] - pi[1], pk[2] - pi[2]];
-                    let normal = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+                    let normal = [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ];
                     if normal == [0; 3] {
                         continue;
                     }
-                    let w = -(pi[0] as i64 * normal[0] as i64 + pi[1] as i64 * normal[1] as i64 + pi[2] as i64 * normal[2] as i64);
+                    let w = -(pi[0] as i64 * normal[0] as i64
+                        + pi[1] as i64 * normal[1] as i64
+                        + pi[2] as i64 * normal[2] as i64);
                     for l in k + 1..n {
                         let q = points[l].grid;
-                        let d = q[2] as i64 * normal[2] as i64 + q[1] as i64 * normal[1] as i64 + w + q[0] as i64 * normal[0] as i64;
+                        let d = q[2] as i64 * normal[2] as i64
+                            + q[1] as i64 * normal[1] as i64
+                            + w
+                            + q[0] as i64 * normal[0] as i64;
                         if d != 0 {
                             found = Some((i, j, k, l, d));
                             break 'search;
@@ -400,7 +476,9 @@ impl Hull {
                 }
             }
         }
-        let Some((i, j, k, l, d)) = found else { return false };
+        let Some((i, j, k, l, d)) = found else {
+            return false;
+        };
         let vi = self.new_vertex(points[i]);
         let vj = self.new_vertex(points[j]);
         let vk = self.new_vertex(points[k]);
@@ -451,7 +529,12 @@ impl Hull {
         let domain = Domain::new(source)?;
         let mut points: Vec<Point> = source
             .iter()
-            .map(|&position| Point { position, grid: domain.quantize(position), extra: 0, index: -1 })
+            .map(|&position| Point {
+                position,
+                grid: domain.quantize(position),
+                extra: 0,
+                index: -1,
+            })
             .collect();
         let last = points.len() as i32 - 1;
         sort_points(&mut points, 0, last);
@@ -506,7 +589,11 @@ impl Hull {
         for t in self.triangle_order() {
             let [a, b, c] = self.triangles[t].vertices.map(|v| {
                 let p = self.grid_position(v);
-                [subtract(p[0], reference[0]), subtract(p[1], reference[1]), subtract(p[2], reference[2])]
+                [
+                    subtract(p[0], reference[0]),
+                    subtract(p[1], reference[1]),
+                    subtract(p[2], reference[2]),
+                ]
             });
             for p in [a, b, c] {
                 low = std::array::from_fn(|i| if low[i] < p[i] { low[i] } else { p[i] });
@@ -517,16 +604,28 @@ impl Hull {
             let y = subtract(multiply(c[0], b[2]), multiply(b[0], c[2]));
             let six = add(add(multiply(a[1], y), multiply(a[0], x)), multiply(a[2], z));
             volume = add(volume, six);
-            moment = std::array::from_fn(|i| add(moment[i], multiply(add(add(b[i], a[i]), c[i]), six)));
+            moment =
+                std::array::from_fn(|i| add(moment[i], multiply(add(add(b[i], a[i]), c[i]), six)));
         }
         let extent: [f32; 3] = std::array::from_fn(|i| subtract(high[i], low[i]));
-        let ey = if extent[1] > extent[0] { extent[1] } else { extent[0] };
+        let ey = if extent[1] > extent[0] {
+            extent[1]
+        } else {
+            extent[0]
+        };
         let largest = if extent[2] > ey { extent[2] } else { ey };
-        if volume <= multiply(multiply(multiply(largest, largest), largest), f32::from_bits(0x3400_0000)) {
+        if volume
+            <= multiply(
+                multiply(multiply(largest, largest), largest),
+                f32::from_bits(0x3400_0000),
+            )
+        {
             return Err("hkgpConvexHull mass properties failed (degenerate volume)".into());
         }
         let inverse = crate::float::divide(1., volume);
-        Ok(std::array::from_fn(|i| add(multiply(multiply(moment[i], inverse), 0.25), reference[i])))
+        Ok(std::array::from_fn(|i| {
+            add(multiply(multiply(moment[i], inverse), 0.25), reference[i])
+        }))
     }
 
     /// buildIndices (140b94be0, 3D part): vertex indices in list order, and
@@ -548,7 +647,13 @@ impl Hull {
                 let x = subtract(multiply(a[2], b[1]), multiply(b[2], a[1]));
                 let y = subtract(multiply(a[0], b[2]), multiply(b[0], a[2]));
                 let squared = add(add(multiply(y, y), multiply(x, x)), multiply(z, z));
-                (t, multiply(crate::gameplay::constraint_solver::inverse_length(squared), squared))
+                (
+                    t,
+                    multiply(
+                        crate::gameplay::constraint_solver::inverse_length(squared),
+                        squared,
+                    ),
+                )
             })
             .collect();
         if by_area.len() > 1 {
@@ -568,11 +673,21 @@ impl Hull {
             let squared = add(add(multiply(y, y), multiply(x, x)), multiply(z, z));
             let n = if 0. < squared {
                 let inverse = crate::gameplay::constraint_solver::inverse_length(squared);
-                [multiply(inverse, x), multiply(inverse, y), multiply(inverse, z)]
+                [
+                    multiply(inverse, x),
+                    multiply(inverse, y),
+                    multiply(inverse, z),
+                ]
             } else {
                 [x, y, z]
             };
-            let w = subtract(0., add(add(multiply(n[1], p0[1]), multiply(n[0], p0[0])), multiply(n[2], p0[2])));
+            let w = subtract(
+                0.,
+                add(
+                    add(multiply(n[1], p0[1]), multiply(n[0], p0[0])),
+                    multiply(n[2], p0[2]),
+                ),
+            );
             planes[t] = [n[0], n[1], n[2], w];
             self.triangles[t].face = -1;
         }
@@ -589,15 +704,29 @@ impl Hull {
             let p = planes[seed];
             self.triangles[seed].face = face;
             self.faces.push(p);
-            let mut stack: Vec<Link> = self.triangles[seed].links.iter().filter_map(|l| *l).collect();
+            let mut stack: Vec<Link> = self.triangles[seed]
+                .links
+                .iter()
+                .filter_map(|l| *l)
+                .collect();
             while let Some(at) = stack.pop() {
                 if self.triangles[at.triangle].face != -1 {
                     continue;
                 }
                 let q = planes[at.triangle];
                 let valid = q[..3].iter().all(|v| !v.is_nan());
-                let length = subtract(add(add(multiply(q[1], q[1]), multiply(q[0], q[0])), multiply(q[2], q[2])), 1.).abs();
-                let dot = add(add(multiply(p[1], q[1]), multiply(p[0], q[0])), multiply(p[2], q[2]));
+                let length = subtract(
+                    add(
+                        add(multiply(q[1], q[1]), multiply(q[0], q[0])),
+                        multiply(q[2], q[2]),
+                    ),
+                    1.,
+                )
+                .abs();
+                let dot = add(
+                    add(multiply(p[1], q[1]), multiply(p[0], q[0])),
+                    multiply(p[2], q[2]),
+                );
                 if !valid || f32::from_bits(0x38d1_b717) <= length || tolerance <= dot {
                     self.triangles[at.triangle].face = face;
                     for edge in [next_edge(at.edge), previous_edge(at.edge)] {
@@ -637,7 +766,9 @@ impl Hull {
 /// volume centroid (+0x1d00), and that centroid (+0x1d10).
 pub fn collision_shape(points: &[[f32; 4]]) -> Result<(Vec<[f32; 4]>, [f32; 3]), String> {
     // 140b896a0: half the smallest half extent of the hull's box.
-    collision_shape_with(points, |hull| Ok(multiply(0.5, hull.smallest_box_half_extent())))
+    collision_shape_with(points, |hull| {
+        Ok(multiply(0.5, hull.smallest_box_half_extent()))
+    })
 }
 
 /// `collision_shape` with the decimation tolerance from `tolerance`.
@@ -660,7 +791,12 @@ pub fn collision_shape_with(
         .into_iter()
         .map(|v| {
             let p = hull.vertices[v].point.position;
-            [subtract(p[0], centroid[0]), subtract(p[1], centroid[1]), subtract(p[2], centroid[2]), p[3]]
+            [
+                subtract(p[0], centroid[0]),
+                subtract(p[1], centroid[1]),
+                subtract(p[2], centroid[2]),
+                p[3],
+            ]
         })
         .collect();
     Ok((vertices, centroid))
@@ -676,20 +812,32 @@ pub fn invert(m: &[f32; 16], tolerance: f32) -> Option<[f32; 16]> {
     let t2 = multiply(m[15], m[9]);
     let t3 = subtract(t1, t2);
     let t4 = subtract(multiply(m[14], m[9]), multiply(m[13], m[10]));
-    let t5 = add(add(multiply(m[5], t0), multiply(t3, m[6])), multiply(t4, m[7]));
+    let t5 = add(
+        add(multiply(m[5], t0), multiply(t3, m[6])),
+        multiply(t4, m[7]),
+    );
     let t6 = multiply(m[12], m[10]);
     let t7 = multiply(m[14], m[8]);
     let t8 = subtract(t6, t7);
     let t9 = subtract(multiply(m[13], m[8]), multiply(m[12], m[9]));
-    let t10 = add(add(multiply(m[4], t4), multiply(t8, m[5])), multiply(t9, m[6]));
+    let t10 = add(
+        add(multiply(m[4], t4), multiply(t8, m[5])),
+        multiply(t9, m[6]),
+    );
     let t11 = multiply(t10, m[3]);
     let t12 = subtract(multiply(m[12], m[11]), multiply(m[15], m[8]));
     let t13 = subtract(t7, t6);
-    let t14 = add(add(multiply(m[6], t12), multiply(t13, m[7])), multiply(t0, m[4]));
+    let t14 = add(
+        add(multiply(m[6], t12), multiply(t13, m[7])),
+        multiply(t0, m[4]),
+    );
     let t15 = multiply(t14, m[1]);
     let t16 = add(t11, t15);
     let t17 = subtract(t2, t1);
-    let t18 = add(add(multiply(m[7], t9), multiply(t17, m[4])), multiply(t12, m[5]));
+    let t18 = add(
+        add(multiply(m[7], t9), multiply(t17, m[4])),
+        multiply(t12, m[5]),
+    );
     let t19 = -multiply(t18, m[2]);
     let t20 = -multiply(t5, m[0]);
     let t21 = add(t19, t20);
@@ -717,21 +865,93 @@ pub fn invert(m: &[f32; 16], tolerance: f32) -> Option<[f32; 16]> {
     let t39 = subtract(t30, t29);
     Some([
         multiply(-t5, t22),
-        multiply(add(multiply(m[3], t4), add(multiply(t3, m[2]), multiply(t0, m[1]))), t22),
-        multiply(-add(multiply(m[15], t23), add(multiply(t26, m[14]), multiply(t27, m[13]))), t22),
-        multiply(add(multiply(m[11], t23), add(multiply(t26, m[10]), multiply(t27, m[9]))), t22),
+        multiply(
+            add(
+                multiply(m[3], t4),
+                add(multiply(t3, m[2]), multiply(t0, m[1])),
+            ),
+            t22,
+        ),
+        multiply(
+            -add(
+                multiply(m[15], t23),
+                add(multiply(t26, m[14]), multiply(t27, m[13])),
+            ),
+            t22,
+        ),
+        multiply(
+            add(
+                multiply(m[11], t23),
+                add(multiply(t26, m[10]), multiply(t27, m[9])),
+            ),
+            t22,
+        ),
         multiply(t14, t28),
-        multiply(-add(multiply(m[0], t0), add(multiply(t13, m[3]), multiply(t12, m[2]))), t28),
-        multiply(add(multiply(m[12], t27), add(multiply(t31, m[15]), multiply(t32, m[14]))), t28),
-        multiply(-add(multiply(m[8], t27), add(multiply(t31, m[11]), multiply(t32, m[10]))), t28),
+        multiply(
+            -add(
+                multiply(m[0], t0),
+                add(multiply(t13, m[3]), multiply(t12, m[2])),
+            ),
+            t28,
+        ),
+        multiply(
+            add(
+                multiply(m[12], t27),
+                add(multiply(t31, m[15]), multiply(t32, m[14])),
+            ),
+            t28,
+        ),
+        multiply(
+            -add(
+                multiply(m[8], t27),
+                add(multiply(t31, m[11]), multiply(t32, m[10])),
+            ),
+            t28,
+        ),
         multiply(-t18, t35),
-        multiply(add(multiply(m[1], t12), add(multiply(t17, m[0]), multiply(t9, m[3]))), t35),
-        multiply(-add(multiply(m[13], t32), add(multiply(t36, m[12]), multiply(t37, m[15]))), t35),
-        multiply(add(multiply(m[9], t32), add(multiply(t36, m[8]), multiply(t37, m[11]))), t35),
+        multiply(
+            add(
+                multiply(m[1], t12),
+                add(multiply(t17, m[0]), multiply(t9, m[3])),
+            ),
+            t35,
+        ),
+        multiply(
+            -add(
+                multiply(m[13], t32),
+                add(multiply(t36, m[12]), multiply(t37, m[15])),
+            ),
+            t35,
+        ),
+        multiply(
+            add(
+                multiply(m[9], t32),
+                add(multiply(t36, m[8]), multiply(t37, m[11])),
+            ),
+            t35,
+        ),
         multiply(t10, t38),
-        multiply(-add(multiply(m[2], t9), add(multiply(t8, m[1]), multiply(t4, m[0]))), t38),
-        multiply(add(multiply(m[14], t37), add(multiply(t39, m[13]), multiply(t23, m[12]))), t38),
-        multiply(-add(multiply(m[10], t37), add(multiply(t39, m[9]), multiply(t23, m[8]))), t38),
+        multiply(
+            -add(
+                multiply(m[2], t9),
+                add(multiply(t8, m[1]), multiply(t4, m[0])),
+            ),
+            t38,
+        ),
+        multiply(
+            add(
+                multiply(m[14], t37),
+                add(multiply(t39, m[13]), multiply(t23, m[12])),
+            ),
+            t38,
+        ),
+        multiply(
+            -add(
+                multiply(m[10], t37),
+                add(multiply(t39, m[9]), multiply(t23, m[8])),
+            ),
+            t38,
+        ),
     ])
 }
 
@@ -762,35 +982,61 @@ fn quadric_cost(q: &Quadric, v: [f32; 4]) -> f32 {
         multiply(dot, v[i])
     });
     let sum = add(add(t[3], t[1]), add(t[2], t[0]));
-    if 0. > sum { 0. } else { sum }
+    if 0. > sum {
+        0.
+    } else {
+        sum
+    }
 }
 
 impl Hull {
     /// 140b9bc60 with planes: inside every face plane within `tolerance`.
     fn accepts(&self, p: [f32; 4], tolerance: f32) -> bool {
         self.faces.iter().all(|f| {
-            !(tolerance < add(add(add(multiply(f[1], p[1]), multiply(f[0], p[0])), multiply(f[2], p[2])), f[3]))
+            !(tolerance
+                < add(
+                    add(
+                        add(multiply(f[1], p[1]), multiply(f[0], p[0])),
+                        multiply(f[2], p[2]),
+                    ),
+                    f[3],
+                ))
         })
     }
 
     /// The optimal collapse of an edge (140b5ce50 inverse, checked both
     /// ways against the identity, then the plane test), or the midpoint.
-    fn collapse(&self, sum: &Quadric, small: [f32; 4], large: [f32; 4], root: f32, tolerance: f32) -> Collapse {
+    fn collapse(
+        &self,
+        sum: &Quadric,
+        small: [f32; 4],
+        large: [f32; 4],
+        root: f32,
+        tolerance: f32,
+    ) -> Collapse {
         let m: [f32; 16] = [
-            sum[0], sum[4], sum[8], 0., sum[1], sum[5], sum[9], 0., sum[2], sum[6], sum[10], 0., sum[3], sum[7], sum[11], 1.,
+            sum[0], sum[4], sum[8], 0., sum[1], sum[5], sum[9], 0., sum[2], sum[6], sum[10], 0.,
+            sum[3], sum[7], sum[11], 1.,
         ];
         if let Some(inv) = invert(&m, root) {
-            let col = |x: &[f32; 16], k: usize| [x[4 * k], x[4 * k + 1], x[4 * k + 2], x[4 * k + 3]];
+            let col =
+                |x: &[f32; 16], k: usize| [x[4 * k], x[4 * k + 1], x[4 * k + 2], x[4 * k + 3]];
             let mut worst = 0f32;
             for c in 0..4 {
                 let (ic, mcol) = (col(&inv, c), col(&m, c));
                 for r in 0..4 {
                     let mi = add(
-                        add(add(multiply(ic[1], m[4 + r]), multiply(ic[0], m[r])), multiply(ic[2], m[8 + r])),
+                        add(
+                            add(multiply(ic[1], m[4 + r]), multiply(ic[0], m[r])),
+                            multiply(ic[2], m[8 + r]),
+                        ),
                         multiply(ic[3], m[12 + r]),
                     );
                     let im = add(
-                        add(add(multiply(mcol[1], inv[4 + r]), multiply(mcol[0], inv[r])), multiply(mcol[2], inv[8 + r])),
+                        add(
+                            add(multiply(mcol[1], inv[4 + r]), multiply(mcol[0], inv[r])),
+                            multiply(mcol[2], inv[8 + r]),
+                        ),
                         multiply(mcol[3], inv[12 + r]),
                     );
                     let identity = if c == r { 1. } else { 0. };
@@ -803,7 +1049,10 @@ impl Hull {
             if worst < root {
                 let candidate = [inv[12], inv[13], inv[14], 1.];
                 if self.accepts(candidate, tolerance) {
-                    return Collapse { position: candidate, cost: quadric_cost(sum, candidate) };
+                    return Collapse {
+                        position: candidate,
+                        cost: quadric_cost(sum, candidate),
+                    };
                 }
             }
         }
@@ -813,7 +1062,10 @@ impl Hull {
             multiply(add(large[2], small[2]), 0.5),
             1.,
         ];
-        Collapse { position: mid, cost: quadric_cost(sum, mid) }
+        Collapse {
+            position: mid,
+            cost: quadric_cost(sum, mid),
+        }
     }
 
     /// 140b896a0 (decimateVertices): quadric edge collapses over the edges
@@ -826,7 +1078,10 @@ impl Hull {
         let root = epsilon_root();
         let order = self.vertex_order();
         let n = order.len();
-        let mut positions: Vec<[f32; 4]> = order.iter().map(|&v| self.vertices[v].point.position).collect();
+        let mut positions: Vec<[f32; 4]> = order
+            .iter()
+            .map(|&v| self.vertices[v].point.position)
+            .collect();
         let original = positions.clone();
         let mut quadrics = vec![[0f32; 16]; n];
         let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); n];
@@ -839,7 +1094,11 @@ impl Hull {
                 if self.triangles[neighbour].face != tri.face {
                     let a = index(tri.vertices[edge]);
                     let b = index(tri.vertices[next_edge(edge)]);
-                    let key = if a < b { a << 16 | (b & 0xffff) } else { b << 16 | (a & 0xffff) };
+                    let key = if a < b {
+                        a << 16 | (b & 0xffff)
+                    } else {
+                        b << 16 | (a & 0xffff)
+                    };
                     if !keys.contains(&key) {
                         keys.push(key);
                     }
@@ -848,7 +1107,9 @@ impl Hull {
             let p = self.faces[tri.face as usize];
             for k in 0..3 {
                 let v = index(tri.vertices[k]) as usize;
-                let known = planes[v].iter().any(|q| (0..3).all(|i| subtract(q[i], p[i]).abs() <= root));
+                let known = planes[v]
+                    .iter()
+                    .any(|q| (0..3).all(|i| subtract(q[i], p[i]).abs() <= root));
                 planes[v].push(p);
                 if !known {
                     let q = &mut quadrics[v];
@@ -901,7 +1162,10 @@ impl Hull {
             while 0 <= i {
                 let at = i as usize;
                 let (a, b) = (keys[at] & 0xffff, keys[at] >> 16);
-                if [a, b].iter().any(|&v| v as usize == keep || v as usize == gone) {
+                if [a, b]
+                    .iter()
+                    .any(|&v| v as usize == keep || v as usize == gone)
+                {
                     let a = if a as usize == gone { keep as u32 } else { a };
                     let b = if b as usize == gone { keep as u32 } else { b };
                     let (small, large) = if a < b { (a, b) } else { (b, a) };
@@ -909,8 +1173,15 @@ impl Hull {
                     keys[at] = key;
                     if keys.iter().rposition(|&k| k == key) == Some(at) {
                         let (small, large) = (small as usize, large as usize);
-                        let sum: Quadric = std::array::from_fn(|k| add(quadrics[small][k], quadrics[large][k]));
-                        collapses[at] = self.collapse(&sum, positions[small], positions[large], root, tolerance);
+                        let sum: Quadric =
+                            std::array::from_fn(|k| add(quadrics[small][k], quadrics[large][k]));
+                        collapses[at] = self.collapse(
+                            &sum,
+                            positions[small],
+                            positions[large],
+                            root,
+                            tolerance,
+                        );
                     } else {
                         keys.swap_remove(at);
                         collapses.swap_remove(at);
@@ -939,7 +1210,11 @@ impl Hull {
             }
         }
         if count < n {
-            let rebuilt = if 2 < alive { Hull::build(&positions[..count]).ok() } else { None };
+            let rebuilt = if 2 < alive {
+                Hull::build(&positions[..count]).ok()
+            } else {
+                None
+            };
             *self = match rebuilt {
                 Some(hull) => hull,
                 None => Hull::build(&original)?,
@@ -1000,17 +1275,39 @@ impl Hull {
         for i in 0..n {
             for j in i + 1..n {
                 for k in j + 1..n {
-                    let Some(out) = invert_transposed(planes[i], planes[j], planes[k]) else { continue };
-                    let (wi, wj, wk) = (subtract(0., planes[i][3]), subtract(0., planes[j][3]), subtract(0., planes[k][3]));
+                    let Some(out) = invert_transposed(planes[i], planes[j], planes[k]) else {
+                        continue;
+                    };
+                    let (wi, wj, wk) = (
+                        subtract(0., planes[i][3]),
+                        subtract(0., planes[j][3]),
+                        subtract(0., planes[k][3]),
+                    );
                     let p = [
-                        add(add(multiply(wj, out[4]), multiply(wi, out[0])), multiply(wk, out[8])),
-                        add(add(multiply(wj, out[5]), multiply(wi, out[1])), multiply(wk, out[9])),
-                        add(add(multiply(wj, out[6]), multiply(wi, out[2])), multiply(wk, out[10])),
-                        add(add(multiply(wj, out[7]), multiply(wi, out[3])), multiply(wk, out[11])),
+                        add(
+                            add(multiply(wj, out[4]), multiply(wi, out[0])),
+                            multiply(wk, out[8]),
+                        ),
+                        add(
+                            add(multiply(wj, out[5]), multiply(wi, out[1])),
+                            multiply(wk, out[9]),
+                        ),
+                        add(
+                            add(multiply(wj, out[6]), multiply(wi, out[2])),
+                            multiply(wk, out[10]),
+                        ),
+                        add(
+                            add(multiply(wj, out[7]), multiply(wi, out[3])),
+                            multiply(wk, out[11]),
+                        ),
                     ];
                     let inside = (0..n).filter(|&q| q != i && q != j && q != k).all(|q| {
                         let f = planes[q];
-                        !(tolerance < add(add(add(f[3], multiply(p[1], f[1])), multiply(p[2], f[2])), multiply(p[0], f[0])))
+                        !(tolerance
+                            < add(
+                                add(add(f[3], multiply(p[1], f[1])), multiply(p[2], f[2])),
+                                multiply(p[0], f[0]),
+                            ))
                     });
                     if inside {
                         points.push(p);
@@ -1036,7 +1333,10 @@ impl Hull {
             .map(|f| {
                 let mut reach = 0f32;
                 for p in points {
-                    let d = add(add(f[3], multiply(f[1], p[1])), add(multiply(f[2], p[2]), multiply(f[0], p[0])));
+                    let d = add(
+                        add(f[3], multiply(f[1], p[1])),
+                        add(multiply(f[2], p[2]), multiply(f[0], p[0])),
+                    );
                     reach = if reach > d { reach } else { d };
                 }
                 [f[0], f[1], f[2], subtract(f[3], reach)]
@@ -1052,7 +1352,10 @@ mod tests {
     use super::*;
 
     fn words(fields: &[&str]) -> Vec<u32> {
-        fields.iter().map(|h| u32::from_str_radix(h, 16).unwrap()).collect()
+        fields
+            .iter()
+            .map(|h| u32::from_str_radix(h, 16).unwrap())
+            .collect()
     }
 
     /// Outputs of the installed 140adf2d0 and 140ae1cb0 + 140ae12e0
@@ -1076,7 +1379,14 @@ mod tests {
                 }
                 four += 1;
             } else {
-                let p = |k: usize| [f(values[4 * k]), f(values[4 * k + 1]), f(values[4 * k + 2]), f(values[4 * k + 3])];
+                let p = |k: usize| {
+                    [
+                        f(values[4 * k]),
+                        f(values[4 * k + 1]),
+                        f(values[4 * k + 2]),
+                        f(values[4 * k + 3]),
+                    ]
+                };
                 let ok = values[12] == 0;
                 let result = invert_transposed(p(0), p(1), p(2));
                 assert_eq!(result.is_some(), ok, "status of {line}");
@@ -1124,7 +1434,10 @@ fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
         for b in 0..blocks {
             for l in 0..4 {
                 let p = points[4 * b + l];
-                let v = add(add(multiply(p[1], d[1]), multiply(p[0], d[0])), multiply(p[2], d[2]));
+                let v = add(
+                    add(multiply(p[1], d[1]), multiply(p[0], d[0])),
+                    multiply(p[2], d[2]),
+                );
                 low[l] = minps(low[l], v);
                 high[l] = maxps(high[l], v);
             }
@@ -1136,7 +1449,10 @@ fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
     let high = [maxps(high[2], high[0]), maxps(high[3], high[1])];
     let mut high = maxps(high[0], high[1]);
     for p in &points[done.min(n)..] {
-        let v = add(add(multiply(d[1], p[1]), multiply(d[0], p[0])), multiply(d[2], p[2]));
+        let v = add(
+            add(multiply(d[1], p[1]), multiply(d[0], p[0])),
+            multiply(d[2], p[2]),
+        );
         low = minps(low, v);
         high = maxps(high, v);
     }
@@ -1145,9 +1461,21 @@ fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
 
 /// 1/sqrt through SQRTPS and DIVPS, masked to 0 (140c0d380's normalize).
 fn normalized(v: [f32; 4]) -> [f32; 4] {
-    let s = add(add(multiply(v[1], v[1]), multiply(v[0], v[0])), multiply(v[2], v[2]));
-    let inverse = if s <= 0. { 0. } else { crate::float::divide(1., s.sqrt()) };
-    [multiply(v[0], inverse), multiply(v[1], inverse), multiply(v[2], inverse), 0.]
+    let s = add(
+        add(multiply(v[1], v[1]), multiply(v[0], v[0])),
+        multiply(v[2], v[2]),
+    );
+    let inverse = if s <= 0. {
+        0.
+    } else {
+        crate::float::divide(1., s.sqrt())
+    };
+    [
+        multiply(v[0], inverse),
+        multiply(v[1], inverse),
+        multiply(v[2], inverse),
+        0.,
+    ]
 }
 
 impl Hull {
@@ -1159,7 +1487,12 @@ impl Hull {
         let domain = Domain::new(points).ok()?;
         let mut records: Vec<Point> = points
             .iter()
-            .map(|&position| Point { position, grid: domain.quantize(position), extra: 0, index: -1 })
+            .map(|&position| Point {
+                position,
+                grid: domain.quantize(position),
+                extra: 0,
+                index: -1,
+            })
             .collect();
         let a = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
         let xy = if a[1] > a[0] { a[1] } else { a[0] };
@@ -1173,14 +1506,18 @@ impl Hull {
         }
         let mut chain: Vec<Point> = Vec::new();
         for p in &records {
-            while chain.len() >= 2 && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p)) {
+            while chain.len() >= 2
+                && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p))
+            {
                 chain.pop();
             }
             chain.push(*p);
         }
         let lower = chain.len() + 1;
         for p in records.iter().rev().skip(1) {
-            while chain.len() >= lower && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p)) {
+            while chain.len() >= lower
+                && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p))
+            {
                 chain.pop();
             }
             chain.push(*p);
@@ -1207,13 +1544,22 @@ impl Hull {
             let z = subtract(multiply(p[1], q[0]), multiply(q[1], p[0]));
             let x = subtract(multiply(p[2], q[1]), multiply(q[2], p[1]));
             let y = subtract(multiply(p[0], q[2]), multiply(q[0], p[2]));
-            let size = |v: [f32; 3]| add(add(multiply(v[1], v[1]), multiply(v[0], v[0])), multiply(v[2], v[2]));
+            let size = |v: [f32; 3]| {
+                add(
+                    add(multiply(v[1], v[1]), multiply(v[0], v[0])),
+                    multiply(v[2], v[2]),
+                )
+            };
             if size(best) < size([x, y, z]) {
                 best = [x, y, z];
             }
             previous = current;
         }
-        if add(add(multiply(best[1], normal[1]), multiply(best[0], normal[0])), multiply(best[2], normal[2])) < 0. {
+        if add(
+            add(multiply(best[1], normal[1]), multiply(best[0], normal[0])),
+            multiply(best[2], normal[2]),
+        ) < 0.
+        {
             chain.reverse();
         }
         let mut hull = Self {
@@ -1253,9 +1599,22 @@ impl Hull {
             } else {
                 [nx, ny, nz]
             };
-            let w = subtract(0., add(add(multiply(p[1], n[1]), multiply(p[0], n[0])), multiply(p[2], n[2])));
-            let side = add(add(w, multiply(mean[1], n[1])), add(multiply(mean[2], n[2]), multiply(mean[0], n[0])));
-            let plane = if 0. <= side { [-n[0], -n[1], -n[2], -w] } else { [n[0], n[1], n[2], w] };
+            let w = subtract(
+                0.,
+                add(
+                    add(multiply(p[1], n[1]), multiply(p[0], n[0])),
+                    multiply(p[2], n[2]),
+                ),
+            );
+            let side = add(
+                add(w, multiply(mean[1], n[1])),
+                add(multiply(mean[2], n[2]), multiply(mean[0], n[0])),
+            );
+            let plane = if 0. <= side {
+                [-n[0], -n[1], -n[2], -w]
+            } else {
+                [n[0], n[1], n[2], w]
+            };
             hull.faces.push(plane);
             previous = v;
         }
@@ -1269,14 +1628,25 @@ impl Hull {
     /// accumulated in that order. The identity at the origin when no frame
     /// is found.
     pub fn smallest_box(&self) -> [[f32; 4]; 4] {
-        let points: Vec<[f32; 4]> = self.vertex_order().iter().map(|&v| self.vertices[v].point.position).collect();
+        let points: Vec<[f32; 4]> = self
+            .vertex_order()
+            .iter()
+            .map(|&v| self.vertices[v].point.position)
+            .collect();
         let mut best = f32::from_bits(0x7f7f_ffee);
-        let mut frame = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0.; 4]];
+        let mut frame = [
+            [1., 0., 0., 0.],
+            [0., 1., 0., 0.],
+            [0., 0., 1., 0.],
+            [0.; 4],
+        ];
         for face in &self.faces {
             let n1 = normalized(*face);
             let (low1, high1) = project(n1, &points);
             let e1 = subtract(high1, low1);
-            let Some(planar) = Hull::build_planar(&points, n1) else { continue };
+            let Some(planar) = Hull::build_planar(&points, n1) else {
+                continue;
+            };
             for edge in &planar.faces {
                 let n2 = normalized(*edge);
                 let (low2, high2) = project(n2, &points);

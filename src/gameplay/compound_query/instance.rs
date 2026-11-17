@@ -14,6 +14,11 @@ impl ShapeKey {
     /// Preserve the consumed prefix and append the instance key, with trailing
     /// one bits as in141ec47d0. Call before the tag/filter callbacks.
     pub fn compound_child(self, instance: u16, key_bits: u8) -> Result<Self, String> {
+        self.child(u32::from(instance), key_bits)
+    }
+
+    /// Mesh leaf indices use the same prefix rule and can exceed 16 bits.
+    pub fn child(self, index: u32, key_bits: u8) -> Result<Self, String> {
         let bits = self.bits + u32::from(key_bits);
         if self.bits > 32 || bits > 32 {
             return Err("compound shape key exceeds32 bits".into());
@@ -23,7 +28,8 @@ impl ShapeKey {
         } else {
             u32::MAX << (32 - self.bits)
         };
-        let value = (u32::from(instance) + 1)
+        let value = index
+            .wrapping_add(1)
             .wrapping_shl(32u32.wrapping_sub(bits))
             .wrapping_sub(1)
             | (self.value & mask);

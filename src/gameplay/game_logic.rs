@@ -20,6 +20,7 @@ impl StateId {
     pub const PAUSE: Self = Self(2);
     pub const READ_NOTE: Self = Self(4);
     pub const JOURNAL: Self = Self(7);
+    pub const POWER_WHEEL: Self = Self(8);
     pub const RESULTS: Self = Self(11);
     pub const GAME_OVER: Self = Self(13);
     pub const MAP_TRANSITION: Self = Self(15);

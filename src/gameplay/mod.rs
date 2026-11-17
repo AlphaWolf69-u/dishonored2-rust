@@ -1,4 +1,5 @@
 pub mod game_clock;
+pub mod controller_feedback;
 pub mod effects;
 pub mod event_gate;
 pub mod event_graph;
@@ -103,3 +104,25 @@ pub mod scene_animation;
 pub mod damage;
 
 pub mod interaction_enums;
+
+pub mod shape_convex_query;
+
+pub mod world_convex_query;
+
+pub mod throwable;
+
+pub mod breakable;
+
+pub mod explosions;
+
+pub mod compressed_mesh_query;
+
+pub mod water_forces;
+pub mod occluded_sensor;
+
+pub mod damage_zone;
+pub mod grenade;
+pub mod ai_world;
+pub mod ai_cues;
+pub mod ai_smart_objects;
+pub mod power_wheel;

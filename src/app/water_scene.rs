@@ -382,6 +382,9 @@ pub(super) fn publish_water_frame(
             values,
             ocean_environment,
             matrices,
+            // 358ad9 binds view+39e0 (group1) to `time`; requesting the
+            // zero-byte local selection exposes that same canonical clock.
+            shader_time: view_clock.view_shader_times(0)?.local_time[0],
             local_time: view_clock
                 .view_shader_times(crate::game_clock::RESET_VIEW_LOCAL_TIME_FLAG)?
                 .local_time,

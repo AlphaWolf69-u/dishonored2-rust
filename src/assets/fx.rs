@@ -21,6 +21,11 @@ pub mod particles;
 pub mod screen_quad;
 pub mod decal;
 pub mod fade;
+pub mod entity_def;
+pub mod explosion;
+pub mod light;
+pub mod screen_distortion;
+pub mod rumble;
 
 pub struct EnvironmentEffectAsset {
     pub name: String,
@@ -47,6 +52,8 @@ pub struct EffectGroupAsset {
     pub environments: Vec<EnvironmentEffectAsset>,
     pub sounds: Vec<SoundEffectAsset>,
     pub sub_effects: Vec<SubEffectAsset>,
+    pub entity_defs: Vec<entity_def::EntityDefAsset>,
+    pub explosions: Vec<explosion::ExplosionAsset>,
 }
 pub type EnvironmentGroupAsset = EffectGroupAsset;
 
@@ -179,6 +186,8 @@ impl Default for EffectGroupAsset {
             environments: Vec::new(),
             sounds: Vec::new(),
             sub_effects: Vec::new(),
+            entity_defs: Vec::new(),
+            explosions: Vec::new(),
         }
     }
 }
@@ -443,6 +452,8 @@ pub fn effect_group(fields: &Fields) -> Result<EffectGroupAsset, String> {
             }
             "m_sounds" => descriptor_list(&mut group.sounds, scope(value)?, sound_effect)?,
             "m_subFXs" => descriptor_list(&mut group.sub_effects, scope(value)?, sub_effect)?,
+            "m_entityDefs" => descriptor_list(&mut group.entity_defs, scope(value)?, entity_def::entity_def)?,
+            "m_explosions" => descriptor_list(&mut group.explosions, scope(value)?, explosion::explosion)?,
             _ => {} // Other effect families are not environment descriptors.
         }
     }

@@ -8,7 +8,14 @@ fn allocation_scope() -> Option<crate::platform::allocation_tags::Guard> {
 #[derive(Debug)]
 pub struct PickableItem {
     pub path: Arc<str>,
+    ///76e750 copies the item's authored name into its pickup interaction.
+    pub name: String,
+    /// DeclInventoryItem+70; shared by the actual wheel and item details.
+    pub description: String,
+    pub plural_name: Option<String>,
     pub readable: Option<PickableReadable>,
+    ///63c510/841500: actual DeclInventoryItem+c4, independent of type.
+    pub note_type:i32,
     pub modifiers: ItemModifiers,
     /// 1415a7730 maps this to arkDeclInventoryItem +0x80. Equipment
     /// component metadata, including slot, belongs to the spawned entity.
@@ -32,6 +39,7 @@ pub enum PickableReadable {
 #[derive(Clone, Copy, Debug)]
 pub enum PickableOtherKind { Map, Audiograph, Item }
 impl PickableItem {
+    pub fn pickup_log_image(&self)->Option<&str>{self.pickup_image.as_deref()}
     pub fn item_type(&self) -> &str { self.item_type.as_deref().unwrap_or("0") }
     pub fn map(&self) -> Result<Option<&crate::assets::interactive_map::Map>, &str> {
         Ok(match &self.readable { Some(PickableReadable::Map(map)) => Some(map), _ => None })
@@ -159,7 +167,8 @@ impl PickableSources {
         })) };
         let audio = matches!(atom(&fields, "m_type"), Some("TYPE_AUDIOGRAPH" | "13")).then(||
             (atom(&fields, "m_name").unwrap_or("").to_owned(), atom(&fields, "m_description").unwrap_or("").to_owned()));
-        let item = Arc::new(PickableItem { path: key.clone(), readable, modifiers: modifiers_fields(&key, &fields)?,
+        let item = Arc::new(PickableItem { path: key.clone(), name:atom(&fields,"m_name").unwrap_or("").to_owned(), description:atom(&fields,"m_description").unwrap_or("").to_owned(), plural_name:atom(&fields,"m_pluralName").filter(|name|!name.is_empty()&&!name.eq_ignore_ascii_case("NULL")).map(str::to_owned), readable, modifiers: modifiers_fields(&key, &fields)?,
+            note_type:atom(&fields,"m_noteType").map(note_type).transpose()?.unwrap_or(-1),
             equipment: atom(&fields, "m_equipment").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")).map(str::to_owned),
             type_number: item_type_number(atom(&fields, "m_type").unwrap_or("TYPE_MISC"))?,
             consumable: consumable_fields(&fields)?,

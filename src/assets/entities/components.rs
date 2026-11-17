@@ -1,7 +1,13 @@
 //! Shared component declaration inheritance and inline field overlays.
 use super::{field, parse_declaration, scope, Definition, Value};
 use std::collections::HashMap;
-pub(super) type Fields = Vec<(String, Value)>;
+pub(crate) type Fields = Vec<(String, Value)>;
+
+///Canonical serialized uint identifier, also retained by arkAreaTag's4-byte
+///value. Keep one six-digit codec for declaration IDs and typed tag fields.
+pub(crate) fn decode_identifier(value: &str) -> Result<u32, String> {
+    super::processed_decl::decode_edit_id(value)
+}
 
 /// Common scheduling for a component class, using its resolved declaration and
 /// inline overlays. Payload readers and lifecycle composition share this path.
@@ -29,7 +35,7 @@ pub fn scheduling_bindings(
 
 /// Common declaration fields from1414fc060, with enum values from1419fa950
 /// and141a017b0. Apply after the concrete declaration constructor's defaults.
-pub(super) fn scheduling(
+pub(crate) fn scheduling(
     fields: &[(String, Value)],
     mut value: crate::gameplay::component_state::declaration::DeclarationScheduling,
 ) -> Result<crate::gameplay::component_state::declaration::DeclarationScheduling, String> {
@@ -76,7 +82,7 @@ pub(super) fn scheduling(
     Ok(value)
 }
 
-pub(super) fn entry_class(
+pub(crate) fn entry_class(
     entry: &[(String, Value)],
     declarations: &HashMap<&str, &Definition>,
 ) -> Result<Option<String>, String> {
@@ -93,7 +99,7 @@ pub(super) fn entry_class(
 
 /// Resolve one binding using the same inheritance and overlays as the other
 /// component readers. The caller keeps a cache for this component class.
-pub(super) fn entry_fields(
+pub(crate) fn entry_fields(
     entry: &[(String, Value)],
     kind: &str,
     declarations: &HashMap<&str, &Definition>,
@@ -101,10 +107,10 @@ pub(super) fn entry_fields(
     read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Option<Fields>, String> {
     let class = entry_class(entry, declarations)?;
-    // The serialized class keeps the underscore while its declaration suffix
-    // does not: cpntPickable_Simple / .cpntpickablesimple.
-    if class.as_deref() != Some(kind)
-        && !(kind == "cpntpickable_simple" && class.as_deref() == Some("cpntpickablesimple")) {
+    // Native type registration retains underscores which declaration filename
+    // extensions omit (Pickable, AI sensors/reasoners, ReferenceFramePlayer).
+    if !class.as_deref().is_some_and(|class| class.bytes().filter(|byte| *byte != b'_')
+        .eq(kind.bytes().filter(|byte| *byte != b'_'))) {
         return Ok(None);
     }
     let mut resolved = if let Some(name) = atom(entry, "mapComponentDecl") {
@@ -212,3 +218,7 @@ pub(super) fn component_fields(
     }
     Ok(resolved)
 }
+
+//Shared processed edit-list projection used by runtime and metadata owners.
+pub(crate) use super::processed_decl::ComponentList;
+pub(crate) use super::processed_decl::normalize_edit_fields;

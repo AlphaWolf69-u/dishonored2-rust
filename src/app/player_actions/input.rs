@@ -109,8 +109,11 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                     equipment_entity: entity,
                 });
             }
-            InventoryChange::Unequipped { path, .. } => {
-                actions.removed_equipment.push(path);
+            InventoryChange::Unequipped { path, destroy, .. } => {
+                //619640/619740 deactivate a quantity-positive owned actor.
+                //The actual Unequipped callback already stopped/rebound it;
+                //retiring it here also destroys a same-frame reselection.
+                if destroy { actions.removed_equipment.push(path); }
             }
             InventoryChange::Equipped { .. } => {} // Produced by the admitted live component transaction.
             _ => unreachable!("filtered equipment message"),
@@ -203,7 +206,10 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
             let Some(item) = inventory.declaration(&selection.equipment).cloned() else {
                 continue;
             };
-            if inventory.quantity(&selection.equipment) == 0 {
+            //7fb350/7f8d60 require a real retained equipment component,
+            //not a positive quantity. Empty actors retire on Unequip619740.
+            if inventory.quantity(&selection.equipment) == 0
+                && !player.has_equipment_target(&selection.equipment) {
                 continue;
             }
             let Some(metadata) = actions.metadata.get(&selection.equipment).cloned() else {
@@ -223,37 +229,9 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 }
                 continue;
             }
-            let live = if metadata.equipment.archetype == 5 {
-                actions.active_power.as_deref() == Some(selection.equipment.as_str())
-            } else {
-                let side = match slot {
-                    1 => Some(0),
-                    0 => Some(1),
-                    _ => None,
-                };
-                side.is_some_and(|side| {
-                    actions
-                        .active(side)
-                        .is_some_and(|active| active.entity == metadata.entity)
-                })
-            };
-            if live && inventory.equipped(slot) == Some(selection.equipment.as_str()) {
-                if let Some(ranged) = &metadata.ranged {
-                    if let Err(error) = install_ranged(
-                        player,
-                        &selection.equipment,
-                        Arc::new(ranged.clone()),
-                        selection.ammunition.as_deref(),
-                        &mut inventory,
-                    ) {
-                        eprintln!("Ammunition selection {}: {error}", selection.equipment);
-                    }
-                }
-                actions
-                    .selected_ammunition
-                    .insert(selection.equipment, selection.ammunition);
-                continue;
-            }
+            //835e00 handles an already equipped entity too: it applies the
+            //selected ammunition and enters the declared equip scene. A
+            //model-only ammo change bypasses that actual source transaction.
             actions.wanted[slot as usize] = Some(selection.equipment.clone());
             actions
                 .selected_ammunition
@@ -442,11 +420,7 @@ pub(in crate::app) fn dispatch_shortcuts(
             continue;
         }
         if let Some(selection) = inventory.shortcut_selection(event.action) {
-            actions.source_flags.insert(
-                selection.equipment.clone(),
-                player.shortcut_equipment_flags(),
-            );
-            actions.selection_requests.push(selection);
+            actions.request_selection(player, selection);
         }
     }
 }
@@ -495,6 +469,11 @@ pub(in crate::app) fn register_ranged(
     player.register_ranged(identity, settings, &Ammunition(inventory))
 }
 
+pub(in crate::app) fn prepare_animation_frame(player: &mut Player, inventory: &mut DiscoveredDocuments,
+    marker: i32, dt: f32, now: f64) {
+    player.prepare_animation_frame(marker, dt, now, &mut Ammunition(inventory));
+}
+
 pub(in crate::app) fn player_frame(
     player: &mut Player,
     world: &dyn player::character_proxy::PlayerWorld,
@@ -505,9 +484,10 @@ pub(in crate::app) fn player_frame(
     now: f64,
     fov: f32,
     inventory: &mut DiscoveredDocuments,
+    marker: i32,
 ) {
     player.update_power_inputs(events);
-    player.frame_with_inventory(
+    player.frame_with_inventory_for_clock(
         world,
         events,
         look,
@@ -516,6 +496,7 @@ pub(in crate::app) fn player_frame(
         now,
         fov,
         &mut Ammunition(inventory),
+        marker,
     );
 }
 

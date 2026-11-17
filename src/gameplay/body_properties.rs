@@ -8,7 +8,11 @@ struct Property<T> {
     value: T,
 }
 
-struct ReleaseProgress { body: u32, first: u16, current: u16 }
+struct ReleaseProgress {
+    body: u32,
+    first: u16,
+    current: u16,
+}
 
 #[derive(Default)]
 pub struct BodyProperties<T = u64> {
@@ -21,6 +25,9 @@ pub struct BodyProperties<T = u64> {
 }
 
 impl<T: Default> BodyProperties<T> {
+    pub(crate) fn has_listener_heads(&self) -> bool {
+        !self.heads.is_empty()
+    }
     /// ceab10 removes the body head immediately. During the world's deferred
     /// destruction phase it retains the chain for later processing; otherwise
     /// ceaec0 destroys each value before splicing the chain into the free list.
@@ -31,30 +38,54 @@ impl<T: Default> BodyProperties<T> {
         mut destroy_value: impl FnMut(&mut T) -> Result<(), String>,
     ) -> Result<(), String> {
         if let Some(progress) = &self.pending_release {
-            if progress.body != body { return Err("another body-property release is incomplete".into()); }
+            if progress.body != body {
+                return Err("another body-property release is incomplete".into());
+            }
         } else {
-            let Some(&first) = self.heads.get((body & 0x00ff_ffff) as usize) else { return Ok(()); };
-            if first == u16::MAX { return Ok(()); }
+            let Some(&first) = self.heads.get((body & 0x00ff_ffff) as usize) else {
+                return Ok(());
+            };
+            if first == u16::MAX {
+                return Ok(());
+            }
             // Validate the complete chain before detaching its public head.
             let mut current = first;
             let mut visited = 0;
             while current != u16::MAX {
-                if visited >= self.properties.len() { return Err("cyclic released body-property chain".into()); }
-                current = self.properties.get(current as usize).ok_or("released property chain points outside storage")?.next;
+                if visited >= self.properties.len() {
+                    return Err("cyclic released body-property chain".into());
+                }
+                current = self
+                    .properties
+                    .get(current as usize)
+                    .ok_or("released property chain points outside storage")?
+                    .next;
                 visited += 1;
             }
             if self.dispatching {
-                self.deferred_release.try_reserve(1).map_err(|error| format!("deferred property release: {error}"))?;
+                self.deferred_release
+                    .try_reserve(1)
+                    .map_err(|error| format!("deferred property release: {error}"))?;
                 self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
                 self.deferred_release.push(first);
                 return Ok(());
             }
             self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
-            self.pending_release = Some(ReleaseProgress { body, first, current: first });
+            self.pending_release = Some(ReleaseProgress {
+                body,
+                first,
+                current: first,
+            });
         }
         loop {
-            let progress = self.pending_release.as_mut().expect("property release progress exists");
-            let property = self.properties.get_mut(progress.current as usize).ok_or("released property disappeared")?;
+            let progress = self
+                .pending_release
+                .as_mut()
+                .expect("property release progress exists");
+            let property = self
+                .properties
+                .get_mut(progress.current as usize)
+                .ok_or("released property disappeared")?;
             destroy_value(&mut property.value)?;
             let next = property.next;
             if next == u16::MAX {

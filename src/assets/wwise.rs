@@ -13,6 +13,7 @@ pub use vorbis::VorbisCursor;
 pub(crate) use vorbis::observe_header_samples;
 pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
+pub mod game_properties;
 pub mod event_resources;
 pub mod auxiliary_resources;
 pub mod rtpc_resources;

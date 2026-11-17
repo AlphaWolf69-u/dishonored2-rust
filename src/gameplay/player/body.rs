@@ -370,8 +370,8 @@ pub struct Body {
     pub footstep_settings: FootstepSettings,
     pub sound_settings: crate::gameplay::sound::component::Settings,
     pub sound_listener: Option<crate::gameplay::sound::listener::Binding>,
-    sound_requests: Vec<crate::gameplay::sound::Request>,
-    contact_requests: Vec<crate::gameplay::sound::Contact>,
+    pub(super) sound_requests: Vec<crate::gameplay::sound::Request>,
+    pub(super) contact_requests: Vec<crate::gameplay::sound::Contact>,
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
@@ -391,6 +391,7 @@ pub struct Body {
     /// The tree's `additives` node and the item index of each jump kind
     /// (arkAdditivesSettings +4..+9).
     pub additives: AnimBasicNode,
+    pub additive_command: Option<AnimBasicCommand>,
     pub jump_items: [Option<usize>; 6],
     pub lean: Lean,
     /// `m_leanLeftAnimAlias` / `m_leanUpAnimAlias` clips (paused leaves of
@@ -504,6 +505,7 @@ impl Body {
             follow_slope: FollowSlope::default(),
             slope_rotation: Mat3::IDENTITY,
             additives: AnimBasicNode::default(),
+            additive_command: None,
             jump_items: [None; 6],
             lean: Lean { limits: [1.0; 2], ..Lean::default() },
             lean_clips: [None; 2],
@@ -600,7 +602,7 @@ impl Body {
         // The IO entry keeps the last command posted since the tree's last
         // update (FUN_1406e1fe0 overwrites it).
         let posted: Vec<AdditiveCommand> = self.jump.commands.drain(..).collect();
-        let command = last_command(&posted, &self.jump_items);
+        let command = last_command(&posted, &self.jump_items).or(self.additive_command.take());
         self.additives.update(dt, command, &self.animations);
         self.follow_slope.update(&self.decl, dt, ground_normal, supported, midnight);
         self.slope_rotation = self.follow_slope.rotation(axis);

@@ -329,6 +329,7 @@ pub(super) fn publish_display_frame(
     mut display: Option<ResMut<DisplayScene>>,
     clock: Res<crate::gameplay::game_clock_runtime::ClockRuntime>,
     screen_fx: Option<Res<super::pause_fx::PauseScreenFx>>,
+    player: Option<Res<super::player::PlayerState>>,
     mut published_screen_fx: Local<f32>,
     mut cameras: Query<(Entity, &GlobalTransform, &mut ExposureParameters), With<Camera3d>>,
     mut output: ResMut<DisplaySceneFrame>,
@@ -372,12 +373,13 @@ pub(super) fn publish_display_frame(
             view[0][2] + view[2][1],
         )?;
         *exposure = frame_exposure;
-        let camera_effects = display.camera_effects.update(
+        let camera_effects = display.camera_effects.update_with_player_fx(
             &scene.area_environments,
             weight,
             super::view_to_game(transform.translation()),
             scene.environment_blend_duration,
             delta,
+            player.as_ref().and_then(|state| state.player.as_ref()).and_then(|player| player.combat_fx.as_ref()),
         )?;
         Ok(DisplayFrame {
             camera,

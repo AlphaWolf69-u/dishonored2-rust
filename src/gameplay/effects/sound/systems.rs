@@ -22,6 +22,20 @@ impl<O, P> Default for SoundSystems<O, P> {
 impl<O: Copy, P: Copy + PartialEq> SoundSystems<O, P> {
     pub(crate) fn allocated_count(&self) -> u16 { self.links.allocated_count }
 
+    /// Read-only diagnostics borrow the real family chain/object identities.
+    pub(crate) fn visit_objects(&self,mut head:u16,mut visit:impl FnMut(O))->Result<(),String>{
+        let mut visited=0;
+        while head!=u16::MAX{
+            visited+=1;
+            if visited>self.slots.len(){return Err("FX sound observation chain contains a cycle".into())}
+            let sound=self.slots.get(usize::from(head)).and_then(Option::as_ref)
+                .ok_or("FX sound observation slot absent")?;
+            if let Some(object)=sound.handle.object(){visit(object)}
+            head=self.links.next[usize::from(head)];
+        }
+        Ok(())
+    }
+
     /// 222f80 samples the position before attempting pool acquisition. A full
     /// pool consumes those three samples, but not 230160's start-delay sample.
     pub fn start(

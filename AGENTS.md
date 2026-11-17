@@ -6,6 +6,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 - The objective is a faithful, playable Rust rewrite using assets from the user's installed Dishonored 2 copy.
 - Use the Dishonored 2 Ghidra decompilation dump or MCP whenever a claim about an original mechanic depends on executable code. If Ghidra MCP is unavailable, find other way to use ghidra.
+- `140166830` returns in the installed executable. The static dump falsely marks it as nonreturning; inspect caller assembly after that call before translating a diagnostic into a fatal error.
 - Implement behavior in the rewrite only when it is supported by original game files, decompiled game code, or measured game behavior. Never invent or substitute any unsupported behavior, regardless of subsystem or implementation detail. If the original behavior is not yet understood, investigate it until it can be implemented from evidence.
 - When correcting writing code, first trace how the original game handles the relevant path, then rewrite that behavior in Rust. A special case is not a replacement for the game's algorithm.
 - Before starting any research or implementation step, quickly search the Rust rewrite source in `src/`, the existing executable probes and test cases in `analysis/` and `src/` for that original game function or behavior. Use `rg --no-ignore` for `analysis/` (normal ripgrep skips these local-only probes). Reuse work already verified against the game
@@ -22,6 +23,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 ## Running-game research
 
 - Prefer windowless acquisition checks for agent diagnostics. Never automatically restore or focus a diagnostic window, change the display mode, or fight Alt+Tab/minimization. Automatic visible diagnostic launches are disabled following the user's desktop disruption report.
+- Verify loading changes through the existing windowless CPU and production-loader diagnostics before declaring a build ready. Compilation alone does not verify loading.
 
 - Routine read-only diagnostics and closing agent-owned game processes are authorized. Do not automatically launch a visible original game or rewrite, focus/restore a window, or change display mode. A visible launch requires a current explicit user request; diagnostics otherwise remain windowless. Never use a focus helper or diagnostic override to bypass this restriction.
 - Launch the original through Steam AppID `403640`, never directly through `Dishonored2.exe`: a direct launch enters the free trial.
@@ -31,6 +33,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 ## Working in this repository
 
+- Write project text as UTF-8. Prefer `apply_patch`; never overwrite source or documentation with the Windows default code page.
 - Build and test with the debug (dev) profile, or `cargo check` when only compilation matters. Use `--release` only for the main branch build the user tests from and for performance measurements (timings, frame rate, latency); the release profile uses LTO and takes several times longer.
 - ChatGPT/Codex agents only (not Claude): do not check build progress, poll build sessions, inspect build logs/processes for progress, or spend time waiting for builds. Continue useful project work while a build runs; read its final result when needed after that work.
 - Game behavior is the naming default: name files, modules, types, functions, fields, constants, shaders and fixtures by responsibility without redundant `Native`, `Original`, `native_` or `original_` qualifiers. This also applies to project-authored dependency patches and diagnostic controls. Mark host integration or deliberate deviations explicitly (for example `bevy_backend`, `debug_` or `approximate_`); keep meaningful comparison provenance in comments and test descriptions. Preserve installed resource names and historical evidence paths.

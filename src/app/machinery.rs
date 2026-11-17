@@ -57,13 +57,41 @@ impl AmbientMachinery {
         self.skins.iter().find(|skin| skin.placement() == placement)
             .map(|skin| skin.animated_palette(&self.physics, animation, joint_frames))
     }
-    pub(super) fn initial_joint_matrix(&self, placement: usize, joint: i16,
-        skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>)
-        -> Result<Option<super::physics_skinning::Affine>, String> {
-        let Some(skin) = self.skins.iter().find(|skin| skin.placement() == placement) else { return Ok(None); };
-        if !Arc::ptr_eq(skin.skeleton(), skeleton) { return Err("attachment and physics pose skeleton owners differ".into()); }
-        let current = skin.current_with_animation(&self.physics, None)?;
-        Ok(usize::try_from(joint).ok().and_then(|joint| current.get(joint)).copied())
+    ///Use the same lower-tree -> Midnight -> physics order as the live
+    ///scene publisher, at its actual admitted startup scene clock.
+    pub(super) fn initial_joint_matrices(&self, placement: usize,
+        skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>,
+        animations: &super::usable_animation::UsableAnimations)
+        -> Result<Option<Vec<super::physics_skinning::Affine>>, String> {
+        let lower_matrices = animations.initial_joint_matrices(placement, skeleton)?;
+        let matrices;
+        if let Some(skin) = self.scene_skins.get(&placement) {
+            let animation = &skin.asset.animation;
+            if !Arc::ptr_eq(animation.skeleton(), skeleton) {
+                return Err("attachment and scene skeleton owners differ".into());
+            }
+            let time = self.scenes.animated_groups().find_map(|(index,_,_,time)| (index==placement).then_some(time))
+                .ok_or("startup scene skin has no admitted scene clock")?;
+            let pose = match animations.local_pose(placement) {
+                Some((lower_skeleton, lower)) => {
+                    if !Arc::ptr_eq(lower_skeleton, skeleton) {
+                        return Err("scene and lower tree skeleton owners differ".into());
+                    }
+                    animation.pose_over(time, lower.clone())?
+                }
+                None => animation.pose(time)?,
+            };
+            matrices = Some(animation.matrices_from_pose(&pose)?);
+        } else {
+            matrices = lower_matrices.map(|pose| pose.to_vec());
+        }
+        if let Some(skin) = self.skins.iter().find(|skin| skin.placement()==placement) {
+            if !Arc::ptr_eq(skin.skeleton(), skeleton) {
+                return Err("attachment and physics pose skeleton owners differ".into());
+            }
+            return Ok(Some(skin.current_with_animation(&self.physics, matrices.as_deref())?));
+        }
+        Ok(matrices)
     }
     pub(super) fn skin_models(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::bmd6::ModelInfo>)> {
         self.skins.iter().map(|skin| (skin.placement(), skin.model()))

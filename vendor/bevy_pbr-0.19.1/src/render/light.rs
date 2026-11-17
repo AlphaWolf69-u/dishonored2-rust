@@ -2551,6 +2551,9 @@ pub(crate) fn specialize_shadows(
                     continue;
                 }
                 let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                    view_pending_shadow_queues
+                        .current_frame
+                        .insert((*render_entity, *visible_entity));
                     continue;
                 };
 
@@ -2757,6 +2760,9 @@ pub fn queue_shadows(
             };
 
             let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+                view_pending_shadow_queues
+                    .current_frame
+                    .insert((*render_entity, *main_entity));
                 continue;
             };
 

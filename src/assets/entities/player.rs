@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default)]
 pub struct PlayerDeclarations {
+    pub ai_tampering_declared: bool,
     pub physics: Vec<(String, Value)>,
     pub audio: Vec<(String, Value)>,
     /// Optional listener resolved in the same ordered entity/source pass.
@@ -20,11 +21,14 @@ pub struct PlayerDeclarations {
     pub autocrouch_sensor: Vec<(String, Value)>,
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
+    pub ranged_target_sensor: Vec<(String, Value)>,
+    pub rune_charms_sensor: Vec<(String, Value)>,
     pub blink_mantle_sensor: Vec<(String, Value)>,
     pub grapple_sensor: Vec<(String, Value)>,
     pub grapple_to_mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
+    pub chaos: Vec<(String, Value)>,
     /// Shared power-system and mark inputs, resolved with the player's other
     /// components; consumers project typed runtime data before source release.
     pub powers: Vec<(String, Value)>,
@@ -127,19 +131,12 @@ pub(crate) fn player_listener_trace_path(path: &str) -> bool {
         || path.starts_with("generated/decls/cpntaudiolistener/")
 }
 
-fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
-    let mut entries: Vec<(String, Fields)> = Vec::new();
-    for fields in chain {
-        let Some(components) = scope(field(fields, "edit")).and_then(|edit| scope(field(edit, "m_componentDecls"))) else { continue };
-        for (key, value) in components {
-            let (Some(key), Some(entry)) = (component_key(key), scope(Some(value))) else { continue };
-            match entries.iter_mut().find(|(existing, _)| existing == key) {
-                Some((_, existing)) => overlay(existing, entry),
-                None => entries.push((key.to_owned(), entry.to_vec())),
-            }
-        }
+pub(crate) fn component_entries(chain: &[Fields]) -> Result<Vec<(String, Fields)>, String> {
+    let mut list = super::processed_decl::ComponentList::default();
+    for (index,fields) in chain.iter().enumerate() {
+        list.apply(fields, false, &format!("runtime component layer {index}"))?;
     }
-    entries
+    list.into_components("runtime entity component list")
 }
 
 /// Resolve one optional component through entity and component inheritance.
@@ -155,7 +152,7 @@ pub fn entity_component(entity: &str, kind: &str,
 /// their component from that same retained chain, without reading it twice.
 pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String> {
-    let entries = component_entries(chain);
+    let entries = component_entries(chain)?;
     let mut result = None;
     let mut cache = HashMap::new();
     for (_, entry) in entries {
@@ -172,7 +169,7 @@ pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
 pub fn entity_components_with_prefix(entity: &str, prefix: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<(String, Fields)>, String>
 {
-    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let entries = component_entries(&entity_chain(entity, &mut read)?)?;
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     for (_, entry) in entries {
@@ -186,7 +183,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 20] = [
+const PLAYER_COMPONENTS: [&str; 23] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -197,11 +194,14 @@ const PLAYER_COMPONENTS: [&str; 20] = [
     "cpntplayersensorlean",
     "cpntplayerbody",
     "cpntplayersensormantle",
+    "cpntplayersensorrangedtarget",
+    "cpntplayersensorrunecharms",
     "cpntplayersensorblinktomantle",
     "cpntplayersensorgrapple",
     "cpntplayersensorgrappletomantle",
     "cpnthealthevolved",
     "cpntmana",
+    "cpntplayerchaos",
     "cpntadrenaline",
     "cpntplayerbreath",
     "cpntplayerfxmanager",
@@ -211,10 +211,6 @@ const PLAYER_COMPONENTS: [&str; 20] = [
 
 fn kind_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(_, kind)| kind)
-}
-
-fn component_key(key: &str) -> Option<&str> {
-    key.strip_prefix("item_add[").or_else(|| key.strip_prefix("item_override[")).and_then(|rest| rest.strip_suffix(']'))
 }
 
 /// The entity def chain from the root ancestor to `name`.
@@ -271,8 +267,10 @@ fn player_declarations_with_listener(
 ) -> Result<PlayerDeclarations, String> {
     let entity = format!("models/characters/player/{character}/body.def");
     let chain = entity_chain(&entity, &mut read)?;
-    let entries = component_entries(&chain);
+    let entries = component_entries(&chain)?;
     let mut body_model = String::new();
+    let ai_tampering_declared = entries.iter().any(|(_, entry)|
+        atom(entry, "inheritedDecl").is_some_and(|name| kind_of(name) == Some("cpntaitampering")));
     for fields in &chain {
         let Some(edit) = scope(field(fields, "edit")) else { continue };
         if let Some(model) = scope(field(edit, "renderModelInfo")).and_then(|info| atom(info, "model")) {
@@ -312,8 +310,11 @@ fn player_declarations_with_listener(
     let autocrouch_sensor = take("cpntplayersensorautocrouch")?;
     let lean_sensor = take("cpntplayersensorlean")?;
     let mantle_sensor = take("cpntplayersensormantle")?;
+    let ranged_target_sensor = take("cpntplayersensorrangedtarget")?;
+    let rune_charms_sensor = take("cpntplayersensorrunecharms")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
+    let chaos = take("cpntplayerchaos")?;
     let powers = take("cpntplayerpowersystem")?;
     let outsider_mark = take("cpntplayeroutsidermark")?;
     let adrenaline = take("cpntadrenaline")?;
@@ -364,7 +365,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { ai_tampering_declared, physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

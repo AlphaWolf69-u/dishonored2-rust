@@ -27,8 +27,25 @@ pub struct WorldEffectSources(pub Arc<WorldFxSources>);
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct DynamicEffects(pub Arc<Vec<DynamicEffect>>);
 
+///7ee610's instance metadata, owned through the actual FX tail lifetime.
+#[derive(Clone, Copy)]
+pub struct EntityEffectContext {
+    pub owner: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub culprit: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub cannot_incapacitate_player_and_allies: bool,
+    pub player_impact: bool,
+    pub velocities: [[f32; 3]; 2],
+    ///60a480/60a8b0 request+f0/f4 -> FXparams+b8/bc.22fd00 uses
+    ///speed squared times mass for the existing physics-energy sound RTPC.
+    pub contact_speed:f32,
+    pub contact_mass:f32,
+    ///60a480 receives8520d0's SOURCE body flag19 to install the
+    ///439480 contact-stimulus completion callback; it is not a clock.
+    pub contact_stimulus_enabled:Option<bool>,
+}
 #[derive(Clone)]
 pub struct DynamicEffect {
+    pub entity_context: Option<EntityEffectContext>,
     pub owner: String,
     pub revision: u64,
     pub effect: String,
@@ -87,13 +104,21 @@ struct FrameBinding {
     local: Option<([f32; 3], [f32; 4])>,
 }
 
+#[derive(Clone, Default)]
+struct EphemeralFrame {
+    root: Option<(ReferenceFrame, u64)>,
+    tags: HashMap<String, (ReferenceFrame, u64)>,
+    revision: u64,
+}
+
 /// Pose publication includes non-rendered FX targets. This is not a second
 /// physics world: moving owners publish the same pose used by their geometry.
 #[derive(Resource, Default, ExtractResource)]
 pub struct WorldEffectFrames {
     entities: Arc<HashMap<String, EntityFrame>>,
     published: HashMap<String, ReferenceFrame>,
-    ephemeral: HashMap<String, ReferenceFrame>,
+    ephemeral: HashMap<String, EphemeralFrame>,
+    ephemeral_revision: u64,
     pub clock: Option<WorldFxClock>,
     player: Option<(ReferenceFrame, Arc<HashMap<String, ReferenceFrame>>)>,
 }
@@ -106,6 +131,7 @@ impl Clone for WorldEffectFrames {
             entities: self.entities.clone(),
             published: self.published.clone(),
             ephemeral: self.ephemeral.clone(),
+            ephemeral_revision: self.ephemeral_revision,
             clock: self.clock,
             player: self.player.clone(),
         };
@@ -176,6 +202,7 @@ impl WorldEffectFrames {
             entities: Arc::new(entities),
             published: HashMap::new(),
             ephemeral: HashMap::new(),
+            ephemeral_revision: 0,
             clock: None,
             player: None,
         })
@@ -189,14 +216,43 @@ impl WorldEffectFrames {
     /// Reuse names and storage while active; the component's retirement
     /// removes its publication without altering installed entity frames.
     pub fn publish_ephemeral<'a>(&mut self, frames: impl Clone + Iterator<Item = (&'a str, ReferenceFrame)>) {
-        self.ephemeral.retain(|name, pose| {
-            if let Some((_, frame)) = frames.clone().find(|(candidate, _)| *candidate == name.as_str()) {
-                *pose = frame; true
-            } else { false }
-        });
+        self.begin_ephemeral();
         for (name, frame) in frames {
-            if !self.ephemeral.contains_key(name) { self.ephemeral.insert(name.to_owned(), frame); }
+            self.publish_ephemeral_frame(name, "", frame);
         }
+        self.finish_ephemeral();
+    }
+
+    pub fn begin_ephemeral(&mut self) { self.ephemeral_revision = self.ephemeral_revision.wrapping_add(1); }
+
+    /// Publish only actual demanded entity/tag poses into the existing host
+    /// snapshot. Rigs, palettes, definitions and component identities stay with
+    /// their canonical owners; unchanged names/tag keys allocate nothing.
+    pub fn publish_ephemeral_frame(&mut self, name: &str, tag: &str, frame: ReferenceFrame) {
+        if !self.ephemeral.contains_key(name) { self.ephemeral.insert(name.to_owned(), EphemeralFrame::default()); }
+        let entry = self.ephemeral.get_mut(name).expect("inserted FX frame");
+        entry.revision = self.ephemeral_revision;
+        if tag.is_empty() { entry.root = Some((frame, self.ephemeral_revision)); }
+        else if let Some(value) = entry.tags.get_mut(tag) { *value = (frame, self.ephemeral_revision); }
+        else { entry.tags.insert(tag.to_owned(), (frame, self.ephemeral_revision)); }
+    }
+
+    pub fn finish_ephemeral(&mut self) {
+        let revision = self.ephemeral_revision;
+        self.ephemeral.retain(|_, entry| {
+            if entry.revision != revision { return false; }
+            if entry.root.is_some_and(|(_, previous)| previous != revision) { entry.root = None; }
+            entry.tags.retain(|_, (_, previous)| *previous == revision);
+            true
+        });
+    }
+
+    pub fn has_authored_entity(&self, name: &str) -> bool { self.entities.contains_key(name) }
+
+    pub fn ephemeral_current(&self, name: &str, tag: &str) -> bool {
+        let Some(entry) = self.ephemeral.get(name) else { return false; };
+        if tag.is_empty() { entry.root.is_some_and(|(_, revision)| revision == self.ephemeral_revision) }
+        else { entry.tags.get(tag).is_some_and(|(_, revision)| *revision == self.ephemeral_revision) }
     }
 
     pub fn resolve(&self, entity: &crate::gameplay::event_graph::EntityReference, tag: &str) -> Result<Option<ReferenceFrame>, String> {
@@ -210,7 +266,12 @@ impl WorldEffectFrames {
                     .ok_or_else(|| format!("player FX tag/joint {tag} is absent")),
             },
             EntityReference::Named(name) if tag.is_empty() => self.frame(name),
-            EntityReference::Named(name) => Err(format!("FX tag/joint {name}/{tag} awaits its animated model pose")),
+            EntityReference::Named(name) => match self.ephemeral.get(name) {
+                Some(entry) => entry.tags.get(tag).map(|(frame, _)| Some(*frame))
+                    .ok_or_else(|| format!("FX tag/joint {name}/{tag} is absent from its actual published model")),
+                None if !self.entities.contains_key(name) => Ok(None),
+                None => Err(format!("FX tag/joint {name}/{tag} awaits its animated model pose")),
+            },
         }
     }
 
@@ -236,13 +297,13 @@ impl WorldEffectFrames {
     /// traversal. Bound entities still use the one existing resolver below.
     pub fn published_frame(&self, entity:&str)->Result<Option<ReferenceFrame>,String>{
         if let Some(frame)=self.published.get(entity){return Ok(Some(*frame));}
-        if let Some(frame)=self.ephemeral.get(entity){return Ok(Some(*frame));}
+        if let Some(frame)=self.ephemeral.get(entity).and_then(|entry| entry.root){return Ok(Some(frame.0));}
         let Some(entry)=self.entities.get(entity) else{return Ok(None);};
         if entry.parent.is_none(){return Ok(Some(entry.spawn));}
         self.frame(entity)
     }
     pub fn frame(&self, entity: &str) -> Result<Option<ReferenceFrame>, String> {
-        if !self.entities.contains_key(entity) { return Ok(self.ephemeral.get(entity).copied()); }
+        if !self.entities.contains_key(entity) { return Ok(self.ephemeral.get(entity).and_then(|entry| entry.root.map(|value| value.0))); }
         let mut current = entity;
         let mut visited = HashSet::new();
         let mut chain = Vec::new();

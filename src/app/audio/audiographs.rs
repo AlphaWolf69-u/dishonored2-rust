@@ -134,7 +134,7 @@ impl Playback {
     fn advance(
         &mut self,
         emitter: Emitter,
-        position: Option<Vec3>,
+        position: Option<super::spatial::Position>,
         completions: &mut SoundCompletions,
         events: &mut MessageWriter<SoundEvent>,
     ) {
@@ -185,8 +185,8 @@ impl Playback {
                 Request::PostAt {
                     event,
                     emitter,
-                    position,
-                    front: None,
+                    position: position.position,
+                    front: position.front,
                     parameter: None,
                 }
             } else {
@@ -211,6 +211,7 @@ pub(super) fn update(
     loading: Res<crate::app::loading_screen::Acquisition>,
     mut completions: ResMut<SoundCompletions>,
     mut events: MessageWriter<SoundEvent>,
+    hud: Option<NonSend<crate::app::pause_menu::PauseMenu>>,
 ) {
     while let Some(selection) = owner.requests.pop_front() {
         let toggle_off = owner.player.selected == Some(selection.item);
@@ -281,12 +282,21 @@ pub(super) fn update(
                 .iter()
                 .any(|entry| entry.item_id == device.item)
             {
-                inventory.admit_audiograph(
+                if inventory.admit_audiograph(
                     device.path.clone(),
                     device.item,
                     1,
                     device.declaration.clone(),
-                );
+                ) { device.pickup_log_pending = true; }
+            }
+        }
+        //496760 directly requests6734b0 only for the recording's first
+        //actual acquisition; ordinary inventory messages are not a log.
+        if device.pickup_log_pending {
+            match hud.as_ref().map(|hud| hud.queue_pickup(device.declaration.clone(), 1)).transpose() {
+                Ok(Some(())) => device.pickup_log_pending = false,
+                Ok(None) => {},
+                Err(error) => error!("Audiograph pickup log delivery failed: {error}"),
             }
         }
         let Some(emitter) = device.emitter else {
@@ -294,7 +304,12 @@ pub(super) fn update(
         };
         device.player.advance(
             emitter,
-            Some(crate::app::game_to_view(actor.frame.position)),
+            // 4961c0 plays through the actor's speech/audio component; retain
+            // its complete emitter frame, including the cone's forward axis.
+            Some(super::spatial::Position {
+                position: Vec3::from_array(actor.frame.position),
+                front: Some(Vec3::from_array(actor.frame.basis[0])),
+            }),
             &mut completions,
             &mut events,
         );
@@ -338,6 +353,7 @@ struct Device {
     emitter: Option<Emitter>,
     player: Playback,
     started: bool,
+    pickup_log_pending: bool,
 }
 /// Level-scoped links to actual usables; no retained generic component trees.
 #[derive(Resource, Default)]
@@ -395,6 +411,7 @@ impl Devices {
                 emitter: None,
                 player: Playback::default(),
                 started: false,
+                pickup_log_pending: false,
             });
         }
         eprintln!("AUDIOGRAPH_DEVICES admitted={}", entries.len());

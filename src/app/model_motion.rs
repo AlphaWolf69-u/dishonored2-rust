@@ -8,6 +8,168 @@ use bevy::prelude::*;
 use hashbrown::HashMap;
 use crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches;
 
+#[path = "model_shader_data.rs"]
+mod shader_data;
+pub(super) use shader_data::{ModelShaderData, publish_shader_clocks, set_shader_clock, set_shader_clock_with_live, set_in_water};
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum ModelKey { Placed(usize), Actor(crate::gameplay::entity_lifetime::EntityId) }
+
+/// Source Hide/Show changes actual renderer visibility without removing the
+/// rigid body or reacquiring a model. Placed sources retain their map owner.
+pub(super) fn set_entity_visible(world: &mut World,
+    live: &crate::gameplay::entity_lifetime::LiveEntities,
+    id: crate::gameplay::entity_lifetime::EntityId, visible: bool) -> Result<(), String> {
+    let (name, _) = live.get(id).ok_or("model visibility targeted a stale entity generation")?;
+    if super::world_models::set_visible(world, id, visible)? { return Ok(()) }
+    let placements = world.get_resource::<super::RenderSourcePlacements>().map(|placements|
+        placements.0.iter().enumerate().filter_map(|(index, placement)|
+            placement.id.eq_ignore_ascii_case(name).then_some(index)).collect::<Vec<_>>()).unwrap_or_default();
+    if placements.is_empty() { return Ok(()) } // Actual non-render entity.
+    {
+        let mut hidden = world.resource_mut::<super::interaction_focus::RetiredPlacements>();
+        for &placement in &placements { if visible { hidden.0.remove(&placement); } else { hidden.0.insert(placement); } }
+    }
+    if !visible {
+        let entities = if let Some(mut queue) = world.get_resource_mut::<super::SceneRenderQueue>() {
+            queue.instances.iter_mut().filter_map(|instance| {
+                let source = instance.source?;
+                let placement = match source.surface {
+                    super::RenderModelSurface::Bmodel { placement, .. } | super::RenderModelSurface::Bmd6 { placement, .. } => placement,
+                    _ => return None,
+                };
+                if !placements.contains(&placement) { return None }
+                instance.visible = false;
+                instance.entity
+            }).collect::<Vec<_>>()
+        } else { Vec::new() };
+        for entity in entities { if let Some(mut visibility) = world.get_mut::<Visibility>(entity) { *visibility = Visibility::Hidden; } }
+    }
+    // Source masks, shadow bounds and Tome/color publication all consume the
+    // existing placed-hidden set; Show restores the next real query result.
+    Ok(())
+}
+
+///87b6b0→873340→87e040/87e0a0. The wrapper's local cast bit is
+///instance state, not a change to shared mesh/material declarations. Pending
+///world models retain the same request until their real upload is admitted.
+pub(super) fn set_entity_shadow_casting(
+    world:&mut World, live:&crate::gameplay::entity_lifetime::LiveEntities,
+    root:crate::gameplay::entity_lifetime::EntityId, value:bool,
+)->Result<(),String>{
+    let keys=shader_data::keys(world,live,root)?.into_iter().filter(|&key|shadow_depth_input(world,key).is_some()).collect::<Vec<_>>();
+    if keys.is_empty(){return Ok(())} //No actual render-owner wrapper.
+    let first=shadow_depth_input(world,keys[0]).ok_or("shadow property lost its actual model owner")?;
+    let local=world.get_resource::<ModelShaderData>().and_then(|data|data.local_cast_shadows(keys[0])).unwrap_or(first.0);
+    if local==value{return Ok(())} //87b6b0 refreshes only on local-bit change.
+    for key in keys{
+        if let ModelKey::Actor(id)=key{
+            if super::world_models::set_local_shadow_casting(world,id,value){continue}
+        }
+        world.resource_mut::<ModelShaderData>().set_local_cast_shadows(key,value);
+    }
+    let parent=live.parent(root)?;
+    let parent_model=parent.map(|parent|->Result<_,String>{
+        let keys=shader_data::keys(world,live,parent)?;
+        let model=keys.first().and_then(|&key|shadow_depth_input(world,key)).map(|(_,flags,depth,_)|(flags,depth));
+        Ok((0,model))
+    }).transpose()?;
+    let inherited=render_model::parent_model_depth_state(parent_model);
+    let mut stack=vec![(root,inherited)];
+    let mut visited=std::collections::HashSet::new();
+    while let Some((id,inherited))=stack.pop(){
+        if !visited.insert(id){return Err("cyclic live model-depth hierarchy".into())}
+        let keys=shader_data::keys(world,live,id)?.into_iter().filter(|&key|shadow_depth_input(world,key).is_some()).collect::<Vec<_>>();
+        let input=keys.first().and_then(|&key|shadow_depth_input(world,key));
+        let local=keys.first().and_then(|&key|world.get_resource::<ModelShaderData>().and_then(|data|data.local_cast_shadows(key)))
+            .unwrap_or_else(||input.map_or(true,|input|input.0));
+        let local_depth=input.map_or(0.,|input|input.3);
+        let resolved=render_model::resolve_inherited_model_depth_state(inherited,local_depth,0,u8::from(local));
+        for key in keys{publish_shadow_depth(world,key,resolved)?;}
+        //Source ordered recursion propagates through model-less children too.
+        for &child in live.children(id)?.iter().rev(){stack.push((child,resolved));}
+    }
+    Ok(())
+}
+
+///(constructor local bit, actual flags18bc, resolved depth, local depth).
+fn shadow_depth_input(world:&World,key:ModelKey)->Option<(bool,u8,f32,f32)>{
+    let (local,mut flags,mut depth,local_depth)=match key{
+        ModelKey::Placed(placement)=>{
+            let source=world.get_resource::<ModelShadowSources>()?.0.iter().find(|source|source.placement==placement)?;
+            //874c50's local depth starts at zero; these placed source models
+            //are constructed with INITIAL_MODEL_CONTEXT_FLAGS_18BC.
+            (true,source.flags_18bc,0.,0.)
+        }
+        ModelKey::Actor(id)=>{
+            if let Some((local,flags))=super::world_models::shadow_state(world,id){(local,flags,0.,0.)}
+            else{
+                let arms=world.get_resource::<super::player_arms::PlayerArms>()?;
+                let(flags,depth)=arms.managed_model_depth_state(id)?;
+                (false,flags,depth,arms.managed_model_local_depth_hack(id))
+            }
+        }
+    };
+    if let Some(data)=world.get_resource::<ModelShaderData>(){
+        if let Some(casts)=data.cast_shadows(key){flags=(flags&!8)|(u8::from(casts)<<3);}
+        if let Some(value)=data.depth_hack(key){depth=value;}
+    }
+    Some((local,flags,depth,local_depth))
+}
+
+fn publish_shadow_depth(world:&mut World,key:ModelKey,resolved:render_model::InheritedModelDepthState)->Result<(),String>{
+    let Some((_,before,mut depth,_))=shadow_depth_input(world,key)else{return Ok(())};
+    let previous_depth=depth;
+    let mut flags=before;
+    render_model::publish_model_depth_state(&mut flags,&mut depth,resolved);
+    let casts=flags&8!=0;
+    let changed=(before^flags)&8!=0;
+    let dynamic=match key{
+        ModelKey::Placed(placement)=>{
+            if let Some(mut sources)=world.get_resource_mut::<ModelShadowSources>(){
+                for source in sources.0.iter_mut().filter(|source|source.placement==placement){
+                    render_model::publish_model_depth_state(&mut source.flags_18bc,&mut depth,resolved);
+                }
+            }
+            if changed{
+                let entities=world.get_resource::<SceneRenderQueue>().map(|queue|queue.instances.iter().filter_map(|instance|{
+                    let matches=instance.source.is_some_and(|source|match source.surface{
+                        super::RenderModelSurface::Bmodel{placement:actual,..}|super::RenderModelSurface::Bmd6{placement:actual,..}=>actual==placement,
+                        _=>false,
+                    });
+                    matches.then_some(instance.entity).flatten()
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                for entity in entities{if let Ok(mut entity)=world.get_entity_mut(entity){
+                    if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+                }}
+            }
+            render_model::model_is_dynamic_caster(flags)
+        }
+        ModelKey::Actor(id)=>{
+            if super::world_models::publish_shadow_state(world,id,resolved)?.is_none(){
+                let entities=world.get_resource::<super::player_arms::PlayerArms>().map(|arms|arms.managed_model_shadow_entities(id)).unwrap_or_default();
+                if let Some(mut arms)=world.get_resource_mut::<super::player_arms::PlayerArms>(){
+                    if arms.attachments.has(id){arms.attachments.set_shadow_casting(id,casts)?;}
+                }
+                if changed{for entity in entities{if let Ok(mut entity)=world.get_entity_mut(entity){
+                    if casts{entity.remove::<bevy::light::NotShadowCaster>();}else{entity.insert(bevy::light::NotShadowCaster);}
+                }}}
+            }
+            //WorldModels already gathers runtime instances in its dynamic
+            //bucket, including rigid actors; preserve that host contract.
+            true
+        }
+    };
+    if changed||depth!=previous_depth{
+        let mut data=world.resource_mut::<ModelShaderData>();
+        data.publish_cast_shadows(key,casts);
+        data.publish_depth_hack(key,depth);
+    }
+    if let Some(mut controls)=world.get_resource_mut::<super::local_shadow_updates::LocalShadowViewControls>(){
+        controls.0.actor_caster_changed(changed,dynamic);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ModelPose {
     pub placement: usize,
@@ -38,6 +200,14 @@ impl BoundModels {
     }
 
     pub(super) fn entity_delta(&self, id: &str) -> Option<&[[f32; 4]; 3]> { self.entity_deltas.get(id) }
+
+    ///Claimed once during level preparation, after actual actor admission.
+    ///808880's canonical binding owner publishes these final sampled frames;
+    ///7506d0's legacy parent-delta adapter must not publish them as well.
+    pub(super) fn exclude_canonical_bindings<'a>(&mut self, entities: impl Iterator<Item = &'a str>) {
+        let entities = entities.collect::<hashbrown::HashSet<_>>();
+        self.binds.retain(|binding| !entities.contains(binding.entity_id.as_str()));
+    }
 
     fn children(&mut self, placements: &[crate::entities::PlacedModel]) -> &HashMap<usize, Vec<usize>> {
         self.children.get_or_insert_with(|| {
@@ -117,6 +287,25 @@ pub(super) struct ModelProbeLighting {
     handle: Handle<super::ShaderBuffer>,
     first: usize,
     records: Option<Vec<ProbeRecord>>,
+    next: usize,
+    dynamic_start: usize,
+    capacity: usize,
+    returned: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+    free: Vec<u32>,
+    shader_clocks: HashMap<u32,[f32;2]>,
+    default_shader_clock: Option<[f32;2]>,
+}
+
+/// Host SH-bank allocation corresponding to a model's shader-bank entry
+/// (31ad30/329120). The owning draw survives in RetiredModel until GPU ack;
+/// only then may a different actor reuse this row.
+pub(super) struct ProbeSlot {
+    index: u32,
+    returned: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+}
+impl ProbeSlot { pub(super) fn index(&self) -> u32 { self.index } }
+impl Drop for ProbeSlot {
+    fn drop(&mut self) { self.returned.lock().unwrap().push(self.index); }
 }
 
 type ProbeRecord = [u8; 9 * 16];
@@ -139,6 +328,12 @@ impl ModelProbeLighting {
 
     pub(super) fn new(handle: Handle<super::ShaderBuffer>, first: usize, buffer: &mut super::ShaderBuffer) -> Self {
         let retain_full = std::env::var_os("DH2_DEBUG_RETAIN_PROBE_RECORDS").is_some_and(|value| value == "1");
+        // bevy_backend: only the final unused SH alpha lane holds model time.
+        // Other alpha lanes retain reflection and rigid-water inputs. NaN is
+        // the host default-clock selector; no lighting RGB component changes.
+        for record in buffer.data.as_mut().expect("instance probe upload prepared")[first*144..].chunks_exact_mut(144) {
+            record[140..144].copy_from_slice(&0x7fc00000u32.to_le_bytes());
+        }
         let bytes = buffer.data.as_deref().expect("instance probe upload prepared");
         let records = (!retain_full).then(|| {
             bytes[first * size_of::<ProbeRecord>()..].chunks_exact(size_of::<ProbeRecord>())
@@ -151,18 +346,103 @@ impl ModelProbeLighting {
             let retained = records.as_ref().map_or(bytes.len(), |records| records.capacity() * size_of::<ProbeRecord>());
             eprintln!("INSTANCE_PROBE_RECORDS bytes={} retained_cpu_bytes={retained} crc32={:08x}", bytes.len(), crc.sum());
         }
+        let next = bytes.len() / size_of::<ProbeRecord>();
         if records.is_some() {
             buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
         }
-        Self { handle, first, records }
+        Self { handle, first, records, next, dynamic_start: next, capacity: next,
+            returned: Default::default(), free: Vec::new(), shader_clocks:HashMap::new(), default_shader_clock:None }
     }
 
+    /// Allocate only at admission. Growth copies the existing GPU bank; it
+    /// does not reconstruct static records or re-upload their CPU payload.
+    fn allocate(&mut self, buffers: &mut Assets<super::ShaderBuffer>,
+        patches: &mut ShaderBufferPatches, mut record: ProbeRecord) -> Result<(ProbeSlot, bool), String> {
+        self.free.extend(self.returned.lock().unwrap().drain(..));
+        let index = if let Some(index) = self.free.pop() { index as usize } else {
+            let index = self.next;
+            if index >= 0x8000_0000 { return Err("model probe bank exhausted its tag index".into()); }
+            self.next += 1;
+            if let Some(records) = &mut self.records { records.push([0; 144]); }
+            index
+        };
+        self.shader_clocks.remove(&(index as u32));
+        record[140..144].copy_from_slice(&0x7fc00000u32.to_le_bytes());
+        let grew = self.next > self.capacity;
+        if grew {
+            // bevy_backend: amortized capacity, preserving the game's one bank
+            // and the exact per-draw record contents across host buffer changes.
+            let dynamic = (self.next - self.dynamic_start).checked_next_power_of_two().ok_or("model probe bank size overflow")?;
+            self.capacity = self.dynamic_start.checked_add(dynamic).ok_or("model probe bank size overflow")?;
+            let bytes = self.capacity.checked_mul(size_of::<ProbeRecord>()).ok_or("model probe bank byte overflow")?;
+            buffers.get_mut(&self.handle).ok_or("model probe buffer missing")?.resize_in_place(bytes as u64);
+        }
+        if let Some(records) = &mut self.records { records[index - self.first] = record; }
+        else if let Some(mut buffer) = buffers.get_mut(&self.handle) {
+            if let Some(data) = &mut buffer.data { data[index * 144..index * 144 + 144].copy_from_slice(&record); }
+        }
+        patches.enqueue(self.handle.id(), index * 144, &record);
+        Ok((ProbeSlot { index: index as u32, returned: self.returned.clone() }, grew))
+    }
+
+    pub(super) fn allocate_draws(world: &mut World, records: Vec<ProbeRecord>) -> Result<Vec<ProbeSlot>, String> {
+        let (slot, grew, handle) = world.resource_scope(|world, mut bank: Mut<Self>| {
+            world.resource_scope(|world, mut buffers: Mut<Assets<super::ShaderBuffer>>| {
+                let mut patches = world.resource_mut::<ShaderBufferPatches>();
+                let mut slots = Vec::with_capacity(records.len());
+                let mut grew = false;
+                for record in records {
+                    let (slot, growth) = bank.allocate(&mut buffers, &mut patches, record)?;
+                    slots.push(slot);
+                    grew |= growth;
+                }
+                Ok::<_, String>((slots, grew, bank.handle.id()))
+            })
+        })?;
+        if grew {
+            // The storage handle stays stable, but its GPU buffer changed.
+            // Bevy material extraction must rebuild bind groups referencing it.
+            let mut probes = world.resource_mut::<Assets<super::ProbeMaterial>>();
+            let ids = probes.iter().filter_map(|(id, material)| (material.extension.sh.id() == handle).then_some(id)).collect::<Vec<_>>();
+            for id in ids { if let Some(material) = probes.get_mut(id) { let _ = material.into_inner(); } }
+            drop(probes);
+            let mut decals = world.resource_mut::<Assets<super::DecalMaterial>>();
+            let ids = decals.iter().filter_map(|(id, material)| (material.extension.sh.id() == handle).then_some(id)).collect::<Vec<_>>();
+            for id in ids { if let Some(material) = decals.get_mut(id) { let _ = material.into_inner(); } }
+        }
+        Ok(slot)
+    }
+
+    pub(super) fn shader_clock(&self,index:u32,fallback:[f32;2])->[f32;2]{self.shader_clocks.get(&index).copied().unwrap_or(fallback)}
+    pub(super) fn publish_default_clock(&mut self,patches:&mut ShaderBufferPatches,time:[f32;2]){
+        if self.default_shader_clock.map(|old|old[0].to_bits())!=Some(time[0].to_bits()){
+            patches.enqueue(self.handle.id(),140,&time[0].to_le_bytes());
+        }
+        self.default_shader_clock=Some(time);
+    }
+    pub(super) fn publish_clock(&mut self,patches:&mut ShaderBufferPatches,index:u32,time:[f32;2]){
+        let changed=self.shader_clocks.insert(index,time).is_none_or(|old|old[0].to_bits()!=time[0].to_bits());
+        if !changed{return}
+        if let Some(records)=&mut self.records{
+            if let Some(record)=(index as usize).checked_sub(self.first).and_then(|index|records.get_mut(index)){
+                record[140..144].copy_from_slice(&time[0].to_le_bytes());
+            }
+        }
+        patches.enqueue(self.handle.id(),index as usize*144+140,&time[0].to_le_bytes());
+    }
     pub(super) fn write(&mut self, patches: &mut ShaderBufferPatches,
         buffers: &mut Assets<super::ShaderBuffer>, index: u32, record: &[u8; 9 * 16]) {
+        let mut host_record=*record;
+        host_record[140..144].copy_from_slice(&self.shader_clocks.get(&index).map_or(0x7fc00000,|time|time[0].to_bits()).to_le_bytes());
+        let record=&host_record;
         let index = index as usize;
         let offset = index * record.len();
         let Some(records) = &mut self.records else {
-            patches.write(buffers, &self.handle, offset, record);
+            if buffers.get(&self.handle).is_some_and(|buffer| buffer.data.is_none()) {
+                patches.enqueue(self.handle.id(), offset, record);
+            } else {
+                patches.write(buffers, &self.handle, offset, record);
+            }
             return;
         };
         let Some(target) = index.checked_sub(self.first).and_then(|index| records.get_mut(index)) else { return; };
@@ -225,6 +505,7 @@ pub(super) struct ModelPosePublication<'w, 's> {
     bound: Option<ResMut<'w, BoundModels>>,
     effect_frames: Option<ResMut<'w, crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
     clock: Option<Res<'w, crate::gameplay::game_clock_runtime::ClockRuntime>>,
+    model_projections: Option<ResMut<'w, super::projected_decals::ModelProjectionContexts>>,
 }
 
 pub(super) fn publish_model_poses(publication: ModelPosePublication<'_, '_>) { publish(publication); }
@@ -239,7 +520,7 @@ pub(super) fn publish_bound_model_poses(publication: ModelPosePublication<'_, '_
 fn publish(publication: ModelPosePublication<'_, '_>) {
     let ModelPosePublication { mut pending, mut bindings, mut placements, mut models, mut bounds,
         mut queries, mut queue, mut entities, scene, mut probe_buffer, mut buffers, mut patches,
-        bound, mut effect_frames, clock } = publication;
+        bound, mut effect_frames, clock, mut model_projections } = publication;
     if let Some(frames) = effect_frames.as_mut() {
         frames.clock = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| {
             Some(crate::rendering::bevy_backend::world_effects::WorldFxClock {
@@ -318,6 +599,7 @@ fn publish(publication: ModelPosePublication<'_, '_>) {
             frames.publish_delta(&placement.id, pose.delta);
         }
         let source = &mut models.0[binding.source];
+        if let Some(contexts)=model_projections.as_deref_mut(){contexts.dirty(super::projected_decals::ModelKey::Placed(source.placement));}
         source.bounds = render_model::transformed_bounds(
             source.local_bounds,
             placement.position,

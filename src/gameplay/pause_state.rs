@@ -581,11 +581,17 @@ mod dof_tests {
 /// the descriptor `FUN_14002c440` reads at decl +0x64), for a display of
 /// `display` pixels.
 pub fn font_caching(catalog: &crate::assets::archive::Catalog, movie: &str, stage: (f64, f64), display: (u32, u32)) -> Option<crate::flash::glyph_cache::FontCaching> {
-    use crate::gameplay::options::decl::{int, read_edit, scope};
+    use crate::gameplay::options::decl::read_edit;
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     let name = format!("{}.iggyfile", movie.strip_suffix(".iggy").unwrap_or(movie));
     let edit = read_edit(&mut read, "iggyfile", &name).ok()?;
-    let buffer = scope(&edit, "m_vectorFontBuffer")?;
+    font_caching_fields(&edit, movie, stage, display)
+}
+
+/// Use the actual resolved descriptor when its identity differs from the movie.
+pub fn font_caching_fields(edit: &crate::gameplay::options::decl::Fields, movie: &str, stage: (f64, f64), display: (u32, u32)) -> Option<crate::flash::glyph_cache::FontCaching> {
+    use crate::gameplay::options::decl::{int, scope};
+    let buffer = scope(edit, "m_vectorFontBuffer")?;
     let field = |n: &str| int(buffer, n, 0).max(0) as u32;
     crate::flash::glyph_cache::FontCaching::for_movie(field("m_maxNumGlyph"), field("m_maxGlyphWidth"), field("m_maxGlyphHeight"), (stage.0 as u32, stage.1 as u32), movie, display)
 }

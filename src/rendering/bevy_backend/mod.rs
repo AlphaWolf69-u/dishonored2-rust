@@ -81,6 +81,7 @@ pub mod camera_colours;
 pub mod alpha_depth;
 #[cfg(feature = "game")]
 pub mod occlusion_query_pass;
+#[cfg(feature = "game")]
 pub mod water_depth;
 #[cfg(feature = "game")]
 pub mod underwater_stencil;
@@ -322,6 +323,14 @@ pub mod world_effects;
 pub(crate) mod world_particle_state;
 #[cfg(feature = "game")]
 mod world_sub_effects;
+#[cfg(feature = "game")]
+mod world_light_effects;
+#[cfg(feature = "game")]
+mod world_screen_distortion;
+#[cfg(feature = "game")]
+mod world_rumble;
+#[cfg(feature = "game")]
+mod world_gameplay_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_sounds;
 
