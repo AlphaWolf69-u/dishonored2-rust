@@ -21,9 +21,37 @@ pub struct Target {
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
     pub body_id: u32,
+    /// Full source witness for consumers such as sensor27. Ordinary occlusion
+    /// retains only its body identity, exactly as before.
+    pub witness: Option<Witness>,
 }
 #[derive(Clone, Copy, Debug)]
+pub enum Witness {
+    Convex(super::shape_convex_query::ConvexContact),
+    Ray(super::shape_ray_query::ShapeRayContact),
+}
+#[derive(Clone, Debug)]
+pub struct ConvexRequest {
+    pub vertices: std::sync::Arc<[[f32; 4]]>,
+    pub shape_type: u8,
+    pub radius: f32,
+    pub transform: super::shape_transform::ShapeMatrix,
+    pub displacement: [f32; 3],
+    pub layers: u32,
+    pub required_flags: u32,
+}
+#[derive(Clone, Debug)]
 pub enum Request {
+    ///095280 main/all-hit collector; the independent initial collector is null.
+    Convex(ConvexRequest),
+    ///095030 collector1 preserves the closest witness for candidate refinement.
+    RayClosest {
+        origin: [f32; 3],
+        direction: [f32; 3],
+        maximum_fraction: f32,
+        layers: u32,
+        required_flags: u32,
+    },
     Sphere {
         origin: [f32; 3],
         radius: f32,

@@ -34,6 +34,30 @@ fn post_world_effect(world: &mut World, path: &str, frame: ReferenceFrame) -> Re
     effects.start_world_once(key, path, frame);
     Ok(())
 }
+///441220/87cb90 explicit pose clears attachment but keeps the actual entity,
+///its clock and inherited velocities. The shared once-owner drains every tail.
+pub(super) fn post_grapple_impact(world: &mut World, path: &str, target: EntityId,
+    frame: ReferenceFrame) -> Result<(), String> {
+    world.init_resource::<WorldEffectSequence>();
+    let key = {
+        let mut serial = world.resource_mut::<WorldEffectSequence>();
+        serial.0 = serial.0.wrapping_add(1);
+        Arc::<str>::from(format!("power-impact-{}", serial.0))
+    };
+    let name = world.resource::<LiveEntities>().get(target)
+        .ok_or("Far Reach impact target retired")?.0.to_owned();
+    let published = world.resource::<super::physics_scene::PhysicsScene>()
+        .published_entity_frame(world.resource::<LiveEntities>(), target)?;
+    world.resource_mut::<super::usable_effects::EffectRequests>().start_context_once(key, path,
+        super::usable_effects::EntityPlacement {target: EntityReference::Named(name), tag: String::new(),
+            local: Default::default(), attached: false}, frame,
+        crate::rendering::bevy_backend::world_effects::EntityEffectContext {
+            owner: Some(target), culprit: None, cannot_incapacitate_player_and_allies: false,
+            player_impact: false, velocities: published.velocities, contact_speed: 0., contact_mass: 0.,
+            contact_stimulus_enabled: None,
+        });
+    Ok(())
+}
 
 #[derive(Resource, Default)]
 struct GrappleBeamEffect { owner: Option<Arc<str>> }
@@ -260,7 +284,11 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
         world.insert_resource(actions); return Err("Blink FX request owner is absent".into());
     };
     let result = (|| {
-        actions.prepare_family_runtime(player, clock, &mut effects)?;
+        if actions.needs_preparation() {
+            world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                actions.prepare_family_runtime(player, clock, &mut effects, &mut scene, world.resource::<LiveEntities>())
+            })?;
+        }
         if actions.blink.is_none() && actions.active_blink.is_none() { return Ok(()); }
         let collision = world.get_resource::<super::NavigationWorld>().ok_or("Blink collision world is absent")?;
         let live = world.get_resource::<LiveEntities>().ok_or("Blink entity owner is absent")?;
@@ -323,22 +351,31 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
 /// The accepted Grapple motion owns its sensor/scene projection through
 /// equipment changes. Service its real state completion independently of
 /// whichever power is currently selected.
-fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player, aim: bool) {
+fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player,
+    clock: &ClockRuntime, events: &mut EntityEvents, aim: bool) {
     world.init_resource::<PowerQueries>();
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return };
     let mut impacts = [None, None];
     let result = (|| {
         if let Some(active) = actions.active_far_reach.as_mut() {
+            active.service_objects(world, player, clock, events)?;
             let retained = active.service(player)?;
             impacts[0] = active.take_world_impact();
             if !retained { actions.finish_far_reach_activity(); }
         }
         if let Some(far) = actions.far_reach.as_mut() {
+            far.service_objects(world, player, clock, events)?;
             if far.has_activity() { far.service(player)?; }
             impacts[1] = far.take_world_impact();
             if aim {
                 let aiming = player.power_cast_active(6) && player.selected_power().is_some_and(|cast| cast.phase() == Phase::Aiming);
-                if aiming && !far.has_activity() {
+                if aiming && !far.has_cast_activity() {
+                    let view = player.view();
+                    world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                        let live = world.resource::<LiveEntities>();
+                        far.acquire(&mut scene, live, player, &view, crate::platform::console::shared().read().cvars
+                            .int("ark_shadow_grapple_snapping_enabled").unwrap_or(1) != 0)
+                    })?;
                     if let Some(collision) = world.get_resource::<super::NavigationWorld>() {
                         let scene = world.get_resource::<super::physics_scene::PhysicsScene>().ok_or("Far Reach canonical physics owner is absent")?;
                         let query_owner = scene.point_queries()?;
@@ -351,7 +388,15 @@ fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Pl
                         far.aim(player, &view, &queries, snapping);
                         if let Some(error) = queries.take_error() { return Err(error); }
                     }
-                } else if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+                    world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                        far.submit_acquisition(&mut scene, world.resource::<LiveEntities>(), player)
+                    })?;
+                } else {
+                    world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                        far.cancel_acquisition(&mut scene, world.resource::<LiveEntities>(), player)
+                    })?;
+                    if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+                }
             }
         }
         Ok::<(), String>(())
@@ -395,8 +440,11 @@ pub(super) fn before_frame(world: &mut World) {
     let Some(mut state) = world.remove_resource::<super::player::PlayerState>() else { return };
     if let Some(player) = state.player.as_mut() {
         player.set_power_time(now);
-        service_far_reach(world, player, false);
         if let Some(mut clock) = world.remove_resource::<ClockRuntime>() {
+            if let Some(mut events) = world.remove_resource::<EntityEvents>() {
+                service_far_reach(world, player, &clock, &mut events, false);
+                world.insert_resource(events);
+            }
             let result = service_blinks(world, player, &mut clock, false);
             world.insert_resource(clock);
             if let Err(error) = result { power_error(world, &error); }
@@ -483,6 +531,10 @@ fn execute_pending(world: &mut World, player: &mut crate::gameplay::player::Play
         }
         Some(6) => {
             let view = player.view();
+            let available = world.get_resource::<super::player_actions::PlayerActions>()
+                .and_then(|actions| actions.far_reach.as_ref().map(|far| far.object_admission(world, player)))
+                .unwrap_or(Ok(false))?;
+            if !available {player.cancel_power_use(); return Ok(());}
             let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
                 .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(Ok(false))?;
             if accepted { player.commit_power_cast(now, factor); }
@@ -566,7 +618,7 @@ pub(super) fn after_frame(world: &mut World) {
                 if let Some(delta) = far_delta { far.update_cast(player, delta, mode); }
             }
         }
-        service_far_reach(world, player, true);
+        service_far_reach(world, player, &clock, &mut events, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
         if let Err(error) = execute_pending(world, player, player_id, now, &mut clock, &mut events) { power_error(world, &error); }
         // Body owner has already advanced its actual hand-tag endpoint;

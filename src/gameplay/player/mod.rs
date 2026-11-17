@@ -1,8 +1,8 @@
 //! The first-person player: controller input, the locomotion state machine,
 //! physics with its character proxy, and the camera, updated in the game
 //! frame's stage order (FUN_1408ad260):
-//! input dispatch → QUERY_PHYSICS (physics queries) → DEFAULT (physics query
-//! results, controller, state machine, camera) → PRE_PHYSICS (physics step).
+//! input dispatch в†’ QUERY_PHYSICS (physics queries) в†’ DEFAULT (physics query
+//! results, controller, state machine, camera) в†’ PRE_PHYSICS (physics step).
 pub mod animation;
 pub mod adrenaline;
 pub mod arms;
@@ -12,6 +12,7 @@ pub mod weapons;
 pub mod power_states;
 pub mod grapple;
 pub mod grapple_state;
+pub mod grapple_catch;
 pub mod combat;
 mod diagnostics;
 pub mod combat_fx;
@@ -175,6 +176,7 @@ pub struct Player {
     fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     drowning_damage_enabled: bool,
     drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
+    inventory_health_damage: std::sync::Arc<crate::assets::damage::Declaration>,
     mana: mana::Mana,
     powers: power_states::Runtime,
     equipment_changes: equipment_states::Runtime,
@@ -258,6 +260,7 @@ pub struct PlayerSetup {
     pub accepts_water_damage: bool,
     pub drowning_damage_enabled: bool,
     pub drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
+    pub inventory_health_damage: std::sync::Arc<crate::assets::damage::Declaration>,
 }
 
 impl Player {
@@ -414,6 +417,23 @@ impl Player {
         }
         self.entity_events.push(EntityEvent::Damage { params: *parameters, result, was_dead });
         result
+    }
+
+    ///The code-referenced damage lease is acquired before Player publication.
+    pub fn inventory_health_damage_ready(&self) -> bool { self.managed_entity.is_some() }
+
+    ///71a140's negative branch: actual authored damage, never a direct HP edit.
+    pub fn inventory_health_damage(&mut self, signed_amount: f32) -> crate::gameplay::damage::DamageResult {
+        if !(signed_amount < 0.0) { return Default::default(); }
+        let declaration = &self.inventory_health_damage;
+        let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
+        parameters.set_amount(declaration, -signed_amount, true);
+        parameters.hit_location = Some(self.physics.position()); //878230
+        parameters.hit_direction = Vec3::Z; //14228a940..948
+        parameters.hit_normal = Some(Vec3::ZERO); //1431af668..670
+        parameters.attacker = self.managed_entity;
+        parameters.inflictor = self.managed_entity;
+        self.receive_damage(&parameters)
     }
 
     pub fn read_note_state_allowed(&self) -> Option<bool> {
@@ -699,6 +719,7 @@ impl Player {
             fall_damage: setup.fall_damage,
             drowning_damage_enabled: setup.drowning_damage_enabled,
             drowning_damage: setup.drowning_damage,
+            inventory_health_damage: setup.inventory_health_damage,
             mana,
             powers: Default::default(),
             equipment_changes: Default::default(),

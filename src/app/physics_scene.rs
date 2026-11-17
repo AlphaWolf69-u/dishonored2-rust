@@ -44,10 +44,12 @@ mod blink_queries;
 mod player_queries;
 pub(super) mod breakable;
 pub(super) mod carrying_host;
+pub(super) mod grapple_catch;
+pub(in crate::app) mod grapple_release;
 pub(super) mod carrying_resources;
 pub(super) mod sound_volumes;
 pub(super) mod damage_zone;
-mod occluded_sensor;
+pub(in crate::app) mod occluded_sensor;
 pub(super) mod damage;
 mod loot;
 pub(super) mod grenades;
@@ -135,6 +137,7 @@ pub(super) struct PhysicsScene {
         crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
+    grapple_dependency_ranges:[Option<[i32;2]>;5],
     factories: [u32; 52],
     classes: [i32; 52],
     entities: Vec<PhysicsEntity>,
@@ -540,6 +543,11 @@ impl PhysicsScene {
         let entity_range = |name: &[u8]| {
             hierarchy.type_range(*names.get(name).ok_or("physics entity class absent")?)
         };
+        let grapple_dependency_ranges=[b"arkCpntInteractable".as_slice(),b"arkCpntNavigation".as_slice(),
+            b"arkMovable".as_slice(),b"arkCpntAIPhysicsReaction".as_slice(),b"arkCpntPhysicsSystemEvolved".as_slice()]
+            .map(|name|names.get(name).map(|&index|hierarchy.type_range(index)).transpose());
+        let [interactable_range,navigation_range,movable_range,reaction_range,evolved_range]=grapple_dependency_ranges;
+        let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
         let mut classes = [0; 52];
@@ -723,6 +731,7 @@ impl PhysicsScene {
                 bodies: Vec::new(),
             },
             types,
+            grapple_dependency_ranges,
             factories,
             classes,
             entities: Vec::new(),

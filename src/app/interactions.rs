@@ -27,7 +27,7 @@ pub(super) struct Actor {
 #[derive(Resource)]
 pub(super) struct Interactions {
     pub catalog: Arc<Catalog>,
-    limits: Arc<crate::assets::inventory_item::ReadableLimits>,
+    pub(super) limits: Arc<crate::assets::inventory_item::ReadableLimits>,
     pub sensor: entities::usable::Sensor,
     pub actors: Vec<Actor>,
     pub readable: Vec<entities::usable::ReadableBinding>,
@@ -41,6 +41,7 @@ pub(super) struct Interactions {
     parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(SelectionKind, usize, usize)>,
+    grapple_prompt:Option<(crate::gameplay::entity_lifetime::EntityId,crate::gameplay::pickable_component::CheckedComponent)>,
     pending_read: Option<ReadResult>,
     pending_activation: Option<(
         ReadResult,
@@ -239,6 +240,7 @@ impl Interactions {
             parent,
             pending,
             selected: None,
+            grapple_prompt:None,
             pending_read: None,
             physics_queries: Default::default(),
             pending_pickup: None,
@@ -284,6 +286,20 @@ impl Interactions {
             path: item,
             item: declaration,
         });
+    }
+
+    ///841500/83fe70 hand the actual same checked Pickable toREAD_NOTE52.
+    ///The existing read owner retains the descriptor and owns its UI/inventory
+    ///acknowledgements; no second pickup or source read is created.
+    pub(in crate::app) fn request_loot_readable(&mut self,live:&crate::gameplay::entity_lifetime::LiveEntities,
+        id:crate::gameplay::entity_lifetime::EntityId,reference:crate::gameplay::pickable_component::CheckedComponent,
+        item:Arc<crate::assets::inventory_item::PickableItem>)->Result<bool,String> {
+        let (name,_)=live.get(id).ok_or("Loot47 readable target generation is stale")?;
+        if self.acquisitions_closed.load(Ordering::Acquire)||self.pending_read.is_some()||self.pending_activation.is_some(){return Ok(false);}
+        if item.note_type==-1{return Err("Loot47 READ_NOTE target has no authored note type".into());}
+        if item.readable.is_none(){return Err("Loot47 READ_NOTE item has no canonical presentation".into());}
+        self.pending_read=Some(ReadResult{entity:name.to_owned(),identity:(id,reference),path:item.path.to_string(),item});
+        Ok(true)
     }
 
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> {
@@ -429,6 +445,45 @@ fn interaction_type(name: Option<&str>) -> i32 {
         "ARK_UI_INTERACTION_BUSY_TALK" => 15,
         _ => -1,
     }
+}
+
+fn pickable_prompt(live:&crate::gameplay::entity_lifetime::LiveEntities,id:crate::gameplay::entity_lifetime::EntityId,
+    pickable:&crate::gameplay::pickable_component::PickableComponent)->Option<super::interaction_focus::InteractionPrompt> {
+    let name = pickable.item.as_ref().map(|item| &item.name)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(&pickable.definition.interaction_labels[0]);
+    Some(super::interaction_focus::InteractionPrompt {
+                        entity: live.get(id)?.0.to_owned(),
+                        name: name.clone(),
+                        usage_text: pickable.definition.interaction_labels[1].clone(),
+                        interaction_type: pickable.definition.pickup_interaction.icon,
+                        binding: "<GBA_INTERACT>".to_owned(),
+                        name_postfix: String::new(),
+                        hold: false,
+                        locked: pickable
+                            .definition
+                            .pickup_interaction
+                            .has(crate::gameplay::interaction_definition::LOCKED),
+                        player_state: pickable.definition.interaction_state.clone(),
+                    })
+}
+
+fn grapple_prompt(scene:&super::physics_scene::PhysicsScene,live:&crate::gameplay::entity_lifetime::LiveEntities,
+    player:&crate::gameplay::player::Player,models:Option<&super::world_models::WorldModels>,sources:&super::shadow_updates::ModelShadowSources,
+    placements:&super::RenderSourcePlacements)->Result<Option<(crate::gameplay::entity_lifetime::EntityId,crate::gameplay::pickable_component::CheckedComponent)>,String> {
+    let Some((candidates,cosine))=player.grapple_catch_prompt_candidates() else{return Ok(None);};
+    if candidates[0].is_some(){return Err("GrappleCatch ragdoll HUD requires the actual NPCInteraction owner".into());}
+    let (eye,axis)=player.published_camera_frame();
+    for id in candidates.into_iter().flatten() {
+        if live.get(id).is_none(){continue;}
+        if !scene.grapple_pickup_available(live,player,id)?{continue;}
+        let Some(frame)=scene.entity_frame(live,id)? else{continue;};
+        let bounds=super::world_models::entity_bounds_from_parts(live,id,models,Some(sources),placements)?.unwrap_or([frame.position;2]);
+        if !crate::gameplay::player::grapple_catch::in_cone(bounds,eye,axis.x_axis,cosine){continue;}
+        let Some((reference,_))=scene.grapple_pickable(live,id)? else{continue;};
+        return Ok(Some((id,reference)));
+    }
+    Ok(None)
 }
 
 /// Consume the five sorted sensor casts in the order used by 1403b8430.
@@ -856,7 +911,7 @@ pub(super) fn focus_and_interact(
                     continue;
                 };
                 let carrying = pickable.definition.hold.is_some();
-                if (!carrying && pickable.item.as_ref().is_none_or(|item| item.type_number != 4))
+                if (!carrying && pickable.item.as_ref().is_none_or(|item|item.note_type==-1&&!super::pickups::inventory_family_available(item,player)))
                     || !models.interaction_visible(id)
                 {
                     continue;
@@ -999,7 +1054,19 @@ pub(super) fn focus_and_interact(
         }
     }
     interactions.physics_queries = physics_queries;
-    if selected != interactions.selected {
+    let catch_prompt=physics.as_deref().zip(live.as_deref()).zip(player.as_deref().and_then(|state|state.player.as_ref()))
+        .map(|((scene,live),player)|grapple_prompt(scene,live,player,models.as_deref(),&sources,&placements)).transpose();
+    let catch_prompt=match catch_prompt {Ok(value)=>value.flatten(),Err(error)=>{warn!("Grapple catch prompt: {error}");None}};
+    if let Some((id,reference))=catch_prompt {
+        //Immutable interaction metadata belongs to this actual component
+        //generation. A stable catch hint does no per-frame string allocation.
+        if interactions.grapple_prompt!=Some((id,reference))||focused.current.is_none() {
+            focused.current=physics.as_deref().zip(live.as_deref()).and_then(|(scene,live)|
+                scene.grapple_pickable(live,id).ok().flatten().and_then(|(_,pickable)|pickable_prompt(live,id,pickable)));
+        }
+        interactions.grapple_prompt=Some((id,reference));
+        selected=None;interactions.selected=None;
+    } else if interactions.grapple_prompt.take().is_some() || selected != interactions.selected {
         let prompt = selected
             .map(|(kind, index, step)| {
                 if let SelectionKind::Pickup(id) | SelectionKind::CarryLive(id) = kind {
@@ -1009,23 +1076,7 @@ pub(super) fn focus_and_interact(
                     let Ok(Some((_, pickable))) = scene.interaction_pickable(live, id) else {
                         return None;
                     };
-                    let name = pickable.item.as_ref().map(|item| &item.name)
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or(&pickable.definition.interaction_labels[0]);
-                    return Some(super::interaction_focus::InteractionPrompt {
-                        entity: live.get(id)?.0.to_owned(),
-                        name: name.clone(),
-                        usage_text: pickable.definition.interaction_labels[1].clone(),
-                        interaction_type: pickable.definition.pickup_interaction.icon,
-                        binding: "<GBA_INTERACT>".to_owned(),
-                        name_postfix: String::new(),
-                        hold: false,
-                        locked: pickable
-                            .definition
-                            .pickup_interaction
-                            .has(crate::gameplay::interaction_definition::LOCKED),
-                        player_state: pickable.definition.interaction_state.clone(),
-                    });
+                    return pickable_prompt(live,id,pickable);
                 }
                 if kind == SelectionKind::Carry {
                     let binding = &interactions.carrying[index];
@@ -1118,7 +1169,8 @@ pub(super) fn focus_and_interact(
                                 entity: id,
                                 reference,
                                 definition: pickable.definition.clone(),
-                                item: item.clone(),
+                                item: Some(item.clone()),
+                                hold:None,
                                 maximum: interactions.limits.maximum(&item.path),
                                 phase: 0,
                                 admitted: 0,
@@ -1210,8 +1262,8 @@ fn read_is_live(
 ) -> bool {
     physics.zip(live).is_some_and(|(scene, live)| {
         scene
-            .readable_identity(&read.entity, live)
-            .is_ok_and(|current| current == Some(read.identity))
+            .grapple_pickable(live,read.identity.0)
+            .is_ok_and(|current|current.is_some_and(|(reference,_)|reference==read.identity.1))
     })
 }
 

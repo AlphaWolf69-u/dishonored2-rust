@@ -16,12 +16,12 @@ impl Cue {
 ///783940 initializes the real arkMovable members before4e65a0 installs
 ///arkGrenade's concrete vtable. The managed link is distinct from owner+ac.
 pub(in crate::app) struct Movable {
-    #[allow(dead_code)]
     linked_entity: Option<EntityId>,
     picked_up: bool,
 }
 impl Movable {
     pub(in crate::app) fn new() -> Self { Self { linked_entity: None, picked_up: false } }
+    pub(in crate::app) fn linked_entity(&self)->Option<EntityId>{self.linked_entity}
     pub(in crate::app) fn picked_up(&mut self, successful: bool) -> bool {
         if successful { self.picked_up = true; }
         self.picked_up

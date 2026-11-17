@@ -26,6 +26,7 @@ struct EntityClock {
     /// idEntity+2b8, constructor874c50 initializes the explicit time-space
     /// attachment separately from the actor's ordinary binding parent.
     time_parent: Option<EntityId>,
+    time_children: Vec<EntityId>,
 }
 impl EntityClock {
     ///80f040 advances only the root countdown here. The application publishes
@@ -112,6 +113,7 @@ struct LoadedClock {
     player_override: Option<f32>,
     player_timespace: u32,
     player_clock_offset: f64,
+    player_time_children: Vec<EntityId>,
     entity_clocks: HashMap<EntityId, EntityClock>,
     entity_overrides: Vec<EntityId>,
     /// Actual87ce70/87d050 notifications awaiting the application owners.
@@ -367,6 +369,7 @@ impl ClockRuntime {
             remaining: None,
             managed_override: false,
             time_parent: None,
+            time_children: Vec::new(),
         });
         Ok(())
     }
@@ -380,6 +383,24 @@ impl ClockRuntime {
     }
     pub fn unregister_entity_time(&mut self, entity: EntityId) {
         if let Ok(state) = &mut self.0 {
+            //Final generation destruction releases both attachment links.
+            //Surviving children must first pass the application's80e050
+            //detach path, while actual binding/Scene owners still exist.
+            let parent=state.entity_clocks.get(&entity).and_then(|record|record.time_parent);
+            if let Some(parent)=parent {
+                if state.player_entity==Some(parent) {
+                    if let Some(index)=state.player_time_children.iter().position(|child|*child==entity) {state.player_time_children.swap_remove(index);}
+                } else if let Some(record)=state.entity_clocks.get_mut(&parent) {
+                    if let Some(index)=record.time_children.iter().position(|child|*child==entity) {record.time_children.swap_remove(index);}
+                }
+            }
+            let children=if state.player_entity==Some(entity) {std::mem::take(&mut state.player_time_children)}
+                else {state.entity_clocks.get_mut(&entity).map(|record|std::mem::take(&mut record.time_children)).unwrap_or_default()};
+            for child in children {
+                if let Some(record)=state.entity_clocks.get_mut(&child) {
+                    if record.time_parent==Some(entity) {record.time_parent=None;}
+                }
+            }
             if state.player_entity == Some(entity) {
                 state.player_entity = None;
                 state.player_override = None;
@@ -387,6 +408,7 @@ impl ClockRuntime {
                 //receives the same source constructor selector/offset zero.
                 state.player_timespace = 0;
                 state.player_clock_offset = 0.;
+                state.player_time_children.clear();
             }
             state.entity_clocks.remove(&entity);
             state.entity_overrides.retain(|id| *id != entity);
@@ -453,6 +475,46 @@ impl ClockRuntime {
             .get(&entity)
             .ok_or("entity clock root is not registered")?
             .time_parent)
+    }
+    pub(crate) fn is_player_entity(&self, entity: EntityId) -> bool {
+        self.0.as_ref().is_ok_and(|state| state.player_entity == Some(entity))
+    }
+    pub(crate) fn entity_time_children(&self, entity: EntityId) -> Result<&[EntityId], &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        if state.player_entity == Some(entity) { return Ok(&state.player_time_children); }
+        Ok(&state.entity_clocks.get(&entity).ok_or("time attachment owner is not registered")?.time_children)
+    }
+    ///80cd60 changes only explicit+2b8/+2c0 links, never selectors/offsets.
+    pub(crate) fn attach_entity_time(&mut self, parent: EntityId, child: EntityId) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|error|error.clone())?;
+        if state.player_entity == Some(child) { return Err("explicit Player time-parent admission is not hosted".into()); }
+        if state.entity_clocks.get(&child).ok_or("time attachment child is not registered")?.time_parent.is_some() {
+            return Err("time attachment child must detach its previous parent".into());
+        }
+        let children = if state.player_entity == Some(parent) { &mut state.player_time_children }
+            else { &mut state.entity_clocks.get_mut(&parent).ok_or("time attachment parent is not registered")?.time_children };
+        if !children.contains(&child) {
+            children.try_reserve(1).map_err(|error| format!("time attachment children: {error}"))?;
+            children.push(child);
+        }
+        state.entity_clocks.get_mut(&child).ok_or("time attachment child disappeared")?.time_parent = Some(parent);
+        Ok(())
+    }
+    ///80e050's raw unlink. The application computes its actual old/new roots
+    ///and transfers the selector1 countdown before acknowledging the operation.
+    pub(crate) fn unlink_entity_time(&mut self, child: EntityId) -> Result<Option<EntityId>, String> {
+        let state = self.0.as_mut().map_err(|error|error.clone())?;
+        if state.player_entity == Some(child) { return Ok(None); }
+        let Some(record) = state.entity_clocks.get_mut(&child) else { return Ok(None); };
+        let Some(parent) = record.time_parent.take() else { return Ok(None); };
+        //80e050 uses7b8270's first-match swap removal, preserving its exact
+        //subsequent80f620 attachment traversal order.
+        if state.player_entity == Some(parent) {
+            if let Some(index)=state.player_time_children.iter().position(|id|*id==child) {state.player_time_children.swap_remove(index);}
+        } else if let Some(record) = state.entity_clocks.get_mut(&parent) {
+            if let Some(index)=record.time_children.iter().position(|id|*id==child) {record.time_children.swap_remove(index);}
+        }
+        Ok(Some(parent))
     }
     pub(crate) fn entity_transition_front(
         &mut self,
@@ -598,6 +660,7 @@ impl ClockRuntime {
         entity: EntityId,
         space: u32,
         children: &[EntityId],
+        attached_roots: &[EntityId],
     ) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|e| e.clone())?;
         let work = state
@@ -612,9 +675,11 @@ impl ClockRuntime {
             return Err("entity time completion differs".into());
         }
         work.pending
-            .try_reserve(children.len())
+            .try_reserve(children.len() + attached_roots.len())
             .map_err(|error| format!("entity time publication: {error}"))?;
-        //80f620 visits the actual ordered actor-child list depth first.
+        //80f620 visits actor children before explicit attachments, whose
+        //actual877500 binding roots are supplied by the LiveEntities owner.
+        work.pending.extend(attached_roots.iter().rev().copied());
         work.pending.extend(children.iter().rev().copied());
         work.current = None;
         Ok(())
@@ -697,6 +762,7 @@ impl FromWorld for ClockRuntime {
                 player_override: None,
                 player_timespace: 0,
                 player_clock_offset: 0.0,
+                player_time_children: Vec::new(),
                 entity_clocks: HashMap::new(),
                 entity_overrides: Vec::new(),
                 entity_transitions: VecDeque::new(),

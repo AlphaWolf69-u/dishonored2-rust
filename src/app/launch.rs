@@ -451,6 +451,9 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::weapon_throwing::prepare,
                 super::carrying_resources::prepare,
                 super::power_world::update,
+                gameplay_system(super::physics_scene::occluded_sensor::resolve_pending)
+                    .run_if(super::pause_menu::game_not_paused)
+                    .run_if(super::loading_screen::is_playing),
                 super::power_execution::before_frame,
               ).chain(),
               (

@@ -369,6 +369,7 @@ struct PullRange {
     minimum_z: f32, maximum_z: f32, vertical_impulse: f32,
     minimum_angular: f32, maximum_angular: f32,
 }
+#[derive(Clone)]
 pub struct PullSettings { ranges: [PullRange; 3] }
 impl PullSettings {
     pub fn read(fields: &[(String, Value)]) -> Result<Self, String> {

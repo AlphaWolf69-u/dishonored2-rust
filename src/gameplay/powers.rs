@@ -8,6 +8,7 @@ pub mod blast;
 pub mod action;
 pub mod world_effects;
 pub mod traversal;
+pub mod far_reach;
 
 #[derive(Clone, Debug)]
 pub struct Settings {

@@ -421,7 +421,14 @@ impl PauseMenu {
     pub(super) fn queue_pickup(&self, item: Arc<crate::assets::inventory_item::PickableItem>, count: u32) -> Result<(), String> {
         if !self.hud_started || self.hud_failed { return Ok(()); }
         self.hud_notifications.lock().map_err(|_| "HUD pickup mailbox poisoned")?
-            .pending.push_back(super::hud_movie::notifications::Pickup { item, count });
+            .pending.push_back(super::hud_movie::notifications::Pickup::Item { item, count });
+        Ok(())
+    }
+    ///6733c0 uses HUD-owned currency labels/image, not an inventory item.
+    pub(super) fn queue_currency(&self,count:i32)->Result<(),String> {
+        if !self.hud_started || self.hud_failed {return Ok(());}
+        self.hud_notifications.lock().map_err(|_|"HUD pickup mailbox poisoned")?
+            .pending.push_back(super::hud_movie::notifications::Pickup::Currency {count});
         Ok(())
     }
     pub(super) fn power_wheel_command(&self, command: super::power_wheel_movie::Command) -> Result<(), String> {

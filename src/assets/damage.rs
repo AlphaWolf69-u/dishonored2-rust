@@ -11,6 +11,11 @@ pub struct Declaration {
     pub damage_type: DamageType,
 }
 impl Declaration {
+    ///DAT14231f390's code-resource record14231f380 names141c5d380.
+    ///71a140 retains this real declaration when signed pickup health is negative.
+    pub fn acquire_inventory_health(catalog: &Catalog) -> Result<Arc<Self>, String> {
+        Self::acquire(catalog, "code_referenced/damage/generic_no_reaction_damage.damage")
+    }
     pub fn read(fields: &[(String, Value)]) -> Result<Self, String> {
         Ok(Self { minimum: number(fields, "m_minDamage", 0.0)?, maximum: number(fields, "m_maxDamage", 0.0)?, damage_type: DamageType::read(atom(fields, "m_damageType").unwrap_or("0"))? })
     }

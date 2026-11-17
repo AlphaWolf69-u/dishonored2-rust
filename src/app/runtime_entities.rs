@@ -227,6 +227,35 @@ pub(super) fn picked_up_builtin(world: &mut World, id: EntityId, successful: boo
         super::model_motion::set_entity_shadow_casting(world, live, id, false)
     })
 }
+///43f9b0 reads actual arkMovable+360, not idEntity's bind parent or culprit.
+pub(in crate::app) fn movable_linked_entity(world:&World,id:EntityId)->Result<Option<EntityId>,String> {
+    let live=world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+        .ok_or("Movable link requires the actual identity owner")?;
+    let (_,class)=live.get(id).ok_or("Movable link target generation is stale")?;
+    let owner=world.get_resource::<RuntimeEntities>().ok_or("Movable constructor owner absent")?;
+    let types=owner.catalog.component_types.lock().map_err(|_|"Movable class metadata poisoned")?
+        .clone().ok_or("Movable executable class metadata absent")?;
+    let metadata=types.classes().metadata(class).ok_or("Movable class metadata absent")?;
+    let name=types.classes().name_text(metadata.name).ok_or("Movable class name absent")?;
+    if !matches!(name,b"arkMovable"|b"arkGrenade") {
+        return Err(format!("Movable link constructor is not hosted for {}",String::from_utf8_lossy(name)));
+    }
+    if let Some(definition)=owner.actors.get(&id).and_then(|actor|actor.definition.as_ref()) {
+        if definition.class_index!=class || definition.class.as_bytes()!=name {
+            return Err("Movable constructor and live class differ".into());
+        }
+        if owner.actors[&id].movable.is_none() {
+            return Err("runtime Movable constructor payload absent".into());
+        }
+    }
+    let link=owner.actors.get(&id).and_then(|actor|actor.movable.as_ref())
+        .map(|state|state.linked_entity()).or_else(||super::equipment_identity::movable_linked_entity(world,id));
+    //Placed headers project ctor state on demand.783940 sets the managed
+    //link NULL;4e65a0 preserves it. No admitted class setter7839c0 currently
+    //changes that member. A future setter must retain it in this same journal.
+    let linked=link.flatten();
+    Ok(linked.filter(|linked|live.get(*linked).is_some()))
+}
 pub(super) fn bounds(world: &World, id: EntityId) -> Result<Option<[[f32; 3]; 2]>, String> {
     if let Some(bounds) = super::world_models::bounds(world, id) {
         return Ok(Some(bounds));
@@ -1459,10 +1488,8 @@ fn finish_retirement(world: &mut World, id: EntityId, mode: RetireMode) -> Resul
         return Ok(false);
     }
     if !alive && (!super::world_models::retired_entity(world,id) || !super::projectiles::retired(world,id)) { return Ok(false); }
-    if let Some(mut clock) =
-        world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
-    {
-        clock.unregister_entity_time(id);
+    if world.contains_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>() {
+        super::time_sync::retire_entity_time(world, id)?;
     }
     with_scene(world, |_, scene, live, _| {
         if live.get(id).is_some() {

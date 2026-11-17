@@ -59,6 +59,7 @@ impl StateId {
     pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
+    pub const GRAPPLE_CATCH: Self = Self(84);
     pub const READ_NOTE: Self = Self(52);
     pub const LOOT_OBJECT: Self = Self(47);
     pub const GRAB_OBJECT: Self = Self(48);
@@ -463,6 +464,7 @@ pub enum Kind {
     PowerWheel,
     UseHeart(Arc<use_heart::Declaration>),
     PlayHeartBark(Arc<play_heart_bark::Declaration>),
+    GrappleCatch(super::grapple_catch::Declaration),
     LootObject(Arc<super::carrying::GrabDecl>),
     GrabObject(Arc<super::carrying::GrabDecl>),
     HoldObject(Arc<super::carrying::HoldDecl>),
@@ -588,6 +590,10 @@ impl StateDecl {
                 (StateId::USE_HEART,0.)
             }
             Kind::PlayHeartBark(_) => {flags.primary=false;flags.body_parts=0;flags.locked_body_parts=0;flags.exclusive_body_parts=0;(StateId::PLAY_HEART_BARK,0.)}
+            Kind::GrappleCatch(_) => {
+                flags=StateFlags{primary:false,body_parts:0,locked_body_parts:0,exclusive_body_parts:0,allow_self:true,..flags};
+                (StateId::GRAPPLE_CATCH,0.)
+            }
             Kind::LootObject(ref grab) | Kind::GrabObject(ref grab) => {
                 flags = StateFlags { primary:false,body_parts:8,locked_body_parts:8,exclusive_body_parts:0,
                     allow_camera_out_of_shape:true,..flags };
@@ -738,13 +744,13 @@ impl MotionRequests {
 }
 
 /// arkCpntPlayerBody locomotion stance (body slot 7) and its transition
-/// durations (FUN_140770e90 → FUN_140771270).
+/// durations (FUN_140770e90 Р В Р вЂ Р Р†Р вЂљР’В Р Р†Р вЂљРІвЂћСћ FUN_140771270).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocoStances {
     pub current: Option<String>,
     /// Body slot 8, the head-bob stance.
     pub bob: Option<String>,
-    /// (from, to) → duration in seconds.
+    /// (from, to) Р В Р вЂ Р Р†Р вЂљР’В Р Р†Р вЂљРІвЂћСћ duration in seconds.
     pub transitions: HashMap<(String, String), f32>,
     /// body+0xd98 m_maxSpeeds {back, strafe, fwd, strafe} (1e30 unset).
     pub max_speeds: [f32; 4],
@@ -1194,10 +1200,11 @@ pub struct StateMachine {
     wheel_logic_active: bool,
     wheel_requested: bool,
     world_pickup: super::world_pickup::Runtime,
+    pub(super) grapple_catch:super::grapple_catch::Runtime,
     slash_rules: Option<super::slash_rules::Runtime>,
 }
 
-fn cos_snap(degrees: f32) -> f32 {
+pub(crate) fn cos_snap(degrees: f32) -> f32 {
     use std::f32::consts::TAU;
     let mut angle = degrees * 0.017453292;
     if angle < 0.0 || angle >= TAU {
@@ -1206,7 +1213,7 @@ fn cos_snap(degrees: f32) -> f32 {
     angle.cos()
 }
 
-/// acos clamped as the decompiled callers do (π at ≤ -1, 0 at ≥ 1).
+/// acos clamped as the decompiled callers do (Р В РЎСџР В РІР‚С™ at Р В Р вЂ Р Р†Р вЂљР’В°Р вЂ™Р’В¤ -1, 0 at Р В Р вЂ Р Р†Р вЂљР’В°Р СћРЎвЂ™ 1).
 fn slope_of(z: f32) -> f32 {
     if z <= -1.0 {
         std::f32::consts::PI
@@ -1224,7 +1231,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), slash_rules: None }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
     }
 
     pub(super) fn world_pickup_busy(&self)->bool{self.world_pickup.busy()}
@@ -1243,7 +1250,8 @@ impl StateMachine {
     pub(super) fn reject_world_pickup(&mut self,id:crate::gameplay::entity_lifetime::EntityId)->Result<(),String>{
         self.world_pickup.reject_active(id)?;self.quit(StateId::LOOT_OBJECT);Ok(())
     }
-    pub(super) fn finish_world_pickup(&mut self){self.world_pickup.reject();self.offer_world_pickup();}
+    pub(super) fn finish_world_pickup(&mut self){self.world_pickup.reject();self.world_pickup.offer_from_exit();self.quit(StateId::LOOT_OBJECT);}
+    pub(super) fn world_pickup_from_exit(&self)->bool{self.world_pickup.offered_from_exit}
     pub(super) fn world_pickup_allowed(&self,id:StateId,parts:&super::body_parts::BodyParts,now:f64)->Option<bool>{
         let Some(state)=self.state(id) else{return Some(false)};
         let Kind::LootObject(declaration)=&state.decl.kind else{return Some(false)};
@@ -1333,7 +1341,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), slash_rules: None }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None }
     }
 
     pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
@@ -1550,7 +1558,7 @@ impl StateMachine {
         }
     }
 
-    /// FUN_140854190 → FUN_140802a20.
+    /// FUN_140854190 Р В Р вЂ Р Р†Р вЂљР’В Р Р†Р вЂљРІвЂћСћ FUN_140802a20.
     pub fn quit(&mut self, id: StateId) {
         self.queue.push(Command::Quit(id));
     }
@@ -1614,6 +1622,7 @@ impl StateMachine {
             Kind::PowerWheel => self.wheel_movie_ready,
             Kind::UseHeart(_) => true,
             Kind::PlayHeartBark(d) => frame.heart_entity.is_some() && !frame.heart_bark_playing && self.states[index].heart_bark.can_activate(frame.action_time,&d.action),
+            Kind::GrappleCatch(_) => true,
             Kind::LootObject(decl) => self.world_pickup.pending() && self.world_pickup.action.can_activate(frame.action_time,&decl.action),
             Kind::GrabObject(decl) => frame.carrying.pending() && frame.carrying.grab_state()==Some(decl.id) && frame.carrying.release.can_activate(frame.action_time,&decl.action),
             Kind::HoldObject(_) => frame.carrying.held.as_ref().is_some_and(|target|target.hold_state()==state.decl.id),
@@ -2437,6 +2446,7 @@ impl StateMachine {
             *frame.desired_legs += 1;
         }
         match &decl.kind {
+            Kind::GrappleCatch(declaration)=>{self.grapple_catch.activate(declaration);return;}
             Kind::PlayHeartBark(declaration) => {self.activate_heart_bark(index,declaration,frame);return;}
             Kind::LootObject(declaration) => {
                 self.world_pickup.activate();
@@ -2808,7 +2818,7 @@ impl StateMachine {
             // Activated above, without the navigation base.
             Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::PowerWheel | Kind::UseHeart(_) | Kind::PlayHeartBark(_) | Kind::UsePower(_) | Kind::Blinking | Kind::Grapple(_) | Kind::Dead(_)
                 | Kind::FireWeapon(_) | Kind::ThrowWeapon | Kind::Recoil(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon
-                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) => {}
+                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) | Kind::GrappleCatch(_) => {}
         }
     }
 
@@ -2880,6 +2890,7 @@ impl StateMachine {
             *frame.desired_legs -= 1;
         }
         match self.states[index].decl.kind.clone() {
+            Kind::GrappleCatch(_)=>{self.grapple_catch.deactivate();return;}
             Kind::Recoil(_) => {
                 self.states[index].recoil.action.deactivate(frame.action_time);
                 self.states[index].recoil.selection=None;
@@ -2917,7 +2928,7 @@ impl StateMachine {
                 return;
             }
             Kind::LootObject(_) => {
-                self.world_pickup.offer();
+                self.world_pickup.offer_from_exit();
                 self.world_pickup.action.deactivate(frame.action_time);
                 return;
             }
@@ -3155,6 +3166,7 @@ impl StateMachine {
         let kind = self.states[index].decl.kind.clone();
         let id = self.states[index].decl.id;
         match kind {
+            Kind::GrappleCatch(declaration)=>{self.grapple_catch.update(frame.dt,frame.controller.pressed(declaration.action),frame.camera.eye,frame.camera_axis.x_axis);}
             Kind::LootObject(declaration) => {
                 use super::combat::ActionStep;
                 let action=frame.controller.mapping.iter().find(|mapping|mapping.state==id).map_or(0,|mapping|mapping.action);

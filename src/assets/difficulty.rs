@@ -33,6 +33,8 @@ pub struct Definition {
     pub mana_potion_factors: [f32; 3],
     pub mana_heal_factors: [f32; 3],
     pub health_regen_amount_scale: f32,
+    ///647ee0: declaration+174, indexed by the active ammo-quantity level.
+    pub ammo_quantity_offsets: [i32; 3],
     // Host: keep declaration generation leases while direct contiguous
     // runtime preset tables avoid an extra pointer lookup per value read.
     pub(crate) preset_leases: Vec<Arc<Preset>>,

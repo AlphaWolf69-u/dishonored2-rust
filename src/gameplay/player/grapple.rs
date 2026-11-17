@@ -327,6 +327,13 @@ pub struct TargetHit {
     pub distance: f32,
     pub through_surface: bool,
 }
+#[derive(Clone, Copy)]
+pub struct AcquiredGeometry {
+    pub hit: Option<TargetHit>,
+    pub origin: Vec3,
+    pub direction: Vec3,
+    pub length: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct GeometryTarget {
@@ -359,6 +366,8 @@ pub struct PreparedSensor {
     samples: Vec<Vec3>,
 }
 impl PreparedSensor {
+    pub fn shape(&self, index: usize) -> &[Vec3] { &self.shapes[index] }
+    pub fn samples(&self) -> &[Vec3] { &self.samples }
     pub fn new(decl: SensorDecl) -> Self {
         let shapes = decl.shapes();
         let mut samples = vec![Vec3::X];
@@ -769,17 +778,39 @@ impl Sensor {
         sneaking: bool,
         crouching: bool,
     ) -> Option<GeometryTarget> {
-        let vertical_range = vertical_range
+        self.geometry_target_with_acquisition(world, physics, eye, view, horizontal_range,
+            vertical_range, snapping, sneaking, crouching, None)
+    }
+    ///3b49c0 consumes the previous submission phase's witnesses before the
+    ///same safe-position/hole/ledge probes. Do not recast the primary sweep.
+    pub fn geometry_target_from_hit(
+        &mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics,
+        eye: Vec3, view: Mat3, horizontal_range: f32, vertical_range: f32,
+        snapping: bool, sneaking: bool, crouching: bool, acquired: AcquiredGeometry,
+    ) -> Option<GeometryTarget> {
+        self.geometry_target_with_acquisition(world, physics, eye, view, horizontal_range,
+            vertical_range, snapping, sneaking, crouching, Some(acquired))
+    }
+    fn geometry_target_with_acquisition(
+        &mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics,
+        eye: Vec3, view: Mat3, horizontal_range: f32, vertical_range: f32,
+        snapping: bool, sneaking: bool, crouching: bool,
+        acquired: Option<AcquiredGeometry>,
+    ) -> Option<GeometryTarget> {
+        let vertical_range = if acquired.is_some() {vertical_range} else {vertical_range
             + if view.x_axis.z > 0.0 {
                 (physics.posture_settings(0).height - physics.current_settings().height).max(0.0)
             } else {
                 0.0
-            };
-        let (origin, direction, length) =
-            Self::query_segment(physics, eye, view, horizontal_range, vertical_range);
-        let mut target = if let Some(target) =
-            self.sampled_target(world, physics, origin, direction, length, snapping)
-        {
+            }};
+        let (origin, direction, length) = acquired.map_or_else(
+            || Self::query_segment(physics, eye, view, horizontal_range, vertical_range),
+            |acquired| (acquired.origin, acquired.direction, acquired.length));
+        let acquired = match acquired {
+            Some(acquired) => acquired.hit,
+            None => self.sampled_target(world, physics, origin, direction, length, snapping),
+        };
+        let mut target = if let Some(target) = acquired {
             target
         } else {
             if !snapping {

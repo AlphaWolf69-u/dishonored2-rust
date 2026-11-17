@@ -473,7 +473,9 @@ pub(super) fn poll_owned(
                     if let Some(mut clock) = world
                         .get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
                     {
-                        clock.unregister_entity_time(entity.shared);
+                        super::super::time_sync::retire_entity_time_with_owners(
+                            host.scene, host.live, &mut clock, entity.shared,
+                        )?;
                     }
                 }
             }

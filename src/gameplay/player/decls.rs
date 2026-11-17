@@ -556,7 +556,7 @@ enum SupportedDefaultState {
     Dead, ReadNote, PowerWheel, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
     FireWeapon, ThrowWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Recoil, Block,
-    EquipChange, DrawEquipment, Undraw, GrabObject, HoldObject, ReleaseObject,
+    EquipChange, DrawEquipment, Undraw, GrabObject, HoldObject, ReleaseObject, GrappleCatch,
 }
 
 fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
@@ -566,6 +566,7 @@ fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
         "playerstatepowerwheel" => SupportedDefaultState::PowerWheel,
         "playerstateuseheart" => SupportedDefaultState::UseHeart,
         "playerstateplayheartbark" => SupportedDefaultState::PlayHeartBark,
+        "playerstategrabgrappledentity"=>SupportedDefaultState::GrappleCatch,
         "playerstatelootobject" => SupportedDefaultState::GrabObject,
         "playerstateholdobject" => SupportedDefaultState::HoldObject,
         "playerstatereleaseobject" => SupportedDefaultState::ReleaseObject,
@@ -627,6 +628,12 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::PowerWheel if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::PowerWheel)) => Kind::PowerWheel,
             SupportedDefaultState::UseHeart if !result.iter().any(|s:&StateDecl|matches!(s.kind,Kind::UseHeart(_))) => Kind::UseHeart(std::sync::Arc::new(super::states::use_heart::Declaration::read(fields)?)),
             SupportedDefaultState::PlayHeartBark if !result.iter().any(|s:&StateDecl|matches!(s.kind,Kind::PlayHeartBark(_))) => Kind::PlayHeartBark(std::sync::Arc::new(super::states::play_heart_bark::Declaration::read(fields)?)),
+            SupportedDefaultState::GrappleCatch => Kind::GrappleCatch(super::grapple_catch::Declaration{
+                action:action(fields,"m_action",22)?,ragdoll_distance:number(fields,"m_ragdollMaxDistance",3.)?,
+                movable_distance:number(fields,"m_movableMaxDistance",1.)?,maximum_angle:number(fields,"m_maxAngle",45.)?,
+                no_collision_duration:seconds(fields,"m_noCollisionDuration",f32::from_bits(0x3d888889))?,
+                occlusion_layers:layer_mask(fields,"m_occlusionLayers",0x802b)?,
+            }),
             SupportedDefaultState::GrabObject => {
                 if !matches!(atom(fields,"m_id").and_then(state_id).unwrap_or(StateId(47)),StateId(47)|StateId::GRAB_OBJECT){continue;}
                 let declaration=std::sync::Arc::new(super::carrying::GrabDecl::read(fields)?);
@@ -809,7 +816,7 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             _ => continue,
         };
         let mut decl = StateDecl::class_default(kind);
-        if matches!(decl.kind,Kind::LootObject(_)|Kind::GrabObject(_)|Kind::HoldObject(_)|Kind::ReleaseObject(_)) {
+        if matches!(decl.kind,Kind::LootObject(_)|Kind::GrabObject(_)|Kind::HoldObject(_)|Kind::ReleaseObject(_)|Kind::GrappleCatch(_)) {
             decl.flags.allow_self=boolean(fields,"m_allowSelf",decl.flags.allow_self)?;
             decl.flags.quit_self=boolean(fields,"m_quitSelf",decl.flags.quit_self)?;
             decl.flags.cancelable=boolean(fields,"m_cancelable",decl.flags.cancelable)?;
@@ -1007,7 +1014,7 @@ pub fn loco_idle_blend(locomotion: &Fields) -> Result<[f32; 2], String> {
         number(locomotion, "m_idleBlendOut", f32::from_bits(0x3e99_999a))?])
 }
 
-/// `m_stances` with their speed sets (FUN_1407030a0 → FUN_140249400) and
+/// `m_stances` with their speed sets (FUN_1407030a0 РІвЂ вЂ™ FUN_140249400) and
 /// the arms' clips for their equip states `arm_equip` (left, right).
 pub fn loco_stances(locomotion: &Fields, arm_equip: [&str; 2]) -> Result<Vec<(String, Vec<LocoSpeedDecl>)>, String> {
     let speed_list: Vec<String> = scope(locomotion, "m_speedList")

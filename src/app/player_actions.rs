@@ -906,6 +906,8 @@ impl PlayerActions {
         player: &mut Player,
         clock: &mut crate::gameplay::game_clock_runtime::ClockRuntime,
         effects: &mut super::usable_effects::EffectRequests,
+        scene: &mut super::physics_scene::PhysicsScene,
+        live: &crate::gameplay::entity_lifetime::LiveEntities,
     ) -> Result<(), String> {
         if !self.needs_preparation() {
             return Ok(());
@@ -915,6 +917,7 @@ impl PlayerActions {
             owner.cleanup = false;
         }
         if let Some(owner) = self.far_reach.as_mut().filter(|owner| owner.cleanup) {
+            owner.cancel_acquisition(scene, live, player)?;
             owner.retire(player);
             owner.cleanup = false;
         }
@@ -923,6 +926,7 @@ impl PlayerActions {
             owner.cleanup = false;
         }
         for owner in &mut self.retiring_far_reaches {
+            owner.cancel_acquisition(scene, live, player)?;
             owner.retire(player);
             owner.cleanup = false;
         }
@@ -944,6 +948,14 @@ impl PlayerActions {
                 self.cached_far_reaches
                     .insert(owner.generation.clone(), owner);
             }
+        }
+        Ok(())
+    }
+    fn retire_far_reach_queries(&mut self, scene: &mut super::physics_scene::PhysicsScene,
+        live: &crate::gameplay::entity_lifetime::LiveEntities, player: &Player) -> Result<(), String> {
+        for owner in self.far_reach.iter_mut().chain(self.active_far_reach.iter_mut())
+            .chain(self.retiring_far_reaches.iter_mut()).chain(self.cached_far_reaches.values_mut()) {
+            owner.cancel_acquisition(scene, live, player)?;
         }
         Ok(())
     }
@@ -1981,9 +1993,13 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
             world.resource_scope(|world, mut state: Mut<super::player::PlayerState>| {
                 world.resource_scope(
                     |world, mut clock: Mut<crate::gameplay::game_clock_runtime::ClockRuntime>| {
+                        let player = state.player.as_mut().expect("player retirement admission");
+                        world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {
+                            actions.retire_far_reach_queries(&mut scene,
+                                world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(), player)
+                        })?;
                         let mut effects =
                             world.resource_mut::<super::usable_effects::EffectRequests>();
-                        let player = state.player.as_mut().expect("player retirement admission");
                         if let Some(blink) = actions.blink.as_mut() {
                             blink.retire(player, &mut clock, &mut effects)?;
                         }

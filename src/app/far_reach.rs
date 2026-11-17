@@ -14,6 +14,8 @@ use crate::{
     },
 };
 use std::sync::Arc;
+mod acquisition;
+mod objects;
 
 #[derive(Clone)]
 pub(super) struct PlayerSettings {
@@ -24,6 +26,19 @@ pub(super) struct PlayerSettings {
 
 pub(super) struct Runtime {
     sensor: Sensor,
+    acquisition: crate::gameplay::powers::far_reach::Sensor,
+    acquisition_classes: Option<crate::app::physics_scene::occluded_sensor::GrappleClasses>,
+    acquired: Option<crate::gameplay::powers::far_reach::Acquired>,
+    acquisition_frame: Option<crate::gameplay::powers::far_reach::Input>,
+    next_acquisition_input: Option<crate::gameplay::powers::far_reach::Input>,
+    object: Option<crate::gameplay::powers::far_reach::ObjectTarget>,
+    pull: crate::gameplay::powers::traversal::PullSettings,
+    catch_offsets: [bevy_math::Vec3; 2],
+    object_request: Option<objects::Request>,
+    released: Option<objects::Released>,
+    entity_delay: f32,
+    object_impact_fx: [Option<String>; 2],
+    blind_duration: f32,
     target: Option<GeometryTarget>,
     pending: bool,
     was_active: bool,
@@ -48,12 +63,19 @@ pub(super) struct Runtime {
 }
 impl Runtime {
     pub fn new(prepared: Prepared, physics: &PlayerPhysics) -> Self {
+        let sensor = Sensor::new(prepared.player.sensor.clone());
+        let acquisition = crate::gameplay::powers::far_reach::Sensor::new(sensor.prepared.clone());
         Self {
+            acquisition, acquisition_classes: None, acquired: None, acquisition_frame: None, next_acquisition_input: None, object: None,
+            pull: prepared.pull, catch_offsets: prepared.catch_offsets,
+            object_request: None, released: None, entity_delay: prepared.entity_delay,
+            object_impact_fx: prepared.object_impact_fx,
+            blind_duration: prepared.blind_duration,
             mantle: prepared
                 .player
                 .mantle
                 .map(|decl| MantleSensor::new(decl, physics)),
-            sensor: Sensor::new(prepared.player.sensor),
+            sensor,
             target: None,
             pending: false,
             was_active: false,
@@ -104,25 +126,40 @@ impl Runtime {
         queries: &dyn PlayerWorld,
         snapping: bool,
     ) -> bool {
-        if self.has_activity() {
+        if self.has_cast_activity() {
             return false;
         }
+        let Some(acquisition_frame) = self.acquisition_frame else {
+            self.target = None; self.object = None; self.mantle_exit = None;
+            return false;
+        };
         let previous = self.target;
         let previous_mantle = self.mantle_exit;
-        self.target = self.sensor.geometry_target(
+        self.object = self.acquired.and_then(|acquired| acquired.object);
+        if let Some(object) = self.object {
+            self.moved = self.previous_position.is_none_or(|previous|
+                previous.distance_squared(object.origin) > self.sensor.prepared.decl.movement_tolerancy.powi(2));
+            self.previous_position = Some(object.origin);
+            self.target = None;
+            self.mantle_exit = None;
+            return true;
+        }
+        let acquired_view = self.acquisition_frame.map(|input| View {origin: input.eye, axis: input.view_axis});
+        let view = acquired_view.as_ref().unwrap_or(view);
+        self.target = self.sensor.geometry_target_from_hit(
             queries,
             &player.physics,
             view.origin,
             view.axis,
-            player
-                .attributes
-                .get("ARK_ATTRIBUTE_GRAPPLE_HORIZONTAL_RANGE"),
-            player
-                .attributes
-                .get("ARK_ATTRIBUTE_GRAPPLE_VERTICAL_RANGE"),
+            acquisition_frame.horizontal_range,
+            acquisition_frame.vertical_range,
             snapping,
             player.machine.is_active(StateId::SNEAKING),
             player.machine.is_active(StateId::AUTOCROUCH),
+            crate::gameplay::player::grapple::AcquiredGeometry {
+                hit: self.acquired.map(|acquired| acquired.surface), origin: acquisition_frame.origin,
+                direction: acquisition_frame.direction, length: acquisition_frame.length,
+            },
         );
         self.mantle_exit = None;
         if let Some(mut target) = self.target {
@@ -232,8 +269,15 @@ impl Runtime {
         self.target.is_some()
     }
     pub fn execute(&mut self, player: &mut Player, _view: &View) -> Result<bool, String> {
-        if self.has_activity() {
+        if self.has_cast_activity() {
             return Ok(false);
+        }
+        if let Some(target) = self.object {
+            if !player.start_grapple_beam(target.origin, self.beam_speed)? { return Ok(false); }
+            self.beam_destination = target.origin;
+            self.object_request = Some(objects::Request::new(target));
+            self.pending = true;
+            return Ok(true);
         }
         let Some(target) = self.target else {
             return Ok(false);
@@ -288,8 +332,9 @@ impl Runtime {
         Ok(true)
     }
     pub fn has_activity(&self) -> bool {
-        self.pending || self.was_active
+        self.pending || self.was_active || self.released.is_some()
     }
+    pub fn has_cast_activity(&self) -> bool { self.pending || self.was_active }
     pub fn cancel(&mut self, _player: &mut Player) {
         if !self.has_activity() {
             self.target = None;
@@ -343,6 +388,11 @@ impl Runtime {
         Ok(self.has_activity())
     }
     pub fn retire(&mut self, player: &mut Player) {
+        self.object_request = None;
+        self.object = None;
+        self.acquired = None;
+        self.acquisition_frame = None;
+        if self.released.take().is_some() { player.set_grapple_catch_targets(Default::default()); }
         player.stop_grapple_beam();
         if let Some(request) = self.request.take() {
             self.mantle = request.mantle;
@@ -366,6 +416,11 @@ pub(super) struct Prepared {
     pub beam_speed: f32,
     pub start_pull_distance: f32,
     pub world_impact_fx: Option<String>,
+    pub pull: crate::gameplay::powers::traversal::PullSettings,
+    pub catch_offsets: [bevy_math::Vec3; 2],
+    pub entity_delay: f32,
+    pub object_impact_fx: [Option<String>; 2],
+    pub blind_duration: f32,
 }
 impl Prepared {
     pub fn player(
@@ -396,7 +451,28 @@ impl Prepared {
         component: &[(String, Value)],
         player: &PlayerSettings,
     ) -> Result<Self, String> {
+        let vector = |name: &str, default: [f32; 3]| -> Result<bevy_math::Vec3, String> {
+            let fields = component.iter().find_map(|(key,value)| if key == name {
+                if let Value::Scope(fields) = value {Some(fields.as_slice())} else {None}
+            } else {None}).unwrap_or(&[]);
+            let mut values = default;
+            for (index, axis) in ["x", "y", "z"].into_iter().enumerate() {
+                if let Some(value) = crate::gameplay::options::decl::atom(fields, axis) {
+                    values[index] = value.trim_end_matches('f').parse::<f32>()
+                        .ok().filter(|value| value.is_finite()).ok_or_else(|| format!("invalid Far Reach {name}.{axis}"))?;
+                }
+            }
+            Ok(bevy_math::Vec3::from_array(values))
+        };
         Ok(Self {
+            pull: crate::gameplay::powers::traversal::PullSettings::read(component)?,
+            //43e920 constructor+268..27c: normal(0,0,0), sliding(0,0,2).
+            catch_offsets: [vector("m_pullTargetOffset", [0.;3])?, vector("m_slidingPullTargetOffset", [0.,0.,2.])?],
+            entity_delay: crate::gameplay::player::grapple::seconds(component, "m_entityGrappledDelay", 2.)?,
+            blind_duration: crate::gameplay::player::grapple::seconds(component, "m_npcPullBlindDuration", 2.)?,
+            object_impact_fx: ["m_movableImpactFX", "m_pickupImpactFX"].map(|name|
+                crate::gameplay::options::decl::atom(component, name)
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL")).map(str::to_owned)),
             player: player.clone(),
             snap_hold_duration: crate::gameplay::player::grapple::seconds(
                 component,
@@ -441,6 +517,8 @@ impl Prepared {
         [
             self.world_impact_fx.as_deref(),
             self.player.motion.leave_wall_fx.as_deref(),
+            self.object_impact_fx[0].as_deref(),
+            self.object_impact_fx[1].as_deref(),
         ]
         .into_iter()
         .flatten()

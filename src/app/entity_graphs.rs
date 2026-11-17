@@ -4,6 +4,70 @@
 use crate::gameplay::entity_lifetime::EntityId;
 use bevy::prelude::*;
 
+///One691110 ->8847f0/884980 call. The accepted catch journal owns this
+///receipt until builtin and reverse-order observer delivery acknowledge.
+#[derive(Default)]
+pub(super) struct GrappledReceipt {
+    target: Option<EntityId>,
+    builtin: bool,
+    observers: Option<Vec<EntityId>>,
+    next: usize,
+    complete: bool,
+}
+
+///141398270 registers grappled(void), event11b linked to notice81. The
+///ordinals come from installed PE constructor order, not a name hash.
+pub(super) fn grappled(
+    world: &mut World,
+    live: &crate::gameplay::entity_lifetime::LiveEntities,
+    target: EntityId,
+    receipt: &mut GrappledReceipt,
+) -> Result<(), String> {
+    if receipt.target.is_some_and(|previous| previous != target) {
+        return Err("grappled receipt target changed".into());
+    }
+    if receipt.complete { return Ok(()); }
+    let (_, class) = live.get(target).ok_or("grappled target generation is stale")?;
+    receipt.target = Some(target);
+    if !receipt.builtin {
+        let catalog = world.get_resource::<super::SceneData>()
+            .and_then(|scene| scene.catalog.as_ref())
+            .ok_or("grappled canonical class metadata owner is absent")?;
+        let types = catalog.component_types.lock()
+            .map_err(|_| "grappled class metadata owner is poisoned")?
+            .clone().ok_or("grappled executable class metadata is not resident")?;
+        let metadata = types.classes().metadata(class)
+            .ok_or("grappled actual class metadata is absent")?;
+        let name = types.classes().name_text(metadata.name)
+            .ok_or("grappled actual class name is absent")?;
+        match name {
+            //Movable8e7870, Pickup8b6890 and Grenade8e79e0 delegate11b
+            //to8cf620 ->9154b0's literal void branch. Dynamic8f2260
+            //explicitly consumes11b with the same void result. Their
+            //concrete virtual30 is399620(false), not a script override.
+            b"idEntity" | b"idDynamicEntity" | b"arkMovable" |
+            b"arkPickup" | b"arkGrenade" => {},
+            _ => return Err(format!("grappled builtin dispatch is not implemented for {}",
+                String::from_utf8_lossy(name))),
+        }
+        receipt.builtin = true;
+    }
+    if receipt.observers.is_none() {
+        receipt.observers = Some(live.event_observer_snapshot(target)?);
+    }
+    while let Some(&observer) = receipt.observers.as_ref().unwrap().get(receipt.next) {
+        if live.grappled_observer_matches(observer)? {
+            return Err("grappled notice callback is not implemented".into());
+        }
+        receipt.next += 1;
+    }
+    //The admitted Kiscule receivers subscribe only to Pickup, Breakable
+    //and Gameflow notices; none registers81. NPC bark/behavior recipients
+    //are separate concrete owners and are not admitted by this frontend.
+    receipt.complete = true;
+    Ok(())
+}
+
 ///One884980 ->883d10 invocation, retained by the grenade's accepted explosion
 ///journal. No resource or graph definition is copied into this receipt.
 #[derive(Default)]

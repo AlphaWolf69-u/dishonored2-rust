@@ -504,17 +504,20 @@ pub(super) fn bounds(world:&World,id:EntityId)->Option<[[f32;3];2]>{
 ///camera visibility. Placed resources use their existing authored model bounds
 ///and current placement transform, including physics/animation publication.
 pub(super) fn entity_bounds(world: &World, live: &LiveEntities, id: EntityId) -> Result<Option<[[f32; 3]; 2]>, String> {
-    if let Some(bounds) = self::bounds(world, id) {
-        return Ok(Some(bounds));
-    }
+    if let Some(bounds)=self::bounds(world,id){return Ok(Some(bounds));}
+    let placements=world.get_resource::<super::RenderSourcePlacements>().ok_or("entity bounds require the canonical placed model owner")?;
+    entity_bounds_from_parts(live,id,None,world.get_resource::<super::shadow_updates::ModelShadowSources>(),placements)
+}
+///Same8780d0 owner when a gameplay/UI caller already borrows its actual parts.
+pub(super) fn entity_bounds_from_parts(live:&LiveEntities,id:EntityId,runtime:Option<&WorldModels>,
+    sources:Option<&super::shadow_updates::ModelShadowSources>,placements:&super::RenderSourcePlacements)
+    ->Result<Option<[[f32;3];2]>,String> {
+    if let Some(bounds)=runtime.and_then(|owner|owner.interaction_bounds(id)){return Ok(Some(bounds));}
     let (name, _) = live.get(id).ok_or("entity bounds generation is stale")?;
-    let placements = world.get_resource::<super::RenderSourcePlacements>()
-        .ok_or("entity bounds require the canonical placed model owner")?;
     if !placements.0.iter().any(|placement| placement.id.eq_ignore_ascii_case(name)) {
         return Ok(None); // Actual source entity has no authored render model.
     }
-    let models = world.get_resource::<super::shadow_updates::ModelShadowSources>()
-        .ok_or("entity bounds require prepared model resource bounds")?;
+    let models=sources.ok_or("entity bounds require prepared model resource bounds")?;
     let mut merged = None::<[[f32; 3]; 2]>;
     for source in &models.0 {
         let Some(placement) = placements

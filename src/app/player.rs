@@ -432,6 +432,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         fall_damage: decls::fall_damage_decl(&declarations)
             .map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
         drowning_damage: drowning_damage.map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
+        inventory_health_damage: crate::assets::damage::Declaration::acquire_inventory_health(catalog)?,
         slash_rules,
         mana: decls::mana(&declarations.mana)?,
         adrenaline: decls::adrenaline(&declarations.adrenaline)?,

@@ -293,6 +293,9 @@ pub(super) fn mark_movable_picked_up(world: &mut World, id: EntityId) -> Result<
     entry.runtime_flags |= 4;
     Ok(true)
 }
+pub(super) fn movable_linked_entity(world:&World,id:EntityId)->Option<Option<EntityId>> {
+    world.get_resource::<Identities>()?.entries.get(&id)?.movable.as_ref().map(|state|state.linked_entity())
+}
 
 pub(super) fn equipment(world: &World, identity: &str) -> Option<EntityId> {
     let owner = world.get_resource::<Identities>()?;
@@ -444,6 +447,10 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<boo
     world.resource_mut::<Identities>().entries.get_mut(&id)
         .ok_or("equipment reference retirement journal disappeared")?.reference_retirement = Some(state);
     if !retired? { return Ok(false); }
+    //80e050 must still be able to resolve the actual actor headers and roots.
+    if !identity_retired && world.contains_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>() {
+        super::time_sync::retire_entity_time(world, id)?;
+    }
     if !identity_retired && world.resource_mut::<LiveEntities>().retire(id).is_none() {
         return Err("equipment identity still owns children or managed references".into());
     }
@@ -456,11 +463,6 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<boo
     super::runtime_entities::with_scene(world, |_, scene, live, _| {
         scene.finish_equipment_reference(live, id)
     })?;
-    if let Some(mut clock) =
-        world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
-    {
-        clock.unregister_entity_time(id);
-    }
     if let Some(emitter) = audio {
         super::audio::forget_retired_component_object(world, emitter)?;
     }

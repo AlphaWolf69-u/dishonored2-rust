@@ -12,6 +12,7 @@ pub(super) struct Runtime {
     pending: Option<EntityId>,
     target: Option<EntityId>,
     offered: bool,
+    pub(super) offered_from_exit:bool,
     rejected: VecDeque<EntityId>,
     pub action: ActionRuntime,
     pub scene_started: bool,
@@ -34,6 +35,7 @@ impl Runtime {
     pub fn activate(&mut self) {
         self.target = self.pending.take();
         self.offered = false;
+        self.offered_from_exit=false;
         self.scene_started = false;
     }
     pub fn reject(&mut self) {
@@ -48,6 +50,10 @@ impl Runtime {
         if self.target.is_some() {
             self.offered = true;
         }
+    }
+    pub fn offer_from_exit(&mut self) {
+        if !self.offered {self.offered_from_exit=true;}
+        self.offer();
     }
     pub fn accepted(&self) -> Option<EntityId> {
         self.target.filter(|_| self.offered)
@@ -138,6 +144,9 @@ impl super::Player {
             }
         }
         Err("loot physical completion has no accepted target".into())
+    }
+    pub(crate) fn loot_offered_from_exit(&self,id:EntityId)->bool {
+        [&self.machine,&self.swimming_machine].into_iter().any(|m|m.world_pickup_target()==Some(id)&&m.world_pickup_from_exit())
     }
     pub fn pending_loot_object(&self) -> Option<EntityId> {
         self.machine

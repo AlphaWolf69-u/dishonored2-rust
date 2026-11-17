@@ -175,10 +175,7 @@ pub(super) fn retire(world: &mut World) -> Result<(), String> {
     // by queued receiver callbacks; use the existing manager, not a copy.
     super::entity_graphs::retire(world, entity)?;
     super::player_chaos::retire(world, entity)?;
-    world
-        .get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
-        .ok_or("player retirement clock owner absent")?
-        .unregister_entity_time(entity);
+    super::time_sync::retire_entity_time(world, entity)?;
     if world
         .resource_mut::<LiveEntities>()
         .retire_for_world_shutdown(entity)

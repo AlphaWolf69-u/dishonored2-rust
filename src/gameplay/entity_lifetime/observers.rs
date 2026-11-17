@@ -123,6 +123,17 @@ impl LiveEntities {
             Err("playerEquipmentExploded has an unported generic notice receiver".into())
         }
     }
+    ///883d10/notice81: the admitted generic observer is the actual Trigger
+    ///touch owner. Its8e5500 accepts129..12c, then8d8740; neither filter
+    ///accepts81. Unknown receiver families require their actual callback.
+    pub(crate) fn grappled_observer_matches(&self, observer: EntityId) -> Result<bool, String> {
+        let receiver = self.receiver(observer)?;
+        if receiver.trigger_touching.is_some() {
+            Ok(false)
+        } else {
+            Err("grappled has an unported generic notice receiver".into())
+        }
+    }
     ///785690: actual native Trigger entity list, independent of components.
     pub(crate) fn trigger_is_touching(
         &self,

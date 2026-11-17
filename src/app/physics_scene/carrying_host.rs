@@ -34,6 +34,8 @@ pub(in crate::app) struct CarryPhysics {
     pub(super) resources: super::carrying_resources::Resources,
     progress: HashMap<EntityId, Progress>,
     convex: WorldConvexQuery,
+    pub(super) catch_ray:crate::gameplay::world_ray_query::WorldRayQuery,
+    pub(super) catch_notices:[super::super::entity_graphs::GrappledReceipt;2],
     mesh: crate::gameplay::compressed_mesh_query::CompressedMeshQuery,
     support: crate::gameplay::convex_support::ConvexSupportWorkspace,
     hits: Vec<ConvexContact>,
@@ -917,7 +919,7 @@ fn run(world: &mut bevy::prelude::World, retiring: bool) -> Result<(), String> {
         if !world.resource::<Carrying>().has_work(player) {
             return Ok(());
         }
-        if !retiring && !world.resource::<Carrying>().has_transactions(player) {
+        if !retiring && !world.resource::<Carrying>().has_transactions(player) && !player.grapple_catch_has_work() {
             if player.carrying.held.as_ref().is_some_and(|target| {
                 world
                     .get_resource::<LiveEntities>()
@@ -947,13 +949,11 @@ fn run(world: &mut bevy::prelude::World, retiring: bool) -> Result<(), String> {
         let Some(player) = player.player.as_mut() else {
             return Ok(());
         };
-        let clock = world
-            .get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
-            .ok_or("carry game clock owner absent")?;
-        if !retiring && !clock.advanced() {
-            return Ok(());
-        }
-        let clock = clock.clock().map_err(str::to_owned)?;
+        if !retiring && !world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .ok_or("carry game clock owner absent")?.advanced() {return Ok(());}
+        super::grapple_catch::advance_borrowed(world,&mut scene,&live,player,&mut state,retiring)?;
+        let clock=world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .ok_or("carry game clock owner absent")?.clock().map_err(str::to_owned)?;
         let bounds = world
             .get_resource::<super::super::shadow_updates::ModelShadowSources>()
             .ok_or("carry model bounds owner absent")?;
@@ -1134,6 +1134,7 @@ fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), 
                 });
         if !valid {
             player.lose_loot_object(id)?;
+            super::super::time_sync::detach_entity_time_with_owners(world,&scene,&live,id)?;
             state.progress.remove(&id);
             return Ok(());
         }
@@ -1149,6 +1150,10 @@ fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), 
                 state.progress.remove(&id);
                 return Ok(());
             }
+            scene.entities[*scene.shared_indices.get(&id).ok_or("Loot47 source entity absent")?].entity_flags &= !(1<<15);
+            let player_entity=super::super::player_lifetime::id_with_live(world,&live)
+                .ok_or("Loot47 time attachment Player generation absent")?;
+            super::super::time_sync::attach_entity_time(world,&scene,&live,player_entity,id)?;
             state.progress.get_mut(&id).unwrap().loot_eligible = true;
         }
         let clock = world
@@ -1176,7 +1181,7 @@ fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), 
             from_grapple: pending.from_grapple,
         };
         //Source24 map uses its own immediate callback and skips76e2b0.
-        if pending.item.type_number != 24 {
+        if pending.item.as_ref().is_none_or(|item|item.type_number!=24) {
             host.begin_loot_pull(&target)?;
         }
         if closing || offered {

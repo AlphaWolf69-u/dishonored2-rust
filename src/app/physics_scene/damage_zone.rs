@@ -27,9 +27,6 @@ impl PhysicsScene {
         if self.retirement.is_some() {
             return false;
         }
-        if gather && self.occluded_queries_pending() {
-            return true;
-        }
         self.damage_zones.roster.indices[..self.damage_zones.roster.sorted_start as usize]
             .iter()
             .filter_map(|&slot| self.damage_zones.get(slot))
@@ -299,7 +296,6 @@ impl PhysicsScene {
         events: &mut crate::gameplay::entity_events::EntityEvents,
         marker: i32,
     ) -> Result<(), String> {
-        self.execute_occluded_queries()?;
         for position in 0..self.damage_zones.roster.sorted_start as usize {
             let handle = ComponentHandle {
                 class_id: self.classes[18],

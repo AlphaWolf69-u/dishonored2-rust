@@ -13,7 +13,8 @@ pub(super) struct Pending {
     pub entity: EntityId,
     pub reference: CheckedComponent,
     pub definition: Arc<PickableDefinition>,
-    pub item: Arc<crate::assets::inventory_item::PickableItem>,
+    pub item: Option<Arc<crate::assets::inventory_item::PickableItem>>,
+    pub hold:Option<crate::gameplay::player::carrying::Target>,
     pub maximum: u32,
     pub phase: u8,
     pub admitted: u32,
@@ -30,33 +31,32 @@ impl Pending {
         &self,
         inventory: &interaction_focus::DiscoveredDocuments,
     ) -> bool {
+        if self.definition.hold.is_some(){return false;}
+        let Some(item)=&self.item else{return false;};
+        //615d40's actual exemption bitmap0x38022, before record lookup.
+        if item.type_number < 18 && 0x38022u32 & (1 << item.type_number) != 0 {
+            return false;
+        }
         inventory
-            .record(&self.item.path)
+            .record(&item.path)
             .map_or(self.maximum, |record| record.maximum)
-            <= inventory.quantity(&self.item.path)
+            <= inventory.quantity(&item.path)
     }
 }
 
-struct AmmoEffects<'a>(&'a mut crate::gameplay::player::Player);
-impl interaction_focus::InventoryPickupEffects for AmmoEffects<'_> {
-    fn apply_health(&mut self, _: f32) -> bool {
-        unreachable!("ammo cannot invoke consumable health")
-    }
-    fn mana(&self) -> Option<(f32, f32)> {
-        unreachable!("ammo cannot invoke consumable mana")
-    }
-    fn apply_mana(&mut self, _: f32) {
-        unreachable!("ammo cannot invoke consumable mana")
-    }
-    fn random(&mut self) -> f32 {
-        self.0.inventory_random()
-    }
-    fn duplicate_blueprint_value(&self) -> i32 {
-        unreachable!("ammo is not a blueprint")
-    }
-    fn add_raw_whale_bone(&mut self, _: u32) {
-        unreachable!("ammo is not crafting material")
-    }
+/// Only inventory families whose actual gameplay callback owners are hosted.
+///Read52 has its separate source841500 branch; unhosted special families must not
+///be admitted merely because a declaration has a generic inventory record.
+pub(super) fn inventory_family_supported(item: &crate::assets::inventory_item::PickableItem) -> bool {
+    matches!(item.type_number, 0 | 1 | 2 | 3 | 4 | 6 | 10 | 11 | 14 | 15 | 17..=23 | 27)
+}
+pub(super) fn inventory_family_available(
+    item: &crate::assets::inventory_item::PickableItem,
+    player: &crate::gameplay::player::Player,
+) -> bool {
+    inventory_family_supported(item) && (item.type_number != 6
+        || item.consumable.health as f32 + player.attributes.get("ARK_ATTRIBUTE_HEALTH_CONSUMABLE_BONUS") >= 0.
+        || player.inventory_health_damage_ready())
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
@@ -106,6 +106,7 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
                 .and_then(|player| player.take_rejected_loot_object())
         });
     if rejected == Some(pending.entity) {
+        super::time_sync::detach_entity_time(world,pending.entity)?;
         physics_scene::carrying_host::acknowledge_loot_pull(world, pending.entity);
         return Ok(true);
     }
@@ -122,6 +123,7 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
             .as_mut()
             .ok_or("lost pickup player absent")?
             .lose_loot_object(pending.entity)?;
+        super::time_sync::detach_entity_time(world,pending.entity)?;
         return Ok(false);
     }
     let accepted = world
@@ -131,12 +133,40 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
     if accepted != Some(pending.entity) {
         return Ok(false);
     }
-    if pending.item.type_number != 4 || pending.definition.quantity != 1 {
+    let held_exit=pending.hold.is_some() && world.resource::<player::PlayerState>().player.as_ref()
+        .ok_or("Loot47 time detach player absent")?.loot_offered_from_exit(pending.entity);
+    if !held_exit {super::time_sync::detach_entity_time(world,pending.entity)?;}
+    if pending.item.as_ref().is_some_and(|item|item.note_type!=-1) {return finish_readable(world,pending);}
+    if pending.hold.is_some() {return finish_hold(world,pending);}
+    if pending.item.is_none() {
+        if pending.phase==0 {pending.phase=1;}
+        finish(world,pending)?;
+        world.resource_mut::<player::PlayerState>().player.as_mut().ok_or("Loot47 consume player absent")?.acknowledge_loot_object(pending.entity)?;
+        physics_scene::carrying_host::acknowledge_loot_pull(world,pending.entity);
+        return Ok(true);
+    }
+    let item=pending.item.as_ref().ok_or("Loot47 item lease disappeared")?;
+    if !inventory_family_supported(item) {
         return Err(
-            "runtime pickup requires the actual item-family/pack gameplay callbacks".into(),
+            "Loot47 item family has no admitted gameplay callback owner".into(),
         );
     }
+    //841030 repeats615d40 at the actual inventory callback: quantity can
+    //change while the same target is physically pulled. A newly full target
+    //still receives841500's pickedUp/hide, but no pack RNG/food effects.
+    if pending.phase == 0 && pending.inventory_full(world.resource::<interaction_focus::DiscoveredDocuments>()) {
+        pending.admitted = 0;
+        pending.phase = 1;
+    }
     if pending.phase == 0 {
+        let ammo_pack_bonus = if item.type_number == 4 && pending.definition.quantity != 1 {
+            let state = world.resource::<player::PlayerState>();
+            let difficulty = crate::platform::console::shared().read().cvars
+                .int("ark_difficulty_current").unwrap_or(0);
+            //647ee0 returns zero while the difficulty manager is uninitialized.
+            state.difficulty.as_ref().map(|manager|manager.ammo_quantity_offset(difficulty))
+                .transpose()?.unwrap_or(0)
+        } else { 0 };
         pending.admitted = world.resource_scope(
             |world, mut inventory: Mut<interaction_focus::DiscoveredDocuments>| {
                 let mut state = world.resource_mut::<player::PlayerState>();
@@ -144,15 +174,25 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
                     .player
                     .as_mut()
                     .ok_or("accepted pickup player absent")?;
-                //6156e0 never reads the gameflow ammo-pack bonus for a single
-                //round. Unsupported pack counts are rejected above, not guessed.
-                let attributes = interaction_focus::PickupAttributes::for_player(player, 0);
-                inventory.register_item(pending.item.clone(), pending.maximum);
+                let attributes = interaction_focus::PickupAttributes::for_player(player, ammo_pack_bonus);
+                if item.type_number == 6
+                    && item.consumable.health as f32 + attributes.health_consumable_bonus < 0.0
+                    && !player.inventory_health_damage_ready() {
+                    return Err("negative food health callback has no actual player identity".into());
+                }
+                inventory.register_item(item.clone(), pending.maximum);
+                //These optional families are excluded at admission above;
+                //the borrowed common frontend supplies real health/mana/RNG.
+                let mut raw_whale_bone = |_: u32| -> () { unreachable!("unadmitted crafting family") };
+                let mut negative_health = |player: &mut crate::gameplay::player::Player, amount: f32| {
+                    player.inventory_health_damage(amount);
+                };
                 Ok::<_, String>(inventory.pickup(
-                    &pending.item.path,
-                    1,
+                    &item.path,
+                    pending.definition.quantity as u32,
                     &attributes,
-                    &mut AmmoEffects(player),
+                    &mut interaction_focus::PlayerPickupEffects { player, duplicate_blueprint_value: 0,
+                        raw_whale_bone: &mut raw_whale_bone, negative_health: &mut negative_health },
                 ))
             },
         )?;
@@ -169,14 +209,70 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
     Ok(true)
 }
 
+fn finish_readable(world:&mut World,pending:&mut Pending)->Result<bool,String> {
+    if pending.phase==0 {
+        let item=pending.item.as_ref().ok_or("Loot47 readable item absent")?.clone();
+        world.resource_scope(|world,mut interactions:Mut<interactions::Interactions>|{
+            interactions.request_loot_readable(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.entity,pending.reference,item)
+        })?;
+        pending.phase=1;
+    }
+    if pending.phase==1 {
+        world.resource_scope(|world,mut scene:Mut<physics_scene::PhysicsScene>|{
+            scene.finish_loot_without_hide(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.reference)
+        })?;
+        pending.phase=2;
+    }
+    world.resource_mut::<player::PlayerState>().player.as_mut().ok_or("Loot47 readable player absent")?.acknowledge_loot_object(pending.entity)?;
+    physics_scene::carrying_host::acknowledge_loot_pull(world,pending.entity);
+    Ok(true)
+}
+
+fn finish_hold(world:&mut World,pending:&mut Pending)->Result<bool,String> {
+    if world.resource::<player::PlayerState>().player.as_ref().ok_or("Loot47 hold player absent")?.loot_offered_from_exit(pending.entity) {
+        if pending.phase==0 {
+            world.resource_scope(|world,mut scene:Mut<physics_scene::PhysicsScene>|scene.cancel_held_loot(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.reference))?;
+            pending.phase=1;
+        }
+        if pending.phase==1 {
+            //83fe70 orders76ec80/D7 restoration before80e050.
+            super::time_sync::detach_entity_time(world,pending.entity)?;
+            pending.phase=2;
+        }
+        world.resource_mut::<player::PlayerState>().player.as_mut().unwrap().acknowledge_loot_object(pending.entity)?;
+        physics_scene::carrying_host::acknowledge_loot_pull(world,pending.entity);
+        return Ok(true);
+    }
+    if pending.phase==0 {
+        let target=pending.hold.as_ref().ok_or("Loot47 hold target missing")?.clone();
+        world.get_resource_mut::<player::PlayerState>().and_then(|mut s|s.player.as_mut().map(|p|p.receive_loot_hold(target)))
+            .ok_or("Loot47 hold player absent")??;
+        pending.phase=1;
+    }
+    if pending.phase==1 {
+        world.resource_scope(|world,mut scene:Mut<physics_scene::PhysicsScene>|{
+            scene.finish_held_loot(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.reference)
+        })?;
+        pending.phase=2;
+    }
+    world.resource_mut::<player::PlayerState>().player.as_mut().ok_or("Loot47 hold player absent")?
+        .acknowledge_loot_object(pending.entity)?;
+    physics_scene::carrying_host::acknowledge_loot_pull(world,pending.entity);
+    Ok(true)
+}
+
 fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
     if pending.phase == 1 {
-        //841030 invokes6734b0 explicitly for this actual ammo pickup. This
+        //841030 invokes6734b0 or currency6733c0 explicitly. This
         //is independent of9B; silent loadout/script additions do not log.
         if !pending.hud_notified {
-            if pending.admitted > 0 {
+            if let Some(item) = &pending.item {
                 if let Some(hud) = world.get_non_send_resource::<super::pause_menu::PauseMenu>() {
-                    hud.queue_pickup(pending.item.clone(), pending.admitted)?;
+                    if matches!(item.type_number, 1 | 15) {
+                        hud.queue_currency(pending.definition.quantity)?;
+                    } else if pending.admitted > 0 && item.type_number != 6 {
+                        hud.queue_pickup(item.clone(), pending.admitted)?;
+                    }
                 }
             }
             pending.hud_notified = true;
@@ -184,7 +280,7 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
         super::entity_graphs::picked_up(
             world,
             pending.entity,
-            true,
+            pending.item.is_some(),
             pending.from_grapple,
             &mut pending.notice,
         )?;
