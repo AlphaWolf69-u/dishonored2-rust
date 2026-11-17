@@ -1,5 +1,17 @@
 # Resource parity ledger
 
+Production-path validation (2026-11-17, debug `b4e2a493`): compilation with
+and without the game feature passed. Actual firing/empty fire, Heart, wheel
+mouse handling, pickup/throw, gun damage, ordinary sword damage and charged
+thrust damage passed. Blink's two targeting markers, authored wobble command
+recording, F cancellation, teleportation and mana-regeneration admission
+passed. The eight physical-map movies received actual configuration and
+target-render acknowledgements. Loading, playing and complete retirement
+passed in Edge of the World, Dust District and the Institute; paused exit
+also passed. These receipts do not establish visible pixels, audible output
+or FPS. Separate WORLD surface-impact checks remain pending: their original
+floor-ray fixture was barely in camera focus and did not certify blade reach.
+
 Compiled probe-query verification (2026-11-17, debug `38bbe6af`): actual Edge
 of the World PNW tree bytes and all 261,924 runtime tetrahedron records passed
 the mapped-original oracle. Counts include 159 sorting controls, 53 tree cases
@@ -58,10 +70,12 @@ Prediction before validation: resource acquisition gains one small shared
 typed projection per used descriptor; playback adds at most32 bounded
 scalar/attenuation evaluations per FX frame, with reused slot/vector
 capacity, zero per-frame heap allocation and zero GPU passes. This is a
-fidelity addition, not a measured speedup. `blocked: validation` — sources
-were statically reviewed; parent owns the coherent build and actual Blink,
-stop/tail/shutdown execution. No tests or executable launches were performed
-by this family implementation.
+fidelity addition, not a measured speedup. Runtime validation at `b4e2a493`
+passed the actual Blink target chain, cancellation, helper-tail retirement,
+second activation, cast and ordinary exit. Both targeting markers and the
+authored fullscreen wobble reached their real consumers. This verifies the
+used descriptor's lifecycle; hardware motor output and all curve edge cases
+are not established by that windowless run.
 
 ## Effect resource readiness and contact descriptors (2026-11-17)
 

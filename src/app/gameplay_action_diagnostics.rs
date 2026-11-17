@@ -420,10 +420,16 @@ impl Observation {
                 super::physics_scene::melee::Hit::Ray(hit)=>hit,
                 super::physics_scene::melee::Hit::Shape(_)=>return Err("WORLD fixture ray produced a non-ray witness".into()),
             };
-            let inside=definition.world_focus.contains(p.physics.position(),eye,axis,definition.focus_step_back,Vec3::from_slice(&hit.position));
+            //The first floor ray barely entering WORLD focus can be at the
+            //far box boundary while the real sweep selects a farther packet.
+            //Reuse the existing authored-dimension debug approach predicate;
+            //this only continues physical mouse aiming, never admits a hit.
+            let point=Vec3::from_slice(&hit.position);
+            let inside=Self::melee_fixture_reached(world,point)?;
             if inside{
-                eprintln!("ACTION_SMOKE_WORLD_FIXTURE_RAY app_frame={:?} actual_hit={hit:?} actual_entity={:?} player_origin={:?} camera_eye={eye:?} camera_axis={axis:?} authored_blade_dimensions={:?} authored_shape_step_back={} authored_focus_step_back={} authored_WORLD_focus={:?} authored_NPC_focus={:?} ray_in_focus=true swept_packet_in_focus_not_inferred=true",
-                    world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),contact.entity,p.physics.position(),definition.dimensions,definition.shape_step_back,definition.focus_step_back,definition.world_focus,definition.npc_focus);
+                let approach_bound=0.5*definition.world_focus.extents.x.min(definition.dimensions.x-definition.shape_step_back);
+                eprintln!("ACTION_SMOKE_WORLD_FIXTURE_RAY app_frame={:?} actual_hit={hit:?} actual_entity={:?} player_origin={:?} camera_eye={eye:?} camera_axis={axis:?} authored_blade_dimensions={:?} authored_shape_step_back={} authored_focus_step_back={} authored_WORLD_focus={:?} authored_NPC_focus={:?} actual_horizontal_distance={} authored_approach_bound={approach_bound} ray_in_focus=true swept_packet_in_focus_not_inferred=true",
+                    world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),contact.entity,p.physics.position(),definition.dimensions,definition.shape_step_back,definition.focus_step_back,definition.world_focus,definition.npc_focus,(point-p.physics.position()).truncate().length());
             }
             return Ok(inside.then_some(hit.target));
         }
@@ -562,6 +568,9 @@ impl Observation {
                 if let Err(error)=self.fixture_report(world,"timeout",true){eprintln!("ACTION_SMOKE_FIXTURE_REPORT_ERROR {error}");}
             }
             self.weapon_evidence(world,"timeout")?;
+            // The host's error packet is bounded. Preserve the full retained
+            // witness on stderr before passing the summary across that link.
+            eprintln!("ACTION_SMOKE_TIMEOUT_DIAGNOSTICS{snapshot}");
             return Err(format!("action smoke timeout stage={:?} shots={} projectile_seen={} snapshot={snapshot}",self.stage,self.shot_count,self.projectile_seen));
         }
         match self.stage {
