@@ -9,8 +9,11 @@ passed. The eight physical-map movies received actual configuration and
 target-render acknowledgements. Loading, playing and complete retirement
 passed in Edge of the World, Dust District and the Institute; paused exit
 also passed. These receipts do not establish visible pixels, audible output
-or FPS. Separate WORLD surface-impact checks remain pending: their original
-floor-ray fixture was barely in camera focus and did not certify blade reach.
+or FPS. Corrected diagnostic aiming at `071f8b44` also completed three real
+ordinary WORLD impacts and three charged forward WORLD impacts. Each retained
+its actual callback, particle-chain start, sound-source processing and final
+FX retirement, then exited normally. The first fixture's far-edge camera ray
+had not certified blade reach; no gameplay range was enlarged to pass it.
 
 Compiled probe-query verification (2026-11-17, debug `38bbe6af`): actual Edge
 of the World PNW tree bytes and all 261,924 runtime tetrahedron records passed
