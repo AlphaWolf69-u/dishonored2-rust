@@ -42,6 +42,7 @@ fn installed_trigger_query_geometry_is_retained() {
                     QueryGeometry::Polytope(polytope) => {
                         counts[4] += usize::from(polytope.connectivity.is_none());
                     }
+                    QueryGeometry::Convex(_) | QueryGeometry::CompressedMesh(_) => {}
                 }
             }
         }

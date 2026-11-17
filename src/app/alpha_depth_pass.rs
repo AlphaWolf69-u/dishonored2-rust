@@ -1,6 +1,6 @@
 //! Associate admitted alpha-depth materials with the actual rendered instances.
 use super::{material_loading::alpha::AlphaDepthMaterials, RenderModelSurface, SceneRenderQueue};
-use crate::rendering::bevy_backend::alpha_depth_scene::{AlphaDepthMaterial, AlphaDepthSources};
+use crate::rendering::bevy_backend::alpha_depth_scene::{AlphaDepthSources, AlphaSurface};
 use std::sync::Arc;
 use bevy::{
     prelude::*,
@@ -56,7 +56,12 @@ fn extract(
         let Some(routes) = materials.0.get(&instance.material) else {
             continue;
         };
-        let source: Result<AlphaDepthMaterial, String> = match instance.source.map(|s| s.surface) {
+        let unresolved = |error: &str| AlphaSurface {
+            depth: Err(error.into()),
+            hair: routes[0].hair,
+            lit: Err(error.into()),
+        };
+        let source = match instance.source.map(|s| s.surface) {
             Some(RenderModelSurface::World { .. }) => routes[2].clone(),
             Some(RenderModelSurface::Bmodel { .. }) => routes[0].clone(),
             Some(RenderModelSurface::Bmd6 {
@@ -64,9 +69,9 @@ fn extract(
             }) => routes[0].clone(),
             Some(RenderModelSurface::Bmd6 { .. }) if routes[0] == routes[1] => routes[0].clone(),
             Some(RenderModelSurface::Bmd6 { .. }) => {
-                Err("alpha-depth optional mesh bank association unresolved".into())
+                unresolved("alpha-depth optional mesh bank association unresolved")
             }
-            None => Err("alpha-depth instance source unavailable".into()),
+            None => unresolved("alpha-depth instance source unavailable"),
         };
         sources.0.insert(MainEntity::from(entity), source);
     }

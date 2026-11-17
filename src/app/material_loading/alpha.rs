@@ -1,13 +1,14 @@
 //! Resolve alpha-depth slots while the installed material dictionaries are live.
 use super::{material, MaterialResolver};
-use crate::rendering::bevy_backend::alpha_depth_scene::AlphaDepthMaterial;
+use crate::rendering::bevy_backend::alpha_depth_scene::{AlphaDepthMaterial, AlphaLitRoute, AlphaSurface};
 use bevy::prelude::*;
 use bevy::platform::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Resource, Clone, Default)]
 pub(in crate::app) struct AlphaDepthMaterials(
-    pub Arc<HashMap<super::MaterialHandle, [Result<AlphaDepthMaterial, String>; 3]>>,
+    /// Model banks 0 and 1, world 2.
+    pub Arc<HashMap<super::MaterialHandle, [AlphaSurface; 3]>>,
 );
 
 impl MaterialResolver<'_> {
@@ -29,6 +30,10 @@ impl MaterialResolver<'_> {
             if result.contains_key(&handle) {
                 continue;
             }
+            // The list routes are independent of depth-alpha admission.
+            let mut lit: Result<[Option<AlphaLitRoute>; 3], String> =
+                Err(format!("{name}: alpha list routes unresolved"));
+            let mut hair = false;
             let prepared = (|| -> Result<_, String> {
                 let catalog = self
                     .catalog
@@ -56,15 +61,45 @@ impl MaterialResolver<'_> {
                     definition.render_state(),
                 )?;
                 let decal = library.option_value(main.as_bytes(), &reference, b"isDecal")? & 1 != 0;
-                let hair = library.option_value(main.as_bytes(), &reference, b"hairType")? & 1 != 0;
+                let hair_type = library.option_value(main.as_bytes(), &reference, b"hairType")? & 1 != 0;
+                // 3386a0: material+0x4a bit4 (hairType) selects the hair list.
+                hair = hair_type;
                 let sky = library.option_value(main.as_bytes(), &reference, b"skyType")? as u32;
+                lit = (|| -> Result<_, String> {
+                    // $isAlpha && !$isMainPassAlpha selects writePixel in the
+                    // lit program; dynamicAlpha is model bucket 0x37 and
+                    // worldAlpha world list key 0 (14033b350, 339160).
+                    let decal_type = library.registered_option_value(&reference, b"decalType")? as u32;
+                    let is_alpha = material::shadow_is_alpha(state[0], decal, decal_type, sky);
+                    let main_pass =
+                        library.option_value(main.as_bytes(), &reference, b"isMainPassAlpha")? != 0;
+                    let sort = library.material_stage_sort(
+                        catalog,
+                        main.as_bytes(),
+                        &crate::entities::declaration_text(&bytes),
+                    )?;
+                    let (world, model) =
+                        super::material_draw_routes(library, catalog, &bytes, &main, sort)?;
+                    let mode = crate::platform::console::shared().read().cvars.int("r_OIT")
+                        .ok_or("r_OIT is not registered")?;
+                    let route = |member: bool| {
+                        (is_alpha && !main_pass && member).then_some(AlphaLitRoute {
+                            state,
+                            accumulate: mode != 0,
+                        })
+                    };
+                    let model = route(model == 0x37);
+                    Ok([model, model, route(
+                        world == Some(crate::rendering::material_lists::WorldDrawList::Blend),
+                    )])
+                })();
                 let class = material::material_program_class(
                     true,
                     implicit_main,
                     state[0],
                     library.option_value(main.as_bytes(), &reference, b"invisible")? != 0,
                 );
-                let cleared = material::finalize_material_programs(class, hair, sky).clear_slots;
+                let cleared = material::finalize_material_programs(class, hair_type, sky).clear_slots;
                 let refraction =
                     library.registered_option_value(&reference, b"Alpha/EnableRefraction")? != 0;
                 let effects =
@@ -214,7 +249,6 @@ impl MaterialResolver<'_> {
                     flags49: u8::from(refraction) | (u8::from(effects) << 6),
                     full,
                     reduced,
-                    hair: main.eq_ignore_ascii_case("arkhair"),
                 };
                 Ok(std::array::from_fn(|bank| -> Result<_, String> {
                     let present =
@@ -226,13 +260,31 @@ impl MaterialResolver<'_> {
                     })
                 }))
             })();
+            let depth = prepared.unwrap_or_else(|error| {
+                std::array::from_fn(|_| Err(format!("{name}: {error}")))
+            });
+            let [model, banked, world] = depth;
+            let surface = |bank: usize, depth| AlphaSurface {
+                depth,
+                hair,
+                lit: lit.as_ref().map(|routes| routes[bank]).map_err(Clone::clone),
+            };
             result.insert(
                 handle,
-                prepared.unwrap_or_else(|error| {
-                    std::array::from_fn(|_| Err(format!("{name}: {error}")))
-                }),
+                [surface(0, model), surface(1, banked), surface(2, world)],
             );
         }
+        let routed = |bank: usize| result.values().filter(|surfaces| {
+            surfaces[bank].lit.as_ref().is_ok_and(Option::is_some)
+        }).count();
+        info!(
+            blended = result.len(),
+            dynamic_alpha = routed(0),
+            world_alpha = routed(2),
+            hair = result.values().filter(|surfaces| surfaces[0].hair).count(),
+            unresolved = result.values().filter(|surfaces| surfaces[0].lit.is_err()).count(),
+            "Alpha list routes resolved"
+        );
         AlphaDepthMaterials(Arc::new(result))
     }
 }

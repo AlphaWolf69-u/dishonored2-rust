@@ -14,6 +14,8 @@ pub fn register_shaders(app: &mut App) {
     bevy::asset::load_internal_asset!(app,WARD,"../../../assets/shaders/dh2_ward.wgsl",Shader::from_wgsl);
     const ALPHA_CLIP: Handle<Shader> = bevy::asset::uuid_handle!("e7f61878-cebb-4244-af0f-ad48081c2673");
     bevy::asset::load_internal_asset!(app,ALPHA_CLIP,"../../../assets/shaders/dh2_alpha_clip.wgsl",Shader::from_wgsl);
+    const OIT: Handle<Shader> = bevy::asset::uuid_handle!("0f3d7c52-6a1e-4f0b-9a47-2c6e8d1b5f93");
+    bevy::asset::load_internal_asset!(app,OIT,"../../../assets/shaders/dh2_oit.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(app,DIRECT_SHADER,"../../../assets/shaders/dh2_direct.wgsl",bevy::shader::Shader::from_wgsl);
 }
 
@@ -69,14 +71,20 @@ pub struct SurfaceUniform {
     /// specularFlowAngle; secondary power/intensity/shift and
     /// specularNoiseMaskScale; translucencyCoef; translucency/intensity,
     /// distortion, power, min; hairIBL, r_hairLuminanceHack,
-    /// r_hairAlphaTestLit, r_hairAlphaTestOpaque; OIT/Weights (r_oitColorResistance,
-    /// r_oitDepthRange, r_oitOrderingStrength, r_oitWeightFactor).
-    pub hair: [Vec4; 6],
+    /// r_hairAlphaTestLit, r_hairAlphaTestOpaque.
+    pub hair: [Vec4; 5],
     /// Resolved arkHair options: .x bit 0 useFlowMap, bit 1 useSpecularMask,
     /// bit 2 useSpecularNoiseMask, bit 3 hairTranslucencyType, bit 4
     /// translucency/enable, bit 5 twoSidedLighting; .y fresnelStrength bits;
     /// .z r_hairAlphaTestAlpha bits.
     pub hair_flags: UVec4,
+    /// 325130's OIT/Weights and OIT/Params for this surface's blend state
+    /// (non-particle), bound for the alpha lists' writePixel.
+    pub oit: [Vec4; 2],
+    /// .x r_OIT: 1 NEW_writePixel, 2 OLD_writePixel.
+    pub oit_mode: UVec4,
+    /// ComputeGlassTransmittance: Alpha/RefractionIOR, Alpha/Transmittance.
+    pub glass_transmittance: Vec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -261,9 +269,12 @@ impl From<&Surface> for SurfaceUniform {
                 Vec4::from_array(s.hair.translucency),
                 // The cvar thresholds are written at material load.
                 Vec4::new(s.hair.ibl, 1.0, 0.0, 0.0),
-                Vec4::ZERO,
             ],
             hair_flags: UVec4::new(0, s.hair.fresnel_strength.to_bits(), 0, 0),
+            // Written with the alpha-list routes once the blend state is known.
+            oit: [Vec4::ZERO; 2],
+            oit_mode: UVec4::ZERO,
+            glass_transmittance: Vec4::ZERO,
         }
     }
 }

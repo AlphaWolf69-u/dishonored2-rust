@@ -1,4 +1,6 @@
 #import bevy_pbr::mesh_view_bindings::{view,lights}
+#import dh2_direct::glass_scale
+#import dh2_fresnel::ward_fresnel
 #import dh2_ward::{ward_surface,WardTranslucency,ward_translucency,rgb_to_hsv,hsv_to_rgb}
 #ifdef DH2_HAIR
 #import dh2_direct::{HairSurface,hair_surface,hair_shift,hair_kajiya,hair_specular_mask}
@@ -39,8 +41,10 @@
 // arkSSSRender writes hdrBuffer and sssBuffer; the third target carries the
 // host's per-pixel arkSSSBlur inputs (albedo, kernel width) so the blur runs
 // as one screen pass instead of redrawing the sssSurf list (bevy_backend).
-#ifdef DH2_HAIR_OIT
-// arkHair's OIT pass: hair accumulation and hair revealage.
+#ifdef DH2_OIT
+#import dh2_oit::oit_write_pixel
+// The alpha lists' writePixel targets (14031dce0): accumulation and
+// revealage, hair's or the shared dynamicAlpha/worldAlpha pair.
 struct ProbeOutput {
     @location(0) color: vec4<f32>,
     @location(1) opacity: vec4<f32>,
@@ -202,6 +206,28 @@ fn fragment(
         pbr_input.direct_surface=ward_surface(pbr_input.N,pbr_input.V,authored.roughness,
             authored.direct_diffuse,authored.direct_ior,surface.direct.x,surface.direct.y,
             authored.fresnel_strength);
+        if compiled_misc.z==1u && (compiled_misc.w&64u)!=0u {
+            // arkDefaultHelpers::ComputeGlassTransmittance ($isAlpha).
+            let glass_v=pbr_input.V;let glass_n=pbr_input.N;
+            let vdotn=clamp(dot(glass_v,glass_n),0.0,1.0);
+            let fresnel=ward_fresnel(authored.direct_ior,vdotn,authored.fresnel_strength);
+            let transmittance=select(vec3(1.0)-fresnel,fresnel,face_factor>=0.0);
+            let refracted=refract(-glass_v,glass_n,surface.glass_transmittance.x);
+            let reflected=reflect(-glass_v,glass_n);
+            let view_refracted=(view.view_from_world*vec4(refracted,0.0)).xyz;
+            var angle=acos(clamp(dot(view_refracted,vec3(0.0,0.0,-1.0)),-1.0,1.0));
+            angle-=dot(refracted,reflected)*3.14159265358979323846;
+            var exit=smoothstep(0.0,6.28318530717958647692,angle);
+            exit*=clamp(dot(transmittance,vec3(1.0/3.0)),0.0,1.0);
+            exit=clamp(surface.glass_transmittance.y*exit,0.0,1.0);
+            // BC7 noise guard on low alpha (BC7epsilon).
+            let alpha=authored.albedo.a;
+            var specular=select(1.0,1.0/alpha,alpha>0.01569);
+#ifdef DH2_PARTICLE_INSTANCES
+            specular*=color.a;
+#endif
+            glass_scale=vec2(exit,specular);
+        }
         if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
             // arkVegetation translucency: surf.translucency from translucencyMap
             // (else vertex colour, i.e. 1), and the albedo saturated and
@@ -443,7 +469,8 @@ fn fragment(
                 *reflected_light(probe_index,vertex_output.world_position.xyz,pbr_input.N,hair_view,
                 surface.hair[4].x,specular_reflectance,true,reflection_indices_gain,reflection_barycentrics);
 #else
-            indirect+=pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
+            // Glass transmittance: ambient by the exit term, IBL by 1/alpha.
+            indirect=indirect*glass_scale.x+glass_scale.y*pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
                 pbr_input.N,normalize(view.world_position-vertex_output.world_position.xyz),
                 pbr_input.material.perceptual_roughness,specular_reflectance,
                 compiled_misc.z==2u || compiled_misc.z==11u,
@@ -528,22 +555,25 @@ fn fragment(
     }
 #endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
-#ifdef DH2_HAIR_OIT
+#ifdef DH2_OIT
     {
-        // oit NEW_writePixel (RETAIL) with OIT/Params (1, 0, 1, 1): the
-        // additive opacity is 1 and both particle strengths are neutral.
-        // The weight reads the colour in game lighting units.
-        let alpha=hair_albedo.a;
-        let game=vec4(out.color.rgb/(139.26*view.exposure),alpha);
-        let colour_length=length(game);
-        var colour_normal=1.0;
-        if colour_length>0.0 {colour_normal=1.0-dot(game/colour_length,vec4(0.25));}
-        let weights=surface.hair[5];
-        let a=pow(1e-2+colour_normal,weights.x);
-        let b=pow(min(0.02245,vertex_output.position.z)*weights.y,weights.z);
-        let weight=clamp(a*b,1e-2,3e3)*weights.w;
-        out.color=vec4(out.color.rgb,1.0)*(weight*alpha);
-        out.opacity=vec4(alpha,0.0,0.0,0.0);
+        // $isAlpha && !$isMainPassAlpha: writePixel(finalizedColor,
+        // m_diffuseAlbedo.rgb, m_diffuseAlbedo.a), in game lighting units.
+        let units=139.26*view.exposure;
+#ifdef DH2_HAIR
+        let albedo=hair_albedo;
+#else
+        let albedo=pbr_input.material.base_color;
+#endif
+        let pixel=oit_write_pixel(out.color.rgb/units,albedo.rgb,albedo.a,vertex_output.position,
+            surface.oit[0],surface.oit[1],surface.oit_mode.x);
+#ifdef DH2_HAIR_LIST
+        // The hair resolve composites straight into the view target.
+        out.color=vec4(pixel.colour.rgb*units,pixel.colour.a);
+#else
+        out.color=pixel.colour;
+#endif
+        out.opacity=pixel.opacity;
     }
 #endif
 #ifdef DH2_SSS_TARGETS

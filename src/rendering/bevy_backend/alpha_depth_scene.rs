@@ -17,25 +17,39 @@ use std::{sync::Mutex,
 };
 
 const SHADER: Handle<Shader> = bevy::asset::uuid_handle!("e3a49cd7-5e51-4226-a2b9-d0a1084c1481");
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AlphaDepthMaterial {
     pub state: [u32; 9],
     pub flags49: u8,
     pub full: bool,
     pub reduced: bool,
-    /// arkHair: drawn by the hair pass (lit with depth writes, then OIT)
-    /// instead of the ordinary transparent phase.
+}
+/// 14031dce0 draws dynamicAlpha (model bucket 0x37) and worldAlpha (world
+/// list key 0) through writePixel: weighted-blended accumulation when r_OIT
+/// is nonzero, otherwise the material blend into hdrBuffer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct AlphaLitRoute {
+    pub state: crate::render_state::RenderState,
+    pub accumulate: bool,
+}
+/// One rendered instance's alpha-list routes: the depth-alpha slots, the
+/// hair list (bucket 0x36) and the ALPHA_LIT list.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AlphaSurface {
+    pub depth: Result<AlphaDepthMaterial, String>,
     pub hair: bool,
+    pub lit: Result<Option<AlphaLitRoute>, String>,
 }
 #[derive(Resource, Default)]
-pub struct AlphaDepthSources(pub HashMap<MainEntity, Result<AlphaDepthMaterial, String>>);
+pub struct AlphaDepthSources(pub HashMap<MainEntity, AlphaSurface>);
 /// Forward-list partitioning must finish before alpha-depth clones its batches.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AlphaDepthPreparation;
-/// The hair lit pass, hair OIT pass and hair resolve, before the particle
-/// list's accumulation and resolve.
+/// 14031dce0's model lists: the hair lit pass, hair OIT pass and hair
+/// resolve, then dynamicAlpha/worldAlpha, before the particle draws and the
+/// alpha list's resolve.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HairPass;
+pub struct AlphaLitPass;
 const HAIR_RESOLVE: &str = include_str!("../../../assets/shaders/dh2_hair_resolve.wgsl");
 #[derive(Resource, Default)]
 pub(super) struct AlphaGpu {
@@ -45,6 +59,15 @@ pub(super) struct AlphaGpu {
     /// RGBA16F hair accumulation, R8 hair revealage.
     hair_targets: Option<(FogAttachment, FogAttachment)>,
     hair_resolve: Option<(TextureFormat, BindGroupLayout, RenderPipeline)>,
+    /// dynamicAlpha/worldAlpha per view: [accumulation, material blend].
+    lit_phases: HashMap<RetainedViewEntity, [SortedRenderPhase<Transparent3d>; 2]>,
+    lit_pipelines:
+        HashMap<(CachedRenderPipelineId, AlphaLitRoute, TextureFormat, TextureFormat), CachedRenderPipelineId>,
+    /// The alpha list's RGBA16F accumulation and RG16F revealage, shared
+    /// with the particle draws (36d0c0's packed formats).
+    lit_targets: Option<(FogAttachment, FogAttachment)>,
+    /// The view whose model draws cleared and accumulated into lit_targets.
+    lit_drawn: Mutex<Option<RetainedViewEntity>>,
     opacity: Option<FogAttachment>,
     phases: HashMap<RetainedViewEntity, [SortedRenderPhase<Transparent3d>; 3]>,
     pipelines:
@@ -72,7 +95,22 @@ impl AlphaGpu {
         gpu.phases.clear();
         gpu.hair_phases.clear();
         gpu.hair_targets = None;
+        gpu.lit_phases.clear();
+        gpu.lit_targets = None;
         *gpu.completed.get_mut().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
+    /// The alpha list's targets for the particle draws and resolve.
+    pub(super) fn alpha_list_targets(
+        &self,
+        view: RetainedViewEntity,
+    ) -> Option<super::particle_pass::AlphaListTargets<'_>> {
+        let (accumulation, opacity) = self.lit_targets.as_ref()?;
+        Some(super::particle_pass::AlphaListTargets {
+            accumulation: &accumulation.view,
+            opacity: &opacity.view,
+            drawn: *self.lit_drawn.lock().unwrap() == Some(view),
+        })
     }
 
     pub(super) fn opacity_texture(&self, camera: Entity, frame: u32) -> Option<&Texture> {
@@ -113,9 +151,9 @@ pub fn register(app: &mut App) {
                 Core3d,
                 // Original menu capture: hair lit pass 10249, hair OIT
                 // 10536, particle OIT 10626, composite 10659.
-                draw_hair
+                draw_alpha_lit
                     .in_set(Core3dSystems::MainPass)
-                    .in_set(HairPass)
+                    .in_set(AlphaLitPass)
                     .after(super::fog_scene::AtmospherePass)
                     .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
             );
@@ -145,8 +183,10 @@ fn prepare(
     mut unsupported: Local<HashSet<String>>,
 ) {
     *gpu.completed.get_mut().unwrap() = None;
+    *gpu.lit_drawn.get_mut().unwrap() = None;
     gpu.phases.clear();
     gpu.hair_phases.clear();
+    gpu.lit_phases.clear();
     // Alpha depth is also a fog input, independently of the DoF switch.
     if display.0.is_none() {
         return;
@@ -164,7 +204,7 @@ fn prepare(
                 let item = &source.items[index];
                 let count = item.batch_range.len().max(1);
                 if !item.batch_range.is_empty() {
-                    if let Some(material) = sources.0.get(&item.entity.1) {
+                    if let Some(material) = sources.0.get(&item.entity.1).map(|s| &s.depth) {
                         let material = match material {
                             Ok(material) => material,
                             Err(error) => {
@@ -269,8 +309,7 @@ fn prepare(
             while index < source.items.len() {
                 let item = &source.items[index];
                 let count = item.batch_range.len().max(1);
-                let is_hair = sources.0.get(&item.entity.1)
-                    .is_some_and(|material| material.as_ref().is_ok_and(|material| material.hair));
+                let is_hair = sources.0.get(&item.entity.1).is_some_and(|surface| surface.hair);
                 if is_hair {
                     for kind in 0..2u8 {
                         let key = (item.pipeline, kind);
@@ -288,7 +327,7 @@ fn prepare(
                             if kind == 1 {
                                 descriptor.label = Some("hair oit mesh".into());
                                 let fragment = descriptor.fragment.as_mut().ok_or("hair MAIN has no fragment")?;
-                                fragment.shader_defs.push("DH2_HAIR_OIT".into());
+                                fragment.shader_defs.extend(["DH2_OIT".into(), "DH2_HAIR_LIST".into()]);
                                 let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One,
                                     operation: BlendOperation::Add };
                                 let reveal = BlendComponent { src_factor: BlendFactor::Zero,
@@ -332,16 +371,74 @@ fn prepare(
                 gpu.hair_phases.insert(view.retained_view_entity, hair);
                 ensure_hair_resolve(&mut gpu, &device, target.main_texture_format());
             }
-            if !hair_members.is_empty() {
-                // Pending hair pipelines keep the surfaces out of both paths
-                // for that frame, as the ordinary pipelines do while compiling.
+            // 14033b350: dynamicAlpha (bucket 0x37) and worldAlpha leave the
+            // ordinary transparent phase for 14031dce0's alpha list.
+            let extent = UVec2::new(target.main_texture().width(), target.main_texture().height());
+            if gpu.lit_targets.as_ref().is_none_or(|(accumulation, _)|
+                accumulation.texture.width() != extent.x || accumulation.texture.height() != extent.y) {
+                gpu.lit_targets = Some((
+                    FogAttachment::new(&device, "alpha list accumulation", extent, TextureFormat::Rgba16Float),
+                    FogAttachment::new(&device, "alpha list revealage", extent, TextureFormat::Rg16Float),
+                ));
+            }
+            let mut lit: [SortedRenderPhase<Transparent3d>; 2] = std::array::from_fn(|_| Default::default());
+            let mut lit_members = HashSet::new();
+            let mut index = 0;
+            while index < source.items.len() {
+                let item = &source.items[index];
+                let count = item.batch_range.len().max(1);
+                let members = index..(index + count).min(source.items.len());
+                let route = match sources.0.get(&item.entity.1).map(|surface| &surface.lit) {
+                    Some(Ok(route)) => *route,
+                    Some(Err(error)) => {
+                        if unsupported.insert(error.clone()) {
+                            warn!("Alpha list route pending: {error}");
+                        }
+                        None
+                    }
+                    None => None,
+                };
+                if let Some(route) = route.filter(|_| !hair_members.contains(&index)) {
+                    let format = target.main_texture_format();
+                    let depth_format = TextureFormat::Depth32FloatStencil8;
+                    let key = (item.pipeline, route, format, depth_format);
+                    let pipeline = match gpu.lit_pipelines.get(&key) {
+                        Some(id) => Some(*id),
+                        None if cache.get_render_pipeline(item.pipeline).is_some() => {
+                            let id = cache.queue_render_pipeline(lit_descriptor(&cache, item.pipeline, route, format, depth_format)?);
+                            gpu.lit_pipelines.insert(key, id);
+                            Some(id)
+                        }
+                        None => None,
+                    };
+                    // A compiling pipeline keeps its surfaces out of both paths
+                    // for that frame, as the ordinary pipelines do.
+                    if let Some(pipeline) = pipeline.filter(|id| cache.get_render_pipeline(*id).is_some()) {
+                        for member in members.clone() {
+                            lit[usize::from(!route.accumulate)]
+                                .add_retained(copy_item(&source.items[member], pipeline));
+                        }
+                    }
+                    lit_members.extend(members);
+                }
+                index += count;
+            }
+            if lit.iter().any(|phase| !phase.items.is_empty()) {
+                info_once!(members = lit_members.len(), "Alpha list model surfaces queued");
+                gpu.lit_phases.insert(view.retained_view_entity, lit);
+            }
+            if !hair_members.is_empty() || !lit_members.is_empty() {
+                // The transparent phase is retained across frames: its items
+                // stay queued, and this frame's batches of the rerouted
+                // surfaces are emptied so the ordinary pass skips them.
+                // Pending pipelines keep them out of both paths for that
+                // frame, as the ordinary pipelines do while compiling.
                 if let Some(phase) = phases.get_mut(&view.retained_view_entity) {
-                    let mut position = 0;
-                    phase.items.retain(|_, _| {
-                        let keep = !hair_members.contains(&position);
-                        position += 1;
-                        keep
-                    });
+                    for (position, item) in phase.items.values_mut().enumerate() {
+                        if hair_members.contains(&position) || lit_members.contains(&position) {
+                            item.batch_range.end = item.batch_range.start;
+                        }
+                    }
                 }
             }
             if !pending && selected.iter().any(|p| !p.items.is_empty()) {
@@ -470,17 +567,147 @@ fn draw(
         Some((main.id(), water.matrices.frame, !phases[2].items.is_empty()));
 }
 
-/// arkHair's lit pass (blend SRC_ALPHA, depth writes), its OIT pass into the
-/// hair accumulation and revealage, and the hair resolve into the view.
-fn draw_hair(
+/// The pipeline of one dynamicAlpha/worldAlpha surface: its material state
+/// with 31dce0's overrides, writePixel's two targets when accumulating.
+fn lit_descriptor(
+    cache: &PipelineCache,
+    base: CachedRenderPipelineId,
+    route: AlphaLitRoute,
+    colour: TextureFormat,
+    depth: TextureFormat,
+) -> Result<RenderPipelineDescriptor, String> {
+    let (state, _) = crate::render_state::alpha_surface_draw_state(route.state, route.accumulate, false);
+    let blends = crate::render_state::blend_state(&state);
+    let mut descriptor = cache.get_render_pipeline_descriptor(base).clone();
+    descriptor.label = Some(if route.accumulate { "alpha list accumulation mesh" } else { "alpha list mesh" }.into());
+    let fragment = descriptor.fragment.as_mut().ok_or("alpha list MAIN has no fragment")?;
+    let formats = if route.accumulate {
+        fragment.shader_defs.push("DH2_OIT".into());
+        vec![TextureFormat::Rgba16Float, TextureFormat::Rg16Float]
+    } else {
+        vec![colour]
+    };
+    fragment.targets = formats
+        .into_iter()
+        .enumerate()
+        .map(|(index, format)| {
+            let blend = blends.targets[index].ok_or("alpha list colour target absent")?;
+            Ok(Some(ColorTargetState {
+                format,
+                blend: super::pipeline_state::blend_target(blend)?,
+                write_mask: ColorWrites::from_bits_truncate(u32::from(blend.write_mask)),
+            }))
+        })
+        .collect::<Result<_, String>>()?;
+    descriptor.depth_stencil = Some(super::pipeline_state::depth_stencil_gpu(&state, depth)?);
+    descriptor.multisample.count = 1;
+    descriptor.multisample.alpha_to_coverage_enabled = false;
+    Ok(descriptor)
+}
+
+/// 14031dce0's model lists: hair, then dynamicAlpha/worldAlpha against the
+/// alpha depth with stencil reference 0x44, as the particle draws.
+fn draw_alpha_lit(
     world: &World,
-    view: ViewQuery<(&ExtractedView, &ViewTarget, &ViewDepthTexture)>,
+    view: ViewQuery<(&MainEntity, &ExtractedView, &ViewTarget, &ViewDepthTexture)>,
     gpu: Res<AlphaGpu>,
+    fog: Res<FogGpu>,
+    water: Res<WaterSceneFrame>,
     device: Res<RenderDevice>,
     mut context: RenderContext,
+    mut reported: Local<bool>,
 ) {
     let entity = view.entity();
-    let (extracted, target, main_depth) = view.into_inner();
+    let (main, extracted, target, main_depth) = view.into_inner();
+    draw_hair(world, entity, extracted, target, main_depth, &gpu, &device, &mut context);
+    let Some(phases) = gpu.lit_phases.get(&extracted.retained_view_entity) else {
+        return;
+    };
+    let Some(water) = water.0.as_ref().filter(|w| w.camera == main.id()) else {
+        return;
+    };
+    let Some(depth) = fog.alpha_depth(main.id(), water.matrices.frame) else {
+        return;
+    };
+    let Some((accumulation, revealage)) = gpu.lit_targets.as_ref() else {
+        return;
+    };
+    if depth.alpha.full.format() != TextureFormat::Depth32FloatStencil8
+        || depth.alpha.full.width() != accumulation.texture.width()
+        || depth.alpha.full.height() != accumulation.texture.height()
+    {
+        warn_once!("Alpha list depth {:?} does not match its targets", depth.alpha.full.size());
+        return;
+    }
+    for (index, phase) in phases.iter().enumerate() {
+        if phase.items.is_empty() {
+            continue;
+        }
+        let accumulate = index == 0;
+        let colours = if accumulate {
+            vec![
+                Some(RenderPassColorAttachment {
+                    view: &accumulation.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: Operations { load: LoadOp::Clear(Default::default()), store: StoreOp::Store },
+                }),
+                Some(RenderPassColorAttachment {
+                    view: &revealage.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(bevy::color::LinearRgba::new(1., 0., 0., 1.).into()),
+                        store: StoreOp::Store,
+                    },
+                }),
+            ]
+        } else {
+            vec![Some(target.get_color_attachment())]
+        };
+        let mut pass = context.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some(if accumulate { "alpha list accumulation" } else { "alpha list" }),
+            color_attachments: &colours,
+            // The particle half of this list tests the same target: the
+            // alpha depth carries the stencil marks (2fdea0's underwater
+            // 0x40) that 31dce0's reference 0x44 test reads.
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: &depth.alpha.full_attachment,
+                depth_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
+                stencil_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
+            }),
+            ..Default::default()
+        });
+        // 31dce0 passes reference 0x44 for draws without model+1c1c bit 3.
+        pass.set_stencil_reference(0x44);
+        if let Err(error) = phase.render(&mut pass, world, entity) {
+            error!("Alpha list submission failed: {error:?}");
+            return;
+        }
+        if accumulate {
+            *gpu.lit_drawn.lock().unwrap() = Some(extracted.retained_view_entity);
+        }
+    }
+    if !*reported {
+        info!(accumulated = phases[0].items.len(), blended = phases[1].items.len(),
+            "Alpha list model submission active");
+        *reported = true;
+    }
+}
+
+/// arkHair's lit pass (blend SRC_ALPHA, depth writes), its OIT pass into the
+/// hair accumulation and revealage, and the hair resolve into the view.
+#[allow(clippy::too_many_arguments)]
+fn draw_hair(
+    world: &World,
+    entity: Entity,
+    extracted: &ExtractedView,
+    target: &ViewTarget,
+    main_depth: &ViewDepthTexture,
+    gpu: &AlphaGpu,
+    device: &RenderDevice,
+    context: &mut RenderContext,
+) {
     let Some(phases) = gpu.hair_phases.get(&extracted.retained_view_entity) else {
         return;
     };

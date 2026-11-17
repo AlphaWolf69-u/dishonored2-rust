@@ -56,7 +56,8 @@ fn physics_packets_match_complete_executed_router_and_processor() {
                     BodyCommand::Activation { body, deactivate } => {
                         calls.extend([0x1e, body, u32::from(deactivate)])
                     }
-                    BodyCommand::Ignored => {}
+                    // The fixture's oracle records no call for 0x17.
+                    BodyCommand::MotionProperties { .. } | BodyCommand::Ignored => {}
                 }
                 Ok(())
             })

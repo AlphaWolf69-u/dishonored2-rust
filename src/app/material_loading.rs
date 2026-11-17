@@ -32,6 +32,25 @@ fn boat_volume_routes(
     if material::draw_bucket(0, 0, 0, false, sort, thresholds) != 0x26 {
         return Ok([false; 2]);
     }
+    let (world, model) = material_draw_routes(library, catalog, bytes, main, stage_sort)?;
+    Ok([
+        world == Some(crate::rendering::material_lists::WorldDrawList::BoatVolume),
+        model == 0x26,
+    ])
+}
+
+/// The material's world draw list (339160 via 33bf30) and model bucket
+/// (3386a0), from the finalized material fields both selectors read.
+/// The view's dark-vision mask is zero: an implicit layer selects no world list.
+pub(super) fn material_draw_routes(
+    library: &mut shader_cache::ProgramLibrary,
+    catalog: &archive::Catalog,
+    bytes: &[u8],
+    main: &str,
+    stage_sort: [u32; 2],
+) -> Result<(Option<crate::rendering::material_lists::WorldDrawList>, u8), String> {
+    let sort = stage_sort.map(f32::from_bits);
+    let thresholds = library.material_sort_thresholds(catalog)?;
     let overrides = material_option_overrides(library, bytes)?;
     let mut flags48 =
         (u8::from(library.option_value(main.as_bytes(), &overrides, b"isDecal")? & 1 != 0) << 4)
@@ -44,7 +63,7 @@ fn boat_volume_routes(
     // is null; an authored non-null program precedes sort admission.
     let sss = material::authored_program_override(bytes, "sssProgram")
         .is_some_and(|p| !p.is_empty() && p != "0");
-    let model = material::draw_bucket(flags48, flags4a, flags4b, sss, sort, thresholds) == 0x26;
+    let model = material::draw_bucket(flags48, flags4a, flags4b, sss, sort, thresholds);
     flags48 |=
         u8::from(library.option_value(main.as_bytes(), &overrides, b"needsWind")? & 1 != 0) << 6;
     flags4a |=
@@ -56,8 +75,6 @@ fn boat_volume_routes(
         .ok_or("material MAIN definition absent")?
         .render_state();
     let state = render_state::material_render_state(&entities::declaration_text(bytes), state)?;
-    // Boat admission is unchanged by the view mask: an implicit
-    // dark-vision layer routes elsewhere or is rejected in either case.
     let world = crate::rendering::material_lists::world_draw_list(
         crate::rendering::material_lists::WorldMaterial {
             flags_48: flags48,
@@ -69,8 +86,8 @@ fn boat_volume_routes(
         },
         thresholds,
         0,
-    ) == Some(crate::rendering::material_lists::WorldDrawList::BoatVolume);
-    Ok([world, model])
+    );
+    Ok((world, model))
 }
 
 /// Resolve the slot-admission fields from the same dictionaries as 1402d5210.
@@ -935,7 +952,7 @@ impl MaterialResolver<'_> {
             MaterialGeometry::Model => 1,
         }];
         let mut fog_flags = 0;
-        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11) {
+        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11 | 12) {
             let receiver = (|| -> Result<UVec4, String> {
                 let source = resolve_shadow_source_inputs(
                     self.programs.as_deref_mut(),
@@ -1085,16 +1102,6 @@ impl MaterialResolver<'_> {
                     uniform.hair[4].w = opaque;
                     // The lit pass clips at hairAlphaTest = r_hairAlphaTestLit.
                     uniform.alpha.x = lit;
-                    // NEW_writePixel's OIT/Weights; OIT/Params is (1, 0, 1, 1)
-                    // for non-particle surfaces (325130; menu capture 10536).
-                    match (value("r_oitColorResistance"), value("r_oitDepthRange"),
-                        value("r_oitOrderingStrength"), value("r_oitWeightFactor")) {
-                        (Some(a), Some(b), Some(c), Some(d)) => uniform.hair[5] = Vec4::new(a, b, c, d),
-                        _ => {
-                            eprintln!("OIT cvars are not registered: {path}");
-                            return None;
-                        }
-                    }
                 }
                 _ => {
                     eprintln!("Hair cvars are not registered: {path}");
@@ -1158,6 +1165,75 @@ impl MaterialResolver<'_> {
             return None;
         }
         let transparency = material::transparency_with_program(bytes, program);
+        if transparency == material::Transparency::Blend
+            || surface.program() == material_surface::Program::Hair
+        {
+            // 325130 binds OIT/Weights and OIT/Params per surface from its
+            // MAIN blend state for writePixel (alpha lists, hair OIT).
+            let oit = (|| -> Result<_, String> {
+                let source = resolve_shadow_source_inputs(
+                    self.programs.as_deref_mut(),
+                    bytes,
+                    program,
+                    surface.main_program.as_deref(),
+                )?;
+                let mut state = [0; 9];
+                state[0] = source.main_blend_state;
+                let console = crate::platform::console::shared().read();
+                crate::rendering::particles::transparency::TransparencyParameters::resolve(
+                    &console.cvars,
+                    crate::rendering::particles::transparency::TransparencyParameters::additive(state),
+                    false,
+                )
+            })();
+            match oit {
+                Ok(oit) => {
+                    uniform.oit = [Vec4::from_array(oit.weights), Vec4::from_array(oit.parameters)];
+                    uniform.oit_mode = UVec4::new(oit.mode as u32, 0, 0, 0);
+                }
+                Err(error) => eprintln!("Alpha list parameters unavailable for {path}: {error}"),
+            }
+            // arkDefaultHelpers::ComputeGlassTransmittance's two parameters,
+            // material values over the MAIN program's defaults.
+            let glass = (|| -> Result<Vec4, String> {
+                let catalog = self.catalog.ok_or("material catalog unavailable")?;
+                let main = surface.main_program.as_deref().ok_or("material MAIN absent")?;
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let fallback = library
+                    .definition(main.as_bytes())?
+                    .ok_or("material MAIN definition absent")?
+                    .defaults
+                    .clone();
+                let names = ["alpha/refractionior", "alpha/transmittance"];
+                let parameters = entities::material_float_parameters(
+                    &entities::declaration_text(bytes),
+                    |n| names.contains(&n),
+                )?
+                .into_iter()
+                .map(|(name, words)| render_program::SerializedParameter {
+                    name: name.into_bytes(),
+                    kind: render_program::RenderParameterKind::Uniform,
+                    value: render_program::SerializedParameterValue::Words(words),
+                })
+                .collect();
+                let values = render_program::SerializedParameterBlock { flags: 0, parameters };
+                let mut value = |name: &[u8]| -> Result<f32, String> {
+                    Ok(f32::from_bits(
+                        library.registered_float_vector(catalog, &values, name, Some(&fallback))?[0],
+                    ))
+                };
+                Ok(Vec4::new(value(b"alpha/refractionior")?, value(b"alpha/transmittance")?, 0.0, 0.0))
+            })();
+            match glass {
+                Ok(glass) => uniform.glass_transmittance = glass,
+                Err(error) => eprintln!("Glass transmittance parameters unavailable for {path}: {error}"),
+            }
+        }
         let program_is_decal = material::program_option(bytes, program, "isDecal");
         let two_sided_lighting = material::program_option(bytes, program, "twoSidedLighting");
         let alpha_test = material::program_option(bytes, program, "alphaTest");

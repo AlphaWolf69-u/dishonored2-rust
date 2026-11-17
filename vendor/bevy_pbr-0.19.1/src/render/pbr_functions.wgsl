@@ -6,6 +6,7 @@
 #import dh2_direct::{skin_light_diffuse,skin_direct_diffuse}
 #endif
 #ifdef DH2_SURFACE_ENABLED
+#import dh2_direct::{glass_scale,glass_light_diffuse,glass_direct_diffuse}
 #import dh2_tlf_list
 #import dh2_area_light_opaque::opaque_area_lighting
 #endif
@@ -556,6 +557,9 @@ fn apply_pbr_lighting_with_shadows(
 #ifdef DH2_SKIN
         skin_light_diffuse = vec3<f32>(0.0);
 #endif
+#ifdef DH2_SURFACE_ENABLED
+        glass_light_diffuse = vec3<f32>(0.0);
+#endif
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
 #ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
@@ -571,6 +575,9 @@ fn apply_pbr_lighting_with_shadows(
         }
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SURFACE_ENABLED
+        glass_direct_diffuse += glass_light_diffuse * shadow;
+#endif
 #ifdef DH2_SKIN
         skin_direct_diffuse += skin_light_diffuse * shadow;
 #endif
@@ -645,6 +652,9 @@ fn apply_pbr_lighting_with_shadows(
 #ifdef DH2_SKIN
         skin_light_diffuse = vec3<f32>(0.0);
 #endif
+#ifdef DH2_SURFACE_ENABLED
+        glass_light_diffuse = vec3<f32>(0.0);
+#endif
         let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
 #ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
@@ -660,6 +670,9 @@ fn apply_pbr_lighting_with_shadows(
         }
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SURFACE_ENABLED
+        glass_direct_diffuse += glass_light_diffuse * shadow;
+#endif
 #ifdef DH2_SKIN
         skin_direct_diffuse += skin_light_diffuse * shadow;
 #endif
@@ -740,12 +753,18 @@ fn apply_pbr_lighting_with_shadows(
 #ifdef DH2_SKIN
         skin_light_diffuse = vec3<f32>(0.0);
 #endif
+#ifdef DH2_SURFACE_ENABLED
+        glass_light_diffuse = vec3<f32>(0.0);
+#endif
         var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
 
 #ifdef DIRECTIONAL_LIGHT_SHADOW_MAP_DEBUG_CASCADES
         light_contrib = shadows::cascade_debug_visualization(light_contrib, i, view_z);
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SURFACE_ENABLED
+        glass_direct_diffuse += glass_light_diffuse * shadow;
+#endif
 #ifdef DH2_SKIN
         skin_direct_diffuse += skin_light_diffuse * shadow;
 #endif
@@ -1016,6 +1035,10 @@ fn apply_pbr_lighting_with_shadows(
     if #{DH2_TRACE_LIGHT_COMPONENT} == 2u { direct_light = trace_directional_light; indirect_light = vec3(0.0); }
     if #{DH2_TRACE_LIGHT_COMPONENT} == 3u { direct_light -= trace_local_light + trace_directional_light; indirect_light = vec3(0.0); }
     if #{DH2_TRACE_LIGHT_COMPONENT} == 4u { direct_light = vec3(0.0); }
+#endif
+    // arkDefaultHelpers::ComputeGlassTransmittance (identity unless set).
+#ifdef DH2_SURFACE_ENABLED
+    direct_light = (direct_light - glass_direct_diffuse) * glass_scale.y + glass_direct_diffuse * glass_scale.x;
 #endif
     // Total light
     output_color = vec4<f32>(

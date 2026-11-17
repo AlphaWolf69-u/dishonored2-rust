@@ -451,6 +451,15 @@ pub struct ParticleViewInputs<'a> {
     pub compressed_hdr: bool,
     pub white_level: f32,
     pub resolve_state: crate::render_state::RenderState,
+    pub alpha_list: Option<AlphaListTargets<'a>>,
+}
+/// ALPHA_LIT's accumulation (RGBA16F) and revealage (RG16F). `drawn`: the
+/// dynamicAlpha/worldAlpha model draws already cleared and accumulated into
+/// them this frame, so the particle draws load and the resolve always runs.
+pub struct AlphaListTargets<'a> {
+    pub accumulation: &'a TextureView,
+    pub opacity: &'a TextureView,
+    pub drawn: bool,
 }
 pub(super) struct GeometryGpu {
     vertices: Buffer,
@@ -624,6 +633,7 @@ pub fn particle_shader_source() -> String {
         shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
         shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
         shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_oit.wgsl")),
         include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
         shared_source(include_str!(
             "../../../assets/shaders/dh2_parallel_receiver.wgsl"
@@ -1576,7 +1586,42 @@ impl ParticlePass {
         input: ParticleViewInputs<'_>,
         draws: &[ParticleDraw],
     ) -> Result<(), String> {
+        if !draws.iter().any(|draw| !draw.material.distortion) {
+            // 31dce0 composites the alpha list whenever it drew, with or
+            // without particles.
+            if let Some(targets) = input.alpha_list.as_ref().filter(|t| t.drawn) {
+                self.ensure_transparency(device, queue, &input)?;
+                self.transparency.as_mut().unwrap().record_resolve(device, queue, encoder, &input, targets)?;
+            }
+            if draws.is_empty() {
+                return Ok(());
+            }
+        }
         self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::Colour)
+    }
+
+    fn ensure_transparency(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        input: &ParticleViewInputs<'_>,
+    ) -> Result<(), String> {
+        if self
+            .transparency
+            .as_ref()
+            .is_none_or(|p| !p.matches(input.extent, input.compressed_hdr, input.resolve_state))
+        {
+            self.transparency = Some(transparency::TransparencyPass::new(
+                device,
+                queue,
+                input.extent,
+                input.compressed_hdr,
+                self.colour_format,
+                self.depth_format,
+                input.resolve_state,
+            )?);
+        }
+        Ok(())
     }
 
     /// The opaque colour pass of non-isAlpha particle surfaces, after the
@@ -1822,27 +1867,18 @@ impl ParticlePass {
         };
         let accumulation = phase == ParticlePhase::Colour && draws.iter().find(|draw| !draw.material.distortion)
             .is_some_and(|draw| draw.transparency.mode != 0);
+        let models_drawn = phase == ParticlePhase::Colour && input.alpha_list.as_ref().is_some_and(|t| t.drawn);
+        if models_drawn && !accumulation && draws.iter().any(|draw| !draw.material.distortion) {
+            return Err("particle and model alpha lists disagree on r_OIT".into());
+        }
         if phase == ParticlePhase::Colour && draws
             .iter()
             .any(|draw| !draw.material.distortion && (draw.transparency.mode != 0) != accumulation)
         {
             return Err("particle transparency mode changed within a frame".into());
         }
-        if accumulation
-            && self
-                .transparency
-                .as_ref()
-                .is_none_or(|p| !p.matches(input.extent, input.compressed_hdr, input.resolve_state))
-        {
-            self.transparency = Some(transparency::TransparencyPass::new(
-                device,
-                queue,
-                input.extent,
-                input.compressed_hdr,
-                self.colour_format,
-                self.depth_format,
-                input.resolve_state,
-            )?);
+        if accumulation {
+            self.ensure_transparency(device, queue, &input)?;
         }
         let count = draws.iter().map(|d| d.instances.len()).sum::<usize>();
         if count > self.max_instances || draws.len() > self.max_draws {
@@ -2177,23 +2213,27 @@ impl ParticlePass {
             ));
         }
         let colour_attachments = if accumulation {
-            let targets = self.transparency.as_ref().unwrap();
+            let targets = input.alpha_list.as_ref().ok_or("alpha list targets unavailable")?;
             vec![
                 Some(RenderPassColorAttachment {
-                    view: &targets.accumulation_view,
+                    view: targets.accumulation,
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Default::default()),
+                        load: if targets.drawn { LoadOp::Load } else { LoadOp::Clear(Default::default()) },
                         store: StoreOp::Store,
                     },
                 }),
                 Some(RenderPassColorAttachment {
-                    view: &targets.opacity_view,
+                    view: targets.opacity,
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(bevy::color::LinearRgba::new(1., 0., 0., 1.).into()),
+                        load: if targets.drawn {
+                            LoadOp::Load
+                        } else {
+                            LoadOp::Clear(bevy::color::LinearRgba::new(1., 0., 0., 1.).into())
+                        },
                         store: StoreOp::Store,
                     },
                 }),
@@ -2269,10 +2309,11 @@ impl ParticlePass {
             }
         }
         if accumulation {
+            let targets = input.alpha_list.as_ref().ok_or("alpha list targets unavailable")?;
             self.transparency
                 .as_mut()
                 .unwrap()
-                .record_resolve(device, queue, encoder, &input)?;
+                .record_resolve(device, queue, encoder, &input, targets)?;
         }
         if phase == ParticlePhase::Colour && draws.iter().any(|draw| draw.material.distortion) {
             if self.distortion.as_ref().is_none_or(|(extent, compressed, _, _)|

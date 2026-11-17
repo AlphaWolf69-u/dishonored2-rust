@@ -59,7 +59,7 @@ through 1408ae9b0, sets entity +0xd4 bit 4, applies `m_spawnTag`
 continuation. The rewrite has no script-driven entity spawning yet; the
 world-FX graph evaluator (gameplay/effects/graph.rs) refuses the node.
 
-## Character hair (`arkhair`), in progress
+## Character hair (`arkhair`), connected
 
 Visible today on posed characters only (no AI characters spawn yet):
 the prologue's petrified Corvo and Emily (`dunwall_escape_tower_p`,
@@ -126,9 +126,13 @@ Open, in order:
 - The opaque depth prepass at 0.8 is connected through
   DepthPrepassMaterialKeys::register_blended_prepass (hair keys queue
   like alpha-masked materials; clip_surface applies 0.8).
-- Unverified: Corvo's beard in the prologue view is darker than the lit
-  pass alone; the original's grey beard is only seen in the menu under
-  different lighting. Needs a matched original view of a hair surface.
+- Hair was drawn only on the first frames: Bevy's transparent phase is
+  retained, and removing the rerouted items dropped them for good. The
+  rerouted batches are now emptied each frame instead. With hair drawn
+  every frame, it was also unshadowed: arkHair (program 12) was missing
+  from the forward shadow-receiver setup, so indoor hair took full
+  directional light (grey). With the receiver connected, Corvo's hair is
+  brown and the beard grey-brown, as in the original menu.
 - Hair OIT is connected: AlphaGpu draws the hair lit pass (depth writes)
   and the OIT pass into RGBA16F/R8 targets, then resolves the hair term
   before render_particles; the particle resolve after it composes to the
@@ -148,6 +152,36 @@ Open, in order:
   - One-sided translucency: all 84 translucency-enabled hair materials
     author translucency/intensity 0 and min 0, so the term is zero for
     every installed hair.
+
+## Alpha lists (`dynamicAlpha`, `worldAlpha`), connected
+
+From code: 14033b350 routes model bucket 0x37 (3386a0) to key 5, the list
+at renderer+0x9d091 that the frame graph names `dynamicAlpha`; bucket 0x36
+(hairType) goes to `hair` (0x943ce53b), 0x34 to `shadowWalkSurfs`. World
+list key 0 (339160) is `worldAlpha`. 14031dce0 (ALPHA_LIT) draws, with
+r_OIT set: hair OIT, then worldAlpha, then dynamicAlpha (models and
+particles in one list) into AccumulationBuffer/OpacityBuffer with the
+31dce0 state overrides and stencil reference 0x44, then the composite.
+FORWARD_DYNAMIC (140311aa0) draws opaqueSurf, sssSurf, the sky models
+(0x31927202, bucket 0x29), the hair lit pass and the underwater lists; it
+never draws dynamicAlpha. arkDefault's lit program takes writePixel only
+for `$isAlpha && !$isMainPassAlpha`, after ComputeGlassTransmittance
+(arkDefaultHelpers): specular / alpha (above the BC7 epsilon 0.01569),
+diffuse and ambient times the refraction-exit term.
+
+Rewrite: AlphaSurface routes per instance (model banks and world),
+AlphaGpu draws the routed items against the alpha depth (the target the
+particle draws and underwater stencil marks use) into the shared targets,
+and the particle pass loads them and resolves whenever either half drew.
+One writePixel port (dh2_oit.wgsl) serves particles, hair and models.
+Glass transmittance is ported for program 1 with the material's
+Alpha/RefractionIOR and Alpha/Transmittance. In the prologue tower 22
+model and 28 world materials route here; decals of types 0/3 stay in the
+main pass.
+
+Open, in order: main-pass alpha (decals, hair lit) still draws after the
+fog composite and water; r_OIT and the OIT cvars are read at material
+load, not per frame.
 
 ## Particle declaration census (2026-11-10)
 
