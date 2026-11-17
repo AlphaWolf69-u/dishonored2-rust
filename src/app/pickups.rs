@@ -60,13 +60,17 @@ pub(super) fn inventory_family_available(
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
+    update_pending(world, false)
+}
+
+fn update_pending(world: &mut World, closing: bool) -> Result<(), String> {
     let Some(mut pending) = world
         .get_resource_mut::<interactions::Interactions>()
         .and_then(|mut interactions| interactions.pending_pickup.take())
     else {
         return Ok(());
     };
-    let result = advance(world, &mut pending);
+    let result = advance(world, &mut pending, closing);
     if !matches!(result, Ok(true)) {
         world
             .resource_mut::<interactions::Interactions>()
@@ -75,7 +79,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
     result.map(|_| ())
 }
 
-fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
+fn advance(world: &mut World, pending: &mut Pending, closing: bool) -> Result<bool, String> {
     if pending.rejected_notice {
         //83f590's full-inventory branch sends pickedUp(false,fromGrapple)
         //before841490 posts its prepared full sound. A missing target alone
@@ -133,10 +137,13 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
     if accepted != Some(pending.entity) {
         return Ok(false);
     }
-    let held_exit=pending.hold.is_some() && world.resource::<player::PlayerState>().player.as_ref()
+    let readable=pending.item.as_ref().is_some_and(|item|item.note_type!=-1);
+    let offered_from_exit=world.resource::<player::PlayerState>().player.as_ref()
         .ok_or("Loot47 time detach player absent")?.loot_offered_from_exit(pending.entity);
-    if !held_exit {super::time_sync::detach_entity_time(world,pending.entity)?;}
-    if pending.item.as_ref().is_some_and(|item|item.note_type!=-1) {return finish_readable(world,pending);}
+    //83fe70's readable branch queues52 directly, bypassing its ordinary
+    //cancel restoration/80e050 branch.841500 detaches before queueing52.
+    if !(offered_from_exit && (pending.hold.is_some() || readable)) {super::time_sync::detach_entity_time(world,pending.entity)?;}
+    if readable {return finish_readable(world,pending,offered_from_exit,closing);}
     if pending.hold.is_some() {return finish_hold(world,pending);}
     if pending.item.is_none() {
         if pending.phase==0 {pending.phase=1;}
@@ -209,18 +216,29 @@ fn advance(world: &mut World, pending: &mut Pending) -> Result<bool, String> {
     Ok(true)
 }
 
-fn finish_readable(world:&mut World,pending:&mut Pending)->Result<bool,String> {
+fn finish_readable(world:&mut World,pending:&mut Pending,from_exit:bool,closing:bool)->Result<bool,String> {
     if pending.phase==0 {
+        if closing {
+            //An outgoing unactivated52 is cancelled by the existing read
+            //owner's close/retire path. No UI/inventory/pickup is fabricated.
+            world.resource_mut::<player::PlayerState>().player.as_mut().ok_or("Loot47 readable player absent")?.acknowledge_loot_object(pending.entity)?;
+            physics_scene::carrying_host::acknowledge_loot_pull(world,pending.entity);
+            return Ok(true);
+        }
         let item=pending.item.as_ref().ok_or("Loot47 readable item absent")?.clone();
-        world.resource_scope(|world,mut interactions:Mut<interactions::Interactions>|{
+        let queued=world.resource_scope(|world,mut interactions:Mut<interactions::Interactions>|{
             interactions.request_loot_readable(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.entity,pending.reference,item)
         })?;
+        if !queued {return Ok(false);}
         pending.phase=1;
     }
     if pending.phase==1 {
-        world.resource_scope(|world,mut scene:Mut<physics_scene::PhysicsScene>|{
-            scene.finish_loot_without_hide(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.reference)
-        })?;
+        //841500 completes76ec20(false);83fe70 only queues the52 request.
+        if !from_exit {
+            world.resource_scope(|world,mut scene:Mut<physics_scene::PhysicsScene>|{
+                scene.finish_loot_without_hide(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),pending.reference)
+            })?;
+        }
         pending.phase=2;
     }
     world.resource_mut::<player::PlayerState>().player.as_mut().ok_or("Loot47 readable player absent")?.acknowledge_loot_object(pending.entity)?;
@@ -323,7 +341,7 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
     {
         player.finish_loot_object();
     }
-    update(world)
+    update_pending(world, true)
 }
 
 /// A callback which mutated inventory or accepted a failure notification must

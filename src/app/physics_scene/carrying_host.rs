@@ -916,7 +916,7 @@ fn run(world: &mut bevy::prelude::World, retiring: bool) -> Result<(), String> {
         .get_resource::<PlayerState>()
         .and_then(|state| state.player.as_ref())
     {
-        if !world.resource::<Carrying>().has_work(player) {
+        if !world.resource::<Carrying>().has_work(player) && !player.grapple_catch_has_work() {
             return Ok(());
         }
         if !retiring && !world.resource::<Carrying>().has_transactions(player) && !player.grapple_catch_has_work() {

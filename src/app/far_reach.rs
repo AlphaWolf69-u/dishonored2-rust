@@ -336,8 +336,11 @@ impl Runtime {
     }
     pub fn has_cast_activity(&self) -> bool { self.pending || self.was_active }
     pub fn cancel(&mut self, _player: &mut Player) {
-        if !self.has_activity() {
+        //A retained+168 last-released target belongs to state84's independent
+        //clock interval. It must not preserve a separately canceled new aim.
+        if !self.has_cast_activity() {
             self.target = None;
+            self.object = None;
         }
     }
     pub fn service(&mut self, player: &mut Player) -> Result<bool, String> {

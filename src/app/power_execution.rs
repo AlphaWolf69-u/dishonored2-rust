@@ -352,7 +352,7 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
 /// equipment changes. Service its real state completion independently of
 /// whichever power is currently selected.
 fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player,
-    clock: &ClockRuntime, events: &mut EntityEvents, aim: bool) {
+    clock: &mut ClockRuntime, events: &mut EntityEvents, aim: bool) {
     world.init_resource::<PowerQueries>();
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return };
     let mut impacts = [None, None];
@@ -442,7 +442,7 @@ pub(super) fn before_frame(world: &mut World) {
         player.set_power_time(now);
         if let Some(mut clock) = world.remove_resource::<ClockRuntime>() {
             if let Some(mut events) = world.remove_resource::<EntityEvents>() {
-                service_far_reach(world, player, &clock, &mut events, false);
+                service_far_reach(world, player, &mut clock, &mut events, false);
                 world.insert_resource(events);
             }
             let result = service_blinks(world, player, &mut clock, false);
@@ -618,7 +618,7 @@ pub(super) fn after_frame(world: &mut World) {
                 if let Some(delta) = far_delta { far.update_cast(player, delta, mode); }
             }
         }
-        service_far_reach(world, player, &clock, &mut events, true);
+        service_far_reach(world, player, &mut clock, &mut events, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
         if let Err(error) = execute_pending(world, player, player_id, now, &mut clock, &mut events) { power_error(world, &error); }
         // Body owner has already advanced its actual hand-tag endpoint;

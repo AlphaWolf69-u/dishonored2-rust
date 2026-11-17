@@ -16,6 +16,13 @@ fn entity_binding(scene:&PhysicsScene, live:&LiveEntities, clock:&ClockRuntime, 
     }
     scene.entity_time_binding(live,entity)
 }
+///Preserve874c50's entity clock constructor origin. Admit a placed
+///consumer lazily from its actual selector; existing offset/countdown state
+///is retained by the canonical owner's entry-or-insert registration.
+pub(super) fn register_entity_time(scene:&PhysicsScene,live:&LiveEntities,clock:&mut ClockRuntime,entity:EntityId)->Result<(),String> {
+    let (space,_)=entity_binding(scene,live,clock,entity)?;
+    clock.register_entity_time(entity,space)
+}
 fn binding_root(live:&LiveEntities,mut entity:EntityId)->Result<EntityId,String> {
     let mut visited=Vec::new();
     while let Some(parent)=live.parent(entity)? {

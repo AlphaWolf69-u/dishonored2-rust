@@ -55,22 +55,22 @@ impl Runtime {
         &mut self,
         world: &World,
         player: &mut Player,
-        clock: &ClockRuntime,
+        clock: &mut ClockRuntime,
     ) -> Result<(), String> {
         let Some(released) = self.released.as_ref() else {
             return Ok(());
         };
         let live = world.resource::<LiveEntities>();
         let targets = if live.get(released.target).is_some() {
+            let scene=world.resource::<crate::app::physics_scene::PhysicsScene>();
+            crate::app::time_sync::register_entity_time(scene,live,clock,released.target)?;
             let now = f64::from(clock.entity_time(released.target).map_err(str::to_owned)? as f32);
-            world
-                .resource::<crate::app::physics_scene::PhysicsScene>()
-                .far_reach_released_targets(
-                    live,
-                    released.target,
-                    now - released.time,
-                    self.entity_delay,
-                )?
+            scene.far_reach_released_targets(
+                live,
+                released.target,
+                now - released.time,
+                self.entity_delay,
+            )?
         } else {
             Targets::default()
         };
@@ -84,7 +84,7 @@ impl Runtime {
         &mut self,
         world: &mut World,
         player: &mut Player,
-        clock: &ClockRuntime,
+        clock: &mut ClockRuntime,
         events: &mut EntityEvents,
     ) -> Result<(), String> {
         self.publish_released(world, player, clock)?;
@@ -209,6 +209,10 @@ impl Runtime {
             }
             if request.phase == 3 {
                 if request.success {
+                    crate::app::time_sync::register_entity_time(
+                        world.resource::<crate::app::physics_scene::PhysicsScene>(),
+                        world.resource::<LiveEntities>(),clock,target,
+                    )?;
                     let time = f64::from(clock.entity_time(target).map_err(str::to_owned)? as f32);
                     self.released = Some(Released { target, time });
                     self.publish_released(world, player, clock)?;

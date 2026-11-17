@@ -153,9 +153,9 @@ impl Runtime {
         self.acquired = None;
         self.acquisition_frame = None;
         self.next_acquisition_input = None;
-        if !self.has_activity() {
-            self.object = None;
-        }
+        //Sensor27+1c4 is reset here; the power's separately captured+dc
+        //cast target survives leaving Aiming until its release callback.
+        //Actual cancellation/Stop clears that snapshot in Runtime::cancel.
         Ok(())
     }
 }
