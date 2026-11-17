@@ -36,6 +36,7 @@ struct Delivery {
     factor: f32,
     recoil: bool,
     phase: u8,
+    contact: Option<super::physics_scene::explosion_effects::Contact>,
 }
 struct Owned {
     identity: Arc<str>,
@@ -408,15 +409,18 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
                     contact_mass: 1.,
                     contact_stimulus_enabled: Some(true),
                 };
-                if let Some(ticket) = super::explosions::post_contact_owned(
+                match super::explosions::post_contact_owned(
                     world,
                     &scope.key,
+                    &mut delivery.contact,
                     material,
                     &delivery.hit,
                     delivery.velocity.normalize_or_zero(),
                     context,
                 )? {
-                    entry.tails.push(ticket);
+                    super::explosions::ContactPost::Pending => return Ok(()),
+                    super::explosions::ContactPost::Complete(Some(ticket)) => entry.tails.push(ticket),
+                    super::explosions::ContactPost::Complete(None) => {},
                 }
             }
             delivery.phase = 3;
@@ -434,6 +438,17 @@ fn deliver(world: &mut World, entry: &mut Owned) -> Result<(), String> {
         entry.deliveries.pop_front();
     }
     Ok(())
+}
+
+///Complete source634320/635c90 callbacks already accepted by a real query.
+///This does not sample a blade, submit queries or advance another attack.
+pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
+    let Some(mut owner)=world.remove_resource::<Melee>() else{return Ok(true);};
+    let result=(||{
+        for entry in owner.owned.values_mut(){deliver(world,entry)?;}
+        Ok(owner.owned.values().all(|entry|entry.deliveries.is_empty()))
+    })();
+    world.insert_resource(owner);result
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
@@ -616,6 +631,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         factor: entry.factor,
                         recoil,
                         phase: 0,
+                        contact: None,
                     });
                     entry.seen.push(hit.entity);
                     if recoil {

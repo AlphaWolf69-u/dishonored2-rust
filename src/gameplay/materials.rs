@@ -96,10 +96,15 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     }
     /// c9c940 retains the declaration identity in the library record's +0x60.
     pub(crate) fn material_for_id(&self, id: u16) -> Result<&PhysicsMaterial, String> {
+        Ok(self.definition_for_id(id)?.material())
+    }
+    ///Borrow the same canonical declaration held by a real material record.
+    ///Accepted contact packets can retain this lease without rereading it.
+    pub(crate) fn definition_for_id(&self, id: u16) -> Result<&Arc<Definition>, String> {
         let record = self.library.get(id).ok_or("material library ID absent")?;
         let handle = u64::from(record.words[14]) | (u64::from(record.words[15]) << 32);
         let handle = handle.checked_sub(1).ok_or("material declaration absent")?;
-        self.get(usize::try_from(handle).map_err(|_| "material declaration handle overflow")?)
+        self.declarations.get(usize::try_from(handle).map_err(|_| "material declaration handle overflow")?)
             .ok_or_else(|| "material declaration absent".into())
     }
     pub fn resolve(

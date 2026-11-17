@@ -458,6 +458,20 @@ pub(in crate::app) fn startup_pending(world: &World) -> bool {
                 })
             })
 }
+///Read only from the existing opt-in loading diagnostic; ordinary gameplay
+///does not format owner state or retain a second readiness certificate.
+pub(in crate::app) fn debug_startup_pending(world: &World) -> String {
+    let coordinator = world.get_resource::<RuntimeMaterialCoordinator>();
+    let models = coordinator.map_or(0, |owner|owner.equipment.requested.iter().filter(|(id,lease)|
+        lease.strong_count()!=0&&!admitted(world,**id)).count());
+    let attachments = coordinator.map_or(0, |owner|owner.equipment.attachments.iter().filter(|(id,lease)|
+        lease.strong_count()!=0&&!attachment_admitted(world,**id)).count());
+    format!("attachments={} throwable={} melee={} Heart={} models_pending={} attachment_models_pending={}",
+        super::super::equipment_attachment_admission::startup_pending(world),
+        super::super::weapon_throwing::startup_pending(world),
+        super::super::melee::startup_pending(world),
+        super::super::heart::startup_pending(world),models,attachments)
+}
 
 pub(in crate::app) fn startup_error(world: &World) -> Option<String> {
     world

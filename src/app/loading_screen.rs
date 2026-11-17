@@ -633,9 +633,10 @@ fn acquire(world: &mut World) {
         }
         if !player_pending { crate::loading::complete("initial player resources"); }
         else if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("LOAD player startup pending: actions[{}] equipment={}",
+            eprintln!("LOAD player startup pending: actions[{}] equipment={} admission[{}]",
                 world.get_resource::<super::player_actions::PlayerActions>().map_or(String::new(), |a| a.debug_startup_pending()),
-                super::runtime_materials::equipment_admission::startup_pending(world));
+                super::runtime_materials::equipment_admission::startup_pending(world),
+                super::runtime_materials::equipment_admission::debug_startup_pending(world));
         }
         match advance_initial_images(world, &state.catalog, &state.gpu) {
             Ok(true) => {

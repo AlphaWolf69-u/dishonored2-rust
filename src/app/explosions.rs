@@ -2,6 +2,7 @@
 //! Request admission precedes ammunition consumption; the actual physics
 //!scene executes grouped recipients, occlusion, health and body effects.
 use super::physics_scene::explosion_effects;
+pub(super) use explosion_effects::ContactPost;
 use crate::{assets::explosions::Declaration, gameplay::explosions::Request};
 use bevy::prelude::*;
 use std::collections::VecDeque;
@@ -92,15 +93,16 @@ pub(super) fn ready_contact_owned(
 pub(super) fn post_contact_owned(
     world: &mut World,
     scope: &str,
+    selected: &mut Option<explosion_effects::Contact>,
     source: &str,
     hit: &crate::gameplay::shape_ray_query::ShapeRayContact,
     direction: bevy_math::Vec3,
     context: crate::rendering::bevy_backend::world_effects::EntityEffectContext,
-) -> Result<Option<super::usable_effects::EffectTicket>, String> {
+) -> Result<ContactPost, String> {
     world.resource_scope(|world, mut owner: Mut<Explosions>| {
         owner
             .effects
-            .post_contact(world, scope, source, hit, direction, context)
+            .post_contact(world, scope, selected, source, hit, direction, context)
     })
 }
 pub(super) fn ready(world: &World, declaration: &Declaration) -> Result<bool, String> {

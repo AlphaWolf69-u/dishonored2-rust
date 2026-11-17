@@ -110,6 +110,7 @@ impl LevelLifetime {
             }
             self.retirement_phase = "accepted weapon and impact callbacks";
             if !super::weapon_firing::finish_accepted(world)? { return Ok(false); }
+            if !super::melee::finish_accepted(world)? { return Ok(false); }
             if !super::projectiles::finish_accepted(world)? { return Ok(false); }
             if !super::explosions::finish_accepted(world)? { return Ok(false); }
             super::entity_messages::finish_accepted(world)?;

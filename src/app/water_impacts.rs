@@ -130,6 +130,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             super::physics_scene::explosion_effects::Contact {
                 source,
                 target,
+                target_definition: None,
                 position: bevy_math::Vec3::from_array(impact.point),
                 normal: bevy_math::Vec3::from_array(impact.normal),
                 direction: bevy_math::Vec3::from_array(impact.direction),

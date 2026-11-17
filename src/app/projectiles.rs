@@ -25,6 +25,7 @@ struct Delivery {
     phase: u8,
     handoff_phase: u8,
     contact_cursor: usize,
+    contact: Option<super::physics_scene::explosion_effects::Contact>,
     recovery_disabled: bool,
     stick_recoverable: Option<bool>,
 }
@@ -371,7 +372,7 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                 owner.batch.push((delivery.handle, id));
             }
         }
-        for index in 0..owner.batch.len() {
+        'projectile: for index in 0..owner.batch.len() {
             let (handle, id) = owner.batch[index];
             if !owner.deliveries.contains_key(&id) {
                 if !simulate { return Err("accepted projectile drain admitted a new flight tick".into()); }
@@ -530,6 +531,7 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                         phase: 0,
                         handoff_phase: 0,
                         contact_cursor: 0,
+                        contact: None,
                         recovery_disabled: false,
                         stick_recoverable: None,
                     },
@@ -769,16 +771,20 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                         context.contact_stimulus_enabled =
                             Some(delivery.step.contact_stimulus_enabled);
                         while delivery.contact_cursor < delivery.step.contact_effects.len() {
-                            if let Some(ticket) = super::explosions::post_contact_owned(
+                            match super::explosions::post_contact_owned(
                                 world,
                                 &scope,
+                                &mut delivery.contact,
                                 material,
                                 &delivery.step.contact_effects[delivery.contact_cursor],
                                 delivery.step.hit_direction,
                                 context,
                             )? {
-                                owner.contacts.push((id, ticket));
+                                super::explosions::ContactPost::Pending => continue 'projectile,
+                                super::explosions::ContactPost::Complete(Some(ticket)) => owner.contacts.push((id, ticket)),
+                                super::explosions::ContactPost::Complete(None) => {},
                             }
+                            delivery.contact = None;
                             delivery.contact_cursor += 1;
                         }
                     }

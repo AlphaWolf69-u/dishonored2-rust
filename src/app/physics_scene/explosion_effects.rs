@@ -45,7 +45,6 @@ struct Prepared {
 }
 struct Scope {
     spec: Spec,
-    revision: usize,
     fx_key: Arc<str>,
     task: Option<Mutex<Task<Result<Prepared, String>>>>,
     prepared: Option<Prepared>,
@@ -63,10 +62,20 @@ pub(in crate::app) struct Packet {
     pub path: String,
     pub frame: ReferenceFrame,
 }
+///A host-cold exact contact keeps its accepted gameplay journal until the
+///same FX owner prepares its real resources. None is an actual no-effect
+///material pair, distinct from Pending.
+pub(in crate::app) enum ContactPost {
+    Pending,
+    Complete(Option<super::super::usable_effects::EffectTicket>),
+}
 #[derive(Clone)]
 pub(in crate::app) struct Contact {
     pub source: String,
     pub target: String,
+    ///A witnessed body hands off its existing material lease. Explicit
+    ///already-prepared pairs (SurfaceImpact) do not need another lease here.
+    pub target_definition: Option<Arc<Definition>>,
     pub position: Vec3,
     pub normal: Vec3,
     pub direction: Vec3,
@@ -81,7 +90,6 @@ pub(in crate::app) struct Queries {
 fn acquire(
     catalog: Arc<archive::Catalog>,
     spec: Spec,
-    targets: Vec<Arc<Definition>>,
 ) -> Result<Prepared, String> {
     let mut rows = HashMap::new();
     let mut paths = Vec::new();
@@ -94,7 +102,7 @@ fn acquire(
             )?,
         ]
     } else {
-        targets
+        Vec::new()
     };
     let target_count = materials.len();
     let database = if spec.contact.is_some() || spec.ground.is_some() {
@@ -137,6 +145,19 @@ fn acquire(
         _database: database,
     })
 }
+///635c90 and7b24f0/7b2e60 supply actual source and witness declarations.
+///Explosion and ground packets use this same lookup; their query/damage,
+///orientation and water RNG stages remain with the existing source owners.
+fn contact_path(prepared:&Prepared,contact:&Contact)->Result<Option<String>,String>{
+    let row=(contact.source.to_ascii_lowercase(),contact.target.to_ascii_lowercase());
+    if let Some(path)=prepared.rows.get(&row){return Ok(path.clone());}
+    let source=prepared._materials.iter().find(|material|material.name.eq_ignore_ascii_case(&contact.source))
+        .ok_or("contact source material lease absent")?;
+    let target=contact.target_definition.as_ref().ok_or("contact witness has no material declaration lease")?;
+    Ok(prepared._database.as_ref().ok_or("contact database lease absent")?
+        .effect(source.contact_chain(),target.contact_chain()).map(str::to_owned))
+}
+
 impl Owner {
     pub(in crate::app) fn prepare(
         &mut self,
@@ -191,26 +212,20 @@ impl Owner {
                 Err("explosion scope generation reused for another declaration".into())
             };
         }
-        let (revision, targets) = if spec.contact_target.is_some() {
-            (0, Vec::new())
-        } else {
-            world
-                .get_resource::<PhysicsScene>()
-                .ok_or("explosion scene is absent")?
-                .explosion_materials()?
-        };
+        //635c90/651020 select the two materials from the accepted contact.
+        //Owning a source material never enumerates every level target or
+        //prepares its Cartesian ContactFX expansion before a hit exists.
         let catalog = world
             .get_resource::<super::super::SceneData>()
             .and_then(|scene| scene.catalog.clone())
             .ok_or("explosion catalog lease is absent")?;
         let requested = spec.clone();
-        let task = IoTaskPool::get().spawn(async move { acquire(catalog, requested, targets) });
-        let fx_key = Arc::from(format!("{key}:materials:{revision}"));
+        let task = IoTaskPool::get().spawn(async move { acquire(catalog, requested) });
+        let fx_key = Arc::from(format!("{key}:materials"));
         self.scopes.insert(
             key,
             Scope {
                 spec,
-                revision,
                 fx_key,
                 task: Some(Mutex::new(task)),
                 prepared: None,
@@ -226,36 +241,7 @@ impl Owner {
         });
         self.active
             .retain(|(_, ticket)| !super::super::usable_effects::entity_retired(world, ticket));
-        let revision = world
-            .get_resource::<PhysicsScene>()
-            .map(PhysicsScene::explosion_material_revision)
-            .transpose()?;
-        for (key, scope) in &mut self.scopes {
-            if scope.spec.contact_target.is_none()
-                && scope.prepared.is_some()
-                && Some(scope.revision) != revision
-            {
-                if scope.reserved {
-                    world
-                        .resource_mut::<super::super::usable_effects::EffectRequests>()
-                        .release_reservation(scope.fx_key.clone());
-                    scope.reserved = false;
-                }
-                let scene = world.resource::<PhysicsScene>();
-                let (new_revision, targets) = scene.explosion_materials()?;
-                let catalog = world
-                    .get_resource::<super::super::SceneData>()
-                    .and_then(|scene| scene.catalog.clone())
-                    .ok_or("explosion catalog lease is absent")?;
-                let spec = scope.spec.clone();
-                scope.task = Some(Mutex::new(
-                    IoTaskPool::get().spawn(async move { acquire(catalog, spec, targets) }),
-                ));
-                scope.revision = new_revision;
-                scope.fx_key = Arc::from(format!("{key}:materials:{new_revision}"));
-                scope.prepared = None;
-                scope.error = None;
-            }
+        for scope in self.scopes.values_mut() {
             let Some(task) = scope.task.as_mut() else {
                 continue;
             };
@@ -294,11 +280,7 @@ impl Owner {
         if let Some(error) = &scope.error {
             return Err(error.clone());
         }
-        let revision = world
-            .get_resource::<PhysicsScene>()
-            .ok_or("explosion scene is absent")?
-            .explosion_material_revision()?;
-        if scope.prepared.is_none() || scope.revision != revision {
+        if scope.prepared.is_none() {
             return Ok(false);
         }
         super::super::usable_effects::reservation_ready(world, &scope.fx_key)
@@ -329,14 +311,7 @@ impl Owner {
         if let Some(error) = &scope.error {
             return Err(error.clone());
         }
-        if scope.prepared.is_none()
-            || (scope.spec.contact_target.is_none()
-                && scope.revision
-                    != world
-                        .get_resource::<PhysicsScene>()
-                        .ok_or("contact scene is absent")?
-                        .explosion_material_revision()?)
-        {
+        if scope.prepared.is_none() {
             return Ok(false);
         }
         super::super::usable_effects::reservation_ready(world, &scope.fx_key)
@@ -345,24 +320,41 @@ impl Owner {
         &mut self,
         world: &mut World,
         key: &str,
+        selected: &mut Option<Contact>,
         source: &str,
         hit: &ShapeRayContact,
         direction: Vec3,
         context: crate::rendering::bevy_backend::world_effects::EntityEffectContext,
-    ) -> Result<Option<super::super::usable_effects::EffectTicket>, String> {
-        if !self.ready_contact(world, key, source)? {
-            return Err("contact FX source dependencies are not ready".into());
+    ) -> Result<ContactPost, String> {
+        if selected.is_none() {
+            let Some(mut contact) = world.resource::<PhysicsScene>().explosion_contact(
+                source, Vec3::from_slice(&hit.position[..3]), hit)? else {
+                return Ok(ContactPost::Complete(None));
+            };
+            contact.direction = direction;
+            *selected = Some(contact);
         }
-        let Some(mut contact) = world.resource::<PhysicsScene>().explosion_contact(
-            source,
-            Vec3::from_slice(&hit.position[..3]),
-            hit,
-        )?
-        else {
-            return Ok(None);
-        };
-        contact.direction = direction;
-        self.post_contact_value(world, key, contact, context)
+        if !self.ready_contact(world, key, source)? { return Ok(ContactPost::Pending); }
+        let contact = selected.as_ref().ok_or("selected contact packet disappeared")?;
+        //635c90→60a480/60a8b0 selects the actual two declarations on impact.
+        //Both are already resident: source admission holds one and the real
+        //witness hands off the other. No metadata worker, world scan or extra
+        //readiness frame is needed. Cache only pairs which actually occurred.
+        let prepared=self.scopes.get_mut(key).and_then(|scope|scope.prepared.as_mut())
+            .ok_or("contact source preparation disappeared")?;
+        let row=(source.to_ascii_lowercase(),contact.target.to_ascii_lowercase());
+        if !prepared.rows.contains_key(&row) {
+            let target=contact.target_definition.as_ref().ok_or("contact witness has no material declaration lease")?;
+            let path=contact_path(prepared,contact)?;
+            if !prepared._materials.iter().any(|old|Arc::ptr_eq(old,target)) {
+                prepared._materials.push(target.clone());
+            }
+            prepared.rows.insert(row,path);
+        }
+        //The normal one-shot FX request owns activation and any cold resource
+        //publication. Its existing world/common/subset fast path is preserved;
+        //this packet does not claim that GPU preparation has completed.
+        self.post_contact_value(world, key, contact.clone(), context).map(ContactPost::Complete)
     }
     pub(in crate::app) fn post_contact_value(
         &mut self,
@@ -457,22 +449,15 @@ impl Owner {
         let prepared = self
             .scopes
             .values()
-            .filter(|scope| scope.spec == spec && scope.prepared.is_some())
-            .max_by_key(|scope| scope.revision)
+            .find(|scope| scope.spec == spec && scope.prepared.is_some())
             .and_then(|scope| scope.prepared.as_ref())
             .ok_or("explosion FX source reservation is absent")?;
         let mut packets = Vec::new();
         for contact in contacts {
-            let path = prepared
-                .rows
-                .get(&(
-                    contact.source.to_ascii_lowercase(),
-                    contact.target.to_ascii_lowercase(),
-                ))
-                .ok_or("explosion target material was not prepared before input")?;
+            let path = contact_path(prepared,contact)?;
             if let Some(path) = path {
                 packets.push(Packet {
-                    path: path.clone(),
+                    path,
                     frame: contact_frame(contact.position, contact.normal, contact.direction),
                 })
             }
@@ -590,26 +575,6 @@ pub(in crate::app) fn contact_frame(
 }
 
 impl PhysicsScene {
-    fn explosion_materials(&self) -> Result<(usize, Vec<Arc<Definition>>), String> {
-        let world = self
-            .world
-            .read()
-            .map_err(|_| "explosion material world is poisoned")?;
-        let owner = &world.storage.materials;
-        Ok((
-            owner.declaration_revision(),
-            owner.contact_definitions().to_vec(),
-        ))
-    }
-    fn explosion_material_revision(&self) -> Result<usize, String> {
-        Ok(self
-            .world
-            .read()
-            .map_err(|_| "explosion material world is poisoned")?
-            .storage
-            .materials
-            .declaration_revision())
-    }
     pub(in crate::app) fn explosion_effect_contacts(
         &mut self,
         query: &mut Queries,
@@ -739,18 +704,18 @@ impl PhysicsScene {
         if record.words[14] == 0 && record.words[15] == 0 {
             return Ok(None);
         }
-        let target = world
+        let target_definition = world
             .storage
             .materials
-            .material_for_id(hit.target.material_id)?
-            .name
-            .clone();
+            .definition_for_id(hit.target.material_id)?.clone();
+        let target=target_definition.name.clone();
         let position = Vec3::from_slice(&hit.position[..3]);
         let delta = position - origin;
         let direction = delta * (1. / delta.length_squared().max(f32::MIN_POSITIVE).sqrt());
         Ok(Some(Contact {
             source: source.to_owned(),
             target,
+            target_definition: Some(target_definition),
             position,
             normal: Vec3::from_slice(&hit.normal[..3]),
             direction,

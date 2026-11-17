@@ -5,6 +5,10 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+SurfaceImpact resource-demand audit, 2026-11-17:
+
+- `app/water_impacts::prepare` still enumerates every registered material against every authored water material through `physics_scene/water_impacts::water_impact_material_pairs`, then acquires the exact-pair FX scopes. Native651020 receives the actual body/water material pair at the real impact. Prediction for a future scoped correction: zero such Cartesian startup reservations, with only encountered pairs selecting FX; no FPS/MB saving is measured. It must preserve the existing body/event FIFO acknowledgment, actual source flags and shared ContactFX activation/tail timing. This separate water-impact owner was not changed by the contact/explosion admission repair, beyond retaining the existing explicit-pair packet API. It awaits the same actual-pair handoff/lifecycle change at its pending-water-event boundary, rather than a blanket readiness bypass. The general contact/explosion owner no longer keeps a world-material roster or invalidates sources on unrelated material admission.
+
 GPU regression audit, 2026-11-17 (read-only renderer review):
 
 - Current release walking sample with GPU timeline enabled:
