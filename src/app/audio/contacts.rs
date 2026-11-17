@@ -113,6 +113,15 @@ impl ContactSounds {
         }
     }
 
+    ///Pure handoff of the generation admitted by the map acquisition worker.
+    ///None is pending publication; a recorded acquisition failure stays an error.
+    pub(super) fn database(&self) -> Result<Option<&Arc<ContactDatabase>>, String> {
+        match self.definitions.as_ref() {
+            None => Ok(None),
+            Some(Ok(definitions)) => Ok(Some(&definitions.database)),
+            Some(Err(error)) => Err(error.clone()),
+        }
+    }
     pub(super) fn declarations(&self) -> Option<&declaration_texts::DeclarationTexts> {
         self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
     }

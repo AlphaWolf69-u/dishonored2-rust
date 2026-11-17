@@ -109,11 +109,17 @@ pub(super) fn prepare(world: &mut World) -> Result<(), String> {
             .upgrade()
             .is_some_and(|previous| Arc::ptr_eq(&previous, &sources))
         {
-            for group in sources
+            //The combined renderer snapshot deduplicates effect names. The
+            //actual source bundles can contain separate equal-named gameplay
+            //records, each of which must acquire and acknowledge its own
+            //canonical source lease. Entry keys still deduplicate shared Arcs.
+            let additions=super::usable_effects::gameplay_sources(world);
+            for group in std::iter::once(&sources).chain(additions.iter())
+                .flat_map(|sources| sources
                 .effects
                 .values()
                 .filter_map(|effect| effect.as_ref().ok())
-                .flat_map(|effect| &effect.groups)
+                .flat_map(|effect| &effect.groups))
             {
                 for source in &group.entity_defs {
                     let key = (0, Arc::as_ptr(source) as usize);

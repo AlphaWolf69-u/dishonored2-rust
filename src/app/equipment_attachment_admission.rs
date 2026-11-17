@@ -317,6 +317,17 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                     child
                 }
             };
+            //The source child already has its actual birth frame and binding.
+            //Preparing its model does not require that this owned weapon is
+            //currently selected and projecting joints through the player arms.
+            if !entry.material_requested {
+                super::runtime_materials::equipment_admission::request_attachment(
+                    world,
+                    child,
+                    descriptor.clone(),
+                )?;
+                entry.material_requested = true;
+            }
             //Publish the same actual752900 binding frame consumed by the
             //attachment renderer. The shared actor traversal must not invent
             //another joint pose or leave ammunition at its birth transform.
@@ -337,14 +348,6 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                 super::runtime_materials::equipment_admission::attachment_failure(world, child)
             {
                 return Err(error);
-            }
-            if !entry.material_requested {
-                super::runtime_materials::equipment_admission::request_attachment(
-                    world,
-                    child,
-                    descriptor.clone(),
-                )?;
-                entry.material_requested = true;
             }
         }
         advance_magazine_final(world, &mut owner)?;

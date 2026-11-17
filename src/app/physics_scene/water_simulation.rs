@@ -7,19 +7,31 @@ use crate::gameplay::{
     water_forces::{Input, Scratch},
 };
 use crate::rendering::ocean::{OceanQueryHandle, ocean_query_manager};
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(in crate::app) struct WaterImpact {
     pub body: u32,
     pub water: ComponentHandle,
     pub owner: crate::gameplay::entity_lifetime::EntityId,
-    pub source_material: u16,
-    pub target_material: Option<u16>,
+    pub source_material: Arc<crate::assets::entities::physics_material::resources::Definition>,
+    pub target_material: Arc<crate::assets::entities::physics_material::resources::Definition>,
     pub point: [f32; 3],
     pub normal: [f32; 3],
     pub direction: [f32; 3],
     pub speed: f32,
     pub mass: f32,
     pub body_flags: u32,
+}
+impl std::fmt::Debug for WaterImpact {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.debug_struct("WaterImpact")
+            .field("body",&self.body).field("water",&self.water)
+            .field("owner",&self.owner)
+            .field("source_material",&self.source_material.name)
+            .field("target_material",&self.target_material.name)
+            .field("point",&self.point).field("normal",&self.normal)
+            .field("direction",&self.direction).field("speed",&self.speed)
+            .field("mass",&self.mass).field("body_flags",&self.body_flags).finish()
+    }
 }
 #[derive(Default)]
 pub(super) struct WaterSimulation {
@@ -300,30 +312,16 @@ impl PhysicsScene {
                             .components
                             .first()
                             .ok_or("water impact membership absent")?;
-                        let target_material =
-                            if declaration.materials[usize::from(declaration.is_ocean)].is_some() {
-                                let trigger = self
-                                    .triggers
-                                    .iter()
-                                    .find(|trigger| trigger.water == Some(water_handle))
-                                    .ok_or("water impact trigger dependency absent")?;
-                                let body = self
-                                    .actors
-                                    .bodies
-                                    .get(trigger.movement_body)
-                                    .ok_or("water impact trigger movement absent")?
-                                    .body_id;
-                                Some(
-                                    guard
-                                        .storage
-                                        .bodies
-                                        .get(body)
-                                        .ok_or("water impact trigger body stale")?
-                                        .material_id,
-                                )
-                            } else {
-                                None
-                            };
+                        //651020 passes actual declaration pointers, not the
+                        //water trigger body's possibly different material ID.
+                        //Capture their canonical leases before force/body
+                        //publication can retire the original witnesses.
+                        let (source_material, target_material) =
+                            super::water_impacts::material_leases(
+                                &guard.storage.materials,
+                                rigid.material_table().first().copied().unwrap_or(body.material_id),
+                                declaration.materials[usize::from(declaration.is_ocean)],
+                            )?;
                         let speed2 =
                             (linear[1] * linear[1] + linear[0] * linear[0]) + linear[2] * linear[2];
                         let clamp = if speed2 <= f32::from_bits(0x00800000) {
@@ -336,11 +334,7 @@ impl PhysicsScene {
                             body: id,
                             water: water_handle,
                             owner,
-                            source_material: rigid
-                                .material_table()
-                                .first()
-                                .copied()
-                                .unwrap_or(body.material_id),
+                            source_material,
                             target_material,
                             point: impact_point,
                             normal: [plane[0], plane[1], plane[2]],

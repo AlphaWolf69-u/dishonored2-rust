@@ -201,6 +201,17 @@ pub(super) fn reservation_ready(world: &bevy::prelude::World, key: &str) -> Resu
     Ok(owner.reservations_ready.contains(key))
 }
 
+///A merged render snapshot keeps one effect per name. Gameplay preparation
+///must also visit the actual acquired bundles whose equal-named sub-effects
+///were shadowed there: their entity/explosion receipts belong to those leases.
+///Called only when that immutable snapshot changes, never on a steady frame.
+pub(super) fn gameplay_sources(world:&bevy::prelude::World)->Vec<Arc<Sources>> {
+    let Some(owner)=world.get_resource::<UsableEffects>()else{return Vec::new();};
+    let mut seen=std::collections::HashSet::new();
+    owner.ready.values().filter(|source|seen.insert(Arc::as_ptr(source)))
+        .cloned().collect()
+}
+
 ///The existing opt-in loading report borrows all actual admission witnesses;
 ///it neither publishes readiness nor keeps resource leases after returning.
 pub(super) fn debug_reservation(world:&bevy::prelude::World,key:&str)->String {

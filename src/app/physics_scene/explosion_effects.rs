@@ -154,8 +154,10 @@ fn contact_path(prepared:&Prepared,contact:&Contact)->Result<Option<String>,Stri
     let source=prepared._materials.iter().find(|material|material.name.eq_ignore_ascii_case(&contact.source))
         .ok_or("contact source material lease absent")?;
     let target=contact.target_definition.as_ref().ok_or("contact witness has no material declaration lease")?;
-    Ok(prepared._database.as_ref().ok_or("contact database lease absent")?
-        .effect(source.contact_chain(),target.contact_chain()).map(str::to_owned))
+    Ok(contact_pair_path(prepared._database.as_ref().ok_or("contact database lease absent")?,source,target))
+}
+fn contact_pair_path(database:&ContactDatabase,source:&Definition,target:&Definition)->Option<String>{
+    database.effect(source.contact_chain(),target.contact_chain()).map(str::to_owned)
 }
 
 impl Owner {
@@ -192,25 +194,44 @@ impl Owner {
             },
         )
     }
-    ///651020 supplies two actual material declarations, not every surface in
-    ///the world. Restrict the existing owner to that immutable source pair.
-    pub(in crate::app) fn prepare_contact_pair(
+    ///651020 already owns both actual declarations. Select only this
+    ///accepted pair; no metadata worker, archive reread or Cartesian FX
+    ///reservation precedes the normal one-shot activation owner.
+    pub(in crate::app) fn prepare_contact_pair_leases(
         &mut self,
-        world: &World,
         key: Arc<str>,
-        source: &str,
-        target: &str,
+        source: Arc<Definition>,
+        target: Arc<Definition>,
+        database: Arc<ContactDatabase>,
     ) -> Result<(), String> {
-        self.prepare_spec(
-            world,
-            key,
-            Spec {
-                contact: Some(source.to_owned()),
-                contact_target: Some(target.to_owned()),
-                ground: None,
-                water: None,
-            },
-        )
+        let spec = Spec {
+            contact: Some(source.name.clone()),
+            contact_target: Some(target.name.clone()),
+            ground: None,
+            water: None,
+        };
+        if let Some(scope) = self.scopes.get(&key) {
+            let prepared = scope.prepared.as_ref().ok_or("contact pair lease publication absent")?;
+            if scope.spec != spec || prepared._materials.len() != 2
+                || !Arc::ptr_eq(&prepared._materials[0], &source)
+                || !Arc::ptr_eq(&prepared._materials[1], &target)
+            { return Err("contact scope reused for another material generation".into()); }
+            return Ok(());
+        }
+        let row = (source.name.to_ascii_lowercase(), target.name.to_ascii_lowercase());
+        //Use the SAME paired resolver as635c90/7b24f0. This is a material
+        //operation and needs no invented query witness or geometry.
+        let path = contact_pair_path(&database, &source, &target);
+        let prepared = Prepared {
+            rows: HashMap::from([(row, path)]), paths: Vec::new(),
+            _materials: vec![source, target], _database: Some(database),
+        };
+        let fx_key = Arc::from(format!("{key}:materials"));
+        self.scopes.insert(key, Scope {
+            spec, fx_key, task: None, prepared: Some(prepared),
+            error: None, reserved: false,
+        });
+        Ok(())
     }
     fn prepare_spec(&mut self, world: &World, key: Arc<str>, spec: Spec) -> Result<(), String> {
         if let Some(scope) = self.scopes.get(&key) {

@@ -2,17 +2,11 @@
 //! its real packet until the canonical ContactFX owner accepts that packet.
 use bevy::prelude::*;
 use std::{collections::HashMap, sync::Arc};
-struct Pair {
-    scope: Arc<str>,
-    requested: bool,
-    ready: bool,
-}
 #[derive(Resource, Default)]
 struct WaterImpacts {
-    revision: Option<usize>,
-    pairs: HashMap<(String, String), Pair>,
+    database: Option<Arc<crate::assets::entities::contacts::ContactDatabase>>,
+    pairs: HashMap<(String, String), Arc<str>>,
     closed: bool,
-    pending: bool,
 }
 pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     if world.contains_resource::<WaterImpacts>() {
@@ -22,66 +16,21 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn prepare(world: &mut World) -> Result<(), String> {
-    let Some(mut owner) = world.remove_resource::<WaterImpacts>() else {
-        return Ok(());
-    };
-    let result = (|| {
-        if owner.closed {
-            return Ok(());
-        }
-        let Some(scene) = world.get_resource::<super::physics_scene::PhysicsScene>() else {
-            return Ok(());
-        };
-        let revision = scene.water_impact_material_revision()?;
-        if owner.revision != Some(revision) {
-            let pairs = scene.water_impact_material_pairs()?;
-            for (source, target) in pairs {
-                if owner.pairs.contains_key(&(source.clone(), target.clone())) {
-                    continue;
-                }
-                let scope: Arc<str> = Arc::from(format!("water-impact:{}:{}", source, target));
-                owner.pending = true;
-                //Record before acquisition; a partial reservation must retire.
-                owner.pairs.insert(
-                    (source.clone(), target.clone()),
-                    Pair {
-                        scope: scope.clone(),
-                        requested: false,
-                        ready: false,
-                    },
-                );
-            }
-            owner.revision = Some(revision);
-        }
-        if !owner.pending {
-            return Ok(());
-        }
-        let mut pending = false;
-        for ((source, target), pair) in &mut owner.pairs {
-            if !pair.requested {
-                super::explosions::prepare_contact_pair_owned(
-                    world,
-                    pair.scope.clone(),
-                    source,
-                    target,
-                )?;
-                pair.requested = true;
-            }
-            if !pair.ready {
-                pair.ready = super::explosions::ready_contact_owned(world, &pair.scope, source)?;
-            }
-            pending |= !pair.ready;
-        }
-        owner.pending = pending;
-        Ok(())
-    })();
-    world.insert_resource(owner);
-    result
+    let Some(owner) = world.get_resource::<WaterImpacts>() else { return Ok(()); };
+    if owner.closed || owner.database.is_some() { return Ok(()); }
+    if !world.contains_resource::<super::physics_scene::PhysicsScene>() { return Ok(()); }
+    //ScenePreparation already admits this through AudioPreparation on the
+    //map worker. Borrow its exact result, including overlay generations and
+    //failures; never reacquire/parse metadata on the loading UI thread.
+    let Some(database) = super::audio::prepared_contact_database(world)? else { return Ok(()); };
+    world.resource_mut::<WaterImpacts>().database = Some(database);
+    Ok(())
 }
 pub(super) fn startup_pending(world: &World) -> bool {
-    world
-        .get_resource::<WaterImpacts>()
-        .is_some_and(|owner| owner.revision.is_none() || owner.pending)
+    //Maps without a physics scene have no fluid manager or impact producer.
+    //Keep initialization unconditional, but do not wait for absent work.
+    world.contains_resource::<super::physics_scene::PhysicsScene>()
+        && world.get_resource::<WaterImpacts>().is_some_and(|owner|owner.database.is_none())
 }
 pub(super) fn update(world: &mut World) -> Result<(), String> {
     if world
@@ -98,20 +47,20 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         else {
             return Ok(());
         };
-        let (source, target) = world
-            .resource::<super::physics_scene::PhysicsScene>()
-            .water_impact_material_names(&impact)?;
-        let Some(pair) = world
-            .resource::<WaterImpacts>()
-            .pairs
-            .get(&(source.clone(), target.clone()))
-        else {
-            return Ok(());
+        let source = impact.source_material.name.clone();
+        let target = impact.target_material.name.clone();
+        let pair = (source.clone(), target.clone());
+        let scope = if let Some(scope) = world.resource::<WaterImpacts>().pairs.get(&pair) {
+            scope.clone()
+        } else {
+            let scope: Arc<str> = Arc::from(format!("water-impact:{source}:{target}"));
+            let database = world.resource::<WaterImpacts>().database.clone()
+                .ok_or("water contact database was not prepared")?;
+            super::explosions::prepare_contact_pair_leases_owned(world,scope.clone(),
+                impact.source_material.clone(),impact.target_material.clone(),database)?;
+            world.resource_mut::<WaterImpacts>().pairs.insert(pair,scope.clone());
+            scope
         };
-        if !pair.ready {
-            return Ok(());
-        }
-        let scope = pair.scope.clone();
         let context = crate::rendering::bevy_backend::world_effects::EntityEffectContext {
             owner: Some(impact.owner),
             culprit: None,
@@ -130,7 +79,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             super::physics_scene::explosion_effects::Contact {
                 source,
                 target,
-                target_definition: None,
+                target_definition: Some(impact.target_material.clone()),
                 position: bevy_math::Vec3::from_array(impact.point),
                 normal: bevy_math::Vec3::from_array(impact.normal),
                 direction: bevy_math::Vec3::from_array(impact.direction),
@@ -155,7 +104,7 @@ pub(super) fn retire(world: &mut World) -> Result<(), String> {
     owner.closed = true;
     let result = (|| {
         for pair in owner.pairs.values() {
-            super::explosions::release_owned(world, &pair.scope)?;
+            super::explosions::release_owned(world, pair)?;
         }
         Ok(())
     })();

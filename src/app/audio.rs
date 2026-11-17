@@ -1425,3 +1425,13 @@ pub(super) fn observe_bank_inventory(base: &std::path::Path) -> Result<(), Strin
     eprintln!("AUDIO_BANK_CONTEXT_COMPLETE maps={count}");
     Ok(())
 }
+
+///Borrow the existing ContactSounds result; no resource read, parser or task
+///is admitted here. ScenePreparation publishes it before runtime loading gates.
+pub(super) fn prepared_contact_database(
+    world: &World,
+) -> Result<Option<Arc<crate::assets::entities::contacts::ContactDatabase>>, String> {
+    let owner = world.get_resource::<contacts::ContactSounds>()
+        .ok_or("canonical contact sound metadata owner is absent")?;
+    owner.database().map(|database|database.cloned())
+}

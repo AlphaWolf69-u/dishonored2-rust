@@ -298,8 +298,14 @@ fn modifiers(
 
 ///651020's real two-material SurfaceImpact packet uses the same ContactFX
 ///owner without constructing an artificial ray-query witness.
-pub(super) fn prepare_contact_pair_owned(world:&mut World,scope:Arc<str>,source:&str,target:&str)->Result<(),String>{
-    world.resource_scope(|world,mut owner:Mut<Explosions>|owner.effects.prepare_contact_pair(world,scope,source,target))
+pub(super) fn prepare_contact_pair_leases_owned(
+    world: &mut World, scope: Arc<str>,
+    source: Arc<crate::assets::entities::physics_material::resources::Definition>,
+    target: Arc<crate::assets::entities::physics_material::resources::Definition>,
+    database: Arc<crate::assets::entities::contacts::ContactDatabase>,
+) -> Result<(), String> {
+    world.resource_scope(|_world,mut owner:Mut<Explosions>|
+        owner.effects.prepare_contact_pair_leases(scope,source,target,database))
 }
 pub(super) fn post_contact_pair_owned(world:&mut World,scope:&str,contact:super::physics_scene::explosion_effects::Contact,
     context:crate::rendering::bevy_backend::world_effects::EntityEffectContext,
