@@ -14,7 +14,30 @@ materials (potion and oil liquids), not by FX particles.
 |---|---|---|
 | `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | connected: see "Character hair" below |
 | `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected: see "Character eyes" below |
-| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
+| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | connected; the rune's loot payload is player-systems work, see "Outsider shrine" below |
+| Dark Vision | every Dark Vision layer material, the reveal wave | mapped; blocked until the power publishes its per-frame record, see "Dark Vision" below |
+
+## Dark Vision (`ARK_RENDERPASS_DARKVISION`, 14031f960), mapped, blocked by the power
+
+The pass runs only while `renderer+0x4238 | r_debugDarkVisionLayers`
+(cvar object 0x1432f54f0, value +0x28 = DAT_1432f5518) is nonzero. The same
+mask admits surfaces in 14033b350: a material's `rendering/darkVisionLayer`
+(material+0x4a bits 7:5) whose bit is set adds a row under key layer+8
+with the program 3119a0(material, 0x14/0x15); world surfaces route through
+`material_lists::WorldDrawList::DarkVision`. The pass draws layers 1 and 3
+(device and pickup tints) into its own target against zBuffer with
+decompressedDepth bound, redraws them over the scene, then draws layer 2
+(living) into quarter-resolution targets for the blit/blur and composite
+programs (`rendering/darkvision*`: darkVision, darkVisionBlitLiving,
+darkVisionBlurDisto, darkVisionDepthWaveColor, darkVisionDepthWaveDisto).
+Every program clips by the reveal wave: `darkVisionWaveCenter`,
+`darkVisionDepthClip`, `darkVisionRevealWaveRadius/Power`, the depth-wave
+radii, noise, edge and tints, and the per-layer opacities. Those come from
+renderer +0x423c..+0x4264, which arkCpntPowerDarkVision fills each frame
+from its declaration and the wave's progress. With the debug cvar alone the
+depth clip is zero and nothing draws, so the pass cannot be ported against
+a real input until the power's gameplay (cpntDarkVision proxies and the
+power update, see resource-parity.md) publishes that record.
 
 `particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
 Its 8 materials are the health and mana potion liquids, the institute
@@ -57,6 +80,13 @@ In the prologue view, indirect light on the sclera equals the skin's
 a 128x128x5 BGRA8 volume: app/eye_caustics.rs decodes each source once
 (material::load_3d_image) and binds it to new eye materials (binding 176);
 eye_direct rotates the UV toward the light about the gaze.
+
+Area lights: BRDF_eye::ComputeLightingArea is only the standard
+COMPUTE_AREA_LIGHT_LIGHTING (its translucency branch is an empty TODO);
+arkEyeball compiles useSelfShadowedBumpMap, so arealight's
+ComputeAreaLightShadow scales the light by the SSBump directional
+occlusion toward the light's centre (m_wsToLight). The area loop applies
+eye_directional_occlusion with the interior HL2 basis to each area light.
 
 ## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
 
@@ -175,6 +205,12 @@ Status:
   - One-sided translucency: all 84 translucency-enabled hair materials
     author translucency/intensity 0 and min 0, so the term is zero for
     every installed hair.
+  - Area lights: BRDF_hair::ComputeLightingArea is the standard
+    COMPUTE_AREA_LIGHT_LIGHTING (opaque_area over the hair surface's
+    direct inputs) plus its translucency with the area light's
+    representative direction and shadowed diffuse irradiance; the
+    two-sided branch is `hair_area_translucency`, the one-sided one is
+    zero for every installed hair as above.
 
 ## Alpha lists (`dynamicAlpha`, `worldAlpha`), connected
 
@@ -193,9 +229,13 @@ for `$isAlpha && !$isMainPassAlpha`, after ComputeGlassTransmittance
 diffuse and ambient times the refraction-exit term.
 
 Rewrite: AlphaSurface routes per instance (model banks and world),
-AlphaGpu draws the routed items against the alpha depth (the target the
-particle draws and underwater stencil marks use) into the shared targets,
-and the particle pass loads them and resolves whenever either half drew.
+AlphaGpu draws the routed items against zBuffer, the view depth, into the
+shared targets, and the particle pass draws its half against the same
+depth, loads the targets and resolves whenever either half drew. 31dce0
+resolves its depth target as `zBuffer` (hash 0xba729a59, FNV-1a with the
+terminator); the water pass never writes it, so water hides alpha surfaces
+through the depth stage's underwater stencil mark (2fdea0, 0x40, the
+view depth's stencil) under reference 0x44, not through depthWater.
 One writePixel port (dh2_oit.wgsl) serves particles, hair and models.
 Glass transmittance is ported for program 1 with the material's
 Alpha/RefractionIOR and Alpha/Transmittance. In the prologue tower 22
@@ -206,52 +246,38 @@ r_OIT and the OIT weight cvars follow the console: AlphaGpu reads r_OIT
 each frame for the list's accumulation, and oit_parameters re-resolves the
 alpha-list materials' OIT uniforms when the values change.
 
+Underwater particle lists (connected). 1fddc0 sets the FX model's
++0x1c1c water bits: m_underwater sets 2, else m_handleSeenFromUnderwater
+4, else an underwater view 8. For bucket 0x37, 14033b350 replaces key 5
+(dynamicAlpha) with 0x13 for bit 2 and 0x15 for bit 4 (bucket 0x36 with
+bit 2 takes 0x14); 14033d320 merges 0x13 and 0x14 into
+`underWaterAlphaLit` (slot 0x1b) and 0x15 into `underWaterPredicated`
+(slot 0x1c). Both are drawn by FORWARD_DYNAMIC (140311aa0) with the
+material's lit program (3119a0 key 2/3, no writePixel) into hdrBuffer:
+underWaterAlphaLit with depth writes off and depth compare 6;
+underWaterPredicated with stencil EQUAL 0x40 (read and write mask 0x40)
+against the underwater mark, only when the marks were drawn (the same
+`DAT_1422ae020`/ocean predicate as 2fdea0, so the stencil test alone gives
+the same output). Rewrite: `ParticleList` on each draw,
+`ParticleSystem::surface_route`, and `render_underwater_particles` after
+the opaque particle colour pass and before the atmosphere composite, on a
+pass instance of its own. About 16 installed declarations set m_underwater
+and 34 m_handleSeenFromUnderwater. Not verified on screen yet.
+
 Main-pass alpha (decals 0/3, hair lit) draws after the rewrite's fog
 composite with its own per-pixel fog, which composes to the original's
 forward-then-FOG order for these surfaces (bevy_backend ordering).
 
-## Particle declaration census (2026-11-10)
+## Particle declaration census (2026-11-18)
 
 All 8,909 installed FX declarations loaded through `WorldFxSources`
-(local census `examples/fx_failure_census.rs`; `examples/` is not tracked): effects=8909 failed_effects=10 particles=2171 failed_particles=1233.
-Each particle declaration fails at its first unsupported field, so counts
-below a top reason can hide further gaps. Since this table: flipbook and
-radial-ramp opacity, bare rotation orders, clipping planes, stage
-sorting, stage-to-stage spawning, attractors, stage trails and
-declaration trails, beams and ribbons are connected; 846 particle
-declarations still fail (15 at beams whose end uses the FX target
-parameters, below).
-
-| Count | First failure |
-|---|---|
-| 578 | particle: unresolved particle declaration producer m_havokStages |
-| 77 | particle: unresolved particle spawn producer m_physicsShapesSpawn |
-| 75 | particle: unresolved particle declaration producer m_beams |
-| 73 | particle: unresolved particle clipping field m_planes |
-| 55 | particle: unresolved particle stage producer m_attractors |
-| 55 | particle: unresolved particle stage producer m_sorting |
-| 52 | particle: unresolved particle stage producer m_trails |
-| 47 | particle: unresolved particle parent-stage field m_stageName |
-| 46 | particle: unresolved particle declaration producer m_occlusionKill |
-| 35 | particle: unresolved particle declaration producer m_trails |
-| 27 | particle: inline mip chain size mismatch |
-| 26 | particle: unknown particle mesh rotation order YXZ |
-| 24 | particle: unresolved particle declaration producer m_ribbons |
-| 15 | particle: opaque particle pixel-lighting inputs are not connected |
-| 12 | particle: unresolved particle declaration producer m_occlusionQuery |
-| 11 | particle: unresolved particle spawn producer m_velocityCycleOrientation |
-| 9 | effect: unknown sub-FX field m_name |
-| 5 | particle: unknown particle mesh rotation order ZYX |
-| 4 | particle: unknown field rotation order YXZ |
-| 4 | particle: unresolved particle parent-stage field m_initialVelocity |
-| 3 | particle: unknown particle mesh rotation order ZXY |
-| 2 | particle: FX array index N exceeds declared count |
-| 2 | particle: particle program particle/fire is not connected |
-| 2 | particle: unknown particle mesh rotation order YZX |
-| 1 | effect: sound declaration has no engine ID |
-| 1 | particle: unknown particle mesh rotation order XZY |
-| 1 | particle: unresolved particle declaration producer m_fxEvents |
-| 1 | particle: unresolved particle parent-stage field m_lifeRestriction |
+(local census `examples/fx_failure_census.rs`; `examples/` is not tracked):
+effects=8909 failed_effects=1 particles=2173 failed_particles=0. Every
+particle declaration field, Havok stages included, now loads. The one
+failed effect is not a particle field: the howling-bolt low-frequency FX
+names an explosion declaration
+(`explosion_low_frequency_large_player.explosion`) its effect reader does
+not resolve.
 
 ## Opaque particle surfaces (connected)
 
@@ -738,7 +764,7 @@ counts arrive one or more frames later than the original's next-frame
 read. r_showOcclusionQuery's debug colour draw is not connected. FX
 census 844 -> 833. Not verified on screen.
 
-## Particle FX events (`m_fxEvents`), mapped
+## Particle FX events (`m_fxEvents`), connected
 
 96 installed declarations carry m_fxEvents (3 fail on it first; the rest
 stop earlier). Declaration +0x608: arkFXEventDesc entries (0x58 bytes:
@@ -750,10 +776,11 @@ only when the system has an FX owner (+0x1c78); 1401daf50 advances each
 instance's interval timer; 1401fc020 hands the stage events collected at
 system +0x1cf0 to 1401da820, which matches names, orients the spawn from
 the event velocity/view axes (1401da330) and asks the owner to spawn the
-FX. The rewrite needs a runtime FX spawn request from particle systems
-to its world FX owner before this can be ported.
+FX. Connected (`ParticleSystem::record_fx_events`/`start_fx_events`):
+particle and Havok stage events start the named FX at the event's
+oriented spawn.
 
-## Havok particle stages (`m_havokStages`), mapping
+## Havok particle stages (`m_havokStages`), connected
 
 682 declarations' first failure (debris, chunks, rolling stones,
 breakables, leaves). arkHavokParticleStageDesc (0x1d20 bytes, declaration

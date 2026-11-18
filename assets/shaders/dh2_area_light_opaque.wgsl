@@ -15,12 +15,25 @@ struct TiledLightRecord {
     axis:vec3<f32>, origin_offset:f32,
     shadow_setup:u32, flags:u32, padding:vec2<u32>,
 }
+// One area light at a pixel, with the context its BRDF's ComputeLightingArea
+// reads beyond COMPUTE_AREA_LIGHT_LIGHTING: the representative direction
+// (m_wsLight), the shadowed diffuse irradiance and the light's centre
+// (m_wsToLight's target), all in host world space.
+struct OpaqueArea {
+    lighting:DirectLighting,
+    direction:vec3<f32>,
+    irradiance:vec3<f32>,
+    position:vec3<f32>,
+}
 fn opaque_area_lighting(index:u32,host_surface:WardSurface,host_position:vec3<f32>)->DirectLighting {
+    return opaque_area(index,host_surface,host_position).lighting;
+}
+fn opaque_area(index:u32,host_surface:WardSurface,host_position:vec3<f32>)->OpaqueArea {
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     // Profiling attribution: 10 omits every opaque area light.
-    if #{DH2_TRACE_LIGHT_COMPONENT} == 10u {return DirectLighting(vec3(0.0),vec3(0.0));}
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 10u {return OpaqueArea(DirectLighting(vec3(0.0),vec3(0.0)),vec3(0.0),vec3(0.0),host_position);}
 #endif
-    if index>=arrayLength(&area_light_records)/7u {return DirectLighting(vec3(0.0),vec3(0.0));}
+    if index>=arrayLength(&area_light_records)/7u {return OpaqueArea(DirectLighting(vec3(0.0),vec3(0.0)),vec3(0.0),vec3(0.0),host_position);}
     let base=index*7u;
     let a=bitcast<vec4<f32>>(area_light_records[base]);
     let b=bitcast<vec4<f32>>(area_light_records[base+1u]);
@@ -47,5 +60,7 @@ fn opaque_area_lighting(index:u32,host_surface:WardSurface,host_position:vec3<f3
         let amount=ward_translucency(t,ward_translucency_factor(t,area.direction),area.direction,surface.view);
         lighting.diffuse+=rho*t.transmittance*area.irradiance*amount;
     }
-    return lighting;
+    // Game (x,y,z) is host (x,-z,y): host = (x, z, -y).
+    let to_host=vec3(1.0,1.0,-1.0);
+    return OpaqueArea(lighting,area.direction.xzy*to_host,area.irradiance,record.position.xzy*to_host);
 }

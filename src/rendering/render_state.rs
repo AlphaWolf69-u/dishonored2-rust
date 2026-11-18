@@ -43,6 +43,22 @@ pub fn alpha_surface_draw_state(
     }
 }
 
+/// 140311aa0's underWaterAlphaLit draw: the material's own state with
+/// depth writes off and the depth compare forced to 6.
+pub fn underwater_alpha_lit_state(mut state: RenderState) -> RenderState {
+    state[5] = (state[5] & !0x11) | 6;
+    state
+}
+
+/// 140311aa0's underWaterPredicated draw: only where the underwater mark
+/// (stencil 0x40, read and write mask 0x40) passes EQUAL against reference
+/// 0x40, without depth writes.
+pub fn underwater_predicated_state(mut state: RenderState) -> (RenderState, u32) {
+    state[4] = (state[4] & 0xff) | 0x4004_0000;
+    state[5] = (state[5] & 0xff40_40ee) | 0x0040_4026;
+    (state, 0x40)
+}
+
 /// FUN_1402c4dd0 resets the decoded fields, retaining unused blend bits.
 pub fn reset_render_state(state: &mut RenderState) {
     for target in &mut state[..4] {

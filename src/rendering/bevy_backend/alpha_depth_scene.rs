@@ -415,7 +415,8 @@ fn prepare(
                 };
                 if let Some(route) = route.filter(|_| !hair_members.contains(&index)) {
                     let format = target.main_texture_format();
-                    let depth_format = TextureFormat::Depth32FloatStencil8;
+                    // 31dce0 tests zBuffer, the view depth.
+                    let depth_format = main_depth.texture.format();
                     let pipeline = gpu.prepare_lit_pipeline(&cache, item.pipeline, route, format, depth_format)?;
                     // A compiling pipeline keeps its surfaces out of both paths
                     // for that frame, as the ordinary pipelines do.
@@ -611,8 +612,8 @@ fn lit_descriptor(
     Ok(descriptor)
 }
 
-/// 14031dce0's model lists: hair, then dynamicAlpha/worldAlpha against the
-/// alpha depth with stencil reference 0x44, as the particle draws.
+/// 14031dce0's model lists: hair, then dynamicAlpha/worldAlpha against
+/// zBuffer with stencil reference 0x44, as the particle draws.
 fn draw_alpha_lit(
     world: &World,
     view: ViewQuery<(&MainEntity, &ExtractedView, &ViewTarget, &ViewDepthTexture)>,
@@ -629,20 +630,17 @@ fn draw_alpha_lit(
     let Some(phases) = gpu.lit_phases.get(&extracted.retained_view_entity) else {
         return;
     };
-    let Some(water) = water.0.as_ref().filter(|w| w.camera == main.id()) else {
+    if water.0.as_ref().is_none_or(|w| w.camera != main.id()) {
         return;
-    };
-    let Some(depth) = fog.alpha_depth(main.id(), water.matrices.frame) else {
-        return;
-    };
+    }
     let Some((accumulation, revealage)) = gpu.lit_targets.as_ref() else {
         return;
     };
-    if depth.alpha.full.format() != TextureFormat::Depth32FloatStencil8
-        || depth.alpha.full.width() != accumulation.texture.width()
-        || depth.alpha.full.height() != accumulation.texture.height()
+    if !main_depth.texture.format().has_stencil_aspect()
+        || main_depth.texture.width() != accumulation.texture.width()
+        || main_depth.texture.height() != accumulation.texture.height()
     {
-        warn_once!("Alpha list depth {:?} does not match its targets", depth.alpha.full.size());
+        warn_once!("Alpha list depth {:?} does not match its targets", main_depth.texture.size());
         return;
     }
     for (index, phase) in phases.iter().enumerate() {
@@ -674,14 +672,10 @@ fn draw_alpha_lit(
         let mut pass = context.begin_tracked_render_pass(RenderPassDescriptor {
             label: Some(if accumulate { "alpha list accumulation" } else { "alpha list" }),
             color_attachments: &colours,
-            // The particle half of this list tests the same target: the
-            // alpha depth carries the stencil marks (2fdea0's underwater
-            // 0x40) that 31dce0's reference 0x44 test reads.
-            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                view: &depth.alpha.full_attachment,
-                depth_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
-                stencil_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
-            }),
+            // 31dce0 binds zBuffer, the view depth, for models and
+            // particles alike: its stencil carries the depth stage's
+            // underwater marks (2fdea0, 0x40) that reference 0x44 tests.
+            depth_stencil_attachment: Some(main_depth.get_attachment(StoreOp::Store)),
             ..Default::default()
         });
         // 31dce0 passes reference 0x44 for draws without model+1c1c bit 3.

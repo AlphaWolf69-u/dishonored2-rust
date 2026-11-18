@@ -8,7 +8,11 @@
 #ifdef DH2_SURFACE_ENABLED
 #import dh2_direct::{glass_scale,glass_light_diffuse,glass_direct_diffuse}
 #import dh2_tlf_list
-#import dh2_area_light_opaque::opaque_area_lighting
+#import dh2_area_light_opaque::{opaque_area_lighting,opaque_area}
+#import dh2_direct::hair_area_translucency
+#ifdef DH2_EYE
+#import dh2_direct::{eye_surface,eye_directional_occlusion}
+#endif
 #endif
 
 #import bevy_pbr::{
@@ -805,8 +809,23 @@ fn apply_pbr_lighting_with_shadows(
         var list = dh2_tlf_list::begin_light_list(view_bindings::area_light_heads[head.y * grid.x * 4u + head.x]);
         while dh2_tlf_list::has_light(list, grid.z) {
             let index = dh2_tlf_list::advance_light(&list, view_bindings::area_light_pool[list.head]);
+#ifdef DH2_EYE
+            // arealight::ComputeAreaLightShadow: useSelfShadowedBumpMap scales
+            // the shadow by the SSBump directional occlusion toward the
+            // light's centre; BRDF_eye adds nothing to the standard lighting.
+            let area = opaque_area(index, lighting_input.direct_surface, lighting_input.P);
+            let eye = eye_surface;
+            let occlusion = eye_directional_occlusion(normalize(area.position - lighting_input.P),
+                eye.occlusion, eye.ambient_occlusion, eye.basis_r, eye.basis_g, eye.basis_b, eye.interior_normal);
+            direct_light += (area.lighting.diffuse + area.lighting.specular) * occlusion;
+#else ifdef DH2_HAIR
+            let area = opaque_area(index, lighting_input.direct_surface, lighting_input.P);
+            direct_light += area.lighting.diffuse + area.lighting.specular
+                + hair_area_translucency(area.direction, area.irradiance);
+#else
             let area = opaque_area_lighting(index, lighting_input.direct_surface, lighting_input.P);
             direct_light += area.diffuse + area.specular;
+#endif
     #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
             let transmitted = opaque_area_lighting(index, transmissive_lighting_input.direct_surface, transmissive_lighting_input.P);
             transmitted_light += transmitted.diffuse + transmitted.specular;

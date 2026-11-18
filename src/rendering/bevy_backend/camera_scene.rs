@@ -198,6 +198,9 @@ pub(super) struct CameraGpu {
     /// Its own buffers: the alpha pass uploads into the shared pass later
     /// in the same frame.
     opaque_particles: Option<OpaqueParticleGpu>,
+    /// FORWARD_DYNAMIC's underWaterAlphaLit and underWaterPredicated
+    /// particle surfaces, with buffers of their own for the same reason.
+    underwater_particles: Option<OpaqueParticleGpu>,
     /// 14031d7e0's occlusion query pass for this view.
     occlusion_queries: Option<super::occlusion_query_pass::OcclusionQueryPass>,
     particle_images: super::particle_images::ParticleImagesGpu,
@@ -210,6 +213,9 @@ pub(super) struct ParticlePublicationFrame {
     pub draws: Vec<super::particle_pass::ParticleDraw>,
     /// Non-isAlpha renderers: zPrePass and opaque colour model surfaces.
     pub opaque_draws: Vec<super::particle_pass::ParticleDraw>,
+    /// underWaterAlphaLit, then underWaterPredicated renderers, in
+    /// publication order within each list.
+    pub underwater_draws: Vec<super::particle_pass::ParticleDraw>,
     pub world_meshes: Vec<super::particle_system::WorldMeshDraw>,
 }
 
@@ -264,7 +270,7 @@ impl FxFrame {
         self.capacity.hash(&mut hash);
         for draw in self.screen_draws.iter().flatten() { draw.debug_values().hash(&mut hash); }
         if let Some(published) = &self.particles {
-            for draw in published.draws.iter().chain(&published.opaque_draws) {
+            for draw in published.draws.iter().chain(&published.opaque_draws).chain(&published.underwater_draws) {
                 draw.material.name.hash(&mut hash);
                 draw.instances.len().hash(&mut hash);
                 for value in &draw.instances { particle(value, &mut hash); }
@@ -336,12 +342,17 @@ fn publish_particles(
                 })
             })?;
         drop(console);
-    let (opaque_draws, draws) = draws.into_iter().partition(|draw: &super::particle_pass::ParticleDraw| draw.material.opaque);
+    let (opaque_draws, draws): (Vec<_>, Vec<_>) = draws.into_iter().partition(|draw: &super::particle_pass::ParticleDraw| draw.material.opaque);
+    // 14033d320 merges keys 0x13 and 0x15 into the FORWARD_DYNAMIC lists.
+    let (draws, mut underwater_draws): (Vec<_>, Vec<_>) = draws.into_iter()
+        .partition(|draw| draw.list == super::particle_pass::ParticleList::DynamicAlpha);
+    underwater_draws.sort_by_key(|draw| draw.list != super::particle_pass::ParticleList::UnderwaterLit);
     Ok(ParticlePublicationFrame {
         camera: water.camera,
         frame: water.matrices.frame,
         draws,
         opaque_draws,
+        underwater_draws,
         world_meshes,
     })
 }
@@ -379,6 +390,7 @@ pub(super) fn release_level(world: &mut World) {
     gpu.completed = None;
     gpu.alpha_completed = None;
     gpu.opaque_particles = None;
+    gpu.underwater_particles = None;
     if let Some(particles) = gpu.particles.take() {
         gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
     }
@@ -487,6 +499,14 @@ pub(super) fn register(app: &mut App) {
                     .after(bevy::core_pipeline::core_3d::main_opaque_pass_3d)
                     .before(super::fog_scene::AtmosphereDepthPass)
                     .before(super::fog_scene::AtmospherePass),
+                // 140311aa0 draws the underwater lists after the opaque
+                // surfaces, ahead of FOG; the depth stage already wrote the
+                // underwater marks the predicated list tests.
+                render_underwater_particles
+                    .in_set(Core3dSystems::MainPass)
+                    .after(render_opaque_particles)
+                    .before(super::fog_scene::AtmosphereDepthPass)
+                    .before(super::fog_scene::AtmospherePass),
             ),
         );
         render.add_systems(
@@ -574,6 +594,7 @@ fn render_particles(
         &ExtractedView,
         &ExtractedCamera,
         &ViewTarget,
+        &bevy::render::view::ViewDepthTexture,
         &MaterialExposure,
     )>,
     mut last_error: Local<Option<String>>,
@@ -585,7 +606,7 @@ fn render_particles(
         gpu.particles = None;
         return;
     };
-    let (main, view, camera, target, exposure) = view.into_inner();
+    let (main, view, camera, target, main_depth, exposure) = view.into_inner();
     if main.id() != water.camera {
         return;
     }
@@ -606,7 +627,8 @@ fn render_particles(
         let (depth, _) = fog.camera_depth(water.camera, water.matrices.frame)
             .ok_or("particle depth awaits completed atmosphere")?;
         let colour_format=target.main_texture_format();
-        let depth_format=depth.alpha.full.format();
+        // 31dce0 tests the view zBuffer; preparation and draws share its format.
+        let depth_format=main_depth.texture.format();
         let (mut instances, mut draw_capacity) = publication.0.as_ref()
             .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
             .map_or((0, 0), |frame| frame.capacity);
@@ -778,8 +800,9 @@ fn render_particles(
         // not any particle draws this frame.
         {
             let CameraGpu { occlusion_queries, .. } = &mut *gpu;
-            if occlusion_queries.as_ref().is_none_or(|pass| pass.depth_format() != depth_format) {
-                *occlusion_queries = Some(super::occlusion_query_pass::OcclusionQueryPass::new(&device, depth_format));
+            let query_format = depth.alpha.full.format();
+            if occlusion_queries.as_ref().is_none_or(|pass| pass.depth_format() != query_format) {
+                *occlusion_queries = Some(super::occlusion_query_pass::OcclusionQueryPass::new(&device, query_format));
             }
             let mut manager = crate::rendering::occlusion_query::shared().lock()
                 .map_err(|_| "occlusion query manager poisoned")?;
@@ -800,7 +823,7 @@ fn render_particles(
             .ok_or("particle adaptation awaits preparation")?;
         let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
             lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
-            &depth.alpha.full_attachment, target.main_texture_view(), alpha_list)?;
+            main_depth.view(), target.main_texture_view(), alpha_list)?;
         let CameraGpu { particles, particle_images, .. } = &mut *gpu;
         particles.as_mut().unwrap().pass.record(
             particle_images, &device,
@@ -1104,6 +1127,84 @@ fn render_opaque_particles(
         Ok(()) => *last_error = None,
         Err(error) if last_error.as_ref() != Some(&error) => {
             warn!("Opaque particle colour pending: {error}");
+            *last_error = Some(error);
+        }
+        Err(_) => {}
+    }
+}
+
+/// FORWARD_DYNAMIC's underWaterAlphaLit then underWaterPredicated particle
+/// surfaces (140311aa0): the lit program into the HDR target against the
+/// view depth, whose stencil carries the depth stage's underwater marks.
+fn render_underwater_particles(
+    lighting_scene: ParticleLightingScene,
+    sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    display: Res<DisplaySceneFrame>,
+    water: Res<WaterSceneFrame>,
+    fog: Res<FogGpu>,
+    shared: Res<super::fog_material::FogMaterialResources>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
+    mut gpu: ResMut<CameraGpu>,
+    mut context: RenderContext,
+    view: ViewQuery<(&MainEntity, &ExtractedView, &ExtractedCamera, &ViewTarget,
+        &bevy::render::view::ViewDepthTexture, &MaterialExposure)>,
+    mut last_error: Local<Option<String>>,
+    mut reported: Local<bool>,
+) {
+    let Some(water) = water.0.as_ref() else { gpu.underwater_particles = None; return };
+    let (main, view, camera, target, depth, exposure) = view.into_inner();
+    if main.id() != water.camera {
+        return;
+    }
+    let result = (|| -> Result<(), String> {
+        let Some(frame) = lighting_scene.publication.0.as_ref()
+            .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame) else { return Ok(()) };
+        let Some(published) = frame.particles.as_ref() else { return Ok(()) };
+        let draws = published.underwater_draws.as_slice();
+        if draws.is_empty() { return Ok(()); }
+        let CameraGpu { particles, underwater_particles, particle_images, .. } = &mut *gpu;
+        let Some(alpha) = particles.as_ref().filter(|p| p.prepared) else {
+            return Err("underwater particle surfaces await the particle material gate".into());
+        };
+        let instances = draws.iter().map(|draw| draw.instances.len()).sum::<usize>().max(1).next_power_of_two();
+        let draw_capacity = draws.len().next_power_of_two();
+        let colour_format = target.main_texture_format();
+        let depth_format = depth.texture.format();
+        if underwater_particles.as_ref().is_none_or(|p| p.colour_format != colour_format || p.depth_format != depth_format) {
+            *underwater_particles = Some(OpaqueParticleGpu {
+                pass: super::particle_pass::ParticlePass::new_with_shared(&device, &queue, instances, draw_capacity,
+                    colour_format, depth_format, Some(alpha.pass.reusable_programs()), Some(alpha.pass.shared_grids()))?,
+                instances, draws: draw_capacity, colour_format, depth_format, depth_frame: None, prepared: None,
+            });
+        }
+        let underwater = underwater_particles.as_mut().unwrap();
+        if underwater.instances < instances || underwater.draws < draw_capacity {
+            underwater.pass.grow(&device, instances, draw_capacity);
+            underwater.instances = underwater.instances.max(instances);
+            underwater.draws = underwater.draws.max(draw_capacity);
+        }
+        let sources = sources.0.as_ref().ok_or("particle sources unavailable")?;
+        let lens = display.0.as_ref().filter(|f| f.camera == water.camera).and_then(|f| f.lens.as_ref())
+            .ok_or("particle HDR settings await the current view")?;
+        let adaptation = buffers.get(&exposure.0).ok_or("particle adaptation awaits preparation")?;
+        let inputs = particle_view_inputs(draws, &lighting_scene, sources, &fog, water, &images, &buffers, &shared,
+            lens.settings.hdr_buffer_format != 1, lens.white_level, camera, view, target, &adaptation.buffer,
+            depth.view(), target.main_texture_view(), None)?;
+        underwater.pass.record_underwater(particle_images, &device, &queue, context.command_encoder(), inputs, draws)?;
+        if !*reported {
+            info!(draws = draws.len(), instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
+                "Underwater particle submission active");
+            *reported = true;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => *last_error = None,
+        Err(error) if last_error.as_ref() != Some(&error) => {
+            warn!("Underwater particle surfaces pending: {error}");
             *last_error = Some(error);
         }
         Err(_) => {}

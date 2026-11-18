@@ -344,11 +344,7 @@ impl ParticleSystem {
                 }
                 let mut transparency = context.transparency.get(material.state)?;
                 if material.distortion { transparency.mode = 0; }
-                let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
-                    material.state,
-                    transparency.mode != 0,
-                    self.water_flags & 8 != 0,
-                );
+                let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
                 if !self.debug_reported_child_draw
                     && definition.burst
                     && !definition.burst_event.is_empty()
@@ -364,6 +360,7 @@ impl ParticleSystem {
                     self.debug_reported_child_draw = true;
                 }
                 output.push(super::particle_pass::ParticleDraw {
+                    list,
                     material: material.clone(),
                     masking_factor: self.masking_factor,
                     lighting: if material.option("fx/opt/use_lighting")? != 0 {
@@ -414,9 +411,9 @@ impl ParticleSystem {
                 if instances.is_empty(){continue;}
                 let mut transparency=context.transparency.get(material.state)?;
                 if material.distortion{transparency.mode=0;}
-                let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
-                    transparency.mode!=0,self.water_flags&8!=0);
+                let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
                 output.push(super::particle_pass::ParticleDraw {
+                    list,
                     masking_factor:self.masking_factor,
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
@@ -480,9 +477,9 @@ impl ParticleSystem {
                 }
                 let mut transparency = context.transparency.get(material.state)?;
                 if material.distortion { transparency.mode = 0; }
-                let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
-                    material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+                let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
                 output.push(super::particle_pass::ParticleDraw {
+                    list,
                     masking_factor: self.masking_factor,
                     material: material.clone(),
                     lighting: if material.lighting.is_some() { lighting } else { None },
@@ -521,9 +518,9 @@ impl ParticleSystem {
             }
             let mut transparency = context.transparency.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
-            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
-                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
             output.push(super::particle_pass::ParticleDraw {
+                list,
                 masking_factor: self.masking_factor,
                 material: material.clone(),
                 lighting: if material.lighting.is_some() { lighting } else { None },
@@ -560,9 +557,9 @@ impl ParticleSystem {
             }
             let mut transparency = context.transparency.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
-            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
-                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
             output.push(super::particle_pass::ParticleDraw {
+                list,
                 masking_factor: self.masking_factor,
                 material: material.clone(),
                 lighting: if material.lighting.is_some() { lighting } else { None },
@@ -600,9 +597,9 @@ impl ParticleSystem {
             }
             let mut transparency = context.transparency.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
-            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
-                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            let (state, stencil_reference, list) = self.surface_route(material, &mut transparency);
             output.push(super::particle_pass::ParticleDraw {
+                list,
                 masking_factor: self.masking_factor,
                 material: material.clone(),
                 lighting: if material.lighting.is_some() { lighting } else { None },
@@ -788,6 +785,36 @@ impl ParticleSystem {
 
     /// 1fc170 considers both remaining emission and live particle storage.
     /// Its rate threshold at141ad2734 is exactly 2^-23.
+    /// 14033b350 routes a dynamicAlpha surface by the FX model's +0x1c1c
+    /// water bits (1fddc0): bit 2 to underWaterAlphaLit and bit 4 to
+    /// underWaterPredicated, both drawn by 140311aa0 with the material's lit
+    /// program (3119a0 key 2) instead of writePixel; otherwise ALPHA_LIT's
+    /// 31dce0 state, whose stencil reference follows bit 8.
+    fn surface_route(
+        &self,
+        material: &crate::rendering::particles::material::ParticleMaterial,
+        transparency: &mut crate::rendering::particles::transparency::TransparencyParameters,
+    ) -> (crate::render_state::RenderState, u32, super::particle_pass::ParticleList) {
+        use super::particle_pass::ParticleList;
+        if !material.distortion && !material.opaque {
+            if self.water_flags & 2 != 0 {
+                transparency.mode = 0;
+                return (crate::render_state::underwater_alpha_lit_state(material.state), 0, ParticleList::UnderwaterLit);
+            }
+            if self.water_flags & 4 != 0 {
+                transparency.mode = 0;
+                let (state, reference) = crate::render_state::underwater_predicated_state(material.state);
+                return (state, reference, ParticleList::UnderwaterPredicated);
+            }
+        }
+        let (state, reference) = crate::render_state::alpha_surface_draw_state(
+            material.state,
+            transparency.mode != 0,
+            self.water_flags & 8 != 0,
+        );
+        (state, reference, ParticleList::DynamicAlpha)
+    }
+
     fn finished(&self) -> bool {
         if self.killed {
             return true;

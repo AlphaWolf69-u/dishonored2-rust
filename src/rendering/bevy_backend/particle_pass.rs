@@ -373,7 +373,21 @@ pub fn opaque_colour_state(mut state: crate::render_state::RenderState) -> crate
     state
 }
 
+/// The renderer list a dynamicAlpha-bucket (0x37) particle surface joins
+/// (14033b350 by the FX model's +0x1c1c water bits, merged by 14033d320).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticleList {
+    /// dynamicAlpha, drawn by ALPHA_LIT.
+    DynamicAlpha,
+    /// m_underwater (bit 2, key 0x13): underWaterAlphaLit in FORWARD_DYNAMIC.
+    UnderwaterLit,
+    /// m_handleSeenFromUnderwater (bit 4, key 0x15): underWaterPredicated in
+    /// FORWARD_DYNAMIC, behind the underwater mark only.
+    UnderwaterPredicated,
+}
+
 pub struct ParticleDraw {
+    pub list: ParticleList,
     pub material: Arc<ParticleMaterial>,
     pub masking_factor: f32,
     /// Shared per-object SH/IBL record selected at the particle root's origin.
@@ -1641,6 +1655,24 @@ impl ParticlePass {
         draws: &[ParticleDraw],
     ) -> Result<(), String> {
         self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::OpaqueColour)
+    }
+
+    /// FORWARD_DYNAMIC's underWaterAlphaLit and underWaterPredicated lists:
+    /// the isAlpha colour program without writePixel accumulation, blended
+    /// into `input.colour` with each draw's list state and stencil reference.
+    pub fn record_underwater(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        input: ParticleViewInputs<'_>,
+        draws: &[ParticleDraw],
+    ) -> Result<(), String> {
+        if draws.iter().any(|draw| draw.list == ParticleList::DynamicAlpha || draw.transparency.mode != 0) {
+            return Err("underwater particle list holds an ALPHA_LIT surface".into());
+        }
+        self.record_mode(images, device, queue, encoder, input, draws, ParticlePhase::Colour)
     }
 
     /// One record per instance (1eaa40's layout of the rewrite's particle
