@@ -40,11 +40,16 @@ pub mod silence;
 pub struct Contact {
     pub source: String,
     pub target: String,
+    ///Actual mapped material ID from the accepted ground witness. Static
+    ///navigation snapshots have no runtime ID and retain their actual name.
+    pub target_material_id: Option<u16>,
     pub position: bevy_math::Vec3,
     pub normal: bevy_math::Vec3,
     pub direction: bevy_math::Vec3,
     pub speed: f32,
     pub mass: f32,
+    ///770990 passes !controller-possession(active), not a guessed movement flag.
+    pub stimulus_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

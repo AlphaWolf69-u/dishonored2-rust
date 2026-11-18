@@ -885,10 +885,12 @@ impl Frame<'_> {
                 if let Some(source) = material.or(self.footstep.material.as_deref()) {
                     self.contact_requests.push(Contact {
                         source: source.to_owned(), target: target.to_owned(),
+                        target_material_id: self.physics.ground_material_hit.as_ref().and_then(|hit|hit.material_id),
                         position: self.origin, normal: Vec3::Z, direction: Vec3::ZERO,
                         speed: self.body_speed.max(self.physics.gravity_velocity.z.abs()),
                         // The character proxy uses fixed motion0 (092260).
                         mass: 0.0,
+                        stimulus_enabled: self.controller.possession_state() == 14,
                     });
                 }
             }

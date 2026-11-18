@@ -84,6 +84,21 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     /// share values. Contact dependency consumers observe this owner revision.
     pub(crate) fn declaration_revision(&self) -> usize { self.declarations.len() }
     pub(crate) fn contact_definitions(&self) -> &[Arc<Definition>] { &self.declarations }
+    ///A real static ground witness already supplies its resolved declaration
+    ///name. Borrow the same admitted resource; never reacquire it on a frame.
+    pub(crate) fn contact_definition_named(&self, name: &str) -> Result<&Arc<Definition>, String> {
+        self.names
+            .get(name)
+            .and_then(|&handle| self.declarations.get(handle))
+            .or_else(|| {
+                self.declarations
+                    .iter()
+                    .find(|definition| definition.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(|| {
+                format!("ground contact material {name:?} has no admitted declaration lease")
+            })
+    }
     /// 853b80 passes the library record's actual declaration+68 collision
     /// block flags to81a5f0. These are neither traversal flags at+80 nor the
     /// solver policy flags packed into the runtime library record.

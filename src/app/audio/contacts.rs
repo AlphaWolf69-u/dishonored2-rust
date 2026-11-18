@@ -1,115 +1,94 @@
-//! Host scheduling for the sound portion of material-contact FX. Definitions,
-//! ancestry and event IDs are read from the installation and cached by name.
-use super::{AudioTarget, SoundEvent};
-use crate::{archive::Catalog, assets::{entities::{contacts::ContactDatabase}, fx},
-    gameplay::{effects::{groups::sample_offsets, sound::{sample_position, SoundEffect, SoundEvent as TimedEvent}, timing::EffectTimingRanges},
-        game_clock_runtime::{ClockRuntime, GamePaused}, sound::{Contact, Emitter, Request}}};
+//!770990→60a480/60a8b0 material contacts feed the SAME whole-FX owner.
+//!This module owns only map metadata and actual ground-demand admission.
+//!No projected sound/group cache, audio objects, custom RNG or tail manager.
+use crate::{
+    archive::Catalog,
+    assets::{
+        declaration_texts,
+        entities::{contacts::ContactDatabase, physics_material::resources::Definition},
+    },
+    gameplay::{entity_lifetime::EntityId, sound::Contact},
+};
 use bevy::prelude::*;
-use std::{collections::{HashMap, HashSet}, sync::Arc};
-use crate::assets::declaration_texts;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 #[derive(Message)]
-pub(in crate::app) struct ContactSound(pub Contact);
-
-struct Sound {
-    position: [Vec3; 2],
-    start: TimedEvent,
-}
-struct Group {
-    location: fx::EffectGroupLocation,
-    timing: EffectTimingRanges,
-    sounds: Vec<Sound>,
+pub(in crate::app) struct ContactSound {
+    pub contact: Contact,
+    pub owner: EntityId,
+    pub source: Arc<Definition>,
+    pub target: Arc<Definition>,
 }
 struct Definitions {
-    catalog: std::sync::Arc<Catalog>,
+    catalog: Arc<Catalog>,
     texts: declaration_texts::DeclarationTexts,
     database: Arc<ContactDatabase>,
-    chains: HashMap<String, Arc<crate::assets::entities::physics_material::resources::Definition>>,
-    effects: HashMap<String, Arc<Vec<Group>>>,
-    source_leases: Vec<Arc<fx::definition::Definition>>,
+    //Existing read-only catalog-scope diagnostic only; production receives
+    //actual Body/ground leases and never populates a second material cache.
+    chains: HashMap<String, Arc<Definition>>,
 }
-
 impl Definitions {
-    fn load(catalog: Arc<Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) -> Result<Self, String> {
+    fn load(
+        catalog: Arc<Catalog>,
+        map: &str,
+        seed: declaration_texts::PhysicsSeed,
+    ) -> Result<Self, String> {
         let base = catalog.base();
         let database = ContactDatabase::acquire(&catalog)?;
-        let texts = (|| {
-            let language = crate::assets::lang::read_text_language(base)?;
-            declaration_texts::acquire(base, &catalog, map.trim_end_matches(".entities"), language, seed)
-        })().unwrap_or_else(|error: String| {
-            warn!("Contact declarations not read with the level: {error}");
-            Default::default()
-        });
-        Ok(Self { catalog, texts, database, chains: HashMap::new(), effects: HashMap::new(), source_leases: Vec::new() })
+        let language = crate::assets::lang::read_text_language(base)?;
+        let texts = declaration_texts::acquire(
+            base,
+            &catalog,
+            map.trim_end_matches(".entities"),
+            language,
+            seed,
+        )?;
+        Ok(Self {
+            catalog,
+            texts,
+            database,
+            chains: HashMap::new(),
+        })
     }
-
-    fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.resolve_with(&self.catalog, |path| declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
-        Ok(TimedEvent { delay: asset.delay, event })
-    }
-
     fn prepare_material_chain(&mut self, name: &str) -> Result<(), String> {
         if !self.chains.contains_key(name) {
-            let material = crate::assets::entities::physics_material::resources::acquire_with(
-                &self.catalog, name, |path| declaration_texts::read(&self.catalog, &self.texts, path),
+            let definition = crate::assets::entities::physics_material::resources::acquire_with(
+                &self.catalog,
+                name,
+                |path| declaration_texts::read(&self.catalog, &self.texts, path),
             )?;
-            self.chains.insert(name.to_owned(), material);
+            self.chains.insert(name.to_owned(), definition);
         }
         Ok(())
     }
-
-    fn resolve(&mut self, contact: &Contact) -> Result<Arc<Vec<Group>>, String> {
-        for name in [&contact.source, &contact.target] { self.prepare_material_chain(name)?; }
-        let Some(effect) = self.database.effect(self.chains[&contact.source].contact_chain(),
-            self.chains[&contact.target].contact_chain()) else {
-            return Ok(Arc::new(Vec::new()));
-        };
-        if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
-        let effect = effect.to_owned();
-        let source = fx::declaration::acquire_with(&self.catalog, &effect,
-            fx::definition::Consumer::Common, None,
-            |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
-        let mut groups = Vec::new();
-        for group in &source.groups {
-            let group = &group.asset;
-            if !group.enabled { continue; }
-            let mut sounds = Vec::new();
-            for sound in &group.sounds {
-                if !sound.enabled || (sound.start.event.is_none() && sound.stop.event.is_none()) { continue; }
-                if sound.stop.event.is_some() {
-                    return Err(format!("{effect}: contact FX requires an owner for its authored stop event"));
-                }
-                sounds.push(Sound { position: sound.position, start: self.event(&sound.start)? });
-            }
-            groups.push(Group { location: group.location, timing: group.timings, sounds });
-        }
-        let groups = Arc::new(groups);
-        self.source_leases.push(source);
-        self.effects.insert(effect, groups.clone());
-        Ok(groups)
-    }
 }
-
-struct Active {
-    sound: SoundEffect,
-    emitter: Emitter,
-    age: f32,
-    origin: Vec3,
-    axis: Mat3,
-    parameter: (u32, f32),
+struct GroundDemand {
+    target: Arc<Definition>,
+    sources: Arc<[Arc<Definition>]>,
 }
-
+struct Ground {
+    demand: GroundDemand,
+    scopes: Vec<Arc<str>>,
+}
 #[derive(Resource, Default)]
-pub(super) struct ContactSounds {
+pub(in crate::app) struct ContactSounds {
     definitions: Option<Result<Definitions, String>>,
-    active: Vec<Active>,
-    seed: u32,
-    reported: HashSet<String>,
+    ground: Option<Ground>,
+    next_ground: Option<GroundDemand>,
+    ground_dirty: bool,
+    pending: VecDeque<ContactSound>,
+    sequence: u64,
+    closed: bool,
 }
 impl ContactSounds {
     pub(super) fn release_level_history(&self) {
         if let Some(Ok(definitions)) = &self.definitions {
-            definitions.texts.release_level_history(&definitions.catalog);
+            definitions
+                .texts
+                .release_level_history(&definitions.catalog);
         }
     }
 
@@ -123,125 +102,302 @@ impl ContactSounds {
         }
     }
     pub(super) fn declarations(&self) -> Option<&declaration_texts::DeclarationTexts> {
-        self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
+        self.definitions
+            .as_ref()?
+            .as_ref()
+            .ok()
+            .map(|definitions| &definitions.texts)
     }
     pub(super) fn acquire() -> Self {
         let definitions = (|| {
-            let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
+            let base =
+                crate::assets::installation::game_base().map_err(|error| error.to_string())?;
             let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
             let map = crate::gameplay::map_info::current_map().unwrap_or_default();
             Definitions::load(catalog, &map, Default::default())
         })();
-        Self { definitions: Some(definitions), ..Default::default() }
-    }
-    pub(super) fn acquire_with_seed(catalog: Arc<Catalog>, map: &str,
-        seed: declaration_texts::PhysicsSeed) -> Self {
-        let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
-        Self { definitions: Some(Definitions::load(catalog, map, seed)), ..Default::default() }
-    }
-}
-
-/// Synchronous diagnostic entry; production publishes this owner from the
-/// acquisition worker before running Startup or admitting map systems.
-pub(super) fn initialize(mut commands: Commands, state: Res<ContactSounds>) {
-    if state.definitions.is_none() { commands.insert_resource(ContactSounds::acquire()); }
-}
-
-pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageReader<ContactSound>,
-    objects: Res<super::objects::EffectObjects>,
-    mix: Res<super::AudioMix>,
-    mut output: MessageWriter<SoundEvent>, clock: Res<ClockRuntime>, paused: Res<GamePaused>, playing: Query<&AudioTarget>,
-    mut physics: Option<ResMut<crate::app::physics_scene::PhysicsScene>>,
-    observer: Option<Res<super::observation::Observation>>)
-{
-    if paused.0 || !clock.advanced() { return; }
-    let Some(energy) = mix.physics_scale else { return };
-    let Ok(clock) = clock.clock() else { return };
-    let dt = clock.delta(3).unwrap_or(0.0);
-    let state = &mut *state;
-    let emitters = playing.iter().map(|target| target.emitter).collect::<HashSet<_>>();
-    state.active.retain(|active| active.sound.is_alive(emitters.contains(&active.emitter)));
-    for active in &mut state.active { active.age += dt; }
-    for ContactSound(contact) in contacts.read() {
-        if observer.is_some() {
-            eprintln!("CONTACT_SOUND_PACKET source={:?} target={:?} position={:?} normal={:?} direction={:?} speed={} mass={}",
-                contact.source, contact.target, contact.position, contact.normal, contact.direction, contact.speed, contact.mass);
+        Self {
+            definitions: Some(definitions),
+            ..Default::default()
         }
-        let prepared = (|| {
-            let definitions = state.definitions.as_mut().ok_or("contact definitions have not been acquired")?
-                .as_mut().map_err(|error| error.clone())?;
-            let groups = definitions.resolve(contact)?;
-            if observer.is_some() {
-                let effect = definitions.effects.iter().find_map(|(name, cached)| Arc::ptr_eq(cached, &groups).then_some(name.as_str()));
-                eprintln!("CONTACT_SOUND_RESOLVED source={:?} target={:?} effect={effect:?} groups={} events={:?}",
-                    contact.source, contact.target, groups.len(), groups.iter().flat_map(|group| group.sounds.iter().filter_map(|sound| sound.start.event)).collect::<Vec<_>>());
+    }
+    pub(super) fn acquire_with_seed(
+        catalog: Arc<Catalog>,
+        map: &str,
+        seed: declaration_texts::PhysicsSeed,
+    ) -> Self {
+        let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
+        Self {
+            definitions: Some(Definitions::load(catalog, map, seed)),
+            ..Default::default()
+        }
+    }
+}
+
+impl ContactSounds {
+    ///Called at the EXISTING actual player ground-query publication, using
+    ///the same MaterialOwner/body declarations. Unchanged witness/bank does
+    ///no allocation, archive read, cloned metadata or per-frame world scan.
+    pub(in crate::app) fn observe_ground(
+        &mut self,
+        target: Option<&Arc<Definition>>,
+        sources: &Arc<[Arc<Definition>]>,
+    ) {
+        if self.closed {
+            return;
+        }
+        let current = if self.ground_dirty {
+            self.next_ground.as_ref()
+        } else {
+            self.ground.as_ref().map(|ground| &ground.demand)
+        };
+        if match (current, target) {
+            (None, None) => true,
+            (Some(current), Some(target)) => {
+                Arc::ptr_eq(&current.target, target) && Arc::ptr_eq(&current.sources, sources)
             }
-            let value = energy.clamp(contact.speed * contact.speed * contact.mass);
-            Ok::<_, String>((groups, (energy.id, value)))
-        })();
-        match prepared {
-            Ok((groups, parameter)) => {
-                let mut in_water = None;
-                for group in groups.iter() {
-                    if group.location != fx::EffectGroupLocation::Everywhere {
-                        let water = in_water.get_or_insert_with(|| physics.as_mut()
-                            .ok_or_else(|| "contact FX water query has no physics world".to_owned())
-                            .and_then(|physics| physics.water_at(contact.position.to_array())));
-                        match water {
-                            Ok(water) if crate::gameplay::effects::groups::location_allowed(group.location, *water) => {},
-                            Ok(_) => continue,
-                            Err(error) => {
-                                if state.reported.insert(error.clone()) { warn!("Contact sound unavailable: {error}"); }
-                                continue;
-                            }
-                        }
-                    }
-                    let offsets = sample_offsets(&group.timing, 0.0, &mut state.seed);
-                    for sound in &group.sounds {
-                        let position = sample_position(sound.position, &mut state.seed);
-                        let runtime = SoundEffect::new(position, sound.start, TimedEvent { delay: [0.0; 2], event: None }, offsets[0], &mut state.seed);
-                        let emitter = match objects.allocate() {
-                            Ok(emitter) => emitter,
-                            Err(error) => { error!("Contact sound allocation failed: {error}"); continue; }
-                        };
-                        state.active.push(Active { sound: runtime, emitter, age: 0.0,
-                            origin: contact.position, axis: crate::gameplay::reference_frame::direction_basis(contact.normal), parameter });
-                    }
+            _ => false,
+        } {
+            return;
+        }
+        self.next_ground = target.map(|target| GroundDemand {
+            target: target.clone(),
+            sources: sources.clone(),
+        });
+        self.ground_dirty = true;
+    }
+    fn prepare_ground(&mut self, world: &mut World) -> Result<(), String> {
+        if self.ground_dirty {
+            if let Some(ground) = self.ground.take() {
+                for scope in ground.scopes {
+                    super::super::explosions::release_owned(world, &scope)?;
                 }
             }
-            Err(error) if state.reported.insert(error.clone()) => warn!("Contact sound unavailable: {error}"),
-            Err(_) => {}
+            self.ground = self.next_ground.take().map(|demand| Ground {
+                demand,
+                scopes: Vec::new(),
+            });
+            self.ground_dirty = false;
         }
-    }
-    for active in &mut state.active {
-        let update = active.sound.update(active.age, active.origin, active.axis);
-        if let Some(event) = update.event {
-            if observer.is_some() {
-                eprintln!("CONTACT_SOUND_POST event={event:#010x} object={:?} position={:?} age={}", active.emitter, update.position, active.age);
+        let Some(ground) = self.ground.as_mut() else {
+            return Ok(());
+        };
+        if ground.scopes.len() == ground.demand.sources.len() {
+            return Ok(());
+        }
+        let database = self
+            .definitions
+            .as_ref()
+            .ok_or("contact metadata was not published")?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .database
+            .clone();
+        while let Some(source) = ground.demand.sources.get(ground.scopes.len()) {
+            let next = self
+                .sequence
+                .checked_add(1)
+                .ok_or("contact scope generation exhausted")?;
+            let scope: Arc<str> = Arc::from(format!("body-ground-contact:{next}"));
+            super::super::explosions::prepare_contact_pair_leases_owned(
+                world,
+                scope.clone(),
+                source.clone(),
+                ground.demand.target.clone(),
+                database.clone(),
+            )?;
+            //Only THIS observed ground and the actual loaded source refs.
+            //No all-world material Cartesian product or synthetic lookahead.
+            if let Err(error) = super::super::explosions::prewarm_contact_pair_owned(world, &scope)
+            {
+                super::super::explosions::release_owned(world, &scope)?;
+                return Err(error);
             }
-            output.write(SoundEvent(Request::PostAt { event, emitter: active.emitter, position: update.position,
-                // 230310 -> 22fe30 publishes the effect frame's first axis
-                // as well as its transformed sound position.
-                front: Some(active.axis.x_axis), parameter: Some(active.parameter) }));
+            self.sequence = next;
+            ground.scopes.push(scope);
         }
+        Ok(())
     }
+    fn collect(&mut self, world: &mut World) -> Result<(), String> {
+        let mut messages = world.resource_mut::<Messages<ContactSound>>();
+        if self.closed && !messages.is_empty() {
+            return Err("contact producer posted after source retirement".into());
+        }
+        self.pending.extend(messages.drain());
+        Ok(())
+    }
+    fn finish(&mut self, world: &mut World) -> Result<(), String> {
+        while let Some(packet) = self.pending.front() {
+            let database = self
+                .definitions
+                .as_ref()
+                .ok_or("contact metadata was not published")?
+                .as_ref()
+                .map_err(Clone::clone)?
+                .database
+                .clone();
+            let current = self
+                .ground
+                .as_ref()
+                .filter(|ground| Arc::ptr_eq(&ground.demand.target, &packet.target))
+                .and_then(|ground| {
+                    ground
+                        .demand
+                        .sources
+                        .iter()
+                        .position(|source| Arc::ptr_eq(source, &packet.source))
+                        .and_then(|index| ground.scopes.get(index))
+                })
+                .cloned();
+            let temporary = current.is_none();
+            let scope = if let Some(scope) = current {
+                scope
+            } else {
+                let next = self
+                    .sequence
+                    .checked_add(1)
+                    .ok_or("accepted contact generation exhausted")?;
+                let scope: Arc<str> = Arc::from(format!("accepted-body-contact:{next}"));
+                super::super::explosions::prepare_contact_pair_leases_owned(
+                    world,
+                    scope.clone(),
+                    packet.source.clone(),
+                    packet.target.clone(),
+                    database,
+                )?;
+                self.sequence = next;
+                scope
+            };
+            let contact = &packet.contact;
+            if world.contains_resource::<super::observation::Observation>() {
+                eprintln!("CONTACT_FX_PACKET source={:?} target={:?} owner={:?} speed={} mass={} stimulus={} scope={scope}",
+                    contact.source,contact.target,packet.owner,contact.speed,contact.mass,contact.stimulus_enabled);
+            }
+            let context = crate::rendering::bevy_backend::world_effects::EntityEffectContext {
+                owner: Some(packet.owner),
+                culprit: None,
+                cannot_incapacitate_player_and_allies: false,
+                player_impact: false,
+                velocities: [[0.; 3]; 2],
+                contact_speed: contact.speed,
+                contact_mass: contact.mass,
+                contact_stimulus_enabled: Some(contact.stimulus_enabled),
+            };
+            let result = super::super::explosions::post_contact_pair_owned(
+                world,
+                &scope,
+                super::super::physics_scene::explosion_effects::Contact {
+                    source: packet.source.name.clone(),
+                    target: packet.target.name.clone(),
+                    target_definition: Some(packet.target.clone()),
+                    position: contact.position,
+                    normal: contact.normal,
+                    direction: contact.direction,
+                },
+                context,
+            );
+            //Scope leases may close after whole-FX admission. The canonical
+            //Owner retains the real ticket/context/FX source through all tails.
+            if temporary {
+                super::super::explosions::release_owned(world, &scope)?;
+            }
+            result?;
+            self.pending.pop_front();
+        }
+        Ok(())
+    }
+}
+
+///Windowless diagnostics keep the same metadata path; no output device needed.
+pub(super) fn initialize(mut commands: Commands, state: Res<ContactSounds>) {
+    if state.definitions.is_none() {
+        commands.insert_resource(ContactSounds::acquire());
+    }
+}
+pub(super) fn update(world: &mut World) -> Result<(), bevy::ecs::error::BevyError> {
+    world
+        .resource_scope(|world, mut owner: Mut<ContactSounds>| {
+            owner.collect(world)?;
+            if !owner.closed {
+                owner.prepare_ground(world)?;
+                owner.finish(world)?;
+            }
+            Ok::<(), String>(())
+        })
+        .map_err(Into::into)
+}
+pub(super) fn finish_accepted(world: &mut World) -> Result<(), String> {
+    if !world.contains_resource::<ContactSounds>() {
+        return if world
+            .get_resource::<Messages<ContactSound>>()
+            .is_some_and(|messages| !messages.is_empty())
+        {
+            Err("accepted contacts have no actual ContactSystem metadata owner".into())
+        } else {
+            Ok(())
+        };
+    }
+    world.resource_scope(|world, mut owner: Mut<ContactSounds>| {
+        owner.collect(world)?;
+        owner.finish(world)
+    })
+}
+pub(super) fn close(world: &mut World) -> Result<(), String> {
+    if !world.contains_resource::<ContactSounds>() {
+        return finish_accepted(world);
+    }
+    world.resource_scope(|world, mut owner: Mut<ContactSounds>| {
+        owner.collect(world)?;
+        owner.finish(world)?;
+        if let Some(ground) = owner.ground.take() {
+            for scope in ground.scopes {
+                super::super::explosions::release_owned(world, &scope)?;
+            }
+        }
+        owner.next_ground = None;
+        owner.ground_dirty = false;
+        owner.closed = true;
+        Ok(())
+    })
 }
 
 /// Acquire actual contact inputs in two independent archive namespaces.
 pub(in crate::app) fn observe_catalogs(base: &std::path::Path, map: &str) -> Result<(), String> {
     let left = Arc::new(Catalog::open(base).map_err(|error| error.to_string())?);
     let right = Arc::new(Catalog::open(base).map_err(|error| error.to_string())?);
-    let level = crate::assets::level::LevelResources::resolve(&left, map).map_err(|error| error.to_string())?;
+    let level = crate::assets::level::LevelResources::resolve(&left, map)
+        .map_err(|error| error.to_string())?;
     let language = crate::assets::lang::read_text_language(base)?;
-    let manifest = crate::assets::map_resources::acquire_level_list(base, &left,
-        level.entities.trim_start_matches("maps/").trim_end_matches(".entities"), language)?;
-    let material = manifest.iter().find(|entry| entry.kind == "physicsMaterial")
+    let manifest = crate::assets::map_resources::acquire_level_list(
+        base,
+        &left,
+        level
+            .entities
+            .trim_start_matches("maps/")
+            .trim_end_matches(".entities"),
+        language,
+    )?;
+    let material = manifest
+        .iter()
+        .find(|entry| entry.kind == "physicsMaterial")
         .and_then(|entry| entry.path.strip_prefix("generated/decls/physicsmaterial/"))
-        .and_then(|path| path.strip_suffix(".decl")).ok_or("contact material is absent")?;
+        .and_then(|path| path.strip_suffix(".decl"))
+        .ok_or("contact material is absent")?;
     let mut a = ContactSounds::acquire_with_seed(left.clone(), &level.entities, Default::default());
-    let mut b = ContactSounds::acquire_with_seed(right.clone(), &level.entities, Default::default());
-    let first = a.definitions.as_mut().ok_or("first contact owner is absent")?.as_mut().map_err(|error| error.clone())?;
-    let second = b.definitions.as_mut().ok_or("second contact owner is absent")?.as_mut().map_err(|error| error.clone())?;
+    let mut b =
+        ContactSounds::acquire_with_seed(right.clone(), &level.entities, Default::default());
+    let first = a
+        .definitions
+        .as_mut()
+        .ok_or("first contact owner is absent")?
+        .as_mut()
+        .map_err(|error| error.clone())?;
+    let second = b
+        .definitions
+        .as_mut()
+        .ok_or("second contact owner is absent")?
+        .as_mut()
+        .map_err(|error| error.clone())?;
     if !Arc::ptr_eq(&first.catalog, &left) || !Arc::ptr_eq(&second.catalog, &right) {
         return Err("contact preparation used a different archive namespace".into());
     }
@@ -252,17 +408,24 @@ pub(in crate::app) fn observe_catalogs(base: &std::path::Path, map: &str) -> Res
     if *first.database != *second.database
         || first_material.material() != second_material.material()
         || first_material.contact_chain() != second_material.contact_chain()
-        || Arc::ptr_eq(first_material, second_material) {
+        || Arc::ptr_eq(first_material, second_material)
+    {
         return Err("independent contact definitions or material namespaces differ".into());
     }
     let mut signature = blake3::Hasher::new();
     let mut records = 0;
     for entry in manifest.iter() {
-        if entry.kind != "physicsMaterial" && entry.kind != "soundevent"
-            && !(entry.kind == "fx" && entry.path.contains("/contactsystem/")) { continue; }
+        if entry.kind != "physicsMaterial"
+            && entry.kind != "soundevent"
+            && !(entry.kind == "fx" && entry.path.contains("/contactsystem/"))
+        {
+            continue;
+        }
         let one = first.texts.get(&entry.path);
         let two = second.texts.get(&entry.path);
-        if one != two { return Err(format!("contact source differs for {}", entry.path)); }
+        if one != two {
+            return Err(format!("contact source differs for {}", entry.path));
+        }
         if let Some(text) = one {
             signature.update(entry.path.as_bytes());
             signature.update(text.as_bytes());
@@ -279,7 +442,9 @@ pub(in crate::app) fn observe_catalogs(base: &std::path::Path, map: &str) -> Res
     }
     drop(b);
     drop(right);
-    if weak_right.strong_count() != 0 { return Err("contact resources retained their catalog".into()); }
+    if weak_right.strong_count() != 0 {
+        return Err("contact resources retained their catalog".into());
+    }
     eprintln!("CONTACT_CATALOG_SCOPES records={records} namespaces=true materials=true independent_release=true final_release=true signature={}", signature.finalize());
     Ok(())
 }

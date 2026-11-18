@@ -234,6 +234,35 @@ impl Owner {
         });
         Ok(())
     }
+    ///Actual current-ground demand can reserve the selected WHOLE effect
+    ///before a later step/landing/slide. This is source admission only, not
+    ///a fabricated PSO/media-ready acknowledgement or a Cartesian preload.
+    pub(in crate::app) fn prewarm_contact_pair(
+        &mut self,
+        world: &mut World,
+        key: &str,
+    ) -> Result<(), String> {
+        let scope = self
+            .scopes
+            .get_mut(key)
+            .ok_or("contact pair scope is absent")?;
+        if scope.reserved {
+            return Ok(());
+        }
+        let prepared = scope
+            .prepared
+            .as_mut()
+            .ok_or("contact pair metadata is pending")?;
+        prepared.paths = prepared.rows.values().filter_map(Clone::clone).collect();
+        prepared.paths.sort_unstable();
+        prepared.paths.dedup();
+        world
+            .get_resource_mut::<super::super::usable_effects::EffectRequests>()
+            .ok_or("canonical FX request owner is absent")?
+            .reserve(scope.fx_key.clone(), prepared.paths.clone());
+        scope.reserved = true;
+        Ok(())
+    }
     fn prepare_spec(&mut self, world: &World, key: Arc<str>, spec: Spec) -> Result<(), String> {
         if let Some(scope) = self.scopes.get(&key) {
             return if scope.spec == spec {
@@ -611,7 +640,7 @@ pub(in crate::app) fn contact_frame(
 }
 
 impl PhysicsScene {
-    fn contact_effect_enabled(&self, source: crate::gameplay::entity_lifetime::EntityId)
+    pub(in crate::app) fn contact_effect_enabled(&self, source: crate::gameplay::entity_lifetime::EntityId)
         -> Result<bool, String> {
         let &index = self.shared_indices.get(&source).ok_or("contact FX source header absent")?;
         let entity = self.entities.get(index).ok_or("contact FX source slot absent")?;

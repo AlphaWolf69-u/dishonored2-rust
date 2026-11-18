@@ -318,6 +318,11 @@ pub(super) fn prepare_contact_pair_leases_owned(
     world.resource_scope(|_world,mut owner:Mut<Explosions>|
         owner.effects.prepare_contact_pair_leases(scope,source,target,database))
 }
+pub(super) fn prewarm_contact_pair_owned(world: &mut World, scope: &str) -> Result<(), String> {
+    world.resource_scope(|world, mut owner: Mut<Explosions>| {
+        owner.effects.prewarm_contact_pair(world, scope)
+    })
+}
 pub(super) fn post_contact_pair_owned(world:&mut World,scope:&str,contact:super::physics_scene::explosion_effects::Contact,
     context:crate::rendering::bevy_backend::world_effects::EntityEffectContext,
 )->Result<Option<super::usable_effects::EffectTicket>,String>{

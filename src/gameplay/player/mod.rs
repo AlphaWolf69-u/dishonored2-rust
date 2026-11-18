@@ -1278,7 +1278,10 @@ impl Player {
         let supported = self.controller.support_state != SupportState::Unsupported;
         let ground_normal = self.physics.ground_ray_normal_average;
         self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings, ground_normal, supported);
-        self.body.update_footsteps(world, &self.physics, &self.attributes, dt, now);
+        self.body.update_footsteps(
+            world, &self.physics, &self.attributes, dt, now,
+            self.controller.possession_state() == 14,
+        );
         self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
         self.body.update_animation_events(dt);
         // ANIMATION (arkCpntAnimEvolved FUN_14054f500): the midnight root

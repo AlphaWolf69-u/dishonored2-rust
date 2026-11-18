@@ -41,3 +41,5 @@ pub(crate) fn normalize_small(value: f32) -> f32 {
 #[cfg(test)]
 #[path = "effects/tests.rs"]
 mod tests;
+
+pub(crate) mod contact_instances;

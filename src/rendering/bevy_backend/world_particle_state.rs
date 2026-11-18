@@ -531,6 +531,11 @@ pub(crate) struct WorldParticleState {
     entity_order: Vec<u32>,
     next_entity: u32,
     next_instance: u32,
+    ///Actual60af50 class journal, sharing this manager's real instances,
+    ///canonical header generations and normal stop/tail callbacks.
+    contact_instances: crate::gameplay::effects::contact_instances::ContactInstances<
+        crate::assets::fx::definition::Definition,
+    >,
     pending_starts: Vec<u16>,
     pool: EffectPoolLinks,
     slots: Vec<Option<Instance>>,
@@ -577,6 +582,7 @@ impl Default for WorldParticleState {
             entity_order: Vec::new(),
             next_entity: 0,
             next_instance: 0,
+            contact_instances: Default::default(),
             pending_starts: Vec::new(),
             slots: (0..pool.next.len()).map(|_| None).collect(),
             pool,
@@ -1230,6 +1236,9 @@ impl WorldParticleState {
                     }
                 }
             }
+            //60ad40 removes the contact journal row AFTER every real stop
+            //request succeeded. Family tails keep their existing owner/ACK.
+            self.contact_instances.remove(handle);
             // 1a31f0 -> 1a1880/1a1990 removes the queued start using the
             // source's last-matching swap removal, before the next drain.
             if let Some(index) = self
@@ -1334,6 +1343,7 @@ impl WorldParticleState {
             .as_ref()
             .filter(|lifetime| lifetime.once)
             .cloned();
+        self.contact_instances.remove(instance.id);
         self.handles.remove(&instance.id);
         if let Some(index) = self
             .pending_starts
@@ -1467,6 +1477,9 @@ impl WorldParticleState {
             if self.slots[index].is_some() {
                 self.shutdown_instance(index as u16, systems)?;
             }
+        }
+        if !self.contact_instances.is_empty() {
+            return Err("ContactSystem retains live definition buckets after FX shutdown".into());
         }
         if !self.distortion.drained() { return Err("FX FSDisto pool retains a live chain after shutdown".into()); }
         self.distortion.shutdown();
@@ -2598,6 +2611,21 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         })
     }
     fn play(&mut self) -> Result<Option<u32>, String> {
+        //A genuine one-shot refusal/completion is not a pending asset and
+        //cannot be replayed while main-thread withdrawal is observed later.
+        if self
+            .entity
+            .dynamic_retirement
+            .as_ref()
+            .is_some_and(|lifetime| {
+                lifetime.once
+                    && lifetime
+                        .completed
+                        .load(std::sync::atomic::Ordering::Acquire)
+            })
+        {
+            return Ok(None);
+        }
         let parameters = &self.entity.parameters;
         // 1404b1d80: an existing target entity initializes its tag or joint
         // (1404b19b0) and writes the target pose into the new record
@@ -2648,8 +2676,27 @@ impl WorldFxComponentHost for InstanceHost<'_> {
                 crate::gameplay::reference_frame::compose(pose, local)
             })
         };
+        //The header Arc, not path spelling, is60af50's declaration identity.
+        let contact_definition = self
+            .entity
+            .entity_context
+            .filter(|context| context.contact_stimulus_enabled.is_some())
+            .map(|_| definition.source.clone());
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {
+            if contact_definition.is_some() {
+                let lifetime = self
+                    .entity
+                    .dynamic_retirement
+                    .as_ref()
+                    .filter(|lifetime| lifetime.once)
+                    .ok_or("material contact refusal has no actual one-shot source owner")?;
+                //No slot/family exists: actual allocation refusal closes this
+                //accepted packet, not an audio/GPU readiness acknowledgement.
+                lifetime
+                    .completed
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
                 bevy::log::info!(effect = name, "World FX instance pool exhausted");
             }
@@ -2684,6 +2731,26 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             target,
         });
         self.state.handles.insert(id, slot);
+        if let Some(definition) = contact_definition {
+            use crate::gameplay::effects::contact_instances::Admission;
+            match self.state.contact_instances.admission(&definition) {
+                Admission::Exhausted => {
+                    //60af50→166830 returns a warning, then60a8b0 destroys
+                    //the actual unstarted instance1a31f0. No family/RNG start.
+                    self.state.report(format!(
+                        "ContactSystem:too many unique active contact definitions; ignored {name}"
+                    ));
+                    self.state.retire(slot, self.systems)?;
+                    return Ok(None);
+                }
+                Admission::Available { oldest } => {
+                    if let Some(oldest) = oldest {
+                        self.state.stop(oldest, self.systems)?;
+                    }
+                    self.state.contact_instances.insert(definition, id)?;
+                }
+            }
+        }
         self.state.pending_starts.push(slot);
         if let FxEntityOwner::Node { graph, node } = self.entity.owner {
             self.state.started.push((graph, node, id));

@@ -413,6 +413,50 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
     let (mut body, scenes) =
         load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener, cancelled)?;
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
+    //State-declaration references are acquired on this EXISTING player worker,
+    //before publication. No contact-frame archive read or all-DB pair preload.
+    let mut contact_names = Vec::<String>::new();
+    for state in &states {
+        for step in [
+            &state.navigation.footstep,
+            &state.navigation.footstep_upstairs,
+            &state.navigation.footstep_downstairs,
+        ] {
+            if let Some(name) = &step.material {
+                contact_names.push(name.clone());
+            }
+        }
+        match &state.kind {
+            crate::gameplay::player::states::Kind::Falling(decl) => {
+                contact_names.extend(
+                    [
+                        decl.landing_material.as_deref(),
+                        decl.dead_landing_material.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_owned),
+                );
+            }
+            crate::gameplay::player::states::Kind::Sliding(decl) => {
+                contact_names.extend(decl.contact_material.as_deref().map(str::to_owned));
+            }
+            _ => {}
+        }
+    }
+    contact_names.sort_unstable();
+    contact_names.dedup();
+    body.contact_materials = contact_names
+        .into_iter()
+        .map(|name| {
+            crate::assets::entities::physics_material::resources::acquire_with(
+                catalog,
+                &name,
+                |path| text_of(catalog, path),
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into();
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)?;
     let drowning_damage = decls::drowning_damage_decl(&declarations.breath);
@@ -754,7 +798,8 @@ pub(super) fn update_player(
     mut contact_sounds: MessageWriter<super::audio::ContactSound>,
     query: (Local<DebugBenchmarkWalk>, Local<std::cell::RefCell<collision::Scratch>>,
         Option<Res<super::physics_scene::PhysicsScene>>,
-        Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>),
+        Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
+        ResMut<super::audio::ContactSources>),
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
@@ -762,7 +807,7 @@ pub(super) fn update_player(
     mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
 ) -> Result<(), bevy::ecs::error::BevyError> {
-    let (mut walk, query_scratch, scene, mut simulation) = query;
+    let (mut walk, query_scratch, scene, mut simulation, mut contact_sources) = query;
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
@@ -915,8 +960,61 @@ pub(super) fn update_player(
     for request in player.body.take_sound_requests() {
         sound_events.write(super::audio::SoundEvent(request));
     }
-    for contact in player.body.take_contact_requests() {
-        contact_sounds.write(super::audio::ContactSound(contact));
+    let contacts_enabled = player
+        .managed_entity()
+        .map(|owner| scene.contact_effect_enabled(owner))
+        .transpose()?
+        .unwrap_or(false);
+    let ground = player
+        .physics
+        .ground_material_hit
+        .as_ref()
+        .filter(|_| contacts_enabled)
+        .map(|hit| {
+            if let Some(id) = hit.material_id {
+                query_world.storage.materials.definition_for_id(id)
+            } else {
+                query_world.storage.materials.contact_definition_named(
+                    world
+                        .material(hit)
+                        .ok_or("actual ground witness has no physics material")?,
+                )
+            }
+        })
+        .transpose()?;
+    contact_sources.observe_ground(ground, &player.body.contact_materials);
+    while let Some(contact) = player.body.next_contact_request() {
+        let owner = player
+            .managed_entity()
+            .ok_or("material contact source actor is not published")?;
+        let source = player
+            .body
+            .contact_materials
+            .iter()
+            .find(|definition| definition.name.eq_ignore_ascii_case(&contact.source))
+            .ok_or("player contact declaration was not acquired with its source state")?
+            .clone();
+        //The accepted packet retains the actual ground declaration from this
+        //query/material owner, independently of later camera/player movement.
+        let target = if let Some(id) = contact.target_material_id {
+            query_world.storage.materials.definition_for_id(id)?.clone()
+        } else {
+            query_world
+                .storage
+                .materials
+                .contact_definition_named(&contact.target)?
+                .clone()
+        };
+        let contact = player
+            .body
+            .accept_contact_request()
+            .ok_or("accepted contact packet disappeared")?;
+        contact_sounds.write(super::audio::ContactSound {
+            contact,
+            owner,
+            source,
+            target,
+        });
     }
     let view = player.view();
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {

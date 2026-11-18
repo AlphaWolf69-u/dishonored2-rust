@@ -25382,3 +25382,32 @@ completed step. It adds no guessed direction/speed/offset threshold or gameplay
 change. Explicit carry/full diagnostics enable the existing bounded trace in
 dev and release; ordinary release retains no history. This still does not
 certify continuous support, full ballistic parity or the separate plate report.
+
+### Material contact FX / player landing, sliding and footsteps
+
+- **Owner:** actual Body/ground material declarations feed `audio::contacts`
+  metadata admission, `physics_scene::explosion_effects::Owner`, the existing
+  EffectRequests/FxSimulation and WorldSounds/audio owners. No sound-only
+  Group/Sound projection, contact-private RNG, decoder or playback service.
+- **ported (staged/unbuilt):**770990 packet source identity/material leases,
+  fixed character mass0, actual Controller5D0 callback predicate;60a480/
+  60a8b0 pair/frame/sourceD2/callback handoff;60a540/60a700/60a510/60af50
+  native16×4 generation-correct declaration journal;60ad40 ordered removal;
+  1a31f0/223c20 stop and shared family tails;22fac0 energy RTPC remains the
+  existing shared implementation. The selected character's declaration refs
+  load on the real worker; frame ground/accepted contacts borrow existing
+  MaterialOwner definitions without archive parse.
+- **host:** actual-ground demand prewarms only the current declared source
+  pairs via canonical async FX preparation. Cold FX/media/PSO publication is
+  still a real pending resource boundary; first-contact latency/audibility
+  requires the coherent production run. No fake ready/voice or gain change.
+  Existing shared FX storage retains stopped instance records through family
+  tails; contact-journal occupancy is released at source stop independently.
+- **ported (staged/unbuilt):**accepted packet/error retention, source-scope
+  cancellation and pre-FX-shutdown drain/close, fixed journal retirement check,
+  canonical declaration/source/media/render tail release. Unknown/unsupported
+  enabled families fail through the existing common owner instead of being
+  silently omitted. No decoded duplicate or all-world Cartesian reservation.
+- **not verified:**actual landing/slide source-start and nonzero post-voice
+  output receipts, cold/warm contact latency and affected-function CPU cost.
+  No builds/tests/runs or measured performance improvement claimed.

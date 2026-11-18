@@ -17,6 +17,7 @@ use super::states::LocoStances;
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::{self, JointRestPose};
 use bevy_math::{Mat3, Quat, Vec3};
+use std::sync::Arc;
 
 pub struct BodySkeleton {
     pub data: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
@@ -376,6 +377,10 @@ pub struct Body {
     pub(super) lower_animation_sounds: Vec<super::midnight::AnimationSoundReceipt>,
     pub(super) lower_animation_effects:Vec<super::midnight::AnimationEffectReceipt>,
     pub(super) contact_requests: Vec<crate::gameplay::sound::Contact>,
+    ///Native declaration references for THIS loaded player's contact producers.
+    ///One immutable lease array; no material syntax/cache or decoded copies.
+    pub(crate) contact_materials:
+        Arc<[Arc<crate::assets::entities::physics_material::resources::Definition>]>,
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
@@ -431,11 +436,23 @@ impl Body {
 
     pub fn take_sound_requests(&mut self) -> Vec<crate::gameplay::sound::Request> { std::mem::take(&mut self.sound_requests) }
     pub fn take_contact_requests(&mut self) -> Vec<crate::gameplay::sound::Contact> { std::mem::take(&mut self.contact_requests) }
+    ///The host must resolve the actual already-acquired source/ground leases
+    ///before acknowledging this packet. Metadata errors cannot lose a burst.
+    pub fn next_contact_request(&self) -> Option<&crate::gameplay::sound::Contact> {
+        self.contact_requests.first()
+    }
+    pub fn accept_contact_request(&mut self) -> Option<crate::gameplay::sound::Contact> {
+        if self.contact_requests.is_empty() {
+            None
+        } else {
+            Some(self.contact_requests.remove(0))
+        }
+    }
 
     /// 776310 -> 770990 for the ordinary player controller. Physics supplies
     /// the dedicated ground material probe; navigation supplies the source.
     pub fn update_footsteps(&mut self, world: &dyn super::character_proxy::PlayerWorld, physics: &super::physics::PlayerPhysics,
-        attributes: &super::states::Attributes, dt: f32, now: f64)
+        attributes: &super::states::Attributes, dt: f32, now: f64, stimulus_enabled: bool)
     {
         use crate::gameplay::sound::{Contact, Emitter, Request};
         use super::states::StateId;
@@ -463,11 +480,12 @@ impl Body {
             if buffer <= 0.0 {
                 self.contact_requests.push(Contact {
                     source: source.to_owned(), target: target.to_owned(), position: physics.position(),
+                    target_material_id: physics.ground_material_hit.as_ref().and_then(|hit|hit.material_id),
                     normal: Vec3::Z, direction: Vec3::ZERO,
                     speed: self.speed.max(physics.gravity_velocity.z.abs()),
                     // c84ca0's proxy body retains Cinfo's fixed motion 0;
                     // its inverse mass is zero, so 092260 returns zero.
-                    mass: 0.0,
+                    mass: 0.0, stimulus_enabled,
                 });
             }
         }
@@ -501,6 +519,7 @@ impl Body {
             lower_animation_sounds: Vec::new(),
             lower_animation_effects:Vec::new(),
             contact_requests: Vec::new(),
+            contact_materials: Arc::from([]),
             angle: 0.0,
             bob_amount: 1.0,
             jump: JumpAnim::default(),

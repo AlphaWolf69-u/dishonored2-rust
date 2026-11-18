@@ -31,7 +31,7 @@ pub(super) use session::{close_admission as close_session_admission, work as acq
 pub(super) mod level;
 pub(super) mod music;
 pub(super) mod audiographs;
-pub(super) use contacts::ContactSound;
+pub(super) use contacts::{ContactSound, ContactSounds as ContactSources};
 
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
@@ -631,6 +631,13 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
     // their owner releases them; a later request must not restart retirement.
     retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete
         || matches!(emitter, Emitter::Component { .. } | Emitter::ComponentJoint { .. } | Emitter::Equipment { .. } | Emitter::PlayerJoint { .. }));
+}
+
+pub(in crate::app) fn finish_contact_effects(world: &mut World) -> Result<(), String> {
+    contacts::finish_accepted(world)
+}
+pub(in crate::app) fn close_contact_effects(world: &mut World) -> Result<(), String> {
+    contacts::close(world)
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
