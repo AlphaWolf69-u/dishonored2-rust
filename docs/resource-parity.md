@@ -25215,3 +25215,23 @@ normalized material-key hash and pipeline ID under existing diagnostic tracing.
 Runtime verification is pending. The provided prior logs do not establish the
 owner of every late opaque/transparent program; no numerical pipeline ID is
 attributed by comparison with another process.
+
+
+Environment owner lifetime closure: PreparedEnvironment retains resolved typed
+values and exact successful source-path dependencies; inherited parsed syntax
+now drops after acquisition. Focus diagnostic targets reuse those same float
+words. All33 registered camera parameter declarations were read from installed
+resources and are Uniform float (local camera-registered-types.json); other
+kinds fail explicitly rather than being silently discarded or reinterpreted.
+Setup no longer creates a second raw pause-environment projection. Actual pause
+rendering uses the single ordered EnvironmentFrame owner.
+
+ENV scope release and the existing final level-history sweep retain only
+source credits held by live typed generations/common declarations, including
+flattened parents, matching the existing FX-owner rule. The established worker
+join, actual GPU readiness, zero-slot removal and empty render-generation ACK
+still precede image projection/source purge. Prediction: zero retained generic
+ENV syntax trees after preparation and no orphaned parent read credits after
+the last scope/lease retires; no measured MB, CPU-time or FPS saving is claimed.
+The existing raw oracle-fixture helper is test-only and transient; no tests were
+added or run. Combined runtime validation remains pending.

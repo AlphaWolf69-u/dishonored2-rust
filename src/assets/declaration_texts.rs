@@ -258,7 +258,7 @@ impl DeclarationTexts {
         let started = trace.then(crate::loading::thread_cycles).flatten();
         let mut removed = 0usize;
         let mut bytes = 0usize;
-        for kind in ["fx", "soundevent", "physicsMaterial"] {
+        for kind in ["fx", "env", "soundevent", "physicsMaterial"] {
             // Typed event acquisition takes its registry before recording
             // a read. Hold it in that same order through this history sweep.
             let events = (kind == "soundevent").then(|| catalog.sound_events.get()).flatten()
@@ -268,10 +268,15 @@ impl DeclarationTexts {
             let effects = (kind == "fx").then(|| catalog.fx_resources.get()).flatten()
                 .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
             let fx_history = effects.as_ref().map(|registry| crate::assets::fx::declaration::source_history(registry));
+            let environments = (kind == "env").then(|| catalog.environment_resources.get()).flatten()
+                .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
+            let env_history = environments.as_ref().map(|registry| crate::rendering::environment_resources::source_history(registry));
             let (count, capacity, _, _) = crate::loading::retain_catalog_kind(catalog.identity(), kind, |path| {
                 self.common.as_deref().is_some_and(|values| values.contains_key(path))
                     || effects.as_ref().is_some_and(|registry| registry.owns_read_history(path))
                     || fx_history.as_ref().is_some_and(|paths| paths.contains(path))
+                    || environments.as_ref().is_some_and(|registry| registry.owns_read_history(path))
+                    || env_history.as_ref().is_some_and(|paths| paths.contains(path))
                     || events.as_ref().is_some_and(|registry| registry.owns_read_history(path))
                     || materials.as_ref().is_some_and(|registry| registry.owns_read_history(path))
             });

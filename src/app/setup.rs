@@ -332,19 +332,13 @@ pub(super) fn prepare(
         let screen_fx = super::pause_fx::load(catalog)
             .inspect_err(|e| warn!("Pause screen FX unavailable: {e}"))
             .ok();
-        let screen_fx_environment = screen_fx
-            .as_ref()
-            .and_then(|fx| {
-                super::pause_fx::environment_parameters(catalog, &fx.environment)
-                    .inspect_err(|e| warn!("Pause screen FX environment: {e}"))
-                    .ok()
-            });
         commands.insert_resource(super::pause_fx::PauseScreenFx::new(screen_fx));
         let display = super::display_scene::DisplayScene::load(
             catalog,
             parameters,
             &scene.area_environments,
-            screen_fx_environment.as_ref(),
+            //Pause environment uses the same ordered typed FX publication as every producer.
+            None,
             images,
             resident_images,
         )

@@ -9,7 +9,8 @@ pub enum PreparedValue { Float([f32;4]), Unsigned([u32;4]), Signed([i32;4]), Boo
 
 pub struct PreparedEnvironment {
     pub name: String,
-    pub parameters: EnvironmentRenderParameters,
+    /// Exact source read-credit dependencies, not retained parsed syntax.
+    pub(crate) source_paths: Vec<String>,
     pub values: HashMap<String, PreparedValue>,
     /// Set by the canonical consumer only after every required projection/image is admitted.
     pub prepared: AtomicBool,
@@ -21,10 +22,15 @@ impl PreparedEnvironment {
         let mut owner = catalog.environment_resources.get_or_init(Default::default).lock()
             .map_err(|_| "environment resource registry is poisoned")?;
         owner.acquire(&path, marker, |_| {
-            let read = |name: &str| crate::assets::declaration_texts::read_common_or_catalog(catalog,
-                &format!("generated/decls/env/{name}.decl"));
+            let mut source_paths = Vec::new();
+            let mut read = |name: &str| {
+                let path = format!("generated/decls/env/{name}.decl").replace('\\', "/").to_ascii_lowercase();
+                let value = crate::assets::declaration_texts::read_common_or_catalog(catalog, &path)?;
+                if value.is_some() { source_paths.push(path); }
+                Ok(value)
+            };
             let text = read(name)?.ok_or_else(|| format!("environment {name} is not installed"))?;
-            let parameters = entities::environment_render_parameters_with_inheritance(name, &text, read)?;
+            let parameters = entities::environment_render_parameters_with_inheritance(name, &text, &mut read)?;
             let reader = crate::assets::environment::ParameterReader { catalog, parameters: &parameters };
             let mut values = HashMap::new();
             let mut seen = HashSet::new();
@@ -55,13 +61,25 @@ impl PreparedEnvironment {
                     values.insert(key, value);
                 }
             }
-            Ok(Arc::new(Self { name: name.to_owned(), parameters, values, prepared: false.into() }))
+            Ok(Arc::new(Self { name: name.to_owned(), source_paths, values, prepared: false.into() }))
         })
     }
 }
+/// Keep owner -> read-history lock order, matching acquisition's Catalog read.
+/// Flattened parent inputs belong to each live typed generation, not a second
+/// permanently credited declaration with no direct resource header to purge.
+pub(crate) fn source_history(owner:&crate::assets::resource_registry::Registry<PreparedEnvironment>)->HashSet<String>{
+    let mut paths=HashSet::new();
+    for environment in owner.live_values(){ paths.extend(environment.source_paths.iter().cloned()); }
+    paths
+}
 pub(crate) fn release(catalog: &Catalog, marker: u8) {
     if let Some(owner) = catalog.environment_resources.get() {
-        owner.lock().unwrap_or_else(|error| error.into_inner()).release(catalog.identity(), "env", marker);
+        let mut owner = owner.lock().unwrap_or_else(|error| error.into_inner());
+        owner.release(catalog.identity(), "env", marker);
+        let dependencies = source_history(&owner);
+        crate::loading::retain_catalog_kind(catalog.identity(), "env", |path|
+            owner.owns_read_history(path) || dependencies.contains(path));
     }
 }
 

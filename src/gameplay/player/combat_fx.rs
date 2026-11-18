@@ -66,19 +66,16 @@ impl Definition {
                     crate::rendering::environment_resources::PreparedEnvironment::acquire(
                         catalog, name, 0,
                     )?;
-                let parameters = &prepared.parameters;
-                let reader = crate::assets::environment::ParameterReader {
-                    catalog,
-                    parameters: &parameters,
-                };
                 let mut values = [None; 33];
-                for (slot, name) in crate::rendering::camera_effects::PARAMETER_NAMES
-                    .iter()
-                    .enumerate()
-                {
-                    if parameters.parameter(name).is_some() {
-                        values[slot] = Some(reader.vector(name)?[0]);
-                    }
+                for (slot, name) in crate::rendering::camera_effects::PARAMETER_NAMES.iter().enumerate() {
+                    values[slot] = match prepared.values.get(*name) {
+                        //313e70's environment camera inputs are registered floating
+                        //uniforms. Reuse the exact acquisition-time float words;
+                        //never silently discard or reinterpret another numeric type.
+                        Some(crate::rendering::environment_resources::PreparedValue::Float(value)) => Some(value[0]),
+                        None => None,
+                        Some(_) => return Err(format!("focused-attack camera parameter {name} is not a floating uniform")),
+                    };
                 }
                 environments.push(Environment {
                     environment: prepared,

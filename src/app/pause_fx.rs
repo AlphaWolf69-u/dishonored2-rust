@@ -80,16 +80,17 @@ pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
     Err(format!("{name} has no environment override"))
 }
 
-/// An environment decl's render parameters, following its inherit chain.
+/// Legacy oracle fixtures may inspect authored syntax transiently. Production
+/// pause publication uses the canonical typed EnvironmentFrame exclusively.
+#[cfg(test)]
 pub(super) fn environment_parameters(
     catalog: &Catalog,
     name: &str,
 ) -> Result<crate::assets::entities::EnvironmentRenderParameters, String> {
-    Ok(
-        crate::rendering::environment_resources::PreparedEnvironment::acquire(catalog, name, 0)?
-            .parameters
-            .clone(),
-    )
+    let read = |name:&str| crate::assets::declaration_texts::read_common_or_catalog(catalog,
+        &format!("generated/decls/env/{name}.decl"));
+    let text=read(name)?.ok_or_else(||format!("environment {name} is not installed"))?;
+    crate::assets::entities::environment_render_parameters_with_inheritance(name,&text,read)
 }
 
 struct Active {

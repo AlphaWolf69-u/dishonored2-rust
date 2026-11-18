@@ -6,7 +6,7 @@ use super::*;
 use crate::rendering::bevy_backend::water_scene::WaterSceneFrame;
 use bevy::{
     material::key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
-    core_pipeline::{prepass::{DepthPrepass, NormalPrepass, MotionVectorPrepass}, deferred::DeferredPrepass},
+    core_pipeline::prepass::{DepthPrepass, NormalPrepass, MotionVectorPrepass, DeferredPrepass},
     ecs::query::Has,
     pbr::{MeshPipelineKey, PreparedMaterial, ViewKeyCache, ViewKeyPrepassCache},
     render::{
