@@ -222,3 +222,15 @@ fn hair_direct(l:WardLight)->vec3<f32> {
     }
     return result;
 }
+// BRDF_hair::ComputeLightingArea's two-sided translucency: the point-light
+// term with the area light's representative direction and its shadowed
+// diffuse irradiance.
+fn hair_area_translucency(direction:vec3<f32>,irradiance:vec3<f32>)->vec3<f32> {
+    let s=hair_surface;
+    if (s.translucency_flags&3u)!=3u {return vec3(0.0);}
+    let ldotn=-dot(direction,s.vertex_normal);
+    let factor=smoothstep(-s.translucency_onset,0.1,ldotn);
+    let light_vector=direction+s.translucency.y*s.vertex_normal;
+    let ldotv=exp2(clamp(-dot(s.view,light_vector),0.0,1.0)*s.translucency.z-s.translucency.z);
+    return s.transmittance*irradiance*(s.translucency.x*(s.translucency.w+factor*ldotv));
+}
