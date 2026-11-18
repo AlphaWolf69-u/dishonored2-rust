@@ -432,7 +432,8 @@ fn fragment(
             let basis_b=-hl2.y*interior_tangent-sqrt(0.5)*interior_bitangent+hl2.z*interior_normal;
             eye_surface=EyeSurface(exterior_normal,ward_inverse_roughness_squared(roughness),view_dir,mask,
                 interior_normal,mix(surface.eye[2].z,surface.eye[2].w,mask),albedo.rgb,1.0,ssbump,
-                basis_r,basis_g,basis_b);
+                basis_r,basis_g,basis_b,eye_dir,interior_tangent,interior_bitangent,eye_uv,
+                surface.eye[5].xy);
             pbr_input.N=exterior_normal;
             pbr_input.material.base_color=albedo;
             pbr_input.material.perceptual_roughness=roughness;

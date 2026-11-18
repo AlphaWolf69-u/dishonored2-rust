@@ -13,7 +13,7 @@ materials (potion and oil liquids), not by FX particles.
 | Gap | Installed content | Status |
 |---|---|---|
 | `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | connected: see "Character hair" below |
-| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected except the internal caustic: see "Character eyes" below |
+| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected: see "Character eyes" below |
 | `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
 
 `particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
@@ -21,7 +21,7 @@ Its 8 materials are the health and mana potion liquids, the institute
 serum, Karnaca oil and the incendiary, sleep and venom crossbow-bolt
 liquids.
 
-## Character eyes (`arkeyeball`), connected except the caustic
+## Character eyes (`arkeyeball`), connected
 
 Installed `renderprog/arkeyeball` with `BRDF_eye`, sortCoverage,
 useSelfShadowedBumpMap 1.
@@ -53,11 +53,10 @@ lights tinted by the IBL chrominance. Eyes are forward shadow receivers.
 In the prologue view, indirect light on the sclera equals the skin's
 (21,15,15 vs 19,15,16); there is no matched original view of an eye yet.
 
-Open: `eye/internalCaustic` (4 materials, e.g. Emily's) samples
-`eye/causticMap`, a 128x128x5 BGRA8 volume. The resident image owner has
-no volume path; the term is absent until it does. Next step: give
-resident_images a volume acquisition (material::load_3d_image already
-decodes it) and bind it as a 3D material texture.
+`eye/internalCaustic` (4 materials, e.g. Emily's) samples `eye/causticMap`,
+a 128x128x5 BGRA8 volume: app/eye_caustics.rs decodes each source once
+(material::load_3d_image) and binds it to new eye materials (binding 176);
+eye_direct rotates the UV toward the light about the gaze.
 
 ## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
 
@@ -205,9 +204,13 @@ Alpha/RefractionIOR and Alpha/Transmittance. In the prologue tower 22
 model and 28 world materials route here; decals of types 0/3 stay in the
 main pass.
 
-Open, in order: main-pass alpha (decals, hair lit) still draws after the
-fog composite and water; r_OIT and the OIT cvars are read at material
-load, not per frame.
+r_OIT and the OIT weight cvars follow the console: AlphaGpu reads r_OIT
+each frame for the list's accumulation, and oit_parameters re-resolves the
+alpha-list materials' OIT uniforms when the values change.
+
+Main-pass alpha (decals 0/3, hair lit) draws after the rewrite's fog
+composite with its own per-pixel fog, which composes to the original's
+forward-then-FOG order for these surfaces (bevy_backend ordering).
 
 ## Particle declaration census (2026-11-10)
 

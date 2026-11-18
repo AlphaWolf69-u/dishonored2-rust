@@ -81,7 +81,8 @@ pub struct SurfaceUniform {
     /// 325130's OIT/Weights and OIT/Params for this surface's blend state
     /// (non-particle), bound for the alpha lists' writePixel.
     pub oit: [Vec4; 2],
-    /// .x r_OIT: 1 NEW_writePixel, 2 OLD_writePixel.
+    /// .x r_OIT: 1 NEW_writePixel, 2 OLD_writePixel; .y blend class + 1
+    /// (1 ordinary, 2 additive; 0 for surfaces outside the alpha lists).
     pub oit_mode: UVec4,
     /// ComputeGlassTransmittance: Alpha/RefractionIOR, Alpha/Transmittance.
     pub glass_transmittance: Vec4,
