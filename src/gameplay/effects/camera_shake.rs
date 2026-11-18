@@ -44,7 +44,8 @@ impl Default for ShakeAccumulator {
 }
 
 /// The FX camera shakes of the last FX update, for the view (14022dac0).
-#[derive(bevy::prelude::Resource, Clone, Copy, Default)]
+#[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
+#[derive(Clone, Copy, Default)]
 pub struct FxShakeFrame(pub ShakeAccumulator);
 
 /// 140110990: idQuat product.

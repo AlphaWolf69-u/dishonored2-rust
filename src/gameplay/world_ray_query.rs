@@ -43,6 +43,7 @@ impl WorldRayQuery {
         request: &WorldRayRequest,
         resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
     ) -> Result<Option<ShapeRayContact>, String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut selected = None;
         let mut visitor = Bodies {
             bodies,
@@ -98,6 +99,7 @@ impl WorldRayQuery {
         hits: &mut Vec<ShapeRayContact>,
     ) -> Result<(), String> {
         hits.clear();
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut selected = None;
         let mut visitor = Bodies {
             bodies,
@@ -135,6 +137,7 @@ impl WorldRayQuery {
         query_flags: u32,
         resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
     ) -> Result<Option<ShapeRayContact>, String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut selected = None;
         let mut visitor = Bodies { bodies, shapes: &mut self.shapes, request, resolve,
             selected: &mut selected, all_hits: None, stop_at_first: true,

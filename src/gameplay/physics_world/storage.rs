@@ -638,6 +638,7 @@ impl WorldStorage {
 
 
     pub fn new(info: WorldInfo, identity: usize, materials: MaterialOwner<usize, usize>) -> Result<Self, String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         if info.user_body_buffer.is_some() || info.user_motion_buffer.is_some() {
             return Err("external physics buffers require their actual owner".into());
         }
@@ -953,6 +954,7 @@ impl WorldStorage {
         mut resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
         contacts: &mut Vec<crate::gameplay::shape_convex_query::ConvexContact>,
     ) -> Result<(), String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let body=self.bodies.get(target_id).ok_or("closest target body generation absent")?;
         let resource=resolve(body.shape)?;
         executor.closest_hits(crate::gameplay::shape_convex_query::ConvexQueryTarget {

@@ -152,6 +152,7 @@ impl WorldStorage {
         E: PublicationEvents + BodyCreationCallbacks,
         C: SimulationContacts<G, E>,
     {
+        crate::gameplay::physics_world::thread_policy::enter();
         if self.simulation_busy {
             return Err("physics simulation reentered its live world".into());
         }

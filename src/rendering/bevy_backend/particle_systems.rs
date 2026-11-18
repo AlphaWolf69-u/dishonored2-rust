@@ -247,6 +247,7 @@ impl ParticleSystems {
             crate::gameplay::world_point_query::WorldPointQuery,
             crate::gameplay::world_ray_query::WorldRayQuery,
         )| {
+            crate::gameplay::physics_world::thread_policy::enter();
             let mut first = None;
             for (offset, system) in systems.iter_mut().enumerate() {
                 if let Err(failure) = system.simulate_in_world(

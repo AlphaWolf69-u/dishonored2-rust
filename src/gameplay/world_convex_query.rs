@@ -45,6 +45,7 @@ impl WorldConvexQuery {
         resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
         submit: &mut dyn FnMut(ConvexContact, bool),
     ) -> Result<(), String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut bounds = super::convex_support::convex_bounds(
             request.cast.geometry.vertices,
             request.cast.transform,

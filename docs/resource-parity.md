@@ -25575,3 +25575,66 @@ Main integration (2026-11-18): merged the concurrently delivered Dark Vision com
 
 
 Integrated no-game compile boundary: the imported DarkVisionFrame uses a conditional Bevy Resource derive only with the game feature; its shared record stays available as ordinary data in the core library. This corrects actual E0433 from the independent core check while preserving identical game-feature Resource behavior. No pulse, admission, owner, renderer or resource-lifetime behavior changes.
+
+
+Physics floating-point thread lifetime (2026-11-18): `ported`, runtime confirmation pending. Native physics/world startup14007b600 (14007b613..64f) and Havok worker-context initializer140aa8f30 (140aa8f45..56, called by actual worker14007a100) read MXCSR and OR only FTZ bit15. The rewrite lacked this initialization. Canonical physics_world::thread_policy now performs the same persistent first-entry initialization for actual world creation, main simulation, worker query traversal, physical shape/mass preparation and particle simulation batches. Bevy worker migration is covered at actual physics entries, without changing general pool startup. DAZ, rounding, exception masks/status and scalar/solver/inertia/clamp algorithms are preserved. Non-x86_64 callers retain the explicit unsupported runtime boundary only when physics policy is used; unrelated asset-only library consumers are not rejected globally.
+
+Actual b6dfc160 release compiled successfully (SHA2563EF8D1390D87DDCA1505B567375B16D75E642A69706F2FBAFF740946D3F7FB34), but runtime acceptance FAILED with intermittent physics transform errors. Direct source- and hash-checked acquisition at the existing failing branch captured identical12-lane NaN entity/render poses; no rounding or missed publication caused that guard. Body16778243/motion696 has valid constrained inverse inertia[15.0625,0,0] and inverse mass1. Actual profile7 is frozen; native Blink state12 activation857300 owns the stopped-world lease and player override, not bare aiming. Actual accepted numerical step is0.100000009 seconds/12substeps/oneiteration; contact and solver rows are finite. The captured executing thread MXCSR0x1fbf has FTZ disabled.
+
+First invalid arithmetic is identified from actual retained solver slot126 and matching compiled code: finite angularX-1.271195526488e-19 minus initialAngularX-1.419518574595e-19 produces delta1.483230481066e-20; squared speed is positive subnormal00026543. Zero frozen speed cap enters inverse_length; RSQRTSS treats the denormal input as zero and produces infinity, Newton refinement produces negative infinity, and multiplication by the zero cap first produces NaN. Native FTZ flushes the preceding squared MULSS result to zero, so this branch is not entered. Exact matching code boundaries039af0c7..039af194 and complete raw snapshots/decoder provenance are preserved locally in analysis/gameplay-repair-20261116, including release-solver-complete-5.json and physics-first-nonfinite-20261118.md. No new epsilon, clamped inertia, identity pose or suppressed guard is introduced.
+
+Prediction before source application/validation: participating threads will have FTZ enabled before their first physics work; the captured frozen/subnormal normalization failure will be prevented by native zero-result behavior. First entry adds one MXCSR read and optional bit-preserving write; later entries only check one thread-local boolean. The marker ends with its thread; no GPU work, VRAM, assets, actor ownership, per-body/per-draw control update or per-frame allocation is added. No whole CPU/FPS gain is claimed. Actual source-ready/thread-bit and ordinary action/loading/retirement confirmation remain required.
+
+
+Same-image live confirmation before rebuilding: b6dfc160 release3EF8D139...7FB34, actual owned initial/update thread was uniquely identified by creation time and name main. The no-debugger/context-only diagnostic changed only MXCSR bit15 (both SDK copies1fa0→9fa0), verified every other meaningful captured GPR/control/x87/XMM field unchanged and resumed the same suspend count. Actual Blink aim/cancel/travel/environment/nonzero sound/mana/sheath/redraw input sequence and ordinary ExitDrain then completed without physics errors. Raw identity/readback/results: MAIN analysis/gameplay-repair-20261116/release-ftz-live-blink-{context.json,game.log}. This confirms the native setting on the exercised compiled path; source-implemented full-thread coverage still requires its own build/ordinary runtime acceptance. No debugger timing change, code patch, fake readiness, clock/pose override or new numerical clamp was used.
+
+
+Source-implemented physics thread policy acceptance (2026-11-18): sourceb222d3852774b54dc88af67dcbcd40df0854c89c, clean debug executable SHA25631D49082AD4CBF50F0B3756D267A9256794D66295BB76E6D3E8E0425856C7512. Game compilation and the independent no-game core check completed0. Actual production-input Blink, grenade cooking/detonation, ranged/Heart/wheel/exhaustion, carrying/world support, power-equipped early-recovery sword contacts, ground-bolt recovery and bottle-contact bolt sequences completed without runtime errors; actual coverage boundaries remain recorded rather than promoted to passes. Edge of the World, Dust District, Institute and paused ordinary ExitDrain completed0. These exercise the source-implemented persistent FTZ policy without a debugger or live FP mutation. Exact completed receipts and binary identity retained locally under analysis/gameplay-repair-20261116/b222-ftz-acceptance. No all-map, pixel, heard-audio, whole-FPS or normal-release acceptance is inferred; normal main release remains separately required.
+
+Concurrent main screen-fade integration: FxScreenFadeFrame derives the Bevy Resource only with the game feature, matching the existing DarkVisionFrame boundary. The shared effect record and numerical owner remain usable without Bevy; game builds retain the same Resource derive and render behavior. No timing, pool, fade composition, admission or resource-lifetime algorithm changes. Integrated compilation and ordinary shared view/FX loading checks remain separately required after importing be40f28e.
+
+
+## FX camera-shake and screen-fade owners (imported be40f28e)
+
+`source-implemented; integrated verification pending:` immutable camera-shake
+descriptors belong to `assets/fx.rs::CameraShakeAsset` and screen-fade
+descriptors to `assets/fx/screen_fade.rs` (`22a170`), acquired/released through
+the same canonical FX declaration generation. No second declaration/image
+cache is introduced. These scalar/vector effect families acquire no separate
+image/model/bank payload.
+
+`source-implemented; integrated verification pending:`
+`gameplay/effects/camera_shake.rs` owns shake initialization `22d700`,
+oscillators `22d640`, phase dispatch `22aec0` and kernels
+`22d240/22d0a0/22d3e0`, channels `22ca90/22c900/22cc20`, direction/distance/
+impulse composition `22c6d0/22c430/22afd0/22b8b0/22c190/22c500`, accumulator
+`22d9e0` and per-frame reset `22db30`. Existing `world_camera_shakes.rs`
+retains the32-slot `19a010` family inside WorldParticleState, including
+top-level/nested Start, update, ordinary/looping Stop, Clear and shutdown;
+active tails retain the same descriptor Arc. The host view publication uses
+the existing particle-view/camera owner for the `88c5e0` application.
+
+`source-implemented; integrated verification pending:`
+`gameplay/effects/screen_fade.rs` owns `22a570` initialization and
+`22a220` dispatch into `22a430/22a390/22a4d0`, then registered-order
+composition `22a6b0` and fade-object colour `167030`.
+`world_screen_fades.rs` retains the32-slot `19a6e0` family, registration
+order (`21d720` view+d8), normal/nested Start, Stop/fade tails, Clear and
+shutdown. `particle_view` publishes its numeric frame to the existing
+`loading_fade` owner; there is no parallel fade image/resource owner.
+
+Camera-shake impulse publication correction (2026-11-18): `22c6d0` passes the
+actual FXparams+b8 word into `22b8b0`'s authored impulse attenuation; zero is
+only the generic `21dc10` constructor input when no contact context exists.
+The shared world FX update already retains this word as
+`EntityEffectContext.contact_speed` (the same input used by canonical rumble).
+Thread it into `world_camera_shakes::Systems::update` instead of substituting
+zero. Existing instance/tail owner, shake pool, Start/Stop/Clear, kernel curves,
+RNG, visibility/view policy and accumulator remain intact. No new owner,
+resource residency, per-frame allocation or GPU pass is introduced. Source-only
+review; no build/test/runtime/appearance/performance verification is claimed.
+
+The imported camera-shake frame also conditionally derives Bevy Resource only with the game feature, correcting the independently observed no-game E0433. Its numerical frame and game-feature Resource behavior stay identical. This supplements the screen-fade feature boundary fixed in5c58e25f.
+
+
+Concurrent main view/FX integration acceptance (2026-11-18): source075cd1bcf53080d51aa364ab996a404fd599a6e2, clean debug executable SHA25634D4ED212F206DEAD8F8EC48E471CAC6A7D5A31B439BC8528A0A2EF55B35A7AC. Game compilation and independent no-game core check completed0. Actual production-input scenarios [blink, grenade, full] completed without runtime errors; actual coverage boundaries remain recorded rather than promoted to passes. Edge of the World, Dust District, Institute and paused ordinary ExitDrain completed0. This confirms the exercised shared view/FX integration with the persistent physics thread policy, without a debugger or diagnostic FP mutation. Exact completed receipts and binary identity retained locally under analysis/gameplay-repair-20261116/075cd1bc-integrated-acceptance. Earlier b222 acceptance separately covers carrying/world support, power-equipped early-recovery sword contacts, ground-bolt recovery and destroyed-bottle surviving-bolt recovery. No all-map, pixel, heard-audio, whole-FPS or normal-release acceptance is inferred; normal main release remains separately required.

@@ -14,6 +14,7 @@ pub(super) fn acquire(catalog: &Catalog, path: &str) -> Result<Arc<Option<Princi
         && std::env::var("DH2_DEBUG_SEPARATE_MASS_RESOURCES").as_deref() != Ok("1");
     let mut decoded = false;
     let mut load = |_| {
+        crate::gameplay::physics_world::thread_policy::enter();
         decoded = true;
         let _tag = crate::platform::allocation_tags::tag("Mass property resources");
         // Absence is a recorded immutable resource state. Preserve it separately

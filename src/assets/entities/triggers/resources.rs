@@ -395,6 +395,7 @@ impl TriggerAssets {
     /// shared source catalog and one identity per shape resource.
     pub(crate) fn from_placements_with_sources(placements: Vec<TriggerPlacement>, catalog: &Catalog,
         sources: &mut physworld::source::ShapeSources) -> Result<Self, String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut assets = Self { placements: Vec::new(), shape_resources: Vec::new(), shapes: Vec::new(),
             free_placements: Vec::new(), free_shapes: Vec::new(), shape_references: Vec::new(), standalone_keys: HashMap::new() };
         assets.append_placements_with_sources(placements, catalog, sources)?;
