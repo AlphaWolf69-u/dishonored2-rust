@@ -241,7 +241,8 @@ impl DarkVisionRecord {
 }
 
 /// The record the render passes read this frame; None while stopped.
-#[derive(bevy::prelude::Resource, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
 pub struct DarkVisionFrame(pub Option<DarkVisionRecord>);
 
 /// The player attributes 14049e9d0 resolves (ARK_ATTRIBUTE_*).

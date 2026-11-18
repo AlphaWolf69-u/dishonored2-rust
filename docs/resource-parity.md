@@ -25572,3 +25572,6 @@ Actual named-binding acceptance (2026-11-18): sourcea194d81984e41095e2056d979d05
 
 
 Main integration (2026-11-18): merged the concurrently delivered Dark Vision component/sonar-wave source into the validated gameplay branch. `host` canonical screen-vector integration retains separate actual ScreenQuad stage inputs and optional Dark Vision wave record as arguments to the SAME DistortionPasses::record_vectors owner. Existing particle vector-only callers supply neither family; normal screen rendering supplies actual stage quads and actual wave record. The idle condition accounts for either family. Each source retains its own existing state/asset lifetime; no duplicate vector renderer, owner, effect execution or new output fallback is introduced. The merge changes no sword, projectile, carry, audio or graph-input mechanics. Integrated compilation and optimized release action/loading acceptance remain pending.
+
+
+Integrated no-game compile boundary: the imported DarkVisionFrame uses a conditional Bevy Resource derive only with the game feature; its shared record stays available as ordinary data in the core library. This corrects actual E0433 from the independent core check while preserving identical game-feature Resource behavior. No pulse, admission, owner, renderer or resource-lifetime behavior changes.
