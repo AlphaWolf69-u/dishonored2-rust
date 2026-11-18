@@ -382,6 +382,7 @@ fn prepare(
                 ));
             }
             let mut lit: [SortedRenderPhase<Transparent3d>; 2] = std::array::from_fn(|_| Default::default());
+            let oit_mode = crate::platform::console::shared().read().cvars.int("r_OIT").unwrap_or(1);
             let mut lit_members = HashSet::new();
             let mut index = 0;
             while index < source.items.len() {
@@ -389,7 +390,8 @@ fn prepare(
                 let count = item.batch_range.len().max(1);
                 let members = index..(index + count).min(source.items.len());
                 let route = match sources.0.get(&item.entity.1).map(|surface| &surface.lit) {
-                    Some(Ok(route)) => *route,
+                    // 31dce0 tests r_OIT for every draw of the list.
+                    Some(Ok(route)) => route.map(|route| AlphaLitRoute { accumulate: oit_mode != 0, ..route }),
                     Some(Err(error)) => {
                         if unsupported.insert(error.clone()) {
                             warn!("Alpha list route pending: {error}");

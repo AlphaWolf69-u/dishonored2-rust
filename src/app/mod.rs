@@ -186,6 +186,7 @@ mod audio;
 mod objectives;
 mod script_spawner;
 mod eye_caustics;
+mod oit_parameters;
 mod objective_markers;
 pub use audio::audiographs::inspect_audiograph_resources;
 mod engine_keys;

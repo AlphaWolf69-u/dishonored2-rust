@@ -204,9 +204,13 @@ Alpha/RefractionIOR and Alpha/Transmittance. In the prologue tower 22
 model and 28 world materials route here; decals of types 0/3 stay in the
 main pass.
 
-Open, in order: main-pass alpha (decals, hair lit) still draws after the
-fog composite and water; r_OIT and the OIT cvars are read at material
-load, not per frame.
+r_OIT and the OIT weight cvars follow the console: AlphaGpu reads r_OIT
+each frame for the list's accumulation, and oit_parameters re-resolves the
+alpha-list materials' OIT uniforms when the values change.
+
+Main-pass alpha (decals 0/3, hair lit) draws after the rewrite's fog
+composite with its own per-pixel fog, which composes to the original's
+forward-then-FOG order for these surfaces (bevy_backend ordering).
 
 ## Particle declaration census (2026-11-10)
 

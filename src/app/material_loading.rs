@@ -1179,17 +1179,18 @@ impl MaterialResolver<'_> {
                 )?;
                 let mut state = [0; 9];
                 state[0] = source.main_blend_state;
+                let additive = crate::rendering::particles::transparency::TransparencyParameters::additive(state);
                 let console = crate::platform::console::shared().read();
                 crate::rendering::particles::transparency::TransparencyParameters::resolve(
-                    &console.cvars,
-                    crate::rendering::particles::transparency::TransparencyParameters::additive(state),
-                    false,
-                )
+                    &console.cvars, additive, false,
+                ).map(|oit| (oit, additive))
             })();
             match oit {
-                Ok(oit) => {
+                Ok((oit, additive)) => {
                     uniform.oit = [Vec4::from_array(oit.weights), Vec4::from_array(oit.parameters)];
-                    uniform.oit_mode = UVec4::new(oit.mode as u32, 0, 0, 0);
+                    // .y: the blend class oit_parameters re-resolves when the
+                    // console values change.
+                    uniform.oit_mode = UVec4::new(oit.mode as u32, u32::from(additive) + 1, 0, 0);
                 }
                 Err(error) => eprintln!("Alpha list parameters unavailable for {path}: {error}"),
             }
