@@ -14,7 +14,30 @@ materials (potion and oil liquids), not by FX particles.
 |---|---|---|
 | `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | connected: see "Character hair" below |
 | `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected: see "Character eyes" below |
-| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
+| `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | connected; the rune's loot payload is player-systems work, see "Outsider shrine" below |
+| Dark Vision | every Dark Vision layer material, the reveal wave | mapped; blocked until the power publishes its per-frame record, see "Dark Vision" below |
+
+## Dark Vision (`ARK_RENDERPASS_DARKVISION`, 14031f960), mapped, blocked by the power
+
+The pass runs only while `renderer+0x4238 | r_debugDarkVisionLayers`
+(cvar object 0x1432f54f0, value +0x28 = DAT_1432f5518) is nonzero. The same
+mask admits surfaces in 14033b350: a material's `rendering/darkVisionLayer`
+(material+0x4a bits 7:5) whose bit is set adds a row under key layer+8
+with the program 3119a0(material, 0x14/0x15); world surfaces route through
+`material_lists::WorldDrawList::DarkVision`. The pass draws layers 1 and 3
+(device and pickup tints) into its own target against zBuffer with
+decompressedDepth bound, redraws them over the scene, then draws layer 2
+(living) into quarter-resolution targets for the blit/blur and composite
+programs (`rendering/darkvision*`: darkVision, darkVisionBlitLiving,
+darkVisionBlurDisto, darkVisionDepthWaveColor, darkVisionDepthWaveDisto).
+Every program clips by the reveal wave: `darkVisionWaveCenter`,
+`darkVisionDepthClip`, `darkVisionRevealWaveRadius/Power`, the depth-wave
+radii, noise, edge and tints, and the per-layer opacities. Those come from
+renderer +0x423c..+0x4264, which arkCpntPowerDarkVision fills each frame
+from its declaration and the wave's progress. With the debug cvar alone the
+depth clip is zero and nothing draws, so the pass cannot be ported against
+a real input until the power's gameplay (cpntDarkVision proxies and the
+power update, see resource-parity.md) publishes that record.
 
 `particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
 Its 8 materials are the health and mana potion liquids, the institute
