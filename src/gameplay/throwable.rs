@@ -105,11 +105,12 @@ impl State {
     pub fn flags(&self) -> u8 {
         self.flags
     }
-    /// 4c6580 gives each component four inline entries; 4c7c50 rejects a
-    /// full list before calling the source duplicate/nearest-point rule.
+    ///4c6580 gives each component four inline entries.4c7ee6's diagnostic
+    ///returns;4c7eeb then skips4c64c0 and returns without changing a full
+    ///list. Preserve that drop-new policy before duplicate/nearest handling.
     pub fn push_contact(&mut self, contact: Contact) -> Result<(), String> {
         if self.contact_count == self.contacts.len() {
-            return Err("Throwable contact list is full".into());
+            return Ok(());
         }
         for slot in &mut self.contacts[..self.contact_count] {
             let old = slot.as_mut().ok_or("Throwable contact list has a hole")?;

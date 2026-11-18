@@ -97,6 +97,7 @@ impl PhysicsScene {
                 writeln!(out,"component={h:?} generation={} flags={:#x} scheduling={:?}",owner.generation,owner.flags,self.declarations.get(&h.packed()).map(|d|&d.scheduling)).unwrap();
                 if h.class_id==self.classes[6] {
                     let p=self.pickables.get(h.slot).ok_or("diagnostic Pickable absent")?;
+                    writeln!(out,"pickable_loot checked={:?} actual_owner={:?}",p.loot_owner,p.loot_owner.and_then(|reference|self.loots.get(reference.handle.slot).filter(|loot|loot.owner.generation==reference.generation)).map(|loot|(loot.owner.entity,loot.owner.flags,loot.members.iter().take(64).map(|member|(member.entity,member.requires_incapacitated_owner,member.collected)).collect::<Vec<_>>()))).unwrap();
                     writeln!(out,"pickable enabled={} rawD0={:#x} interaction={:?} definition={:?} item={:?} player={:?} references=audio:{:?}/physics:{:?}/system:{:?}/mark:{:?}",p.interaction_enabled,p.interaction_flags,p.interaction,p.definition,p.item.as_ref().map(|i|(&i.path,i.type_number,i.note_type)),p.player,p.references.as_ref().and_then(|r|r.player_audio),p.references.as_ref().and_then(|r|r.physics_base),p.references.as_ref().and_then(|r|r.physics_system),p.references.as_ref().and_then(|r|r.outsider_mark)).unwrap();
                 }
             }
@@ -104,6 +105,7 @@ impl PhysicsScene {
                 let body_id=self.rigid_component(h)?.body();
                 let world=self.world.read().map_err(|_|"fixture world poisoned")?;
                 writeln!(out,"rigid={h:?} body={body_id:?} record={:?}",body_id.and_then(|id|world.storage.bodies.get(id)).map(|b|(b.flags,b.filter_info,b.broadphase_id,b.user_data,b.motion_id))).unwrap();
+                writeln!(out,"actual_body_transform={:?} throwable={:?}",body_id.and_then(|id|world.storage.bodies.get(id)).map(|body|body.transform),self.rigid_component(h)?.throwable().ok().map(|state|(state.flags(),state.stuck(),state.collision_update_pending(),state.binding))).unwrap();
                 if let Some(motion)=body_id.and_then(|id|world.storage.bodies.get(id)).and_then(|b|world.storage.motions.get(b.motion_id)) {
                     writeln!(out,"actual_motion center={:?} linear={:?} angular={:?}",motion.pose.center,motion.linear_velocity,motion.angular_velocity).unwrap();
                 }

@@ -525,6 +525,7 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                             },
                         )
                     })?;
+                if step.witness.is_some(){super::gameplay_action_diagnostics::projectile_contact(world,&step);}
                 owner.deliveries.insert(
                     id,
                     Delivery {
@@ -649,6 +650,7 @@ fn advance(world: &mut World, simulate: bool) -> Result<(), String> {
                             )
                         },
                     )?;
+                    if delivery.step.witness.is_some(){super::gameplay_action_diagnostics::projectile_attachment(world,id);}
                     delivery.handoff_phase = 3;
                 }
                 if matches!(delivery.step.handoff, Handoff::Stick) {
@@ -1140,12 +1142,14 @@ pub(super) fn spawn(
     };
     let sound = super::runtime_entities::fired_sound(world, &prepared.entity);
     let disable_trail = request.flags.disable_trail;
+    let diagnostic_source=(request.attacker,request.equipment);
     let id = super::runtime_entities::spawn_projectile(
         world,
         prepared.entity.clone(),
         options,
         request,
     )?;
+    super::gameplay_action_diagnostics::projectile_birth(world,id,diagnostic_source.0,diagnostic_source.1,Arc::as_ptr(&prepared.declaration)as usize);
     //627110 uses the actor's real optional Audio component. Its source and
     //banks were reserved during preparation; starting flight does no I/O.
     if let Some(event) = sound {

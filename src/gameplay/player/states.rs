@@ -857,6 +857,10 @@ pub struct Frame<'a> {
     /// Maximum health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX),
     /// used by 8657c0's fall-damage calculation.
     pub health: f32,
+    pub damage_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
+    pub damage_recipient: super::damage::Recipient<'a>,
+    pub fall_damage: Option<&'a crate::assets::damage::Declaration>,
+    pub fall_incapacitated: &'a mut bool,
     pub underwater: bool,
     pub swim_mantle_exit: &'a mut bool,
     pub game_over_requested: &'a mut bool,
@@ -1209,7 +1213,6 @@ pub struct StateMachine {
     rules: HashMap<(StateId, StateId), Rule>,
     default_state: StateId,
     pending_sounds: Vec<u32>,
-    pending_fall_damage: Option<f32>,
     ///Source state-machine+2f0, maintained by actual activation/exit only.
     cancelable_count:i32,
     read_note: super::read_note::Runtime,
@@ -1251,7 +1254,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
             recoil_interrupt_diagnostic:matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-power"|"world-power-poke")).then_some((0,0,0,false)) }
     }
 
@@ -1363,7 +1366,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), cancelable_count:0, read_note: Default::default(), wheel_movie_ready:false,wheel_logic_active:false,wheel_requested:false, world_pickup: Default::default(), grapple_catch:Default::default(), slash_rules: None,
             recoil_interrupt_diagnostic:matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("world-power"|"world-power-poke")).then_some((0,0,0,false)) }
     }
 
@@ -1402,16 +1405,11 @@ impl StateMachine {
         }
         self.active.clear();
         self.queue.clear();
-        self.pending_fall_damage = None;
     }
 
     pub fn take_sound_events(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_sounds)
     }
-    /// Host dispatches to the player's existing health owner after this
-    /// state update, before physics/input advances to another frame.
-    pub fn take_fall_damage(&mut self) -> Option<f32> { self.pending_fall_damage.take() }
-
     pub fn is_active(&self, id: StateId) -> bool {
         self.active.contains(&id)
     }
@@ -4265,16 +4263,34 @@ impl StateMachine {
         let accumulated = self.states[index].fall.accumulated_height;
         let id = self.states[index].decl.id;
         let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
-        if damage > 0.0 { self.pending_fall_damage = Some(damage); }
+        //8658c0 completes the real Damage recipient before reading death.
+        // Maximum health above is only8657c0's damage scaling input.
+        let mut dead = false;
+        if damage > 0.0 {
+            if let Some(declaration) = frame.fall_damage {
+                let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
+                parameters.set_amount(declaration, damage, true);
+                parameters.attacker = frame.damage_entity;
+                parameters.hit_direction = Vec3::Z;
+                if damage == f32::MAX {
+                    parameters.damage_type.0 |= crate::gameplay::damage::DamageType::INSTANT_KILL.0;
+                }
+                let result = frame.damage_recipient.receive(&parameters, frame.attributes,
+                    frame.mana, frame.mana_replenishes, frame.controller, frame.physics.axis().x_axis);
+                *frame.fall_incapacitated |= result.incapacitated;
+                dead = frame.damage_recipient.health.is_dead();
+            }
+        }
         self.states[index].fall.catfall_taken = false;
-        self.states[index].fall.accumulated_height = 0.0;
-        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
+        if dead {
+            frame.emit_contact(decl.dead_landing_material.as_deref());
+        } else if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
             self.states[index].fall.catfall_taken = true;
             self.quit(id);
             self.queue.push(Command::RequestCatFall(damage));
-            return true;
         }
-        false
+        self.states[index].fall.accumulated_height = 0.0;
+        dead || self.states[index].fall.catfall_taken
     }
 }
 

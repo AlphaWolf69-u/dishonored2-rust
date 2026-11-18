@@ -15,6 +15,7 @@ pub mod grapple_state;
 pub mod grapple_catch;
 pub mod combat;
 mod diagnostics;
+mod damage;
 pub mod combat_fx;
 pub mod breath_audio;
 pub mod chaos;
@@ -460,30 +461,21 @@ impl Player {
     /// The receiving health component owns scaling and immunity. The player
     /// consumes its mana split and publishes the existing incapacitation path.
     pub fn receive_damage(&mut self, parameters: &crate::gameplay::damage::Parameters) -> crate::gameplay::damage::DamageResult {
-        use crate::gameplay::damage::Context;
-        let was_dead = self.health.is_dead();
-        if was_dead {
-            let result = Default::default();
-            self.entity_events.push(EntityEvent::Damage { params: *parameters, result, was_dead });
-            return result;
-        }
-        let attribute = |name: &str| self.attributes.0.get(name).copied().unwrap_or(1.0);
-        let forward = self.physics.axis().x_axis;
-        let difficulty_factor = if forward.dot(parameters.hit_direction) <= 0.0 { self.incoming_damage_factor } else { self.incoming_damage_back_factor };
-        let context = Context { forward, difficulty_factor,
-            incoming_scale: attribute("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE"), explosion_factor: attribute("ARK_ATTRIBUTE_EXPLOSION_DAMAGE_FACTOR"),
-            health_to_mana: self.attributes.get("ARK_ATTRIBUTE_MALUS_HEALTH_TO_MANA_DAMAGES"), mana: self.mana.current(), evolved: true, ..Default::default() };
-        let result = self.health.receive_damage(&self.damage_receiver, parameters, context, &self.attributes);
-        if result.mana_damage > 0.0 { self.mana.consume(result.mana_damage, &self.attributes, self.mana_replenishes); }
+        let result = damage::Recipient {
+            health: &mut self.health,
+            receiver: &self.damage_receiver,
+            adrenaline: &mut self.adrenaline,
+            events: &mut self.entity_events,
+            game_over_fallback: &mut self.game_over_fallback,
+            event_time: self.entity_event_time,
+            incoming_factor: self.incoming_damage_factor,
+            incoming_back_factor: self.incoming_damage_back_factor,
+        }.receive(parameters, &self.attributes, &mut self.mana,
+            self.mana_replenishes, &mut self.controller, self.physics.axis().x_axis);
         if result.incapacitated {
-            self.adrenaline.stop();
-            self.controller.input_move = Vec3::ZERO;
-            self.controller.input_look = Vec3::ZERO;
-            self.game_over_fallback = Some(self.entity_event_time + 7.0);
             self.machine.request(StateId::DEAD);
             self.swimming_machine.request(StateId::DEAD);
         }
-        self.entity_events.push(EntityEvent::Damage { params: *parameters, result, was_dead });
         result
     }
 
@@ -1016,6 +1008,7 @@ impl Player {
         let equipment_transitioning = std::array::from_fn(|side| self.equipment_changes.transitioning(side)
             || self.equipment_action_handles[side].is_some_and(|handle| !self.body.midnight.finished(handle)));
         let camera_axis = self.camera_axis;
+        let mut fall_incapacitated = false;
         macro_rules! frame {
             () => {
                 Frame {
@@ -1070,6 +1063,19 @@ impl Player {
                     vault_sensor: &mut self.vault_sensor,
                     retargeting: &mut self.retargeting,
                     health: self.health.maximum(&self.attributes),
+                    damage_entity: self.managed_entity,
+                    damage_recipient: damage::Recipient {
+                        health: &mut self.health,
+                        receiver: &self.damage_receiver,
+                        adrenaline: &mut self.adrenaline,
+                        events: &mut self.entity_events,
+                        game_over_fallback: &mut self.game_over_fallback,
+                        event_time: self.entity_event_time,
+                        incoming_factor: self.incoming_damage_factor,
+                        incoming_back_factor: self.incoming_damage_back_factor,
+                    },
+                    fall_damage: self.fall_damage.as_deref(),
+                    fall_incapacitated: &mut fall_incapacitated,
                     underwater,
                     swim_mantle_exit: &mut swim_mantle_exit,
                     game_over_requested: &mut self.game_over_requested,
@@ -1247,20 +1253,13 @@ impl Player {
                 }
             }
         }
-        if let Some(amount) = self.machine.take_fall_damage() {
-            if let Some(declaration) = &self.fall_damage {
-                let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
-                parameters.set_amount(declaration, amount, true);
-                parameters.attacker = self.managed_entity;
-                // 8658c0 writes the authored source UP direction at +3c.
-                parameters.hit_direction = Vec3::Z;
-                if amount == f32::MAX {
-                    // 8658c0 calls 780ae0: preserve authored FALL and add
-                    // INSTANTKILL for the fatal-height sentinel.
-                    parameters.damage_type.0 |= crate::gameplay::damage::DamageType::INSTANT_KILL.0;
-                }
-                self.receive_damage(&parameters);
-            }
+        // The landing callback has already applied damage and tested the
+        // actual Health death flag before CatFall/navigation. Preserve the
+        // existing two-mode death-request boundary without borrowing either
+        // machine from inside its own callback.
+        if fall_incapacitated {
+            self.machine.request(StateId::DEAD);
+            self.swimming_machine.request(StateId::DEAD);
         }
         // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.
         if dt != 0.0 {

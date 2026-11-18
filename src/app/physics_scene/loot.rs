@@ -98,6 +98,35 @@ impl PhysicsScene {
         });
         Ok(())
     }
+    ///4c7570 ->7443f0: detach from the actual checked Loot owner. The
+    ///ordinary item path uses76ee70(NULL)/76f020 to restore interaction.
+    pub(super) fn detach_stuck_loot_member(&mut self,index:usize)->Result<(),String>{
+        let Some(pickable)=self.loot_component_lookup(index,6,[0x28,0])? else{return Ok(());};
+        let pickup=self.pickables.get(pickable.slot).ok_or("detached Loot Pickable absent")?;
+        let Some(reference)=pickup.loot_owner else{return Ok(());};
+        if reference.handle.class_id!=self.classes[7]{return Err("detached checked Loot class differs".into());}
+        let Some(loot)=self.loots.get(reference.handle.slot)
+            .filter(|loot|loot.owner.generation==reference.generation)else{return Ok(());};
+        let id=self.entities[index].shared;
+        let Some(member)=loot.members.iter().position(|member|member.entity==id)else{
+            //7443f0 diagnoses missing membership;166830 returns in this build.
+            eprintln!("Failed to detach loot item {:?}",id);return Ok(());
+        };
+        //76f020's item26 branch requires the actual bound power predicate
+        //4c1f20; it is outside currently admitted projectile pickup families.
+        //Never silently turn that special item into an ordinary enabled item.
+        if pickup.owner.flags&0xc>=8
+            &&pickup.item.as_ref().map(|item|crate::assets::inventory_item::item_type_number(item.item_type())).transpose()?==Some(26){
+            return Err("Loot detachment for item26 requires actual4c1f20 bound power eligibility".into());
+        }
+        self.entity_flags_d4[index]|=4;
+        let pickup=self.pickables.get_mut(pickable.slot).unwrap();
+        pickup.loot_owner=None;
+        if pickup.owner.flags&0xc>=8{pickup.interaction_enabled=true;}
+        self.loots.get_mut(reference.handle.slot).unwrap().members.remove(member);
+        Ok(())
+    }
+
     ///744b30 for the admitted authored-empty declarations. The existing
     ///resource reader rejects child itemDefs before admission; dynamically
     ///registered items stay in the same member list across Stop/Start.

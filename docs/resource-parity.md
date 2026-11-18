@@ -25411,3 +25411,41 @@ certify continuous support, full ballistic parity or the separate plate report.
 - **not verified:**actual landing/slide source-start and nonzero post-voice
   output receipts, cold/warm contact latency and affected-function CPU cost.
   No builds/tests/runs or measured performance improvement claimed.
+
+### Landing damage and contact ownership
+
+`ported`, pending combined runtime validation:8658c0 now invokes the same borrowed
+Player/Health damage recipient before reading actual death and selecting
+dead_landing_material versus CatFall/navigation.8657c0's amount and the authored
+damage declaration/FALL/INSTANTKILL/attacker/UP parameters are retained. The late
+numeric fall-damage queue is removed; health, mana, adrenaline, controller and
+EntityEvent side effects execute once through the existing recipient.
+`host`: the existing primary-player EntityEvent flush and two-mode DEAD-request
+boundary remain; no nested Scene pump or possessed-NPC provider is fabricated.
+Existing selected-character contact material leases already cover dead landing.
+No resource acquisition, additional owner, CPU/FPS saving or audible result is
+claimed by this ordering repair.
+
+### Stuck projectile detachment from Loot-bearing supports
+
+`ported`, pending combined runtime validation:125/4c7570 now completes7443f0
+through the canonical checked Pickable/Loot owners: match the actual managed
+member, set D4bit2, clear its checked Loot reference, restore ordinary interaction,
+and remove that one member preserving order. Stale component generations do not
+bind a replacement. Missing membership retains the nonfatal source diagnostic.
+Work occurs only on detachment and scans that owner's members; no new cache,
+history, body or per-frame scan is introduced. TYPE_RAW_WHALE_BONE26 remains
+explicitly blocked on its actual power/crafting predicate, not enabled by a
+default. Installed bottle_01 has no Loot component, so this repair alone does
+not establish a fix for the reported floating bolt after destroying a bottle.
+
+
+Contact host scheduling: the shared material-contact producer uses the existing Bevy run condition after Player update. Only actual ground changes, incomplete source-scope admission and accepted/new packets enter its exclusive World update; canonical FX async progress and explicit retirement remain unchanged. Prediction: no settled idle exclusive contact invocation, not a measured CPU/FPS gain.
+
+
+Actual58f dev acceptance (2026-11-18): game build and no-game core check passed; SHA25603D3C4D457C7F01BDC266E41BD9679171DE9E826C75AD8CD7DF2DBA0D3E2CBF7. Blink completed actual aim/cancel/cast/mana/holster/redraw, source-proven zero-weight ENV publication, real fullscreen-wobble draw and nonzero travel voice with clean exit0. Grenade reached actual arm binding, authored cooking fuse and real Iggy_Init/renderACK, then actual thrown hknpSphereShape2 body. It FAILED afterward: published equipment lost its binding parent and Throwable contact-list overflow aborted physics and retirement. No grenade detonation/clean-exit, remaining-scenario, main-release or FPS acceptance is claimed. Exact logs/results retained locally at analysis/gameplay-repair-20261116/58f-completed-actions. New landing/Loot/idle changes above remain pending compilation and runtime acceptance.
+
+
+Throwable contact saturation: `ported`4c7c50/4c7ee6→4c7eeb skips4c64c0 after166830 returns, dropping the new record at the real fixed inline capacity4. Duplicate/nearest replacement,4c9560 LIFO drain and4c7f40 Stop clear remain unchanged. This repairs the actual58f grenade physics/retirement failure without increasing memory or adding a grenade exception. Runtime verification pending the coherent corrected build; no CPU/FPS gain claimed.
+
+Equipment depletion: `ported`619640 presentation withdrawal now removes the exact retired equipment generation's sampled entity frames and ArmRender model/palette rows in the same mutation that removes its real owned/incoming/current tree. The current hand-root cache is cleared; actual arms/body/other equipment remain. `host:` cached Bevy samples cannot publish after source withdrawal, while canonical actor, audio, child-model and GPU owners retain real Stop/removal/withdrawal acknowledgements. The missing-parent invariant is preserved. Rare depletion uses in-place retain operations on the existing small cache; no new resource, upload, per-frame scan or performance improvement is claimed. Pending actual last-grenade detonation and clean-exit acceptance.

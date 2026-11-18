@@ -13,6 +13,79 @@ use std::{
     time::{Duration, Instant},
 };
 
+///A single exact producer receipt, allocated only by bolt-bottle opt-in.
+#[derive(Resource)]
+struct SupportContact {
+    target: EntityId,
+    before_health: f32,
+    handoff: Option<(EntityId, Option<EntityId>)>,
+    expected: Option<(EntityId, EntityId, usize)>,
+    fired: Option<EntityId>,
+    hit: Option<(
+        EntityId,
+        Option<EntityId>,
+        crate::gameplay::projectiles::Response,
+        crate::gameplay::shape_ray_query::ShapeRayContact,
+    )>,
+}
+pub(super) fn record_birth(
+    world: &mut World,
+    id: EntityId,
+    attacker: Option<EntityId>,
+    equipment: Option<EntityId>,
+    definition: usize,
+) {
+    let Some(mut receipt) = world.get_resource_mut::<SupportContact>() else {
+        return;
+    };
+    let Some((expected_attacker, expected_equipment, expected_definition)) = receipt.expected
+    else {
+        return;
+    };
+    if receipt.fired.is_none()
+        && attacker == Some(expected_attacker)
+        && equipment == Some(expected_equipment)
+        && definition == expected_definition
+    {
+        receipt.fired = Some(id);
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_EXACT_BIRTH fired={id:?} attacker={attacker:?} equipment={equipment:?} declaration_identity={definition} armed_by_actual_fire_input=true");
+    }
+}
+pub(super) fn record_contact(
+    world: &mut World,
+    step: &app::physics_scene::projectiles::ProjectileStep,
+) {
+    let Some(witness) = step.witness else {
+        return;
+    };
+    let Some(mut receipt) = world.get_resource_mut::<SupportContact>() else {
+        return;
+    };
+    if receipt.fired == Some(step.entity) && receipt.hit.is_none() {
+        receipt.hit = Some((step.entity, step.contact_entity, step.response, witness));
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_CONTACT fired={:?} actual_target={:?} expected_target={:?} response={:?} witness={witness:?}",step.entity,step.contact_entity,receipt.target,step.response);
+    }
+}
+
+pub(super) fn record_attachment(world: &mut World, id: EntityId) {
+    if !world
+        .get_resource::<SupportContact>()
+        .is_some_and(|receipt| receipt.hit.is_some_and(|hit| hit.0 == id))
+    {
+        return;
+    }
+    let parent = world.resource::<LiveEntities>().parent(id);
+    match parent {
+        Ok(parent) => {
+            world.resource_mut::<SupportContact>().handoff = Some((id, parent));
+            eprintln!("ACTION_SMOKE_BOLT_BOTTLE_HANDOFF actual_fired={id:?} actual_parent_after_handoff={parent:?}");
+        }
+        Err(error) => {
+            eprintln!("ACTION_SMOKE_BOLT_BOTTLE_HANDOFF actual_fired={id:?} topology_error={error}")
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Select,
@@ -43,6 +116,8 @@ pub(super) struct Observation {
     focused_seen: bool,
     input_sent: bool,
     last_gate: Option<(bool, bool)>,
+    support: Option<EntityId>,
+    support_destroyed: bool,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -52,7 +127,7 @@ impl Observation {
         let existing = batch.iter().map(|(_, id)| *id).collect();
         let input = input_for(25)?;
         send(world, input, true)?;
-        eprintln!("ACTION_SMOKE_BOLT_BEGIN source=actual_WORLD_support+physical_shortcut1+crouch+mouse no_spawn_override=true no_pose_override=true no_range_override=true no_fake_ACK=true");
+        eprintln!("ACTION_SMOKE_BOLT_BEGIN source=actual_fixture+physical_shortcut1+mouse no_spawn_override=true no_pose_override=true no_range_override=true no_fake_ACK=true");
         Ok(Self {
             stage: Stage::Select,
             since: Instant::now(),
@@ -71,7 +146,109 @@ impl Observation {
             focused_seen: false,
             input_sent: false,
             last_gate: None,
+            support: None,
+            support_destroyed: false,
         })
+    }
+    pub(super) fn begin_bottle(world: &mut World) -> Result<Self, String> {
+        let live = world.resource::<LiveEntities>();
+        let target = live
+            .find("env_mulberry_mead_01_18")
+            .ok_or("existing reachable bottle fixture is absent on this level")?;
+        let scene = world.resource::<app::physics_scene::PhysicsScene>();
+        let health = scene
+            .entity_health(live, target)?
+            .ok_or("actual bottle fixture lacks Health")?
+            .0;
+        if health <= 0. {
+            return Err("actual bottle fixture is already destroyed".into());
+        }
+        if scene.breakable_component(live, target)?.is_none() {
+            return Err("actual bottle fixture lacks started Breakable".into());
+        }
+        let mut observation = Self::begin(world)?;
+        observation.support = Some(target);
+        world.insert_resource(SupportContact {
+            target,
+            before_health: health,
+            handoff: None,
+            expected: None,
+            fired: None,
+            hit: None,
+        });
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_BEGIN actual_target={target:?} before_health={health} fixture=existing_reachable_bottle physical_approach_look_fire_only=true no_damage_pose_or_RNG_override=true");
+        Ok(observation)
+    }
+    fn aim_bottle(&mut self, world: &mut World) -> Result<(), String> {
+        let target = self.support.ok_or("bottle observation target absent")?;
+        let center = Self::center(world, target)?;
+        if !Self::steer(world, center)? {
+            self.stop(world)?;
+            return Ok(());
+        }
+        if !Self::focused(world, target) {
+            self.move_with(world, 2)?;
+            return Ok(());
+        }
+        self.stop(world)?;
+        let p = player(world)?;
+        let weapon = p
+            .weapon
+            .as_ref()
+            .ok_or("bottle shot has no selected weapon")?;
+        let source = weapon
+            .fire_source
+            .as_ref()
+            .ok_or("bottle shot has no real fire source")?;
+        if weapon.settings.family != RangedFamily::Crossbow
+            || weapon.ammunition_index() != 0
+            || source.prepared.declaration.sleep_damage.is_some()
+        {
+            return Err("bolt-bottle requires actual initial regular crossbow ammo".into());
+        }
+        let expected_birth = (
+            source.attacker,
+            source.equipment,
+            std::sync::Arc::as_ptr(&source.prepared.declaration) as usize,
+        );
+        self.expected = Some((source.attacker, source.prepared.declaration.entity.clone()));
+        self.ammo = weapon.ammunition().item.clone();
+        self.initial = world
+            .resource::<app::interaction_focus::DiscoveredDocuments>()
+            .quantity(&self.ammo);
+        if self.initial == 0 {
+            return Err("bolt-bottle has no actual regular ammunition".into());
+        }
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_AIM actual_target={target:?} center={center:?} actual_unlocked_focus=true initial_quantity={} no_ray_or_range_override=true",self.initial);
+        //Arm only immediately before this physical fire. Actual spawn callback
+        //correlates managed shooter/equipment AND prepared declaration identity.
+        let input = input_for(20)?;
+        world.resource_mut::<SupportContact>().expected = Some(expected_birth);
+        send(world, input, true)?;
+        self.release = Some(input);
+        self.stage(Stage::Flight);
+        Ok(())
+    }
+    fn report_support(&self, world: &World, reason: &str) -> Result<(), String> {
+        let Some(target) = self.support else {
+            return Ok(());
+        };
+        let live = world.resource::<LiveEntities>();
+        let scene = world.resource::<app::physics_scene::PhysicsScene>();
+        let receipt = world.resource::<SupportContact>();
+        let health = if live.get(target).is_some() {
+            scene.entity_health(live, target)?
+        } else {
+            None
+        };
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_SUPPORT reason={reason} target={target:?} generation_live={} health={health:?} before_health={} hit={:?} handoff={:?} destroyed_observed={} children={:?}",live.get(target).is_some(),receipt.before_health,receipt.hit,receipt.handoff,self.support_destroyed,if live.get(target).is_some(){Some(live.children(target)?)}else{None});
+        if live.get(target).is_some() {
+            eprintln!(
+                "ACTION_SMOKE_BOLT_BOTTLE_TARGET {}",
+                app::interactions::describe_carry_fixture(world, target)?
+            );
+        }
+        Ok(())
     }
     fn stage(&mut self, next: Stage) {
         eprintln!(
@@ -152,6 +329,9 @@ impl Observation {
             if self.existing.contains(&id) {
                 continue;
             }
+            if self.support.is_some() && world.resource::<SupportContact>().fired != Some(id) {
+                continue;
+            }
             let runtime = scene.projectile_runtime(handle)?;
             if runtime.identity == id
                 && runtime.attacker == Some(*attacker)
@@ -165,6 +345,7 @@ impl Observation {
         Ok(())
     }
     fn explain(&self, world: &World, reason: &str) -> Result<(), String> {
+        self.report_support(world, reason)?;
         let Some((handle, id)) = self.projectile else {
             return Ok(());
         };
@@ -221,14 +402,20 @@ impl Observation {
         match self.stage {
             Stage::Select => {
                 if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
-                    let input = input_for(player(world)?.controller.sneak_action)?;
-                    send(world, input, true)?;
-                    self.crouch = Some(input);
+                    if self.support.is_none() {
+                        let input = input_for(player(world)?.controller.sneak_action)?;
+                        send(world, input, true)?;
+                        self.crouch = Some(input);
+                    }
                     self.stage(Stage::Aim);
                 }
             }
             Stage::Aim => {
                 if !super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
+                    return Ok(false);
+                }
+                if self.support.is_some() {
+                    self.aim_bottle(world)?;
                     return Ok(false);
                 }
                 if let Some(hit) = super::Observation::world_fixture(world)? {
@@ -264,7 +451,8 @@ impl Observation {
                         source.prepared.declaration.can_break,source.prepared.declaration.break_chance_stickable);
                     if !material.projectile_can_stick {
                         eprintln!("ACTION_SMOKE_NOT_COVERED check=actual_bolt_focus_pickup reason=source624300_WORLD_support_material_forbids_Stick no_gameplay_failure_claim=true");
-                        self.stage(Stage::Done);return Ok(false);
+                        self.stage(Stage::Done);
+                        return Ok(false);
                     }
                     drop(query);
                     self.expected =
@@ -297,6 +485,37 @@ impl Observation {
                     self.after_shot = Some(quantity);
                 }
                 if let Some((handle, id)) = self.projectile {
+                    if let Some(target) = self.support {
+                        let Some((fired, actual, response, _)) =
+                            world.resource::<SupportContact>().hit
+                        else {
+                            return Ok(false);
+                        };
+                        if fired != id || actual != Some(target) {
+                            self.explain(world, "wrong-actual-contact-target")?;
+                            return Err(format!("bolt-bottle actual contact differs: fired={fired:?} observed={id:?} actual={actual:?} target={target:?}"));
+                        }
+                        let live = world.resource::<LiveEntities>();
+                        self.support_destroyed = live.get(target).is_none()
+                            || world
+                                .resource::<app::physics_scene::PhysicsScene>()
+                                .entity_health(live, target)?
+                                .is_some_and(|health| health.0 <= 0.);
+                        if !self.support_destroyed {
+                            if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
+                                self.report_support(world, "contact-did-not-destroy-support")?;
+                                eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=actual_contact_did_not_destroy_bottle response={response:?}");
+                                self.stage(Stage::Done);
+                            }
+                            return Ok(false);
+                        }
+                        if live.get(id).is_none() {
+                            self.report_support(world, "source-retired-bolt-after-contact")?;
+                            eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_surviving_bolt_recovery reason=actual_bolt_retired response={response:?} destroyed_support=true no_recovery_claim=true");
+                            self.stage(Stage::Done);
+                            return Ok(false);
+                        }
+                    }
                     let live = world.resource::<LiveEntities>();
                     if live.get(id).is_none() {
                         return Err("actual regular bolt retired on contact before a recoverable stick; no recovery claim".into());
@@ -309,6 +528,11 @@ impl Observation {
                         .is_some_and(|(requested, _, _)| !requested);
                     if runtime.has_hit_and_stopped && owner_hidden {
                         self.explain(world, "actual-hidden-Break-or-Uncanny-response")?;
+                        if self.support.is_some() {
+                            eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_surviving_bolt_recovery reason=actual_source_Break_or_Uncanny destroyed_support={} no_recovery_claim=true",self.support_destroyed);
+                            self.stage(Stage::Done);
+                            return Ok(false);
+                        }
                         eprintln!("ACTION_SMOKE_BOLT_RETRY previous={id:?} reason=actual_source_Break_or_Uncanny_response current_quantity={quantity} before_shot={} physical_next_shot_only=true no_RNG_override=true",self.initial);
                         self.existing.insert(id);
                         self.projectile = None;
@@ -319,6 +543,11 @@ impl Observation {
                     if runtime.has_hit_and_stopped && scene.projectile_throwable_started(handle)? {
                         self.explain(world, "actual-impact-after-Throwable-Start")?;
                         if !scene.projectile_recoverable(id)? {
+                            if self.support.is_some() {
+                                eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=source625e80_disabled_Pickable no_recovery_claim=true");
+                                self.stage(Stage::Done);
+                                return Ok(false);
+                            }
                             return Err("actual contact disabled Pickable via source625e80; recovery not admitted".into());
                         }
                         self.stage(Stage::BackAway);
@@ -418,6 +647,10 @@ impl Observation {
                     && self.after_shot.is_some_and(|after| quantity > after)
                 {
                     eprintln!("ACTION_SMOKE_PASS check=actual_fired_bolt_focus_pickup_ammo id={id:?} actual_state47_transaction_sampled={} source6274d0=true source76ec20_hidden=true ammunition_restored=true",self.pending_seen);
+                    if self.support.is_some() {
+                        self.report_support(world, "exact-fired-ID-picked-up-after-destruction")?;
+                        eprintln!("ACTION_SMOKE_PASS check=actual_destroyed_bottle_surviving_bolt_recovery fired={id:?} destroyed_support={} exact_focus_pickup_ammo=true",self.support_destroyed);
+                    }
                     self.stage(Stage::Retirement);
                 }
             }
@@ -437,6 +670,9 @@ impl Observation {
                 self.stop(world)?;
                 if let Some(input) = self.crouch.take() {
                     send(world, input, false)?;
+                }
+                if self.support.is_some() {
+                    world.remove_resource::<SupportContact>();
                 }
                 return Ok(true);
             }

@@ -338,14 +338,19 @@ impl Player {
     /// 619640: depletion destroys the actual source entity, independently of
     /// whether it is selected. Geometry retirement remains the renderer owner.
     pub fn retire_equipment(&mut self, identity: &str) {
-        self.equipment_changes.owned.remove(identity);
+        if let Some(entity) = self.equipment_changes.owned.remove(identity)
+            .and_then(|target| target.tree).and_then(|tree| tree.managed_entity) {
+            self.withdraw_equipment_frames(entity);
+        }
         for side in 0..2 {
             let slot = &mut self.equipment_changes.slots[side];
-            if slot.incoming.as_ref().is_some_and(|target| target.identity == identity) {
-                slot.incoming = None;
-            }
+            let incoming = if slot.incoming.as_ref().is_some_and(|target| target.identity == identity) {
+                slot.incoming.take().and_then(|target| target.tree).and_then(|tree| tree.managed_entity)
+            } else { None };
+            let mut current = None;
             if slot.current.as_ref().is_some_and(|target| target.identity == identity) {
-                self.body.replace_equipment_tree(side, None);
+                current = self.body.replace_equipment_tree(side, None).and_then(|tree| tree.managed_entity);
+                self.equipment_frames[side] = None;
                 self.equipment_archetypes[side] = None;
                 slot.current = None;
                 slot.equipped = false;
@@ -353,7 +358,20 @@ impl Player {
                 slot.handle = 0;
                 slot.requested = slot.incoming.is_some();
             }
+            for entity in [incoming, current].into_iter().flatten() {
+                self.withdraw_equipment_frames(entity);
+            }
         }
+    }
+
+    ///bevy_backend:619640 can withdraw the actual equipment after this
+    ///frame's view sample. Withdraw its cached producers in the same mutation,
+    ///before admission publishes frames again. The canonical actor/audio/GPU
+    ///owners independently retain their existing Stop/retirement receipts.
+    fn withdraw_equipment_frames(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) {
+        self.equipment_entity_frames.retain(|(emitter, _, _, _)|
+            !matches!(emitter, crate::gameplay::sound::Emitter::Equipment { entity: owner, .. } if *owner == entity));
+        self.arm_render.retain(|render| render.managed_entity != Some(entity));
     }
 
     /// bevy_backend: presentation pauses the game clock during loading, while

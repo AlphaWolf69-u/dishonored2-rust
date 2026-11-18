@@ -314,6 +314,17 @@ pub(super) fn initialize(mut commands: Commands, state: Res<ContactSounds>) {
         commands.insert_resource(ContactSounds::acquire());
     }
 }
+///Only actual producer work needs the exclusive World borrow. Reservations
+///already submitted here progress through the canonical FX owner independently.
+pub(super) fn needs_update(owner: Res<ContactSounds>, messages: Res<Messages<ContactSound>>) -> bool {
+    !messages.is_empty()
+        || !owner.pending.is_empty()
+        || owner.ground_dirty
+        || owner.ground.as_ref().is_some_and(|ground| {
+            ground.scopes.len() != ground.demand.sources.len()
+        })
+}
+
 pub(super) fn update(world: &mut World) -> Result<(), bevy::ecs::error::BevyError> {
     world
         .resource_scope(|world, mut owner: Mut<ContactSounds>| {

@@ -1199,6 +1199,12 @@ impl PhysicsScene {
                 .set_body_filter(&mut world.geometry, &mut publication, body, filter)?;
         }
         if !bound {
+            //4c7570 resolves the same Pickable's checked Loot before its
+            //detachment callback settles; otherwise the old owner keeps the
+            //projectile interaction disabled and can later remove it.
+            let index=self.rigid_component(handle)?.owner.entity
+                .ok_or("detached Throwable owner is absent")?;
+            self.detach_stuck_loot_member(index)?;
             self.rigid_component_mut(handle)?
                 .throwable_mut()?
                 .detached();

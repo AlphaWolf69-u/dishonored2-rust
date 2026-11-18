@@ -771,7 +771,7 @@ impl Plugin for SoundPlugin {
         if !app.is_plugin_added::<AudioAssetsPlugin>() { app.add_plugins(AudioAssetsPlugin); }
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
-            .add_systems(Update, contacts::update.after(super::player::update_player))
+            .add_systems(Update, contacts::update.after(super::player::update_player).run_if(contacts::needs_update))
             .add_systems(PostUpdate, (animation::prepare, super::entity_messages::update, bevy_backend::retire, spatial::update, reservations::advance, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, stimulus::scheduled, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses).after(super::model_motion::publish_bound_model_poses).after(super::machinery::pose_scene_systems));
     }

@@ -24,6 +24,11 @@ pub(super) fn heart_used(world: &mut World, entity: EntityId, selected:bool) {
     }
 }
 
+///Opt-in exact contact witness, no second physics query or callback.
+pub(super) fn projectile_birth(world:&mut World,id:EntityId,attacker:Option<EntityId>,equipment:Option<EntityId>,definition:usize){bolt::record_birth(world,id,attacker,equipment,definition);}
+pub(super) fn projectile_contact(world:&mut World,step:&super::physics_scene::projectiles::ProjectileStep){bolt::record_contact(world,step);}
+pub(super) fn projectile_attachment(world:&mut World,id:EntityId){bolt::record_attachment(world,id);}
+
 #[derive(Clone, Copy, Debug)]
 enum Input { Key(KeyCode), Mouse(MouseButton) }
 fn binding(input: Input) -> Option<i32> {
@@ -141,8 +146,8 @@ pub(super) struct Observation {
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("bolt")|Ok("grenade")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, bolt or grenade")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, bolt, bolt-bottle or grenade")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -165,7 +170,7 @@ impl Observation {
         }
         world.insert_resource(Receipts::default());
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
-        let bolt=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt"){Some(bolt::Observation::begin(world)?)}else{None};
+        let bolt=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){Ok("bolt")=>Some(bolt::Observation::begin(world)?),Ok("bolt-bottle")=>Some(bolt::Observation::begin_bottle(world)?),_=>None};
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
