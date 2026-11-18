@@ -283,8 +283,15 @@ impl Models {
             let Some(inputs) = materials.0.get(&part.material) else { return Err("world caster material owner missing".into()) };
             let inputs = inputs.as_ref().map_err(Clone::clone)?;
             if inputs.world_gather_flags48()? & 1 == 0 { continue; }
+            let program=inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
+                .as_ref().ok_or("world caster has no resolved actual slot10 program")?;
+            //As in prepare_model_shadow_instances, MD6 declaration9/10 skin
+            //lanes do not imply that the selected shadow vertex program skins.
+            //The existing source-position stream and rigid model matrix own
+            //the zero-skin route; do not invent CPU deformation or a variant.
             let skin = match &model.prepared.geometry {
                 PreparedGeometry::Rigid(_) => None,
+                PreparedGeometry::Animated(_) if program.skin_influences==0 => None,
                 PreparedGeometry::Animated(arm) => {
                     let surface = &arm.info.surfaces[part.source_index];
                     let (handle, _) = model.shadow_skin.as_ref().ok_or("world caster current skin palette missing")?;

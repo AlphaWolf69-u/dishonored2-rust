@@ -25596,14 +25596,14 @@ Concurrent main screen-fade integration: FxScreenFadeFrame derives the Bevy Reso
 
 ## FX camera-shake and screen-fade owners (imported be40f28e)
 
-`source-implemented; integrated verification pending:` immutable camera-shake
+`ported; integrated verification pending:` immutable camera-shake
 descriptors belong to `assets/fx.rs::CameraShakeAsset` and screen-fade
 descriptors to `assets/fx/screen_fade.rs` (`22a170`), acquired/released through
 the same canonical FX declaration generation. No second declaration/image
 cache is introduced. These scalar/vector effect families acquire no separate
 image/model/bank payload.
 
-`source-implemented; integrated verification pending:`
+`ported; integrated verification pending:`
 `gameplay/effects/camera_shake.rs` owns shake initialization `22d700`,
 oscillators `22d640`, phase dispatch `22aec0` and kernels
 `22d240/22d0a0/22d3e0`, channels `22ca90/22c900/22cc20`, direction/distance/
@@ -25614,7 +25614,7 @@ top-level/nested Start, update, ordinary/looping Stop, Clear and shutdown;
 active tails retain the same descriptor Arc. The host view publication uses
 the existing particle-view/camera owner for the `88c5e0` application.
 
-`source-implemented; integrated verification pending:`
+`ported; integrated verification pending:`
 `gameplay/effects/screen_fade.rs` owns `22a570` initialization and
 `22a220` dispatch into `22a430/22a390/22a4d0`, then registered-order
 composition `22a6b0` and fade-object colour `167030`.
@@ -25638,3 +25638,16 @@ The imported camera-shake frame also conditionally derives Bevy Resource only wi
 
 
 Concurrent main view/FX integration acceptance (2026-11-18): source075cd1bcf53080d51aa364ab996a404fd599a6e2, clean debug executable SHA25634D4ED212F206DEAD8F8EC48E471CAC6A7D5A31B439BC8528A0A2EF55B35A7AC. Game compilation and independent no-game core check completed0. Actual production-input scenarios [blink, grenade, full] completed without runtime errors; actual coverage boundaries remain recorded rather than promoted to passes. Edge of the World, Dust District, Institute and paused ordinary ExitDrain completed0. This confirms the exercised shared view/FX integration with the persistent physics thread policy, without a debugger or diagnostic FP mutation. Exact completed receipts and binary identity retained locally under analysis/gameplay-repair-20261116/075cd1bc-integrated-acceptance. Earlier b222 acceptance separately covers carrying/world support, power-equipped early-recovery sword contacts, ground-bolt recovery and destroyed-bottle surviving-bolt recovery. No all-map, pixel, heard-audio, whole-FPS or normal-release acceptance is inferred; normal main release remains separately required.
+
+
+### Runtime model shadow program/stream routing (2026-11-18)
+
+`ported` — material gather2996f0 and caster draw31ad30/329120 use the actual selected slot10 vertex program. MD6 declaration9/10 merely supplying four/eight skin lanes does not prove that program consumes them. The existing placed-model shadow owner already follows this bytecode rule. Runtime equipment_attachment::shadow_surfaces now borrows that SAME canonical cached descriptor; an Animated surface with zero selected skin inputs takes the existing source-position/rigid-model route. Actual four/eight-input programs still require their real palette and exact count match. The downstream mismatch guard remains unchanged. No CPU deformation, guessed variant, default palette, omitted caster, stale atlas, false completion or downstream fog/FSD bypass is introduced.
+
+Actual c49 release E4714A378544A1DB6537B68705CC8DF872B0894F671FB3B24DBB8AE2F652C93D completed Blink mechanics/audio/environment/mana/holster/redraw and ordinary exit0, but its strict real wobble-draw criterion failed. Earlier frame1857 reports the skin/program mismatch, making the current directional atlas unavailable; fog then refuses the current atlas submission and camera postprocessing correctly refuses incomplete atmosphere depth. The only FSD command receipts were earlier loading frame1260, options0x10. Source/log dependency proof is retained locally in release-blink-fsd-shadow-gate-20261118.md; this is a real upstream render failure, not accepted as a diagnostic timing anomaly.
+
+Exact no-build, executable/PDB/branch-byte-guarded acquisition in that SAME c49 image captured selected program skin count0, Opaque class, dither0, actual surface skin count4 and identity model matrix. Registers and canonical surface/material/program bytes were retained in MAIN analysis/gameplay-repair-20261116/release-shadow-mismatch-slice.json. This establishes the zero-program/Animated-owner inconsistency at the actual branch. The corrected record also selects its real rigid world transform instead of the identity that was valid only with its world-space palette. Separate genuine four/eight mismatches remain explicit errors; none is relaxed or inferred valid from this capture.
+
+Prediction before implementation: those actual zero-skin Animated surfaces submit their original rigid shadow program and source-position stream, restoring same-frame atlas/atmosphere/camera-FX progress. Existing skin4/skin8 output and validation are unchanged. One existing borrowed descriptor lookup is added per admitted runtime shadow surface; no source IO, shader variant, pipeline, GPU pass, asset/buffer/image/palette copy, residency owner or retirement change is added. This repairs missing rendering; no whole-FPS or GPU-time improvement is claimed. Strict Blink draw, ordinary loading/retirement and normal-release confirmation remain required.
+
+Other c49 normal-release production-input sequences (grenade cooking/render ACK/throw/detonation, full ranged/Heart/wheel/exhaustion, power-equipped early-recovery WORLD contacts, carrying/throw/world support, ground bolt and destroyed-bottle surviving-bolt recovery) each exited0 with no action issues. Exact retained results: MAIN analysis/gameplay-repair-20261116/c49-remaining-actions-result.json. Their actual coverage boundaries are preserved; those mechanics receipts do not certify pixels through the failed atlas, so no complete release acceptance or performance measurement was claimed.
