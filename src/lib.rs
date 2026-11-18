@@ -1,4 +1,6 @@
 //! Shared original-data formats, verified engine rules and client integration.
+// GPU-backed asset transactions require deeper Send/Sync trait evaluation.
+#![cfg_attr(feature = "game", recursion_limit = "256")]
 mod sorting;
 pub mod float;
 pub mod colour;

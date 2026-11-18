@@ -427,9 +427,11 @@ pub(super) fn publish_fog_frame(
     mut decal_materials: ResMut<Assets<super::DecalMaterial>>,
     mut output: ResMut<crate::rendering::bevy_backend::fog::FogSceneFrame>,
     mut ray_sources: ResMut<crate::rendering::bevy_backend::sun_rays::SunRaySources>,
-    mut last_error: Local<Option<String>>,
-    mut normal_extent: Local<super::fog_objects::NormalTagExtent>,
-    mut published_environment: Local<u64>,
+    (mut last_error, mut normal_extent, mut published_environment): (
+        Local<Option<String>>,
+        Local<super::fog_objects::NormalTagExtent>,
+        Local<u64>,
+    ),
 ) {
     use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
     if scene.is_added() {

@@ -14,11 +14,7 @@ use crate::{
         tone_mapping::{ToneCurve, ToneSettings},
     },
 };
-use bevy::{
-    asset::RenderAssetUsages,
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-};
+use bevy::prelude::*;
 use std::collections::HashMap;
 
 const NAMES: [&str; 18] = [
