@@ -269,15 +269,12 @@ pub(super) fn prepare_runtime_surface_shadows<'a>(
             .as_ref().map_err(Clone::clone)?;
         let program = inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
             .as_ref().ok_or("particle surface material has no resolved default slot10")?;
-        let streams = surface.skin.as_ref().map_or(0, |skin| skin.influences);
-        // A rigid program (arkDefault doors) over a weighted md6 is drawn from
-        // CPU-deformed vertices (the placed Usable/physics publishers). This
-        // actor's palette is the same deformation. bevy_backend: the skinned
-        // shadow draw stands in for that rigid draw (same depth). Only opaque
-        // and cutout classes have a skinned equivalent.
-        let deformed_rigid = program.skin_influences == 0 && streams != 0 && matches!(program.class,
-            shader_cache::CachedRigidShadowClass::Opaque | shader_cache::CachedRigidShadowClass::AlphaTested);
-        if program.skin_influences != streams && !deformed_rigid {
+        // 25e4d0 supplies the ordinary shared vertex stream and a separate
+        // palette. 2bb550 binds both. Only the selected VS determines which
+        // attributes it consumes (e.g. door latch VS 2290 reads four weights).
+        let skin = surface.skin.as_ref().filter(|_| program.skin_influences != 0);
+        let streams = skin.map_or(0, |skin| skin.influences);
+        if program.skin_influences != streams {
             return Err(format!("runtime surface skin stream ({streams}) and selected shadow program ({}) disagree for program {:?}",
                 program.skin_influences, inputs.main_program));
         }
@@ -299,9 +296,11 @@ pub(super) fn prepare_runtime_surface_shadows<'a>(
         if culled.culled && !debug_no_instance_cull() {
             continue;
         }
-        let mvp = render_shadow::multiply_rows(clip, *model);
         let raster_model = surface.skin.as_ref().map_or(model, |skin| &skin.raster_model);
         let raster_mvp = render_shadow::multiply_rows(clip, *raster_model);
+        // Host skin palettes already include the model transform. Raw source
+        // vertices still require the instance transform, including on MD6.
+        let mvp = if skin.is_some() { render_shadow::multiply_rows(clip, *model) } else { raster_mvp };
         let state = render_model::selected_shadow_model_draw_state(
             inputs.source.shadow_draw_flags49(),
             inputs.source.main_render_state.ok_or("particle surface MAIN draw state is absent")?,
@@ -316,7 +315,7 @@ pub(super) fn prepare_runtime_surface_shadows<'a>(
         let class = program.class;
         let alpha = shadow_alpha_material(inputs, class, parameters, images, queue, "particle surface")?;
         let rigid = || shadow_pass::ShadowInstanceConstants::Rigid(shadow_pass::shadow_instance_cb(&mvp, multiplier));
-        let (program, constants) = if let Some(skin) = &surface.skin {
+        let (program, constants) = if let Some(skin) = skin {
             (shadow_pass::ShadowProgram::Skinned {
                 influences: skin.influences, alpha: alpha.is_some(), dither: program.alpha_dither,
             }, shadow_pass::ShadowInstanceConstants::Skinned {
