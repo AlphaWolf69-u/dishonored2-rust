@@ -140,14 +140,12 @@ covers only the alpha list; the hair list joins its composite.
 
 Connected (1cfe5d19, c39c266e): BRDF_hair shading in the lit pass with
 its lit/opaque alpha outputs, and the alpha-depth passes at 0.5.
-Open, in order:
-- Order: the original draws the main-pass alpha list (hair lit pass at
-  10249, writing depth for alpha >= 0.05) before the hair and particle
-  OIT draws and their resolve (10536-10659). The rewrite runs
-  render_particles (particle OIT and resolve) before Bevy's transparent
-  pass, and Bevy's transparent pass writes no depth. Hair OIT tests
-  GREATER_EQUAL against that lit-pass depth, so it keeps only the front
-  hair layer; it needs the lit pass's depth first.
+Status:
+- Order: AlphaLitPass draws the hair lit pass (writing depth), then the
+  hair OIT pass testing that depth, the hair resolve, the
+  dynamicAlpha/worldAlpha accumulation, then render_particles adds the
+  particles and the alpha list's resolve. The lit pass runs after the
+  rewrite's fog composite with its own per-pixel fog (bevy_backend order).
 - The opaque depth prepass at 0.8 is connected through
   DepthPrepassMaterialKeys::register_blended_prepass (hair keys queue
   like alpha-masked materials; clip_surface applies 0.8).
