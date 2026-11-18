@@ -1940,7 +1940,7 @@ impl WorldParticleState {
         // No alternate simulation, shader or material is used by this control.
         if self.debug_effect.is_some()
             && super::debug_graphics_capture::rendering_ready_age()
-                .is_some_and(|age| age.as_secs_f64() >= 2.0)
+                .is_some_and(|age| age.as_secs_f64() >= debug_effect_start())
         {
             let effect = self.debug_effect.take().unwrap();
             let pose = frames
@@ -2873,4 +2873,10 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         }
         Ok(())
     }
+}
+
+/// DH2_DEBUG_PLAY_FX_START=<seconds after complete rendering> (default 2).
+fn debug_effect_start() -> f64 {
+    static VALUE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("DH2_DEBUG_PLAY_FX_START").ok().and_then(|value| value.parse().ok()).unwrap_or(2.0))
 }

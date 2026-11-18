@@ -405,6 +405,9 @@ fn render_display(
             if fx.camera==frame.camera && fx.frame==water.matrices.frame {
                 let depth=fog_gpu.camera_depth(frame.camera,water.matrices.frame)
                     .ok_or("screen quad depth awaits atmosphere")?.0;
+                if camera_gpu.screen_quads.samples_capture(&fx.screen_quads) {
+                    camera_gpu.screen_quads.capture(&device, context.command_encoder(), post.destination_texture);
+                }
                 camera_gpu.screen_quads.record(&device,&queue,context.command_encoder(),&fx.screen_quads,
                     crate::assets::fx::screen_quad::ScreenQuadStage::AfterToneMap,post.destination,
                     target.main_texture_format(),&depth.alpha.full_sample,&exposure.buffer,full,water.shader_time,water.local_time[0],{

@@ -1191,8 +1191,11 @@ loses w. Remaining, in order:
   (140323e70) copies the tone-mapped scene into `frameCapture` (FNV
   0x23792d9c) at RENDER_FRAME_CAPTURE whenever g_stopTime is clear, i.e.
   every frame in normal play, so the FX events change nothing normal play
-  renders. Still open: binding that copy as `_frameCapture` in the
-  screen-quad renderer (the 4 sampling materials also need use_diffuse).
+  renders. The screen-quad renderer copies the tone-mapped target before
+  the after-tone-map quads when a live quad samples `_frameCapture`, and
+  screenblend fx/opt/use_diffuse multiplies its colour by fx/diffuse at
+  the opacity UV (the 4 sampling materials; checked with
+  ply_bighit_react_01 at the eotw view, no validation errors).
 - m_selfCollisions admitted: SolveSelfContacts only solves constraints
   created from the SpatialPartition's new pairs, and the simulator's
   partition keeps computeNewPairs off (140fd6a00; 1401dfc20 never sets

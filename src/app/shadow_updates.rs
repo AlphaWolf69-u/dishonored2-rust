@@ -269,8 +269,17 @@ pub(super) fn prepare_runtime_surface_shadows<'a>(
             .as_ref().map_err(Clone::clone)?;
         let program = inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
             .as_ref().ok_or("particle surface material has no resolved default slot10")?;
-        if program.skin_influences != surface.skin.as_ref().map_or(0, |skin| skin.influences) {
-            return Err("runtime surface skin stream and selected shadow program disagree".into());
+        let streams = surface.skin.as_ref().map_or(0, |skin| skin.influences);
+        // A rigid program (arkDefault doors) over a weighted md6 is drawn from
+        // CPU-deformed vertices (the placed Usable/physics publishers). This
+        // actor's palette is the same deformation. bevy_backend: the skinned
+        // shadow draw stands in for that rigid draw (same depth). Only opaque
+        // and cutout classes have a skinned equivalent.
+        let deformed_rigid = program.skin_influences == 0 && streams != 0 && matches!(program.class,
+            shader_cache::CachedRigidShadowClass::Opaque | shader_cache::CachedRigidShadowClass::AlphaTested);
+        if program.skin_influences != streams && !deformed_rigid {
+            return Err(format!("runtime surface skin stream ({streams}) and selected shadow program ({}) disagree for program {:?}",
+                program.skin_influences, inputs.main_program));
         }
         let parameters = inputs.parameters.as_ref().map_err(Clone::clone)?
             .as_ref().ok_or("particle surface parameter block is absent")?;

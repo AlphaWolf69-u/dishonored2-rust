@@ -1235,11 +1235,10 @@ mod tests {
         );
 
         fs::write(root.join("game4.resources"), b"no").unwrap();
-        assert!(catalog
-            .read("thing/asset.bin")
-            .unwrap_err()
-            .to_string()
-            .contains("archive extent"));
+        // A pooled reader keeps the length it opened with, so the truncation
+        // is caught by the short member read rather than the extent check.
+        let error = catalog.read("thing/asset.bin").unwrap_err().to_string();
+        assert!(error.contains("archive extent") || error.contains("expected 5 bytes"), "{error}");
 
         drop(catalog);
         fs::remove_dir_all(root).unwrap();

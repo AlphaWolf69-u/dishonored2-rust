@@ -25,6 +25,9 @@ pub struct ScreenQuadMaterial {
     pub clamp_colour: [f32; 4],
     pub depth: [f32; 4],
     pub alpha_test: f32,
+    /// screenblend fx/opt/use_diffuse: TextureColor's RGB is fx/diffuse at
+    /// the opacity UV.
+    pub diffuse: bool,
 }
 impl ScreenQuadMaterial {
     pub fn load(
@@ -147,11 +150,11 @@ impl ScreenQuadMaterial {
                 option("fx/opt/no_opacity_map")?,
             ]
         };
+        let diffuse = program == Program::Blend && option("fx/opt/use_diffuse")? != 0;
         if program == Program::Blend {
             for name in [
                 "fx/opt/radial_ramp",
                 "fx/opt/use_lookup",
-                "fx/opt/use_diffuse",
                 "fx/opt/uv_Disto2xDisto1",
                 "fx/opt/use_disto_has_mask",
                 "fx/opt/uv_disto1_uniform",
@@ -192,6 +195,8 @@ impl ScreenQuadMaterial {
             };
             images.insert(name.to_owned(), resources.image(catalog, &source)?);
         }
+        let diffuse_source = if diffuse { scopes.image_source("fx/diffuse")? } else { "_white".to_owned() };
+        images.insert("fx/diffuse".to_owned(), resources.image(catalog, &diffuse_source)?);
         let layers = ["disto1", "disto2", "opacity"]
             .map(|prefix| -> Result<_, String> {
                 let tile = scopes.vector(&format!("{prefix}_tilling"))?;
@@ -243,6 +248,7 @@ impl ScreenQuadMaterial {
                 [0.; 4]
             },
             alpha_test: scopes.scalar("particleAlphaTest")?,
+            diffuse,
         })
     }
 }

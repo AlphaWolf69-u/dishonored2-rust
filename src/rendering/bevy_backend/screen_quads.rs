@@ -18,8 +18,10 @@ use std::{
 type Frame = crate::gameplay::effects::screen_quad::Frame;
 struct Material {
     source: Weak<ScreenQuadMaterial>,
-    views: [TextureView; 3],
-    binding: Option<((TextureViewId, BufferId), BindGroup)>,
+    views: [TextureView; 4],
+    /// fx/diffuse names the engine image `_frameCapture`.
+    captured: bool,
+    binding: Option<((TextureViewId, BufferId, TextureViewId), BindGroup)>,
     state: crate::render_state::RenderState,
     program: Program,
 }
@@ -39,6 +41,37 @@ pub(super) struct ScreenQuads {
     pass: Option<Pass>,
     prepared_source: Weak<crate::rendering::particles::world_sources::WorldFxSources>,
     prepared_formats: Option<(TextureFormat, TextureFormat)>,
+    /// `_frameCapture`: the tone-mapped scene copied by 140323e70's
+    /// RENDER_FRAME_CAPTURE (every frame while g_stopTime is clear).
+    capture: Option<(Texture, TextureView)>,
+}
+impl ScreenQuads {
+    /// Whether an after-tone-map quad of `frame` samples `_frameCapture`.
+    pub fn samples_capture(&self, frame: &Frame) -> bool {
+        let Some(pass) = self.pass.as_ref() else { return false };
+        frame.iter().any(|draw| draw.asset.stage == ScreenQuadStage::AfterToneMap
+            && draw.asset.material.as_ref().and_then(|name| pass.materials.get(name)).is_some_and(|material| material.captured))
+    }
+    /// RENDER_FRAME_CAPTURE: copy the tone-mapped scene. The copy feeds only
+    /// these quads, so it runs on frames where one samples it (same output).
+    pub fn capture(&mut self, device: &RenderDevice, encoder: &mut CommandEncoder, source: &Texture) {
+        let size = source.size();
+        if self.capture.as_ref().is_none_or(|(texture, _)| texture.size() != size || texture.format() != source.format()) {
+            let texture = device.create_texture(&TextureDescriptor {
+                label: Some("_frameCapture"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: source.format(),
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            self.capture = Some((texture, view));
+        }
+        encoder.copy_texture_to_texture(source.as_image_copy(), self.capture.as_ref().unwrap().0.as_image_copy(), size);
+    }
 }
 fn draw_state(
     mut state: crate::render_state::RenderState,
@@ -111,7 +144,7 @@ impl ScreenQuads {
                         .any(|image| images.changed_paths.contains(&image.path))
             });
             if !current {
-                let views = ["fx/disto1", "fx/disto2", "fx/opacity"]
+                let views = ["fx/disto1", "fx/disto2", "fx/opacity", "fx/diffuse"]
                     .map(|name| -> Result<_, String> {
                         let image = source.images.get(name).ok_or("quad image binding absent")?;
                         images.acquire(
@@ -144,6 +177,7 @@ impl ScreenQuads {
                     Material {
                         source: Arc::downgrade(source),
                         views,
+                        captured: source.images.get("fx/diffuse").is_some_and(|image| &*image.path == "_frameCapture"),
                         binding: None,
                         state: source.state,
                         program: source.program,
@@ -261,13 +295,20 @@ impl ScreenQuads {
                     } else {
                         0.
                     },
-                    0.,
+                    if material.diffuse { 1. } else { 0. },
                     0.,
                 ])
             {
                 word(value.to_bits());
             }
-            let key = (depth.id(), exposure.id());
+            // 140323e70's RENDER_FRAME_CAPTURE copy stands in for
+            // `_frameCapture` (see ScreenQuads::capture).
+            let diffuse = if gpu.captured {
+                &self.capture.as_ref().ok_or("screen quad samples _frameCapture before a capture")?.1
+            } else {
+                &gpu.views[3]
+            };
+            let key = (depth.id(), exposure.id(), diffuse.id());
             if gpu.binding.as_ref().is_none_or(|binding| binding.0 != key) {
                 gpu.binding = Some((
                     key,
@@ -310,6 +351,10 @@ impl ScreenQuads {
                             BindGroupEntry {
                                 binding: 7,
                                 resource: exposure.as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 8,
+                                resource: BindingResource::TextureView(diffuse),
                             },
                         ],
                     ),
@@ -430,7 +475,7 @@ impl Pass {
             },
             count: None,
         }];
-        entries.extend((1..=3).map(|binding| BindGroupLayoutEntry {
+        entries.extend((1..=3).chain([8]).map(|binding| BindGroupLayoutEntry {
             binding,
             visibility: ShaderStages::FRAGMENT,
             ty: BindingType::Texture {
