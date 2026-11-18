@@ -54,7 +54,9 @@ m_autoPauseLODLevel="LOD_LEVEL_HIDDEN";}}"#
     })
     .unwrap();
     let water = &bindings[0];
-    assert_eq!(water.current, [1., -3., 2.]);
+    // 14000c710 drops a mapComponentDecl entry's sibling inlineDecl, so
+    // only the map declaration's y edit overlays the inherited vector.
+    assert_eq!(water.current, [1., -3., 5.]);
     assert_eq!(water.density, 700.);
     assert_eq!(water.scheduling.start_phases, 17);
     assert_eq!(water.scheduling.priority, 6);
@@ -67,7 +69,7 @@ m_autoPauseLODLevel="LOD_LEVEL_HIDDEN";}}"#
         })
         .unwrap();
     assert_eq!(source.materials, [Some(11), Some(22)]);
-    assert!(source.is_ocean);
+    assert!(!source.is_ocean);
     assert_eq!(source.current, water.current);
     assert_eq!(source.density, water.density);
 }
