@@ -107,6 +107,7 @@ pub(super) struct Observation {
     fixture_gate: Option<(bool,bool,bool,bool)>,
     fixture_reports: u32,
     projectile_draw_reports: HashSet<(Entity,u8)>,
+    stuck_projectile_reports: HashSet<EntityId>,
     audio_admissions: usize,
     expected_audio: HashSet<u32>,
     expected_fx: HashSet<String>,
@@ -161,7 +162,7 @@ impl Observation {
         Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
-            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),
+            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
             world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
     }
@@ -405,6 +406,25 @@ impl Observation {
                     .and_then(|queue|queue.shadow_ordinary_query.as_ref()).and_then(|query|query.state.as_ref());
                 if let Some(explanation)=owner.query_diagnostic(id,query_state)? {
                     eprintln!("ACTION_SMOKE_PROJECTILE_QUERY id={id:?} {explanation}");
+                }
+                if (projectile.impact_stopped||projectile.has_hit_and_stopped)
+                    &&scene.projectile_throwable_started(handle)?
+                    &&self.stuck_projectile_reports.len()<32&&self.stuck_projectile_reports.insert(id){
+                    let (eye,axis)=player(world)?.published_camera_frame();
+                    let sensor=world.get_resource::<super::interactions::Interactions>()
+                        .ok_or("actual bolt interaction sensor owner absent")?.sensor;
+                    eprintln!("ACTION_SMOKE_STUCK_PROJECTILE id={id:?} source=actual_fired_bolt_after_Throwable_Start current_eye={eye:?} current_forward={:?} recovered_or_forced=false\n{}",axis.x_axis,
+                        scene.describe_interaction_fixture(live,id,eye,axis.x_axis,sensor)?);
+                    if let Some(state)=query_state{
+                        //On-demand area normalization comparison only. Reuse
+                        //the same actual rows, grid, bounds and flags; this
+                        //does not claim a new camera or visible GPU output.
+                        let mut comparison=state.clone();
+                        comparison.viewport=[0,0,1366,768];
+                        if let Some(explanation)=owner.query_diagnostic(id,Some(&comparison))?{
+                            eprintln!("ACTION_SMOKE_STUCK_PROJECTILE_QUERY_1366X768 id={id:?} copied_descriptor=true rows_and_depth_grid_unchanged=true actual_render_viewport={:?} diagnostic_only_not_actual_user_output=true {explanation}",state.viewport);
+                        }
+                    }
                 }
                 if !published{continue}
                 if !draws_visible{eprintln!("ACTION_SMOKE_NOT_COVERED check=bolt_visible_render reason=actual_camera_culled_draw source_visibility={:?} CPU_pose_publication_verified=true GPU_or_visible_output_not_claimed=true",owner.publication_visibility(id));}

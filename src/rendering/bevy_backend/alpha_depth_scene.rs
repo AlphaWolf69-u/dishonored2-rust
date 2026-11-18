@@ -52,7 +52,7 @@ pub struct AlphaDepthPreparation;
 pub struct AlphaLitPass;
 const HAIR_RESOLVE: &str = include_str!("../../../assets/shaders/dh2_hair_resolve.wgsl");
 #[derive(Resource, Default)]
-pub(super) struct AlphaGpu {
+pub(crate) struct AlphaGpu {
     /// [lit with depth writes, OIT] per view.
     hair_phases: HashMap<RetainedViewEntity, [SortedRenderPhase<Transparent3d>; 2]>,
     hair_pipelines: HashMap<(CachedRenderPipelineId, u8), CachedRenderPipelineId>,
@@ -75,6 +75,19 @@ pub(super) struct AlphaGpu {
     completed: Mutex<Option<(Entity, u32, bool)>>,
 }
 impl AlphaGpu {
+    /// Shared by real draws and asset admission. The latter requests this exact
+    /// descriptor before an actor exists; it never manufactures a visible draw.
+    pub(crate) fn prepare_lit_pipeline(
+        &mut self, cache: &PipelineCache, base: CachedRenderPipelineId,
+        route: AlphaLitRoute, colour: TextureFormat, depth: TextureFormat,
+    ) -> Result<Option<CachedRenderPipelineId>, String> {
+        let key = (base, route, colour, depth);
+        if let Some(id) = self.lit_pipelines.get(&key) { return Ok(Some(*id)); }
+        if cache.get_render_pipeline(base).is_none() { return Ok(None); }
+        let id = cache.queue_render_pipeline(lit_descriptor(cache, base, route, colour, depth)?);
+        self.lit_pipelines.insert(key, id);
+        Ok(Some(id))
+    }
     pub(super) fn ensure_opacity(&mut self, device: &RenderDevice, extent: UVec2) {
         if self.opacity.as_ref().is_none_or(|image| {
             image.texture.width() != extent.x || image.texture.height() != extent.y
@@ -401,16 +414,7 @@ fn prepare(
                 if let Some(route) = route.filter(|_| !hair_members.contains(&index)) {
                     let format = target.main_texture_format();
                     let depth_format = TextureFormat::Depth32FloatStencil8;
-                    let key = (item.pipeline, route, format, depth_format);
-                    let pipeline = match gpu.lit_pipelines.get(&key) {
-                        Some(id) => Some(*id),
-                        None if cache.get_render_pipeline(item.pipeline).is_some() => {
-                            let id = cache.queue_render_pipeline(lit_descriptor(&cache, item.pipeline, route, format, depth_format)?);
-                            gpu.lit_pipelines.insert(key, id);
-                            Some(id)
-                        }
-                        None => None,
-                    };
+                    let pipeline = gpu.prepare_lit_pipeline(&cache, item.pipeline, route, format, depth_format)?;
                     // A compiling pipeline keeps its surfaces out of both paths
                     // for that frame, as the ordinary pipelines do.
                     if let Some(pipeline) = pipeline.filter(|id| cache.get_render_pipeline(*id).is_some()) {

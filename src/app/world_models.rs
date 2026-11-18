@@ -20,6 +20,8 @@ use std::{
         Arc, Weak,
     },
 };
+#[path = "world_model_pipelines.rs"]
+mod pipelines;
 pub(super) struct Request {
     pub key: usize,
     pub descriptor: Arc<Descriptor>,
@@ -49,6 +51,7 @@ struct Prototype {
     descriptor: Weak<Descriptor>,
     model: Option<Arc<Template>>,
     uploaded: Arc<AtomicBool>,
+    pipeline_error: Arc<pipelines::Failure>,
     error: Option<String>,
     owners: std::collections::HashSet<Arc<str>>,
     lease: Arc<()>,
@@ -217,8 +220,9 @@ impl WorldModels {
 }
 #[derive(Clone)]
 struct Upload {
-    assets: Vec<(bevy::asset::AssetId<Mesh>, bevy::asset::UntypedAssetId)>,
+    surfaces: Vec<pipelines::Surface>,
     complete: Arc<AtomicBool>,
+    error: Arc<pipelines::Failure>,
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 struct Uploads(Arc<Vec<Upload>>);
@@ -240,8 +244,9 @@ pub(super) fn install(app: &mut App) {
                 .before(bevy::render::erased_render_asset::prepare_erased_assets::<MeshMaterial3d<super::DecalMaterial>>));
         render.add_systems(
             bevy::render::Render,
-            acknowledge.in_set(bevy::render::RenderSystems::PrepareResources),
+            pipelines::acknowledge.run_if(pipelines::needed).in_set(bevy::render::RenderSystems::Specialize),
         );
+        render.init_resource::<pipelines::Pending>();
     }
 }
 // bevy_backend: storage replacement must precede dependent material binding.
@@ -260,25 +265,6 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     world.insert_resource(Uploads::default());
     Ok(())
 }
-fn acknowledge(
-    uploads: Res<Uploads>,
-    meshes: Res<bevy::render::render_asset::RenderAssets<bevy::render::mesh::RenderMesh>>,
-    materials: Res<
-        bevy::render::erased_render_asset::ErasedRenderAssets<bevy::pbr::PreparedMaterial>,
-    >,
-) {
-    for upload in uploads
-        .0
-        .iter()
-        .filter(|upload| !upload.complete.load(Ordering::Acquire))
-    {
-        if upload.assets.iter().all(|(mesh, material)| {
-            meshes.get(*mesh).is_some() && materials.get(*material).is_some()
-        }) {
-            upload.complete.store(true, Ordering::Release);
-        }
-    }
-}
 pub(super) fn prewarm(world: &mut World, descriptor: Arc<Descriptor>) -> Result<(), String> {
     let mut owner = world
         .get_resource_mut::<WorldModels>()
@@ -295,6 +281,7 @@ pub(super) fn prewarm(world: &mut World, descriptor: Arc<Descriptor>) -> Result<
             descriptor: Arc::downgrade(&descriptor),
             model: None,
             uploaded: Arc::default(),
+            pipeline_error: Arc::default(),
             error: None,
             owners: Default::default(),
             lease: Arc::new(()),
@@ -325,6 +312,9 @@ pub(super) fn prototype_ready(world: &World, descriptor: &Arc<Descriptor>) -> Re
     };
     if let Some(error) = &prototype.error {
         return Err(error.clone());
+    }
+    if let Some(error) = prototype.pipeline_error.message() {
+        return Err(error);
     }
     Ok(prototype.model.is_some() && prototype.uploaded.load(Ordering::Acquire))
 }
@@ -632,17 +622,20 @@ pub(super) fn validate(world: &World, prepared: &Prepared) -> Result<(), String>
 }
 pub(super) fn publish(world: &mut World, mut prepared: Prepared) -> Result<(), String> {
     validate(world, &prepared)?;
-    let assets = prepared.model.uploads();
+    let surfaces = prepared.model.pipeline_surfaces().into_iter().map(|(mesh, material, skinned)| {
+        pipelines::Surface { mesh, material, skinned }
+    }).collect();
     let meshes = prepared.model.receiver_meshes();
     let lease = Arc::downgrade(&world.resource::<WorldModels>().prototypes[&prepared.key].lease);
     super::projected_decals::register_model_layouts(world,&meshes,lease);
     let mut owner = world.resource_mut::<WorldModels>();
     let prototype = owner.prototypes.get_mut(&prepared.key).unwrap();
     let complete = prototype.uploaded.clone();
+    let error = prototype.pipeline_error.clone();
     prepared.model.retain_lease(prototype.lease.clone());
     prototype.model = Some(Arc::new(prepared.model));
     drop(owner);
-    Arc::make_mut(&mut world.resource_mut::<Uploads>().0).push(Upload { assets, complete });
+    Arc::make_mut(&mut world.resource_mut::<Uploads>().0).push(Upload { surfaces, complete, error });
     Ok(())
 }
 pub(super) fn add_leases(

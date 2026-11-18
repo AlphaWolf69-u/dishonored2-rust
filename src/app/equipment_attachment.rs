@@ -25,16 +25,16 @@ struct SurfaceTemplate {mesh:Handle<Mesh>,source_index:usize,probe_index:u32,mat
 enum TemplateGeometry {Rigid(Vec<SurfaceTemplate>),Animated{model:String,info:Arc<crate::bmd6::ModelInfo>,skeleton:Arc<crate::edge_skeleton::EdgeSkeleton>,surfaces:Vec<SurfaceTemplate>}}
 pub(in crate::app) struct Template {descriptor:Arc<Descriptor>,geometry:TemplateGeometry,lifetime:Option<Arc<()>>}
 impl Template{
+    pub(in crate::app) fn pipeline_surfaces(&self)->Vec<(bevy::asset::AssetId<Mesh>,bevy::asset::UntypedAssetId,bool)>{
+        let (surfaces,skin)=match &self.geometry{TemplateGeometry::Rigid(s)=>(s,false),TemplateGeometry::Animated{surfaces,..}=>(surfaces,true)};
+        surfaces.iter().map(|surface|(surface.mesh.id(),match &surface.material{MaterialHandle::Probe(handle)=>handle.id().untyped(),_=>unreachable!("ordinary model template material")},skin)).collect()
+    }
     pub(in crate::app) fn retain_lease(&mut self, lease: Arc<()>) { self.lifetime = Some(lease); }
     pub(in crate::app) fn receiver_meshes(&self)->Vec<(Handle<Mesh>,bool)>{
         let (surfaces,skin)=match &self.geometry{TemplateGeometry::Rigid(s)=>(s,false),TemplateGeometry::Animated{surfaces,..}=>(surfaces,true)};
         surfaces.iter().map(|surface|(surface.mesh.clone(),skin)).collect()
     }
     pub(in crate::app) fn descriptor(&self)->&Arc<Descriptor>{&self.descriptor}
-    pub(in crate::app) fn uploads(&self)->Vec<(bevy::asset::AssetId<Mesh>,bevy::asset::UntypedAssetId)>{
-        let surfaces=match &self.geometry{TemplateGeometry::Rigid(surfaces)|TemplateGeometry::Animated{surfaces,..}=>surfaces};
-        surfaces.iter().map(|surface|(surface.mesh.id(),match &surface.material{MaterialHandle::Probe(handle)=>handle.id().untyped(),_=>unreachable!("ordinary model template material") })).collect()
-    }
     pub(in crate::app) fn instantiate(&self,commands:&mut super::super::setup_commands::SetupCommands)->Result<PreparedModel,String>{
         let sources=match &self.geometry{TemplateGeometry::Rigid(surfaces)|TemplateGeometry::Animated{surfaces,..}=>surfaces};
         let mut surfaces=Vec::with_capacity(sources.len());

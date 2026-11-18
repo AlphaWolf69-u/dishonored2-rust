@@ -25,7 +25,7 @@ pub(super) struct HeadQueries {
     recorded: Option<u32>,
 }
 impl HeadQueries {
-    fn new(device: &RenderDevice, textures: OceanHeightTextures<'_>) -> Self {
+    fn new(device: &RenderDevice, textures: OceanHeightTextures<'_>, first_ring: usize) -> Self {
         let texture_ids = [textures.shore_distance.id(), textures.amplitude_mask.id()];
         Self {
             texture_ids,
@@ -34,7 +34,7 @@ impl HeadQueries {
             handles: [OceanQueryHandle::INVALID; 4],
             points: [None; 4],
             cursor: 0,
-            ring: 0,
+            ring: first_ring,
             snapshot: None,
             recorded: None,
         }
@@ -200,7 +200,16 @@ impl OceanScene {
                     queries.texture_ids = texture_ids;
                 }
             } else {
-                self.head_queries = Some(HeadQueries::new(device, textures));
+                // Main-thread clients can register before this GPU owner is
+                // lazily created. 3032b0 assigned their request to the shared
+                // registration ring +1; the first real dispatch must honor
+                // that ring, rather than independently restarting at zero.
+                let first_ring = {
+                    let shared = crate::rendering::ocean::ocean_query_manager()
+                        .lock().map_err(|_| "ocean query manager poisoned")?;
+                    (shared.register_ring + 1) & 3
+                };
+                self.head_queries = Some(HeadQueries::new(device, textures, first_ring));
             }
         }
         if let Some(queries) = self.head_queries.as_mut() {

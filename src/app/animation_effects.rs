@@ -60,6 +60,13 @@ pub(super) struct Effects {
     closing: bool,
     closed: bool,
 }
+pub(super) fn initialize(world: &mut World) -> Result<(), String> {
+    if world.contains_resource::<Effects>() {
+        return Err("previous animation FX acquisition owner has not retired".into());
+    }
+    world.insert_resource(Effects::default());
+    Ok(())
+}
 fn capture(world: &mut World, owner: &mut Effects) {
     if owner.closed {
         return;
@@ -82,7 +89,7 @@ fn capture(world: &mut World, owner: &mut Effects) {
 ///Only changed canonical animation-bank metadata is visited. Asset work runs
 ///on the IO worker; factory reservations own every decoded/GPU dependency.
 pub(super) fn prepare(world: &mut World) -> Result<(), String> {
-    let mut owner = world.remove_resource::<Effects>().unwrap_or_default();
+    let Some(mut owner) = world.remove_resource::<Effects>() else { return Ok(()); };
     let result = (|| -> Result<(), String> {
         capture(world, &mut owner);
         if owner.closed {
@@ -251,7 +258,7 @@ pub(super) fn startup_error(world: &World) -> Option<String> {
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
     prepare(world)?;
-    let mut owner = world.remove_resource::<Effects>().unwrap_or_default();
+    let Some(mut owner) = world.remove_resource::<Effects>() else { return Ok(()); };
     let result = (|| -> Result<(), String> {
         while let Some(delivery) = owner.deliveries.front_mut() {
             let key = Parameters::from(&delivery.receipt.effect);
@@ -319,7 +326,7 @@ pub(super) fn finish_accepted(world: &mut World) -> Result<bool, String> {
 ///Close new metadata admission before shared FX acquisition closes. Existing
 ///crossings and their already-required recipe work still drain normally.
 pub(super) fn begin_retirement(world: &mut World) {
-    let mut owner = world.remove_resource::<Effects>().unwrap_or_default();
+    let Some(mut owner) = world.remove_resource::<Effects>() else { return; };
     capture(world, &mut owner);
     owner.closing = true;
     world.insert_resource(owner);

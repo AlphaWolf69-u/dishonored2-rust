@@ -2569,3 +2569,16 @@ Original381cd0 builds three temporary sorted coordinate arrays,385a10 sorts with
 Mapped-original oracle `DH2/analysis/performance-20261117/oracle-probe-tree.py` reuses the installed PE with only the already declared RenderDoc patch normalization. The original machine code passed156 tie-sensitive sorting cases,52 exact packed-node comparisons and932 nearest-result cases, including identical centers. This validates the algorithm transcription, not uncompiled Rust or full rendered frames. With `DH2_DEBUG_PROBE_QUERY_FIXTURE=<local binary path>`, actual compiled map loading emits tree/centers/runtime tetra normals for the same oracle's `--fixture` mode, which checks actual Rust tree bytes and every tetra normal against original machine code. Raw installed data remains local and must not be committed. Compilation, actual map fixture/SH verification and same-build scoped timing remain the acceptance gates; no measured improvement is claimed yet.
 
 Scope limits: windowless production diagnostics disable PipelinedRenderingPlugin, so their frame rate is not a visible-session FPS measurement. GPU timeline markers add timestamp command encoders and can perturb work. Current broad atmosphere4.485ms includes more than fog; no per-effect GPU regression or original matched-walk parity is established. Static source sweep: model_motion already memoizes unchanged position/query state and projected_decals already keys lighting by bank generation/position. Particle publication and rigid/arm lighting still repeat queries for unchanged inputs; any additional memoization needs actual caller attribution and its own scoped A/B rather than being bundled into this algorithm change. Parent-object initial-cell borrowing in385da0 is omitted until an actual canonical parent query is supplied; no invented parent cache was added.
+## Ocean query readback wait scope
+
+`bevy_backend/ocean_height_queries/readback.rs::read_current_mapped` currently
+uses `PollType::Wait { submission_index: None }` for a pending selected slot.
+The direct-submission path already retains an actual submission index, but the
+ordinary Bevy graph's map handoff does not expose one to this owner. This can
+wait for later unrelated GPU work in addition to the selected ocean copy;
+304c40's dependency is the selected staging result. Potential removable wait
+is that unrelated tail, currently unmeasured, and may be zero when the slot is
+already ready. Do not claim this explains the first-shot stall. A correction
+requires the real graph submission receipt, matching output and scoped wait
+measurements; neither an earlier frame number nor a guessed timeout can replace
+that receipt. Deferred while the exact-generation correctness repair is checked.

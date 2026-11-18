@@ -834,6 +834,7 @@ fn acquire(world: &mut World) {
                 world.insert_resource(super::carrying::Carrying::default());
                 world.insert_resource(super::physics_scene::carrying_host::CarryPhysics::default());
                 if let Err(error) = super::fx_gameplay::initialize(world)
+                    .and_then(|_| super::animation_effects::initialize(world))
                     .and_then(|_| super::water_impacts::initialize(world))
                     .and_then(|_| super::world_models::initialize(world))
                     .and_then(|_| {super::flash_surface_movie::initialize(world);Ok(())})
