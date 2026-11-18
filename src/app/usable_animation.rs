@@ -606,3 +606,39 @@ pub(super) fn observe_resources(catalog: &crate::archive::Catalog,
     eprintln!("ANIMBASIC_ITEM_STORAGE assets={} instances={} failures={failures} unique_lists={} aliases={aliases} logical_payload_bytes={logical_payload_bytes}",
         assets.len(), nodes.len(), unique.len());
 }
+
+///Read-only F8 snapshot of the existing Usable/pose owners, never an update.
+pub(super) fn write_diagnostics(world:&World,eye:[f32;3],report:&mut String) {
+    use std::fmt::Write;
+    let focus=world.get_resource::<super::interaction_focus::FocusedInteraction>()
+        .and_then(|owner|owner.current.as_ref()).map(|prompt|prompt.entity.as_str());
+    let Some(interactions)=world.get_resource::<super::interactions::Interactions>() else{let _=writeln!(report,"\nUsable actual interaction owner absent");return;};
+    let Some(owner)=world.get_resource::<UsableAnimations>() else{let _=writeln!(report,"\nUsable actual animation owner absent");return;};
+    let sources=world.get_resource::<super::shadow_updates::ModelShadowSources>();
+    let _=writeln!(report,"\nUsable animated placements (focused first, nearest8): focus={focus:?} startup_pending={} loading={} initialized={} audio_pending={}",owner.startup_pending(interactions),owner.loading.len(),owner.initialized,owner.audio_pending);
+    let mut nearest=owner.placements.iter().filter_map(|(&index,slot)|{
+        let actor=interactions.actors.get(slot.actor)?;
+        let distance=actor.frame.position.iter().zip(eye).map(|(a,b)|(a-b)*(a-b)).sum::<f32>();
+        Some((focus!=Some(actor.entity.as_str()),distance,index))
+    }).collect::<Vec<_>>();
+    nearest.sort_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.total_cmp(&b.1)));
+    for (_,distance,index) in nearest.into_iter().take(8) {
+        let slot=&owner.placements[&index];
+        let actor=&interactions.actors[slot.actor];
+        let _=writeln!(report,"  entity={} placement={index} distance={} started={} declared_initial={} current_state={:?} transitioning={:?} model={} requested={} failed={} initialized={} asset={} node={} command={:?} audio_ready={} physics_owned={} prepared_pose={} animation_pose={} local_pose={} source_index={:?}",
+            actor.entity,distance.sqrt(),actor.started,actor.definition.initial_step,actor.state.as_ref().map(|state|state.state),actor.state.as_ref().map(|state|state.transitioning()),
+            slot.model,slot.requested,slot.failed,slot.initialized,slot.asset.is_some(),slot.node.is_some(),slot.command,slot.audio_ready,slot.physics_owned,
+            slot.prepared_pose.is_some(),slot.animation_pose.is_some(),slot.local_pose.is_some(),slot.source_index);
+        let _=writeln!(report,"    current_clip={:?} input_playing={:?} settled={:?} initial_command={:?} frame={:?}",
+            slot.node.as_ref().and_then(|node|node.current_clip()),slot.node.as_ref().map(|node|node.input_playing()),slot.node.as_ref().map(|node|node.is_settled()),
+            actor.state.as_ref().and_then(|state|state.initial().animation),actor.frame);
+        match slot.source_index.and_then(|index|sources.as_ref().and_then(|sources|sources.0.get(index))) {
+            None=>{let _=writeln!(report,"    published_skin source absent");},
+            Some(source)=>match &source.skinning {
+                None=>{let _=writeln!(report,"    published_skin absent skinned={} instances={:?}",source.skinned,source.instances);},
+                Some(Err(error))=>{let _=writeln!(report,"    published_skin error: {error}");},
+                Some(Ok(skin))=>{let _=writeln!(report,"    published_skin palette={:?} matrices={} pose_hash={:016x} first_matrix={:?} instances={:?}",skin.palette.id(),skin.matrices.len(),super::diagnostics::pose_fingerprint(&skin.matrices),skin.matrices.first(),source.instances);},
+            }
+        }
+    }
+}

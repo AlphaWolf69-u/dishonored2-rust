@@ -464,3 +464,48 @@ pub(in crate::app) fn update(world:&mut bevy::prelude::World){
         world.write_message(bevy::app::AppExit::error());
     }
 }
+
+impl PhysicsScene {
+    ///Read only inside the existing F8 callback. No retained diagnostic state.
+    pub(in crate::app) fn write_openable_diagnostics(&self, world:&bevy::prelude::World,
+        eye:[f32;3], report:&mut String) {
+        use std::fmt::Write;
+        let focus=world.get_resource::<super::super::interaction_focus::FocusedInteraction>()
+            .and_then(|owner|owner.current.as_ref()).map(|prompt|prompt.entity.as_str());
+        let live=world.get_resource::<LiveEntities>();
+        let _=writeln!(report,"\nOpenable owners (focused first, nearest8): focus={focus:?} live_owner={} pending_uses={} pending_updates={} prepared_plans={}",
+            live.is_some(),self.openable_uses_pending,self.openable_updates_pending,self.prepared_openables.len());
+        let mut nearest=Vec::new();
+        for &slot in self.openables.roster.indices.iter().take(self.openables.allocated_count()) {
+            let Some(component)=self.openables.get(slot) else{continue};
+            let Some(entity)=component.owner.entity.and_then(|index|self.entities.get(index)) else{continue};
+            let distance=entity.frame.pose.position.iter().zip(eye).map(|(a,b)|(a-b)*(a-b)).sum::<f32>();
+            nearest.push((focus!=Some(entity.name.as_str()),distance,slot));
+        }
+        nearest.sort_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.total_cmp(&b.1)));
+        for (_,distance,slot) in nearest.into_iter().take(8) {
+            let component=self.openables.get(slot).expect("same immutable F8 roster");
+            let index=component.owner.entity.expect("same immutable F8 owner");
+            let entity=&self.entities[index];
+            let state=match component.state{State::Closed=>("Closed",None),State::Animated{opened,direction}=>("Animated",Some((opened,direction))),State::Opened{direction}=>("Opened",Some((true,direction)))};
+            let _=writeln!(report,"  name={} id={:?} live={:?} distance={} handle={:?} generation={} owner_flags={:#x} started={} initial={:?} declared_initial={:?} state={state:?} locked={} blocked={} hidden={} usable_by_player={} child={:?} linked={:?} command_pending={} accepted_uses={}",
+                entity.name,entity.shared,live.map(|live|live.get(entity.shared).is_some()),distance.sqrt(),
+                ComponentHandle{class_id:self.classes[55],slot},component.owner.generation,component.owner.flags,component.started,
+                component.initial,component.definition.initial,component.locked,component.blocked,entity.entity_flags&1!=0,
+                entity.entity_flags_d7&1!=0,component.child,component.linked,component.command_pending,component.uses.len());
+            let _=writeln!(report,"    blockers={:?} needed_keys={:?} aliases={:?} declaration_aliases={:?} actor_frame={:?}",
+                component.blockers,component.needed_keys,component.aliases,component.definition.animations,entity.frame);
+            if let Some(request)=component.uses.front(){let _=writeln!(report,"    first_accepted_use instigator={:?} local={} occlusion={} linked={} linked_occlusion={}",request.instigator,request.local_done,request.local_occlusion_done,request.linked_done,request.linked_occlusion_done);}
+            if let Some(child)=component.child {
+                let child_index=self.shared_indices.get(&child).copied();
+                let _=writeln!(report,"    child_frame={:?}",child_index.and_then(|index|self.entities.get(index)).map(|entity|entity.frame));
+                self.write_runtime_animation_diagnostics(child,report);
+                if let Some(models)=world.get_resource::<super::super::world_models::WorldModels>() {
+                    let _=writeln!(report,"    renderer_parent_pose={:?} renderer_child_pose={:?}",models.publication_pose(entity.shared),models.publication_pose(child));
+                }
+            }
+            let bindings=self.document_hierarchy.bindings.iter().filter(|binding|binding.child==index);
+            for binding in bindings.take(4){let _=writeln!(report,"    binding parent={} joint={} parent_placement={:?}",binding.parent,binding.joint,binding.parent_placement);}
+        }
+    }
+}

@@ -583,12 +583,15 @@ pub(super) fn collision_report(
                 let mut detail=String::new();
                 super::breakables::write_diagnostics(world,owner_eye,&mut detail);
                 super::flash_surfaces::write_diagnostics(world,&mut detail);
+                super::interactions::write_focus_diagnostics(world,&mut detail);
+                super::usable_animation::write_diagnostics(world,owner_eye,&mut detail);
                 super::world_models::write_query_diagnostics(world,&mut detail);
                 particle_diagnostics::write(world,owner_eye,&mut detail);
                 let last_hit=world.get_resource::<super::melee::Melee>()
                     .and_then(|owner| owner.diagnostic_last_contact());
                 if let Some(scene)=world.get_resource::<super::physics_scene::PhysicsScene>() {
                     scene.write_rigid_diagnostics(world,owner_eye,last_hit,&mut detail);
+                    scene.write_openable_diagnostics(world,owner_eye,&mut detail);
                 }
                 detail.push_str(&super::melee::debug_startup_pending(world));
                 match fs::OpenOptions::new().append(true).open(&owner_report_path) {
@@ -645,3 +648,12 @@ fn swimming_clip_aliases(
 }
 #[path = "particle_diagnostics.rs"]
 mod particle_diagnostics;
+
+///F8-only fingerprint of the actual complete published CPU pose. No copy,
+///history, resource acquisition, clock/sample update or GPU claim.
+pub(super) fn pose_fingerprint(matrices:&[[[f32;4];3]])->u64 {
+    use std::hash::Hasher;
+    let mut hash=std::collections::hash_map::DefaultHasher::new();
+    for matrix in matrices {for row in matrix {for word in row {hash.write_u32(word.to_bits());}}}
+    hash.finish()
+}

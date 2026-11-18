@@ -418,3 +418,19 @@ pub(in crate::app) fn update(
         bevy::log::error!("Runtime animation failed: {error}");
     }
 }
+
+impl PhysicsScene {
+    pub(in crate::app) fn write_runtime_animation_diagnostics(&self,id:EntityId,report:&mut String) {
+        use std::fmt::Write;
+        let handle=match self.animation_handle_with_flags(id,[0,0]){
+            Ok(Some(handle))=>handle,Ok(None)=>{let _=writeln!(report,"    AnimBase actual owner absent for {id:?}");return;},
+            Err(error)=>{let _=writeln!(report,"    AnimBase lookup error for {id:?}: {error}");return;}
+        };
+        let Some(animation)=self.animations.get(handle.slot) else{let _=writeln!(report,"    AnimBase payload absent: {handle:?}");return;};
+        let _=writeln!(report,"    AnimBase handle={handle:?} generation={} flags={:#x} rig={} node={} running={} dirty={} frame={:?} default_alias={:?} pending={:?} audio_ready={} audio_scope={:?} queued_sounds={} clip={:?} input_playing={:?} settled={:?} matrices={} pose_hash={:016x} first_matrix={:?}",
+            animation.owner.generation,animation.owner.flags,animation.rig.is_some(),animation.node.is_some(),animation.running,
+            animation.dirty,animation.frame,animation.default_alias,animation.pending,animation.audio_ready,animation.audio_scope,animation.sounds.len(),
+            animation.node.as_ref().and_then(|node|node.current_clip()),animation.node.as_ref().map(|node|node.input_playing()),animation.node.as_ref().map(|node|node.is_settled()),
+            animation.matrices.len(),super::super::diagnostics::pose_fingerprint(&animation.matrices),animation.matrices.first());
+    }
+}

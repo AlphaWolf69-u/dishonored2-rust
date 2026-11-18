@@ -1671,3 +1671,13 @@ pub(super) fn read_action_progress(world: &World) -> Option<ReadActionProgress> 
         acquisitions_closed: owner.acquisitions_closed.load(Ordering::Acquire),
     })
 }
+
+///Existing F8 callback only; selected is the actual sensor-owned descriptor.
+pub(super) fn write_focus_diagnostics(world:&World,report:&mut String) {
+    use std::fmt::Write;
+    let _=writeln!(report,"\nInteraction focus: {:?}",world.get_resource::<super::interaction_focus::FocusedInteraction>().map(|owner|&owner.current));
+    if let Some(owner)=world.get_resource::<Interactions>() {
+        let _=writeln!(report,"  accepted_sensor_selection={:?} pending_changes={} pending_pickup={} pending_read={}",
+            owner.selected,owner.pending.len(),owner.pending_pickup.is_some(),owner.pending_read.is_some());
+    }else{let _=writeln!(report,"  actual interaction owner absent");}
+}
