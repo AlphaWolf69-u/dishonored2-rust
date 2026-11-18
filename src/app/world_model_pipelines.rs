@@ -24,6 +24,8 @@ pub(in crate::app) struct Surface {
     pub mesh: bevy::asset::AssetId<Mesh>,
     pub material: bevy::asset::UntypedAssetId,
     pub skinned: bool,
+    ///Actual enrolled CPU-skin publisher, not all source-skinned geometry.
+    pub cpu_skin: bool,
     pub alpha: Option<Arc<crate::rendering::bevy_backend::alpha_depth_scene::AlphaSurface>>,
 }
 #[derive(Clone, Default)]
@@ -206,14 +208,37 @@ fn ready(world: &World, id: CachedRenderPipelineId) -> Result<bool, String> {
 }
 fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: PrepassView, colour:TextureFormat, depth:TextureFormat, oit:bool) -> Result<bool, String> {
     if item.base.is_empty() {
-        let Some(mut ids) = queue_surface(world, &item.surface, view)? else { return Ok(false) };
+        let Some(material)=world.resource::<ErasedRenderAssets<PreparedMaterial>>().get(item.surface.material)else{return Ok(false);};
+        let properties=material.properties.clone();
+        let Some(mesh)=world.resource::<RenderAssets<RenderMesh>>().get(item.surface.mesh)else{return Ok(false);};
+        let current=mesh.layout.clone();
+        let mesh_bits=MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+        let future=if item.surface.cpu_skin {
+            let output=super::super::shadow_preparation::SkinnedStreams::output_layout(&current.0,
+                &mut world.resource_mut::<bevy::mesh::MeshVertexBufferLayouts>());
+            static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle()
+                || *TRACE.get_or_init(||std::env::var_os("DH2_TRACE_WORLD_FX").is_some()){
+                use std::hash::{Hash,Hasher};
+                let mut before=std::collections::hash_map::DefaultHasher::new();current.hash(&mut before);
+                let mut after=std::collections::hash_map::DefaultHasher::new();output.hash(&mut after);
+                eprintln!("FX_CPU_SKIN_LAYOUT phase=preload mesh={:?} material={:?} current_hash={:016x} future_hash={:016x} current={:?} future={:?}",
+                    item.surface.mesh,item.surface.material,before.finish(),after.finish(),current.0,output.0);
+            }
+            (output!=current).then_some(output)
+        }else{None};
+        let layouts=[Some(current),future];
+        let mut ids=Vec::new();
+        for layout in layouts.iter().flatten(){
+            ids.extend(queue_layout_properties(world,&item.surface,view,&properties,true,layout,mesh_bits)?);
+        }
         item.main_count=ids.len();
-        //Actual model draw admission also owns its enabled depth/normal/motion
-        //pass. The separate decal program-only queue_properties API remains
-        //main-only: no fictitious prepass entity or material is introduced.
+        //Only these real current/forthcoming interfaces enter the same MAIN,
+        //prepass and later Alpha admission. No new mesh or draw is published.
         if let Some((key,deferred))=prepass {
-            let Some(prepass_ids)=queue_model_prepass(world,&item.surface,key,deferred)? else{return Ok(false);};
-            ids.extend(prepass_ids);
+            for layout in layouts.iter().flatten(){
+                ids.extend(queue_model_prepass(world,&item.surface,key,deferred,&properties,layout,mesh_bits)?);
+            }
         }
         item.base = ids;
     }
@@ -243,40 +268,22 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: P
 ///Same prepared material and mesh as this actual model's normal admission.
 ///Mesh layout encodes skinning; only its real no-previous/previous-skin
 ///lifecycle flags are requested, on the actual prepass view key.
-fn queue_model_prepass(world:&mut World,surface:&Surface,view:MeshPipelineKey,deferred:bool)
-    ->Result<Option<Vec<CachedRenderPipelineId>>,String>{
-    let Some(mesh)=world.resource::<RenderAssets<RenderMesh>>().get(surface.mesh)else{return Ok(None);};
-    let layout=mesh.layout.clone();
-    let mesh_bits=MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
-    let Some(material)=world.resource::<ErasedRenderAssets<PreparedMaterial>>().get(surface.material)else{return Ok(None);};
-    let properties=material.properties.clone();
+fn queue_model_prepass(world:&mut World,surface:&Surface,view:MeshPipelineKey,deferred:bool,
+    properties:&Arc<bevy::material::MaterialProperties>,layout:&bevy::mesh::MeshVertexBufferLayoutRef,
+    mesh_bits:MeshPipelineKey)->Result<Vec<CachedRenderPipelineId>,String>{
     let previous_skin=surface.skinned&&view.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS);
     let mut ids=Vec::with_capacity(1+usize::from(previous_skin));
     for previous in 0..=usize::from(previous_skin){
         let mut key=view|mesh_bits;
         if previous!=0{key|=MeshPipelineKey::HAS_PREVIOUS_SKIN;}
         if let Some((id,actual_key))=bevy::pbr::specialize_prepared_material_prepass(world,
-            surface.material.type_id(),&properties,&layout,key,deferred,(surface.mesh,surface.material))
+            surface.material.type_id(),properties,layout,key,deferred,(surface.mesh,surface.material))
             .map_err(|error|format!("world model prepass mesh={:?} material={:?}: {error}",surface.mesh,surface.material))? {
             let _=actual_key; //Both phases are observed by the canonical owner.
             ids.push(id);
         }
     }
-    Ok(Some(ids))
-}
-
-/// The canonical material specializer is also used by the decal owner's
-/// selected, image-free preload inputs. This owns no pipeline cache or assets.
-pub(in crate::app) fn queue_surface(world: &mut World, surface: &Surface, view: MeshPipelineKey)
-    -> Result<Option<Vec<CachedRenderPipelineId>>, String> {
-        let Some(material) = world
-            .resource::<ErasedRenderAssets<PreparedMaterial>>()
-            .get(surface.material)
-        else {
-            return Ok(None);
-        };
-        let properties = material.properties.clone();
-        queue_properties(world, surface, view, &properties, true)
+    Ok(ids)
 }
 
 /// Immutable metadata survives its temporary material binding: layouts,
@@ -286,6 +293,15 @@ pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, vie
         let Some(mesh) = world.resource::<RenderAssets<RenderMesh>>().get(surface.mesh) else { return Ok(None) };
         let layout = mesh.layout.clone();
         let mesh_bits = MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+        queue_layout_properties(world,surface,view,properties,model_diagnostics,&layout,mesh_bits).map(Some)
+}
+
+///One MAIN key/specialization policy for the actual mesh interfaces. Decal
+///program-only callers still request only their current real layout.
+fn queue_layout_properties(world:&mut World,surface:&Surface,view:MeshPipelineKey,
+    properties:&Arc<bevy::material::MaterialProperties>,model_diagnostics:bool,
+    layout:&bevy::mesh::MeshVertexBufferLayoutRef,mesh_bits:MeshPipelineKey)
+    ->Result<Vec<CachedRenderPipelineId>,String>{
         let specialize = properties
             .base_specialize
             .ok_or("world model material has no MAIN specializer")?;
@@ -314,8 +330,8 @@ pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, vie
                     mesh_key: ErasedMeshPipelineKey::new(mesh_key),
                     material_key: properties.material_key.clone(),
                 },
-                &layout,
-                &properties,
+                layout,
+                properties,
             )
             .map_err(|error| format!("world model specialization: {error}"))?;
             static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -343,5 +359,5 @@ pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, vie
             }
             ids.push(id);
         }
-        Ok(Some(ids))
+        Ok(ids)
 }

@@ -655,7 +655,7 @@ pub(super) fn validate(world: &World, prepared: &Prepared) -> Result<(), String>
 pub(super) fn publish(world: &mut World, mut prepared: Prepared) -> Result<(), String> {
     validate(world, &prepared)?;
     let surfaces = prepared.model.pipeline_surfaces().into_iter().map(|(mesh, material, skinned)| {
-        pipelines::Surface { mesh, material, skinned, alpha:None }
+        pipelines::Surface { mesh, material, skinned, cpu_skin:false, alpha:None }
     }).collect();
     let meshes = prepared.model.receiver_meshes();
     let lease = Arc::downgrade(&world.resource::<WorldModels>().prototypes[&prepared.key].lease);
@@ -1030,6 +1030,10 @@ fn register_placed_pipelines(world:&mut World)->Result<(),String>{
     let queue=world.get_resource::<super::SceneRenderQueue>().ok_or("placed pipeline source roster absent")?;
     let alpha=world.get_resource::<super::material_loading::alpha::AlphaDepthMaterials>()
         .ok_or("placed Alpha material source owner absent")?;
+    let placements=world.get_resource::<super::RenderSourcePlacements>().ok_or("placed pipeline source placements absent")?;
+    let deformed=super::skin_publication::deformed_placements(
+        world.get_resource::<super::machinery::AmbientMachinery>(),
+        world.get_resource::<super::interactions::Interactions>(),&placements.0);
     let mut seen=std::collections::HashSet::new();
     let mut surfaces=Vec::new();
     let mut exclusions=std::collections::HashSet::new();
@@ -1053,7 +1057,10 @@ fn register_placed_pipelines(world:&mut World)->Result<(),String>{
             Some(super::RenderModelSurface::Bmd6{..})=>3,
             None=>{exclusions.insert("placed source association absent; MAIN/prepass retained, Alpha unadmitted".to_owned());255},
         };
-        if !seen.insert((instance.mesh.id(),material,bank)){continue;}
+        let cpu_skin=instance.source.is_some_and(|source|matches!(source.surface,
+            super::RenderModelSurface::Bmd6{placement,skin_influences,..}
+                if skin_influences!=0&&deformed.contains(&placement)));
+        if !seen.insert((instance.mesh.id(),material,bank,cpu_skin)){continue;}
         let route=alpha_inputs.entry((material,bank)).or_insert_with(||{
             let route=alpha.0.get(&instance.material)
                 .map(|routes|super::alpha_depth_pass::surface_for(instance,routes));
@@ -1068,14 +1075,14 @@ fn register_placed_pipelines(world:&mut World)->Result<(),String>{
         }).clone();
         //Placed draw construction has no SkinnedMesh/PreviousSkin marker;
         //its actual retained vertex layout owns direct source skin inputs.
-        surfaces.push(pipelines::Surface{mesh:instance.mesh.id(),material,skinned:false,alpha:route});
+        surfaces.push(pipelines::Surface{mesh:instance.mesh.id(),material,skinned:false,cpu_skin,alpha:route});
     }
     if crate::rendering::bevy_backend::world_effects::trace_lifecycle()
         || std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
         let alpha_surfaces=surfaces.iter().filter(|surface|surface.alpha.is_some()).count();
         let alpha_descriptors=alpha_inputs.values().filter(|input|input.is_some()).count();
-        eprintln!("FX_PLACED_PROGRAM_ROSTER source_instances={} unique_pairs={} alpha_surfaces={alpha_surfaces} alpha_descriptors={alpha_descriptors} excluded_reasons={}",
-            queue.instances.len(),surfaces.len(),exclusions.len());
+        eprintln!("FX_PLACED_PROGRAM_ROSTER source_instances={} unique_pairs={} alpha_surfaces={alpha_surfaces} alpha_descriptors={alpha_descriptors} excluded_reasons={} cpu_skin_surfaces={}",
+            queue.instances.len(),surfaces.len(),exclusions.len(),surfaces.iter().filter(|surface|surface.cpu_skin).count());
     }
     drop(alpha_inputs); //Only enrolled Arc leases survive, no second cache.
     for error in exclusions {bevy::log::warn!("Placed program admission: Alpha/source coverage excluded: {error}");}

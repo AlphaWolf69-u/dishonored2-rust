@@ -118,6 +118,8 @@ pub(super) struct Observation {
     last_gate: Option<(bool, bool)>,
     support: Option<EntityId>,
     support_destroyed: bool,
+    support_attempts:u32,
+    support_misses:u32,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -148,6 +150,8 @@ impl Observation {
             last_gate: None,
             support: None,
             support_destroyed: false,
+            support_attempts:0,
+            support_misses:0,
         })
     }
     pub(super) fn begin_bottle(world: &mut World) -> Result<Self, String> {
@@ -192,6 +196,9 @@ impl Observation {
         }
         self.stop(world)?;
         let p = player(world)?;
+        //Installed rangedtarget enables DEBRIS alongside constructor WORLD
+        //bits. This fixture requires its actual hit, not a forced target.
+        if p.ranged_target_entity()!=Some(target){return Ok(());}
         let weapon = p
             .weapon
             .as_ref()
@@ -223,11 +230,37 @@ impl Observation {
         //Arm only immediately before this physical fire. Actual spawn callback
         //correlates managed shooter/equipment AND prepared declaration identity.
         let input = input_for(20)?;
-        world.resource_mut::<SupportContact>().expected = Some(expected_birth);
+        self.after_shot=None;
+        self.support_attempts+=1;
+        let mut receipt=world.resource_mut::<SupportContact>();
+        receipt.expected=Some(expected_birth);receipt.fired=None;receipt.hit=None;receipt.handoff=None;
+        drop(receipt);
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_ATTEMPT attempt={} prior_misses={} target={target:?} actual_ranged_target={:?} actual_dispersion_ratio={} before_quantity={} no_settle_timer_or_velocity_override=true",self.support_attempts,self.support_misses,player(world)?.ranged_target_entity(),player(world)?.weapon.as_ref().unwrap().dispersion_ratio(),self.initial);
         send(world, input, true)?;
         self.release = Some(input);
         self.stage(Stage::Flight);
         Ok(())
+    }
+    fn retry_bottle(&mut self,world:&mut World,id:EntityId,reason:&str)->Result<(),String>{
+        let target=self.support.ok_or("bottle retry lost actual target")?;
+        let live=world.resource::<LiveEntities>();
+        let scene=world.resource::<app::physics_scene::PhysicsScene>();
+        let alive=live.get(target).is_some()
+            &&scene.diagnostic_damage_flags(live,target)?.is_some_and(|flags|flags&0x800==0)
+            &&scene.entity_health(live,target)?.is_some_and(|health|health.0>0.);
+        self.explain(world,reason)?;
+        if !alive{
+            eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=same_bottle_not_alive_for_physical_retry attempts={} misses={} no_recovery_claim=true",self.support_attempts,self.support_misses);
+            self.stage(Stage::Done);return Ok(());
+        }
+        //Retain the missed actor/body and its native removal task untouched.
+        //Only exclude its exact generation from this next attempt's observer.
+        self.existing.insert(id);self.projectile=None;self.expected=None;
+        let mut receipt=world.resource_mut::<SupportContact>();
+        receipt.expected=None;receipt.fired=None;receipt.hit=None;receipt.handoff=None;
+        drop(receipt);
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_RETRY previous_fired={id:?} reason={reason} same_target={target:?} attempts={} misses={} no_bolt_removed=true no_ammo_refund=true no_RNG_override=true",self.support_attempts,self.support_misses);
+        self.stage(Stage::Retry);Ok(())
     }
     fn report_support(&self, world: &World, reason: &str) -> Result<(), String> {
         let Some(target) = self.support else {
@@ -358,17 +391,20 @@ impl Observation {
             return Ok(());
         }
         let scene = world.resource::<app::physics_scene::PhysicsScene>();
-        let runtime = scene.projectile_runtime(handle)?;
-        if runtime.identity != id {
-            return Err("observed bolt component slot was reused".into());
-        }
+        //A native stopped/released component may disappear before its header.
+        //Never read a reused slot as this old projectile or invent its flags.
+        let runtime=match scene.projectile_runtime(handle){
+            Ok(runtime)if runtime.identity==id=>Some(runtime),
+            Ok(runtime)=>{eprintln!("ACTION_SMOKE_BOLT_COMPONENT reason={reason} id={id:?} old_handle={handle:?} slot_reused_by={:?}",runtime.identity);None},
+            Err(error)=>{eprintln!("ACTION_SMOKE_BOLT_COMPONENT reason={reason} id={id:?} old_handle={handle:?} actual_component_unavailable={error}");None},
+        };
         let (eye, axis) = player(world)?.published_camera_frame();
         let sensor = world.resource::<app::interactions::Interactions>().sensor;
         let model = world.get_resource::<app::world_models::WorldModels>();
-        eprintln!("ACTION_SMOKE_BOLT_QUERY reason={reason} id={id:?} eye={eye:?} actual_entity_frame={:?} runtime_position={:?} stopped={} impact_stopped={} picked_up={} throwable_started={} actual_recoverable={} model_publication={:?} source_visibility={:?}\n{}",
-            scene.entity_frame(live,id)?,runtime.position,runtime.has_hit_and_stopped,runtime.impact_stopped,runtime.picked_up,
-            scene.projectile_throwable_started(handle)?,scene.projectile_recoverable(id)?,model.and_then(|model|model.publication_pose(id)),model.and_then(|model|model.publication_visibility(id)),
-            scene.describe_interaction_fixture(live,id,eye,axis.x_axis,sensor)?);
+        eprintln!("ACTION_SMOKE_BOLT_QUERY reason={reason} id={id:?} eye={eye:?} actual_entity_frame={:?} runtime_snapshot={:?} throwable_started={:?} actual_recoverable={:?} model_publication={:?} source_visibility={:?}\n{}",
+            scene.entity_frame(live,id),runtime.map(|runtime|(runtime.position,runtime.has_hit_and_stopped,runtime.impact_stopped,runtime.picked_up)),
+            runtime.map(|_|scene.projectile_throwable_started(handle)),scene.projectile_recoverable(id),model.and_then(|model|model.publication_pose(id)),model.and_then(|model|model.publication_visibility(id)),
+            scene.describe_interaction_fixture(live,id,eye,axis.x_axis,sensor).unwrap_or_else(|error|format!("actual interaction diagnostic unavailable: {error}")));
         if let Some(model) = model {
             let query = world
                 .get_resource::<app::SceneRenderQueue>()
@@ -386,7 +422,7 @@ impl Observation {
                 }
             }
         }
-        eprintln!("ACTION_SMOKE_BOLT_INTERACTION reason={reason}\n{}",app::interactions::describe_carry_fixture(world,id)?);
+        eprintln!("ACTION_SMOKE_BOLT_INTERACTION reason={reason}\n{}",app::interactions::describe_carry_fixture(world,id).unwrap_or_else(|error|format!("actual carry diagnostic unavailable: {error}")));
         Ok(())
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
@@ -495,9 +531,11 @@ impl Observation {
                         else {
                             return Ok(false);
                         };
-                        if fired != id || actual != Some(target) {
-                            self.explain(world, "wrong-actual-contact-target")?;
-                            return Err(format!("bolt-bottle actual contact differs: fired={fired:?} observed={id:?} actual={actual:?} target={target:?}"));
+                        if fired!=id{return Err(format!("bolt-bottle exact birth identity differs: receipt={fired:?} observed={id:?}"));}
+                        if actual!=Some(target){
+                            self.support_misses+=1;
+                            self.retry_bottle(world,id,"actual_fired_bolt_missed_living_bottle")?;
+                            return Ok(false);
                         }
                         let live = world.resource::<LiveEntities>();
                         let scene=world.resource::<app::physics_scene::PhysicsScene>();
@@ -510,9 +548,7 @@ impl Observation {
                             ||scene.entity_health(live,target)?.is_some_and(|health|health.0<=0.);
                         if !self.support_destroyed {
                             if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
-                                self.report_support(world, "contact-did-not-destroy-support")?;
-                                eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=actual_contact_did_not_destroy_bottle response={response:?}");
-                                self.stage(Stage::Done);
+                                self.retry_bottle(world,id,"actual_contact_did_not_destroy_living_bottle")?;
                             }
                             return Ok(false);
                         }
@@ -572,10 +608,10 @@ impl Observation {
                     .resource::<app::interaction_focus::DiscoveredDocuments>()
                     .quantity(&self.ammo);
                 if quantity >= self.initial {
-                    return Err("actual broken bolt did not consume inventory ammunition; retry would not be bounded by the real inventory".into());
+                    return Err("actual prior shot did not consume inventory ammunition; retry would not be bounded by the real inventory".into());
                 }
                 if quantity == 0 {
-                    eprintln!("ACTION_SMOKE_NOT_COVERED check=actual_bolt_focus_pickup reason=actual_regular_ammunition_exhausted_after_native_Break_responses no_inventory_or_RNG_override=true");
+                    eprintln!("ACTION_SMOKE_NOT_COVERED check={} reason=actual_regular_ammunition_exhausted_after_native_contacts attempts={} misses={} no_recovery_claim=true no_inventory_or_RNG_override=true",if self.support.is_some(){"destroyed_support_bolt_recovery"}else{"actual_bolt_focus_pickup"},self.support_attempts,self.support_misses);
                     self.stage(Stage::Done);
                 } else if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
                     //The next Aim samples its own actual pre-shot quantity;

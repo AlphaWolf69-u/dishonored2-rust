@@ -330,7 +330,7 @@ fn acknowledge(world: &mut World) {
                     // DirectMeshSkin consumes only the current shared palette;
                     // these proxies have no PreviousSkin component/history.
                     let surface = super::super::world_models::pipelines::Surface { mesh: work.mesh,
-                        material: pending.programs[program_index].material.untyped(), skinned: false, alpha:None };
+                        material: pending.programs[program_index].material.untyped(), skinned: false, cpu_skin:false, alpha:None };
                     let Some(ids) = super::super::world_models::pipelines::queue_properties(world, &surface, view_key, &properties, false)? else { continue; };
                     if trace() {
                         let program = &pending.programs[program_index];

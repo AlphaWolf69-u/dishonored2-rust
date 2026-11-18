@@ -2697,3 +2697,36 @@ pending-key retries. Eliminating those retries needs separate measured evidence
 and is not bundled here. Genuine unresolved skinned-model Alpha bank selectors
 remain explicitly unadmitted; resource/data ownership must be proven before
 their coverage can be extended. No speculative bank/permutation warmup is used.
+
+
+### Missed CPU-skin lifecycle interface in placed program preparation
+
+The540 same-run receipts resolve the previous prediction miss:27 late programs
+became1, not zero. Alpha104 preparation IDs had zero new Alpha requests after
+gameplay. The remaining MAIN438 cost5.183ms because the already-enrolled actual
+mesh9643/Probe1279 changed vertex layout from5f762f1c3396db3a tobb2df3e837ba7ab6;
+its material and view/mesh keys did not change. The source CPU publisher replaces
+packed directions with Float32 normal/tangent streams and adds its actual float
+bitangent. Setup's initial skin gate instead comes from optional rigid shadow
+program metadata; forcing an initial pose/format would change geometry/output
+and is deliberately not the repair.
+
+Prediction before the correction: source-owner preparation requests the exact
+current and forthcoming CPU-skin interfaces before entry; the formerly late
+matching MAIN key should reuse an already-prepared ID (zero uncovered matching
+late keys), without additional models, images, textures or visible proxies.
+Only already-admitted scene/physics/Usable CPU publishers get this interface;
+other surfaces request their actual current layout only. The shared writer
+descriptor list plus Bevy's canonical packing/interner prevents independent
+layout-format policy copies. MAIN/prepass/Alpha policy and caches remain shared.
+
+Costs are bounded to setup/enrollment and actual pipeline preparation: one
+CPU-owner boolean per existing Surface record; one temporary deformation set
+at each of the two existing lifecycle phases; a temporary sorted attribute map
+for an actual CPU-skin output layout and normal pipeline-ID vectors. The set/map
+is immediately dropped, equal current/future layouts request no extra key, and
+settled frames add no scan, allocation or format conversion. Existing pending
+GPU work remains pending. No second persistent cache or extra draw/pass exists.
+Root validation must match the same-run future-layout preload receipt against
+actual visible source/key/layout, compare first-use creation times, startup
+duration/memory and unchanged output/retirement. No FPS improvement is inferred.

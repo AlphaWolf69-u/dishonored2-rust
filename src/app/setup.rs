@@ -881,17 +881,7 @@ pub(super) fn prepare(
     let mut skin_palettes =
         HashMap::<String, Result<Arc<shadow_updates::RestSkinning>, String>>::new();
     let mut placed_model_default_ranges = 0usize;
-    let mut deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
-    if let Some(interactions) = interactions {
-        for (index, placement) in expanded_placements.iter().enumerate() {
-            if crate::bmd6::declaration_path(&placement.resource_path).is_some()
-                && interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
-                    interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
-                }) {
-                deformed.insert(index);
-            }
-        }
-    }
+    let deformed=super::skin_publication::deformed_placements(machinery,interactions,&expanded_placements);
     // Scene preparation can borrow already acquired physics sources. Editable
     // layers use fresh reads so changes between preparation phases remain visible.
     let physics_models: HashMap<&str, &Arc<bmd6::ModelInfo>> = if catalog.is_some_and(|c| !c.has_overlays()) {

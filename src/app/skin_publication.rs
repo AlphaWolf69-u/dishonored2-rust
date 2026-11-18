@@ -161,3 +161,22 @@ impl BoundsObservation {
 fn elapsed_cycles(start: Option<u64>) -> u64 {
     start.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start))
 }
+
+///The same already-admitted owners that will publish CPU-skinned streams.
+///No declaration/model acquisition or future scene/animation prediction.
+pub(super) fn deformed_placements(machinery:Option<&super::machinery::AmbientMachinery>,
+    interactions:Option<&super::interactions::Interactions>,placements:&[crate::entities::PlacedModel])
+    ->std::collections::HashSet<usize>{
+    let mut deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
+    if let Some(interactions) = interactions {
+        for (index, placement) in placements.iter().enumerate() {
+            if crate::bmd6::declaration_path(&placement.resource_path).is_some()
+                && interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
+                    interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
+                }) {
+                deformed.insert(index);
+            }
+        }
+    }
+    deformed
+}

@@ -25451,9 +25451,9 @@ Throwable contact saturation: `ported`4c7c50/4c7ee6→4c7eeb skips4c64c0 after16
 Equipment depletion: `ported`619640 presentation withdrawal now removes the exact retired equipment generation's sampled entity frames and ArmRender model/palette rows in the same mutation that removes its real owned/incoming/current tree. The current hand-root cache is cleared; actual arms/body/other equipment remain. `host:` cached Bevy samples cannot publish after source withdrawal, while canonical actor, audio, child-model and GPU owners retain real Stop/removal/withdrawal acknowledgements. The missing-parent invariant is preserved. Rare depletion uses in-place retain operations on the existing small cache; no new resource, upload, per-frame scan or performance improvement is claimed. Pending actual last-grenade detonation and clean-exit acceptance.
 
 
-### Already-admitted placed material program preparation (2026-11-18, staged)
+### Already-admitted placed material program preparation (2026-11-18)
 
-`host: pending validation` — `world_models` enrolls the existing SceneRenderQueue
+`host: measured admission; forthcoming CPU-skin interface follow-up below` — `world_models` enrolls the existing SceneRenderQueue
 Probe/Decal mesh/material pairs in its existing pipeline admission owner. No
 model, declaration, image, texture, actor or visible proxy is acquired here.
 Existing common/map base-image phases and RenderAssets remain the only residency
@@ -25515,3 +25515,45 @@ Interaction observations: `host: diagnostic only` — the existing bounded actio
 Actual8dad dev acceptance (2026-11-18): coherent game build/core check passed, sourceclean SHA256BFFE12745554ED3DD520AF9E3A53C789942AA491AF4A5F51C366D4E66FDC97A4. Blink, grenade cooking/gauge Init/render ACK/throw/Sphere/detonation/removal, full ranged/exhaust/empty/Heart/wheel/sheath/redraw, actual carry/throw/support, gun/sword/poke bottle damage with authored destruction FX, power-equipped ordinary WORLD early recovery replacement and charged-forward WORLD contacts all exited0 without action errors. Ten cases completed successfully; this is CPU/real-input/owner evidence, not heard sound, pixel output or FPS. The bottle-bolt case reported an incorrect diagnostic coverage boundary: actual target header0x1e8809 already contained committed0x800 death while stopped Health lookup returnedNone. The observer correction reads that actual damage-owner flag and continues a surviving physical Bounce only after finite movement stops and Throwable actually starts. No missing-Health-as-death fallback is added.
 
 The final ordinary ground-bolt case FAILED pickup: the same real bolt remained published/visible beyond2m, started/recoverable and HUD-focused, but its single action22 press never admitted pending47 or restored ammo. Prior HUD focus does not prove the press-frame ordinary descriptor. No gameplay repair is claimed until the new actuation receipt resolves that exact gate. The driver stopped there; three-map and paused-exit observations were not run in that failed cycle. Immutable logs/identity/results are retained locally under analysis/gameplay-repair-20261116/8dad-completed-actions. Source changes after8dad remain pending coherent compilation/runtime validation and main release.
+
+
+### CPU-skin program interface lifetime correction (2026-11-18, staged)
+
+`host: pending validation` — actual540 preparation covered104 Alpha program
+IDs with no Alpha cache queue after gameplay, and observed late program count
+fell27→1. The remaining MAIN438 (5.183ms creation) belongs to the exact same
+placed Bmd6 mesh9643/Probe1279, placement4555/surface0, but its current vertex
+interface changed. Preload MAIN251/prepass252 used layout5f762f1c3396db3a;
+visible MAIN438/prepass225 used layoutbb2df3e837ba7ab6, with unchanged material
+hash4987941221e522df and MAIN view/mesh key. The original zero-uncovered-key
+prediction therefore missed an actual CPU-skin lifetime interface.
+
+`world_model_pipelines` now enrolls the forthcoming interface only for the same
+real CPU publishers identified by setup: admitted machinery scene/physics skins
+and Usable animation placements. Their predicate is shared through
+`skin_publication::deformed_placements`; it does not acquire future animation,
+model or texture resources and is not applied to every source-skinned model.
+`SkinnedStreams::insert` and program preparation share one four-attribute
+descriptor list: actual float position, normal, tangent and bitangent writes.
+Every other current attribute, topology, material, view and pass stays real.
+The forthcoming layout uses existing Bevy dense attribute packing and the same
+MeshVertexBufferLayouts interner. Current and actual forthcoming interfaces
+enter the same MAIN/prepass/Alpha builders, duplicate interfaces are skipped,
+and every requested ID uses the existing GPU completion/error fence.
+
+No initial geometry, palette, pose, time, blend, shader output, visibility, GPU
+mesh, texture or draw is changed. No fake asset, new persistent layout cache or
+speculative permutation is created. Enrollment retains one CPU-owner boolean;
+the temporary deformation set and layout-construction metadata are released
+after their existing preparation step. Work retains only actual program IDs;
+existing roster/view generation retirement remains the owner. Existing FX trace
+records exact current/future attribute structures/hashes and source asset IDs;
+ordinary MAIN/prepass/Alpha receipts identify the actual prepared programs.
+Runtime acceptance remains pending; no steady FPS or pixel-output claim is made.
+
+
+Actual540 dev acceptance (2026-11-18): game build and independent no-game core check passed; exact source540f0b1db26884a9094d174efcd4f48aeb3abb5d, executable SHA256337E60C16748C0C252563CC1E0C801FFDDF72CB85CB70B1769EC47416DF9FD0D. Blink and complete grenade cooking/renderACK/throw/detonation/removal passed; full weapons/exhaust/empty/Heart/wheel/sheath/redraw, physical carry/throw/support, gun bottle damage with authored destruction FX and power-equipped WORLD early recovery replacement passed; the separate ordinary fired-bolt case recovered that same full-generation bolt through actual selected Pickup, input22, state47, hidden/picked-up state and restored ammunition. All seven sequences exited0 with ordinary retirement. This is real-input/owner evidence, not visual or heard-sound acceptance. The former ground-bolt observation failure was a fixture prerequisite conflating HUD/catch hints with the ordinary selected descriptor; no pickup distance, gameplay latch or range override was introduced. Actual delayed header removal remained an explicit coverage boundary. Exact archived results/logs: analysis/gameplay-repair-20261116/540-completed-actions.
+
+The same540 full/carry/contact/WORLD and grenade logs contain zero missing spatial-position warnings. This supports the actual spatial lifetime correction for those exercised objects; it does not prove audibility of every source. Unrelated startup FX-family boundaries remain recorded separately from effects actually requested by the action sequences. The bottle-bolt case failed because the real fired bolt missed the living bottle and stuck in a wall: its observer must retry ordinary finite-ammunition shots without overriding aim spread, RNG, damage or projectile lifetime. No destroyed-bottle recovery pass is claimed from that miss.
+
+Placed program measurement: the exact540 Blink process enrolled100172 existing source instances as10904 mesh/material/source pairs;670 Alpha surfaces shared129 descriptors, with zero excluded routes in this map.104 actual Alpha program IDs were prepared before entry; no Alpha program was first queued during gameplay. Matching late material/prepass/Alpha creations fell27 to1 versus the source-attributed58f process. The remaining MAIN program438 took5.183ms and used the same placement4555/surface0, mesh9643/Probe1279 and MAIN key as prepared251, but the actual CPU-skin publisher changed its vertex layout. This missed the zero-uncovered prediction; the exact forthcoming-layout correction above follows from that mismatch. No whole-frame/FPS claim or sum of serial diagnostic creation times is made. Other maps still require their own loading observations; their routing is not inferred from Edge of the World.

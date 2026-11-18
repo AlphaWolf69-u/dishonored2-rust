@@ -144,7 +144,7 @@ impl ArmModel {
         self.surfaces.iter().map(|surface|super::world_models::pipelines::Surface {
             mesh:surface._mesh.id(), material:match &surface.material {
                 MaterialHandle::Probe(handle)=>handle.id().untyped(), _=>unreachable!("equipment ordinary material")
-            }, skinned:true, alpha:None,
+            }, skinned:true, cpu_skin:false, alpha:None,
         }).collect()
     }
 }

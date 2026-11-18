@@ -613,11 +613,28 @@ pub(super) fn skin_surface(
 pub(super) struct SkinnedStreams(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>);
 
 impl SkinnedStreams {
+    fn attributes()->[bevy::mesh::MeshVertexAttribute;4]{
+        [Mesh::ATTRIBUTE_POSITION,Mesh::ATTRIBUTE_NORMAL,Mesh::ATTRIBUTE_TANGENT,DH2_BITANGENT]
+    }
+    ///bevy_backend: the forthcoming interface of this real CPU-skin owner.
+    ///Preserve every other actual vertex attribute; densely pack the same
+    ///sorted attribute IDs through Bevy's canonical layout builder/interner.
+    ///No Mesh asset, vertex payload, upload or pose is created or changed.
+    pub(super) fn output_layout(current:&bevy::mesh::MeshVertexBufferLayout,
+        layouts:&mut bevy::mesh::MeshVertexBufferLayouts)->bevy::mesh::MeshVertexBufferLayoutRef{
+        let mut attributes:std::collections::BTreeMap<_,_>=current.attribute_ids().iter().copied()
+            .zip(current.layout().attributes.iter().map(|attribute|attribute.format)).collect();
+        for attribute in Self::attributes(){attributes.insert(attribute.id,attribute.format);}
+        let ids=attributes.keys().copied().collect();
+        let layout=bevy::mesh::VertexBufferLayout::from_vertex_formats(current.layout().step_mode,attributes.into_values());
+        layouts.insert(bevy::mesh::MeshVertexBufferLayout::new(ids,layout))
+    }
     pub(super) fn insert(self, mesh: &mut Mesh) {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.0);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.1);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.2);
-        mesh.insert_attribute(DH2_BITANGENT, self.3);
+        let [position,normal,tangent,bitangent]=Self::attributes();
+        mesh.insert_attribute(position, self.0);
+        mesh.insert_attribute(normal, self.1);
+        mesh.insert_attribute(tangent, self.2);
+        mesh.insert_attribute(bitangent, self.3);
     }
 }
 
