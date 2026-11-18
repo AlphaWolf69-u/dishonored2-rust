@@ -36,14 +36,7 @@ impl ScreenQuadMaterial {
         resources: &mut crate::rendering::particles::definition::ParticleResources,
         name: &str,
     ) -> Result<Self, String> {
-        let path = format!(
-            "generated/decls/material/{}.decl",
-            name.to_ascii_lowercase()
-        );
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("screen quad material absent: {path}"))?;
+        let bytes = crate::material::declaration(catalog, name)?;
         let main = crate::material::authored_program_override(&bytes, "mainProgram")
             .ok_or("screen quad MAIN absent")?;
         let program = match main.to_ascii_lowercase().as_str() {
@@ -162,7 +155,7 @@ impl ScreenQuadMaterial {
             ] {
                 if option(name)? != 0 {
                     return Err(format!(
-                        "screenblend branch requires its compiled shader port: {name} ({path})"
+                        "screenblend branch requires its compiled shader port: {name}"
                     ));
                 }
             }

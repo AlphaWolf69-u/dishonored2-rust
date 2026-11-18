@@ -124,3 +124,18 @@ arkHavokParticleStageSimulator sizes a per-body seed array at +0x340
 (1401e83f0) and draw publications (1401e5440, 1401e4f50) read their seed
 from it, so they see whatever the allocation held. The rewrite uses zero
 (`gameplay::particles::havok_stage`, marked approximate).
+
+## FX references to declarations that are not installed
+
+`models/effects/gui/gamma_screen.fx` names the quad material
+`scrquad_gamma_screen_01_mask.material`, and
+`howling_bolt_low_frequency.fx` names the explosion
+`explosion_low_frequency_large_player.explosion`; neither declaration is
+installed. The decl manager builds them from their default definitions:
+the material from 1402d7600/1402d4710 (`default.material`, arkDefault with
+the stripped material path as its diffusemap), the explosion from the
+generic 022c70 `{ }` over constructor 7e3560's defaults. The rewrite does
+the same (`material::declaration`, `explosions::Declaration::acquire`).
+The gamma mask quad then draws arkDefault in the AFTER_TONEMAP quad pass
+(31da70 draws each quad with its material's +0xa0 program); the rewrite's
+screen-quad pass has no arkDefault draw, so that menu effect stays refused.
