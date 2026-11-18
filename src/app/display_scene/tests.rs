@@ -1,4 +1,5 @@
 use super::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 #[test]
 #[ignore = "requires installed level archives; prepares the actual gameplay display owner"]
 fn installed_gameplay_display_inputs_prepare_for_every_level() {
