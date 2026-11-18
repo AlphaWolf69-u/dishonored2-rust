@@ -389,6 +389,40 @@ pub struct MachineryWorld {
     velocities: Vec<SolverVelocities>,
     /// hknpWorld +0x818 clear: no motion checks, sleep or activation modes.
     pub deactivation_disabled: bool,
+    /// Bodies attached to a simulated body (attachBodies, 140c8fc00): each
+    /// stays its own hknp body with its own shape, moved by the shared
+    /// motion at its spawn offset from the parent body.
+    attached: Vec<AttachedCollision>,
+}
+
+struct AttachedCollision {
+    parent: usize,
+    /// The attached body transform in the parent body's space, at spawn.
+    offset: [[f32; 4]; 4],
+    collision: std::sync::Arc<crate::entities::machinery::recipes::BodyCollision>,
+}
+
+/// `a * b` for column transforms (three basis columns, then the origin).
+fn compose(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    std::array::from_fn(|c| std::array::from_fn(|i| {
+        if i == 3 {
+            b[c][3]
+        } else {
+            let rotated = (a[0][i] * b[c][0] + a[1][i] * b[c][1]) + a[2][i] * b[c][2];
+            if c == 3 { rotated + a[3][i] } else { rotated }
+        }
+    }))
+}
+
+/// The inverse of a rigid column transform.
+fn rigid_inverse(a: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let dot = |c: usize, v: [f32; 4]| (a[c][0] * v[0] + a[c][1] * v[1]) + a[c][2] * v[2];
+    std::array::from_fn(|c| std::array::from_fn(|i| match (c, i) {
+        (3, 3) => 1.,
+        (_, 3) => 0.,
+        (3, _) => -dot(i, a[3]),
+        _ => a[i][c],
+    }))
 }
 struct WindmillMotor {
     constraint: String,
@@ -457,6 +491,18 @@ impl MachineryWorld {
                     (transform[c][1] * d[1] + transform[c][0] * d[0]) + transform[c][2] * d[2]
                 }
             });
+            for &i in &ring[1..] {
+                let Some(collision) = bodies[i].collision.clone() else { continue };
+                let basis = physworld::quaternion_basis(bodies[i].orientation);
+                let p = bodies[i].position;
+                let spawn = [basis[0], basis[1], basis[2], [p[0], p[1], p[2], 1.]]
+                    .map(|mut v| { if v[3] != 1. { v[3] = 0.; } v });
+                self.attached.push(AttachedCollision {
+                    parent: index,
+                    offset: compose(&rigid_inverse(&transform), &spawn),
+                    collision,
+                });
+            }
             // delta() is relative to the spawn motion pose: re-base it so the
             // body still renders at its authored placement.
             body.initial = motion.pose;
@@ -742,7 +788,33 @@ impl MachineryWorld {
                     filter: collision.filter,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // Attached bodies follow, with the parent's motion and activation.
+        let mut bodies = bodies;
+        for attached in &self.attached {
+            let parent = &self.bodies[attached.parent];
+            let collision = &attached.collision;
+            let id = bodies.len() as u32;
+            let transform = compose(&parent.body_transform(), &attached.offset);
+            let Ok(bounds) = collision.shapes.bounds(collision.shapes.root(), transform) else {
+                bodies.push(None);
+                continue;
+            };
+            let material = collision.material.as_ref().map_or(0xffff, |material| {
+                materials.push(SurfaceMaterial::from_physics(material));
+                (materials.len() - 1) as u16
+            });
+            bodies.push(Some(MovingBody {
+                id,
+                active: parent.active(),
+                transform,
+                motion: parent.motion_record(),
+                bounds,
+                shapes: collision.shapes.clone(),
+                material,
+                filter: collision.filter,
+            }));
+        }
         crate::gameplay::havok_fx::dynamic_collide::MovingWorld { bodies, materials }
     }
 

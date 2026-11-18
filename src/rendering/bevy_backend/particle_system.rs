@@ -16,6 +16,7 @@ use crate::{
     },
 };
 use std::{collections::HashMap, sync::Arc};
+use crate::gameplay::particles::trail::TrailVertex;
 
 /// A mesh renderer whose material has a world MAIN program. The original
 /// draws it as an instanced model surface in that material's own passes
@@ -211,6 +212,14 @@ impl ParticleSystem {
                 declaration.distance.alpha.sample_visibility(context.camera.emitter_distance)?,
             ),
         );
+        // The strips are built before the system box is read: the original
+        // builds them in the update (1401f3060 inside 1401ffff0, 1401d8d50
+        // inside 1401fde70, 140212410 inside 140200bf0) and merges their
+        // bounds into the box (+0x1e58) that fog and lighting read after it.
+        let (mut stage_strips, mut beam_strips, mut trail_strips, trail_bounds) =
+            self.build_strips(&declaration, context.camera.position, publication)?;
+        self.trail_bounds = trail_bounds;
+        let publication = self.publication.as_ref().ok_or("particle publication vanished")?;
         let receiver_bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
             &declaration.visibility,
@@ -219,7 +228,6 @@ impl ParticleSystem {
             self.trail_bounds,
             &self.havok_stages,
         )?;
-        let mut trail_bounds = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
         let volumes = context
             .areas
             .iter()
@@ -312,7 +320,7 @@ impl ParticleSystem {
                 bodies: Some((bodies as &dyn Fn(usize) -> Option<[[f32; 3]; 3]>, stage.centroid_offset())),
             }, None, Some(stage)));
         }
-        for (draw, ordinary, havok) in &draw_stages {
+        for (stage_index, (draw, ordinary, _)) in draw_stages.iter().enumerate() {
             let definition = draw.definition;
             let transform = if definition.worldspace || ordinary.is_none() {
                 ReferenceFrame::default()
@@ -453,56 +461,10 @@ impl ParticleSystem {
                     clip_fade_distance:self.clipping.as_ref().filter(|planes|planes.rendering.is_some()).map_or(0.,|planes|planes.fade_distance),fog,
                 });
             }
-            // 1401f3060: each trail renderer builds its live particles'
-            // strips, in slot order, within its vertex budget.
-            // Ordinary stages draw their live slots in slot order; a Havok
-            // stage (1401e5980) its post-step live list, in world space.
-            let (stage_trails, live_slots, capacity, local): (&[Vec<Option<crate::gameplay::particles::trail::TrailRecord>>], Vec<usize>, usize, bool) =
-                match (ordinary, havok) {
-                    (Some(stage), _) => (
-                        &stage.trails,
-                        stage.particles.iter().map(|(slot, _)| slot).collect(),
-                        stage.particles.capacity(),
-                        !definition.worldspace,
-                    ),
-                    (None, Some(stage)) => (
-                        &stage.trails,
-                        stage.live.iter().map(|&body| body as usize).collect(),
-                        stage.particles.capacity(),
-                        false,
-                    ),
-                    (None, None) => continue,
-                };
             for (trail_index, trail) in definition.trails.iter().enumerate() {
-                let records = &stage_trails[trail_index];
-                if records.is_empty() {
-                    continue;
-                }
+                let strip = std::mem::take(&mut stage_strips[stage_index][trail_index]);
                 let Some(name) = trail.material.as_ref() else { continue };
                 let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
-                let live: Vec<&crate::gameplay::particles::trail::TrailRecord> = live_slots.iter()
-                    .filter_map(|&slot| records.get(slot).and_then(Option::as_ref))
-                    .collect();
-                let budget = crate::gameplay::particles::trail::TrailBudget::new(
-                    live.iter().map(|record| record.segments),
-                    crate::gameplay::particles::trail::TrailBudget::limit(trail, capacity),
-                );
-                // 140211a90: a local stage's local trail is built in stage
-                // space and moved by the owner matrix (140210350).
-                let owner = (local && !trail.worldspace)
-                    .then(|| crate::gameplay::particles::trail::owner_transform(publication.pose));
-                let mut strip = Vec::new();
-                for record in &live {
-                    let segments = budget.segments(record.segments);
-                    if segments != 0 {
-                        let mut bounds = record.build(trail, segments, context.camera.position, publication.colour,
-                            owner.as_ref(), &mut strip)?;
-                        if owner.is_some() && bounds[0][0] <= bounds[1][0] {
-                            bounds = crate::rendering::particles::bounds::transform(bounds, publication.pose);
-                        }
-                        crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
-                    }
-                }
                 if strip.is_empty() {
                     continue;
                 }
@@ -536,14 +498,11 @@ impl ParticleSystem {
             }
         }
         // 1401d8d50: each beam emitter draws its live beams as one strip.
-        for (index, beam) in &self.beams {
+        for (beam_slot, (index, _)) in self.beams.iter().enumerate() {
             let asset = &declaration.beams[*index];
             let Some(name) = asset.material.as_ref() else { continue };
             let material = self.materials.get(name).ok_or_else(|| format!("particle beam material absent: {name}"))?;
-            let mut strip = Vec::new();
-            let bounds = beam.build(asset, context.camera.position, publication.colour, publication.pose,
-                self.beam_noise.as_deref(), &mut strip)?;
-            crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
+            let strip = std::mem::take(&mut beam_strips[beam_slot]);
             if strip.is_empty() {
                 continue;
             }
@@ -576,13 +535,11 @@ impl ParticleSystem {
             });
         }
         // 140212410: each declaration trail draws its live records.
-        for (index, trail) in &self.trails {
+        for (trail_slot, (index, _)) in self.trails.iter().enumerate() {
             let asset = &declaration.trails[*index];
             let Some(name) = asset.trail.material.as_ref() else { continue };
             let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
-            let mut strip = Vec::new();
-            let bounds = trail.build(asset, context.camera.position, publication.colour, None, &mut strip)?;
-            crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
+            let strip = std::mem::take(&mut trail_strips[trail_slot]);
             if strip.is_empty() {
                 continue;
             }
@@ -654,8 +611,91 @@ impl ParticleSystem {
                 fog,
             });
         }
-        self.trail_bounds = (trail_bounds[0][0] <= trail_bounds[1][0]).then_some(trail_bounds);
         Ok(())
+    }
+
+    /// The trail renderer, beam and declaration trail strips of this
+    /// update, in draw order, and their union as the system's trail bounds.
+    /// Stage strips are indexed by stage (ordinary, then Havok) and trail.
+    #[allow(clippy::type_complexity)]
+    fn build_strips(
+        &self,
+        declaration: &crate::assets::fx::particle_declaration::ParticleDeclaration,
+        eye: [f32; 3],
+        publication: &ParticlePublication,
+    ) -> Result<(Vec<Vec<Vec<TrailVertex>>>, Vec<Vec<TrailVertex>>, Vec<Vec<TrailVertex>>, Option<[[f32; 3]; 2]>), String> {
+        use crate::gameplay::particles::trail::{TrailBudget, TrailRecord};
+        use crate::rendering::particles::bounds::include;
+        let mut bounds = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
+        // 1401f3060: each trail renderer builds its live particles' strips,
+        // in slot order, within its vertex budget. Ordinary stages use their
+        // live slots in slot order; a Havok stage (1401e5980) its post-step
+        // live list, in world space.
+        let stages = self.stages.iter().map(|stage| (
+            &stage.declaration.stages[stage.index],
+            &stage.trails[..],
+            stage.particles.iter().map(|(slot, _)| slot).collect::<Vec<_>>(),
+            stage.particles.capacity(),
+            !stage.declaration.stages[stage.index].worldspace,
+        )).chain(self.havok_stages.iter().map(|stage| (
+            &stage.definition().stage,
+            &stage.trails[..],
+            stage.live.iter().map(|&body| body as usize).collect(),
+            stage.particles.capacity(),
+            false,
+        )));
+        let mut stage_strips = Vec::new();
+        for (definition, records, live_slots, capacity, local) in stages {
+            let mut strips = Vec::with_capacity(definition.trails.len());
+            for (trail_index, trail) in definition.trails.iter().enumerate() {
+                let mut strip = Vec::new();
+                let records = &records[trail_index];
+                if !records.is_empty() && trail.material.is_some() {
+                    let live: Vec<&TrailRecord> = live_slots.iter()
+                        .filter_map(|&slot| records.get(slot).and_then(Option::as_ref))
+                        .collect();
+                    let budget = TrailBudget::new(live.iter().map(|record| record.segments), TrailBudget::limit(trail, capacity));
+                    // 140211a90: a local stage's local trail is built in
+                    // stage space and moved by the owner matrix (140210350).
+                    let owner = (local && !trail.worldspace)
+                        .then(|| crate::gameplay::particles::trail::owner_transform(publication.pose));
+                    for record in &live {
+                        let segments = budget.segments(record.segments);
+                        if segments != 0 {
+                            let mut strip_bounds = record.build(trail, segments, eye, publication.colour, owner.as_ref(), &mut strip)?;
+                            if owner.is_some() && strip_bounds[0][0] <= strip_bounds[1][0] {
+                                strip_bounds = crate::rendering::particles::bounds::transform(strip_bounds, publication.pose);
+                            }
+                            include(&mut bounds, strip_bounds);
+                        }
+                    }
+                }
+                strips.push(strip);
+            }
+            stage_strips.push(strips);
+        }
+        // 1401d8d50: each beam emitter's live beams as one strip.
+        let mut beam_strips = Vec::with_capacity(self.beams.len());
+        for (index, beam) in &self.beams {
+            let asset = &declaration.beams[*index];
+            let mut strip = Vec::new();
+            if asset.material.is_some() {
+                include(&mut bounds, beam.build(asset, eye, publication.colour, publication.pose,
+                    self.beam_noise.as_deref(), &mut strip)?);
+            }
+            beam_strips.push(strip);
+        }
+        // 140212410: each declaration trail's live records.
+        let mut trail_strips = Vec::with_capacity(self.trails.len());
+        for (index, trail) in &self.trails {
+            let asset = &declaration.trails[*index];
+            let mut strip = Vec::new();
+            if asset.trail.material.is_some() {
+                include(&mut bounds, trail.build(asset, eye, publication.colour, None, &mut strip)?);
+            }
+            trail_strips.push(strip);
+        }
+        Ok((stage_strips, beam_strips, trail_strips, (bounds[0][0] <= bounds[1][0]).then_some(bounds)))
     }
 
     pub fn start_selected(

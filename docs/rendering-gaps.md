@@ -413,12 +413,14 @@ without errors. Not yet seen on screen. Known differences: TEXCOORD5 (left
 unwritten by the original, zero here), declaration-trail velocity
 inheritance (1401db7b0 is sampled into +0x94 but no trail code reads it, so
 it is not ported), and the system's restart path does not reset
-declaration trails. Trail strip bounds enter the system bounds (culling and
-fog selection) from the last publication: the original merges stage trail
-renderer bounds into the stage box (1401f1c40) and declaration trail bounds
-right after their build in the same update (140200bf0), so declaration
-trails lag one frame here; stage-local trail boxes are moved to world space
-on their own rather than inside the stage box (approximate).
+declaration trails. The original resets the system box (+0x1e58) at the start of
+each simulated update (140202060) and merges every strip build into it in
+that update: trail renderers (1401f3060 in 1401ffff0), beams (1401d8d50 in
+1401fde70), declaration trails (140212410 in 140200bf0). The rewrite builds
+all strips before it reads the box for fog and probe lighting, so the
+strips drawn and the box agree in the same frame; stage-local trail boxes
+are moved to world space on their own rather than inside the stage box
+(approximate).
 
 Descriptor (reflection, defaults 1401facf0): m_name +0, m_enabled +8 (1),
 m_worldspace +9 (1), m_trailLife +0x10 (0.5), m_material +0xd8 (required:
@@ -1014,12 +1016,8 @@ loses w. Remaining, in order:
   only when both bounds are non-zero), reacting only when it reaches 0;
   kill kills, stop zeroes linear and angular velocity (stop event below
   state 3) and sleep sets state 0x7f. Census 765 -> 752.
-  Not ported: collide modes 1/2 (accuracy LOW/MEDIUM/HIGH, 467
-  declarations: cached static CD 3681-5224 with hkfxCacheSharing and
-  static cache limiting), the dynamic CD and the CCD's dynamic part
-  (moving world bodies: the map holds only static triangles, so moving
-  doors and props give no contacts), hulls and SolveConvexContacts,
-  SolveSelfContacts, collision/stop events.
+  The later entries below port modes 1/2, the dynamic CD and CCD, hulls
+  with SolveConvexContacts, SolveSelfContacts and the events.
 - Ported (`physics_collide::static_cached`): modes 1 and 2 for sphere
   bodies, with the collector (140fe31e0) keeping the nearest and
   second-nearest leaf distance (a compressed-mesh quad is one leaf: the map
@@ -1139,10 +1137,18 @@ loses w. Remaining, in order:
   body transform (hknp grows them by motion and contact distance,
   1280e20); world bodies are visited in index order, partition members in
   tree-then-list order; compound children in instance order. Not covered:
-  physics-system (ragdoll/cable) bodies and bodies attached to an assembly
-  body (no published shape), mesh-shaped dynamic bodies (the
-  nearest-mesh-point cache, 140fe2ab0/140fe51e0), the moved-body set
-  (teleports; the machinery never teleports). As in the original, the
+  mesh-shaped dynamic bodies (the
+  nearest-mesh-point cache, 140fe2ab0/140fe51e0: no installed dynamic body
+  has a compressed-mesh shape, `installed_machinery_sleep_audit`), the
+  moved-body set (teleports; the machinery never teleports).
+  Attached bodies (attachBodies 140c8fc00, 27 installed with collision, 4
+  in eotw) are published as their own moving bodies: shape, material and
+  filter from their recipe, transform = parent body x spawn offset, the
+  parent's motion and activation. Physics-system bodies need no particle
+  collision: the rewrite simulates only systems on a layer that collides
+  with nothing (HIDDEN; 14076abc0 gives every body the component layer's
+  filter, 14081a5d0), which the particle filters reject as well; systems on
+  colliding layers are a physics-contacts gap, not a particle one. As in the original, the
   static CD queries only static bodies and sleeping dynamic bodies join no
   lists, so unsimulated loose props stay non-colliding. Not yet compared
   against a capture of the running original.
