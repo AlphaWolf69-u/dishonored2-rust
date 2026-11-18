@@ -75,6 +75,7 @@ impl SpriteView {
     }
 }
 
+#[derive(Clone)]
 pub struct ParticleInstance {
     pub position: [f32; 3],
     /// Full geometry basis. Sprite normals remain unscaled; mesh axes include all three size components.

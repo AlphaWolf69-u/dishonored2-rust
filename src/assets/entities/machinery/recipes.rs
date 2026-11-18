@@ -711,8 +711,15 @@ mod tests {
                 if cones > 0 && cones < assembly.joints.len() {
                     *kinds.entry(format!("MIXED cone/hinge assembly in {path}")).or_default() += 1;
                 }
+                for body in assembly.bodies.iter().filter_map(|b| b.collision.as_ref()) {
+                    let mesh = body.shapes.iter().any(|(_, shape)| matches!(shape.geometry,
+                        crate::assets::physworld::query_geometry::QueryGeometry::CompressedMesh(_)));
+                    if mesh {
+                        *kinds.entry(format!("MESH dynamic body in {path}")).or_default() += 1;
+                    }
+                }
                 for body in assembly.bodies.iter().filter(|b| b.attached_to.is_some()) {
-                    *kinds.entry(format!("ATTACHED wind={}", body.wind.is_some())).or_default() += 1;
+                    *kinds.entry(format!("ATTACHED wind={} collision={} in {path}", body.wind.is_some(), body.collision.is_some())).or_default() += 1;
                 }
                 let motor = assembly.joints.iter().any(|j| j.motor.is_some() && j.started);
                 for body in assembly.bodies.iter().filter(|b| b.mass.is_some()) {

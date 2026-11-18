@@ -344,9 +344,33 @@ fn publish_particles(
         drop(console);
     let (opaque_draws, draws): (Vec<_>, Vec<_>) = draws.into_iter().partition(|draw: &super::particle_pass::ParticleDraw| draw.material.opaque);
     // 14033d320 merges keys 0x13 and 0x15 into the FORWARD_DYNAMIC lists.
-    let (draws, mut underwater_draws): (Vec<_>, Vec<_>) = draws.into_iter()
-        .partition(|draw| draw.list == super::particle_pass::ParticleList::DynamicAlpha);
-    underwater_draws.sort_by_key(|draw| draw.list != super::particle_pass::ParticleList::UnderwaterLit);
+    use super::particle_pass::ParticleList;
+    // debug_: DH2_DEBUG_PARTICLE_MATERIAL=<substring> logs that material's
+    // published draws once.
+    if let Ok(filter) = std::env::var("DH2_DEBUG_PARTICLE_MATERIAL") {
+        static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        for draw in draws.iter().filter(|draw| draw.material.name.contains(&filter)) {
+            if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
+                let first = draw.instances.first();
+                info!(list = ?draw.list, state = ?draw.state, stencil = draw.stencil_reference,
+                    mode = draw.transparency.mode, clip = ?draw.clip_plane, fade = draw.clip_fade_distance,
+                    position = ?first.map(|i| i.position), axes = ?first.map(|i| i.axes),
+                    colour = ?first.map(|i| i.parameters.colour), size = ?first.map(|i| i.parameters.size),
+                    strip = draw.strip.len(), "debug_ particle draw");
+            }
+        }
+    }
+    let (mut draws, rest): (Vec<_>, Vec<_>) = draws.into_iter()
+        .partition(|draw| draw.list == ParticleList::DynamicAlpha);
+    let (predicated_alpha, mut underwater_draws): (Vec<_>, Vec<_>) = rest.into_iter()
+        .partition(|draw| draw.list == ParticleList::PredicatedAlpha);
+    // 31dce0 draws underWaterPredicated after dynamicAlpha unless the view's
+    // underwater parameter (the water-volume view that also gates 2fdea0's
+    // volume mark) is set.
+    if !water.ocean_environment.view.water_volume {
+        draws.extend(predicated_alpha);
+    }
+    underwater_draws.sort_by_key(|draw| draw.list != ParticleList::UnderwaterLit);
     Ok(ParticlePublicationFrame {
         camera: water.camera,
         frame: water.matrices.frame,
@@ -1195,8 +1219,10 @@ fn render_underwater_particles(
             depth.view(), target.main_texture_view(), None)?;
         underwater.pass.record_underwater(particle_images, &device, &queue, context.command_encoder(), inputs, draws)?;
         if !*reported {
+            let surfaces = draws.iter().map(|draw| format!("{:?} {} at {:?}", draw.list, draw.material.name,
+                draw.instances.first().map(|instance| instance.position))).collect::<Vec<_>>();
             info!(draws = draws.len(), instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
-                "Underwater particle submission active");
+                ?surfaces, "Underwater particle submission active");
             *reported = true;
         }
         Ok(())
