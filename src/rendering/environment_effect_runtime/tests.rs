@@ -5,13 +5,14 @@ use crate::gameplay::effects::timing::EffectTimingRanges;
 #[test]
 fn default_pool_matches_executed_constructor() {
     let runtime = EnvironmentEffectRuntime::<u32, u32>::default();
+    let pool = runtime.pool.lock().unwrap();
     let mut actual = vec![
         runtime.effects.len() as u32,
-        runtime.pool.next.len() as u32,
-        u32::from(runtime.pool.free_head),
-        u32::from(runtime.pool.allocated_count),
+        pool.next.len() as u32,
+        u32::from(pool.free_head),
+        u32::from(pool.allocated_count),
     ];
-    actual.extend(runtime.pool.next.into_iter().map(u32::from));
+    actual.extend(pool.next.iter().copied().map(u32::from));
     let expected = include_str!("../../../tests/fixtures/effect_environment_pool_defaults.txt")
         .split_whitespace()
         .map(|v| u32::from_str_radix(v, 16).unwrap())
@@ -33,12 +34,13 @@ fn snapshot(
     seed: u32,
     slots: &mut EnvironmentOverrides<u32>,
 ) -> Vec<u32> {
+    let pool = runtime.pool.lock().unwrap();
     let mut result = vec![
-        u32::from(runtime.pool.free_head),
+        u32::from(pool.free_head),
         u32::from(head),
-        u32::from(runtime.pool.allocated_count),
+        u32::from(pool.allocated_count),
     ];
-    result.extend(runtime.pool.next.iter().copied().map(u32::from));
+    result.extend(pool.next.iter().copied().map(u32::from));
     result.push(seed);
     let ids = runtime.registry.with_active(|ids| ids.to_vec()).unwrap();
     result.push(ids.len() as u32);

@@ -49,6 +49,7 @@ fn query_handles_match_executed_registration_result_release_and_reset() {
                 queue.records[(cursor + j) & 1023] = QueryRecord {
                     offset: (j * 7) as u16,
                     count: (j + 1) as u16,
+                    generation: 0,
                 };
             }
             let address = queue.pending.as_ptr();
@@ -78,10 +79,11 @@ fn query_handles_match_executed_registration_result_release_and_reset() {
                 queue.records[j] = QueryRecord {
                     offset: (j % 900) as u16,
                     count: 1,
+                    generation: 0,
                 };
             }
             if slot != u16::MAX {
-                queue.records[usize::from(slot)] = QueryRecord { offset: 13, count };
+                queue.records[usize::from(slot)] = QueryRecord { offset: 13, count, generation: 0 };
             }
             let mut handle = OceanQueryHandle {
                 slot,
