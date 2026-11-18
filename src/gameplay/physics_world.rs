@@ -1,4 +1,5 @@
 //! Physics-world configuration and owned runtime composition.
+pub(crate) mod thread_policy;
 mod info;
 pub use info::{WorldHandles, WorldInfo};
 mod publication;

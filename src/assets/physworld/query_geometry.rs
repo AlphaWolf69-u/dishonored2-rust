@@ -208,6 +208,7 @@ impl PhysWorld {
         root: usize,
         source: Option<&std::sync::Arc<super::source::ShapeSource>>,
     ) -> Result<QueryShapes, String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut shapes = BTreeMap::new();
         let mut pending = vec![root];
         while let Some(index) = pending.pop() {

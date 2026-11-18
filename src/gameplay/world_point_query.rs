@@ -228,6 +228,7 @@ impl WorldPointQuery {
             super::convex_support::distance::ConvexClosestPoint,
         ),
     ) -> Result<(), String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let mut visitor = Bodies {
             bodies,
             shapes: &mut self.shapes,

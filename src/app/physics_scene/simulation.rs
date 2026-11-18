@@ -316,6 +316,7 @@ impl PhysicsScene {
         manager: Option<&crate::gameplay::wind::WindManager>,
         world_wind: Option<&crate::gameplay::wind::Wind>,
     ) -> Result<(), String> {
+        crate::gameplay::physics_world::thread_policy::enter();
         let clock = runtime.clock().map_err(str::to_owned)?;
         let mut driver = self
             .simulation
