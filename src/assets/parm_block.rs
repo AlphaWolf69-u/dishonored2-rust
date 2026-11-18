@@ -114,7 +114,7 @@ fn atom<'a>(value: &'a Value) -> Result<&'a str, String> {
 
 /// Use the same token conversion as registered numeric defaults (1401461c0)
 /// rather than a second host-dependent float conversion.
-fn numeric_word(text: &str, storage: NumericStorage) -> Result<u32, String> {
+pub(crate) fn numeric_word(text: &str, storage: NumericStorage) -> Result<u32, String> {
     let text = text.trim();
     let (negative, number) = text
         .strip_prefix('-')

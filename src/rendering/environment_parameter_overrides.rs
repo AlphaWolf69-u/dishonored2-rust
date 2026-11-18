@@ -70,80 +70,117 @@ impl<K: PartialEq> ParameterOverrides<K> {
             });
             self.entries.last_mut().unwrap()
         };
-        for i in 0..if kind == ParameterKind::Boolean { 1 } else { 4 } {
-            let value = match kind {
-                ParameterKind::Boolean | ParameterKind::Unsigned => value[i] as f32,
-                ParameterKind::Signed => value[i] as i32 as f32,
-                ParameterKind::Float => f32::from_bits(value[i]),
-            };
-            let product = if kind == ParameterKind::Float {
-                multiply(influence, value)
-            } else {
-                multiply(value, influence)
-            };
-            entry.target[i] = add(product, entry.target[i]);
-        }
-        entry.weight = add(multiply(influence, weight), entry.weight);
-        entry.influence = add(influence, entry.influence);
+        accumulate(entry, kind, value, weight, influence);
     }
     pub fn finish(self) -> impl Iterator<Item = (K, [u32; 4])> {
-        self.entries.into_iter().map(|e| {
-            // MAXSS retains incoming NaN/equal operands, unlike f32::max.
-            let epsilon = f32::from_bits(0x38d1_b717);
-            let divisor = if epsilon > e.influence {
-                epsilon
-            } else {
-                e.influence
-            };
-            let reciprocal = 1. / divisor;
-            let fraction = multiply(reciprocal, e.weight).clamp(0., 1.);
-            let value = match e.kind {
-                ParameterKind::Boolean => {
-                    let candidate = u32::from(multiply(reciprocal, e.target[0]) >= 0.5);
-                    let threshold = if e.baseline[0] == 0 && candidate != 0 {
-                        f32::from_bits(0x3586_37bd)
-                    } else {
-                        f32::from_bits(0x3f7f_be77)
-                    };
-                    let value = if fraction < threshold {
-                        e.baseline[0]
-                    } else {
-                        candidate
-                    };
-                    [value, 0, 0, 0]
-                }
-                ParameterKind::Float => std::array::from_fn(|i| {
-                    let start = f32::from_bits(e.baseline[i]);
-                    add(
-                        multiply(multiply(reciprocal, e.target[i]) - start, fraction),
-                        start,
-                    )
-                    .to_bits()
-                }),
-                ParameterKind::Signed => std::array::from_fn(|i| {
-                    let start = e.baseline[i] as i32;
-                    let target = integer(reciprocal * e.target[i]);
-                    let delta = target.wrapping_sub(start) as f32;
-                    start.wrapping_add(integer((delta * fraction).floor())) as u32
-                }),
-                ParameterKind::Unsigned => std::array::from_fn(|i| {
-                    let start = e.baseline[i];
-                    let target = wide_integer_word(reciprocal * e.target[i]);
-                    if target < start {
-                        start.wrapping_sub(wide_integer_word(
-                            ((start - target) as f32 * fraction).ceil(),
-                        ))
-                    } else {
-                        start.wrapping_add(wide_integer_word(
-                            ((target - start) as f32 * fraction).floor(),
-                        ))
-                    }
-                }),
-            };
-            (e.key, value)
-        })
+        self.entries.into_iter().map(finish_entry)
     }
 }
+fn accumulate<K>(
+    entry: &mut Entry<K>,
+    kind: ParameterKind,
+    value: [u32; 4],
+    weight: f32,
+    influence: f32,
+) {
+    for i in 0..if kind == ParameterKind::Boolean { 1 } else { 4 } {
+        let value = match kind {
+            ParameterKind::Boolean | ParameterKind::Unsigned => value[i] as f32,
+            ParameterKind::Signed => value[i] as i32 as f32,
+            ParameterKind::Float => f32::from_bits(value[i]),
+        };
+        let product = if kind == ParameterKind::Float {
+            multiply(influence, value)
+        } else {
+            multiply(value, influence)
+        };
+        entry.target[i] = add(product, entry.target[i]);
+    }
+    entry.weight = add(multiply(influence, weight), entry.weight);
+    entry.influence = add(influence, entry.influence);
+}
+fn finish_entry<K>(e: Entry<K>) -> (K, [u32; 4]) {
+    // MAXSS retains incoming NaN/equal operands, unlike f32::max.
+    let epsilon = f32::from_bits(0x38d1_b717);
+    let divisor = if epsilon > e.influence {
+        epsilon
+    } else {
+        e.influence
+    };
+    let reciprocal = 1. / divisor;
+    let fraction = multiply(reciprocal, e.weight).clamp(0., 1.);
+    let value = match e.kind {
+        ParameterKind::Boolean => {
+            let candidate = u32::from(multiply(reciprocal, e.target[0]) >= 0.5);
+            let threshold = if e.baseline[0] == 0 && candidate != 0 {
+                f32::from_bits(0x3586_37bd)
+            } else {
+                f32::from_bits(0x3f7f_be77)
+            };
+            let value = if fraction < threshold {
+                e.baseline[0]
+            } else {
+                candidate
+            };
+            [value, 0, 0, 0]
+        }
+        ParameterKind::Float => std::array::from_fn(|i| {
+            let start = f32::from_bits(e.baseline[i]);
+            add(
+                multiply(multiply(reciprocal, e.target[i]) - start, fraction),
+                start,
+            )
+            .to_bits()
+        }),
+        ParameterKind::Signed => std::array::from_fn(|i| {
+            let start = e.baseline[i] as i32;
+            let target = integer(reciprocal * e.target[i]);
+            let delta = target.wrapping_sub(start) as f32;
+            start.wrapping_add(integer((delta * fraction).floor())) as u32
+        }),
+        ParameterKind::Unsigned => std::array::from_fn(|i| {
+            let start = e.baseline[i];
+            let target = wide_integer_word(reciprocal * e.target[i]);
+            if target < start {
+                start.wrapping_sub(wide_integer_word(
+                    ((start - target) as f32 * fraction).ceil(),
+                ))
+            } else {
+                start.wrapping_add(wide_integer_word(
+                    ((target - start) as f32 * fraction).floor(),
+                ))
+            }
+        }),
+    };
+    (e.key, value)
+}
+/// The same88e220 resolver for one already-indexed parameter, on the stack.
+/// No per-frame parameter collection/allocation is needed by typed consumers.
+pub fn blend_environments(
+    kind: ParameterKind,
+    baseline: [u32; 4],
+    values: impl Iterator<Item = ([u32; 4], f32, f32)>,
+) -> [u32; 4] {
+    let mut entry = Entry {
+        key: (),
+        kind,
+        baseline,
+        target: [0.; 4],
+        influence: 0.,
+        weight: 0.,
+    };
+    let mut supplied = false;
+    for (value, weight, influence) in values {
+        supplied = true;
+        accumulate(&mut entry, kind, value, weight, influence);
+    }
+    if supplied {
+        finish_entry(entry).1
+    } else {
+        baseline
+    }
+}
+
 fn integer(value: f32) -> i32 {
     crate::entities::integer_word(value.to_bits(), 0x30) as i32
 }

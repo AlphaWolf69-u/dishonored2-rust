@@ -95,6 +95,7 @@ pub struct Catalog {
     pub(crate) faction_registry: std::sync::OnceLock<crate::gameplay::faction_registry::SessionFactionRegistry>,
     pub(crate) component_types: std::sync::Mutex<Option<std::sync::Arc<crate::gameplay::component_state::types::ComponentTypes>>>,
     pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
+    pub(crate) environment_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::rendering::environment_resources::PreparedEnvironment>>>,
     pub(crate) fx_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::definition::Definition>>>,
     pub(crate) midnight_scenes: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::midnight_scene::Definition>>>,
     pub(crate) fade_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::fade::Fade>>>,
@@ -169,6 +170,7 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.environment_resources.take();
         self.fx_resources.take();
         crate::assets::fx::fade::report_retirement(self);
         self.fade_resources.take();
@@ -576,6 +578,7 @@ impl Catalog {
             component_types: Default::default(),
             material_constants: Default::default(),
             physics_material_resources: Default::default(),
+            environment_resources: Default::default(),
             fx_resources: Default::default(),
             fade_resources: Default::default(),
             midnight_scenes: Default::default(),
@@ -1232,8 +1235,11 @@ mod tests {
         );
 
         fs::write(root.join("game4.resources"), b"no").unwrap();
-        // A truncated archive must fail the read, not return short data.
-        assert!(catalog.read("thing/asset.bin").is_err());
+        assert!(catalog
+            .read("thing/asset.bin")
+            .unwrap_err()
+            .to_string()
+            .contains("archive extent"));
 
         drop(catalog);
         fs::remove_dir_all(root).unwrap();

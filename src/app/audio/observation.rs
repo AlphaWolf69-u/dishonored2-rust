@@ -25,6 +25,8 @@ pub(in crate::app::audio) type SourceSamples=Arc<Mutex<Vec<SourceReceipt>>>;
 #[derive(Clone,Debug)]
 pub(in crate::app) struct SourceReceipt {
     pub event:u32,pub playing_id:u32,pub object:Emitter,pub selected_source:u32,
+    pub frames:u64,pub terminal:bool,pub route_bus:Option<u32>,
+    pub route_target_peak:Option<f32>,pub master_target_peak:Option<f32>,
     pub decoded_peak:f32,pub dry_peak:f32,pub aux_peak:f32,pub gain_peak:f32,
     pub route_next_block_gain:Option<f32>,pub master_next_block_gain:Option<f32>,
     pub reason:&'static str,
@@ -288,6 +290,7 @@ impl Observation {
 pub(in crate::app) struct Snapshot {
     pub source_samples: Vec<SourceReceipt>,
     pub source_processed_ids: Vec<u32>,
+    pub ended_ids:Vec<u32>,
     pub output: OutputSnapshot,
     pub samples: u64,
     pub nonzero_samples: u64,
@@ -439,6 +442,7 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
                     .filter(|note| note.kind == "SourceReady")
                     .map(|note| note.playing_id),
             );
+        result.ended_ids=observer.ended.lock().unwrap_or_else(|error|error.into_inner()).iter().copied().collect();
         result.source_processed_ids=observer.ready.lock().unwrap_or_else(|error|error.into_inner()).iter().copied().collect();
     }
     result

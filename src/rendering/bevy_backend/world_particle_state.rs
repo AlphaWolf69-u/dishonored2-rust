@@ -71,6 +71,7 @@ struct Instance {
     fov_head: u16,
     quad_head: u16,
     rumble_head: u16,
+    environment_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
@@ -83,6 +84,7 @@ struct Instance {
 /// What a group start (222f80) needs from the FX manager, for top-level
 /// instances and for the effects their sub-FX trigger.
 pub(super) struct GroupContext<'a> {
+    pub(super) view_mask:u8,
     pub(super) gameplay:
         &'a mut crate::gameplay::effects::gameplay::Requests,
     pub(super) frame: ReferenceFrame,
@@ -94,6 +96,7 @@ pub(super) struct GroupContext<'a> {
     pub(super) fovs: &'a mut super::world_fov::Systems,
     pub(super) quads: &'a mut super::world_screen_quads::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
+    pub(super) environments: &'a mut crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
@@ -112,6 +115,7 @@ impl GroupContext<'_> {
             decals: self.decals,
             distortion: self.distortion,
             rumble: self.rumble,
+            environments: self.environments,
             fovs: self.fovs,
             quads: self.quads,
             lights: self.lights,
@@ -232,6 +236,7 @@ fn update_chains(
     fov_head: &mut u16,
     quad_head: &mut u16,
     rumble_head: &mut u16,
+    environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     frame: &UpdateFrame,
     context: &mut GroupContext,
@@ -266,7 +271,7 @@ fn update_chains(
     let mut index = 0;
     while index < gameplay_events.len() {
         if view_live.is_none() && !gameplay_events[index].is_entity() {
-            view_live = Some(update_view_chains(fov_head,distortion_head,quad_head,frame,context)?);
+            view_live = Some(update_view_chains(fov_head,distortion_head,quad_head,environment_head,frame,context)?);
         }
         if gameplay_events[index].advance(
             frame.age,
@@ -283,7 +288,7 @@ fn update_chains(
     }
     let view_live = match view_live {
         Some(live) => live,
-        None => update_view_chains(fov_head,distortion_head,quad_head,frame,context)?,
+        None => update_view_chains(fov_head,distortion_head,quad_head,environment_head,frame,context)?,
     };
     let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
         frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),
@@ -292,13 +297,14 @@ fn update_chains(
 }
 
 ///222f80/223f60 preserve FOV, distortion and quad family RNG order.
-fn update_view_chains(fov:&mut u16,distortion:&mut u16,quads:&mut u16,
+fn update_view_chains(fov:&mut u16,distortion:&mut u16,quads:&mut u16,environments:&mut u16,
     frame:&UpdateFrame,context:&mut GroupContext)->Result<bool,String>{
     let fov=context.fovs.update(fov,frame.age,&mut context.systems.seed)?;
     let distortion=context.distortion.update(distortion,frame.age,
         frame.particle.view_mask&frame.particle.allowed_mask!=0,&mut context.systems.seed)?;
     let quads=context.quads.update(quads,frame.age,&mut context.systems.seed)?;
-    Ok(fov!=0||distortion!=0||quads!=0)
+    let environments=context.environments.update_group(environments,frame.age,frame.particle.view_mask,&mut context.systems.seed)?;
+    Ok(fov!=0||distortion!=0||quads!=0||environments!=0)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -321,6 +327,7 @@ fn update_sub_effects(
             &mut sub.fov_head,
             &mut sub.quad_head,
             &mut sub.rumble_head,
+            &mut sub.environment_head,
             &mut sub.gameplay_events,
             frame,
             context,
@@ -350,6 +357,7 @@ pub(super) fn start_groups(
     fov_head: &mut u16,
     quad_head: &mut u16,
     rumble_head: &mut u16,
+    environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
     sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
     context: &mut GroupContext,
@@ -450,6 +458,12 @@ pub(super) fn start_groups(
         for quad in &group.quads {
             context.quads.start(quad_head,quad.as_ref().map_err(Clone::clone)?.clone(),offsets,3,&mut context.systems.seed)?;
         }
+        //222f80 bit9: environment overrides follow quads and precede explosions.
+        for source in &group.environments {
+            let descriptor = &group.asset.environments[source.index];
+            context.environments.start(environment_head, source.environment.clone(), descriptor.blend.clone(),
+                offsets, context.view_mask, &mut context.systems.seed)?;
+        }
         for source in &group.explosions {
             let first_explosion = gameplay_events
                 .iter()
@@ -494,6 +508,7 @@ pub(crate) struct WorldParticleState {
     decals: super::decal_effects::DecalSystems,
     distortion: super::world_screen_distortion::Systems,
     rumble: super::world_rumble::Systems,
+    environments: crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     fovs: super::world_fov::Systems,
     quads: super::world_screen_quads::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
@@ -539,6 +554,7 @@ impl Default for WorldParticleState {
             decals: super::decal_effects::new_systems(),
             distortion: Default::default(),
             rumble: Default::default(),
+            environments: Default::default(),
             fovs: Default::default(),
             quads: Default::default(),
             decal_programs: Arc::new(Default::default()),
@@ -589,6 +605,19 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn environment_pool(&self)->crate::rendering::environment_effect_runtime::SharedEnvironmentPool{self.environments.shared_pool()}
+    pub(crate) fn visit_environment_orders(&self,mask:u8,visit:impl FnMut(u64))->Result<(),String>{self.environments.visit_orders(mask,visit)}
+    pub(crate) fn flush_environment_retirements(&self,view:u64,slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.environments.flush_retirements(&[view],|_,slot|slots.retire(slot))
+    }
+    pub(crate) fn publish_environment(&mut self,order:u64,view:u64,mask:u8,slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.environments.publish_order(order,view,mask,slots)
+    }
+    pub(crate) fn publish_environments(&mut self, view:u64, mask:u8,
+        slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.environments.flush_retirements(&[view], |_, slot| slots.retire(slot))?;
+        self.environments.publish(view,mask,slots)
+    }
     pub(crate) fn apply_fov(&self,base:f32)->f32 {
         //21da80 does not call the view FOV reducer for an empty registered
         //list. Preserve the user's base value without applying its clamp.
@@ -1176,6 +1205,7 @@ impl WorldParticleState {
                 self.lights.stop(instance.light_head, instance.age, false)?;
                 self.distortion.stop(instance.distortion_head, instance.age, false)?;
                 self.rumble.stop(instance.rumble_head, instance.age, false)?;
+                self.environments.stop_chain(instance.environment_head, instance.age, false)?;
                 self.fovs.stop(instance.fov_head,instance.age,false)?;
                 self.quads.stop(instance.quad_head,instance.age,false)?;
                 self.decals.stop(instance.decal_head, instance.age);
@@ -1189,6 +1219,7 @@ impl WorldParticleState {
                         lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
                         decals: &mut self.decals,
@@ -1266,6 +1297,7 @@ impl WorldParticleState {
         self.lights.clear(&mut instance.light_head)?;
         self.distortion.clear(&mut instance.distortion_head)?;
         self.rumble.clear(&mut instance.rumble_head)?;
+        self.environments.clear(&mut instance.environment_head)?;
         self.fovs.clear(&mut instance.fov_head)?;
         self.quads.clear(&mut instance.quad_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
@@ -1277,6 +1309,7 @@ impl WorldParticleState {
                 lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
                 decals: &mut self.decals,
@@ -1437,6 +1470,7 @@ impl WorldParticleState {
         }
         if !self.distortion.drained() { return Err("FX FSDisto pool retains a live chain after shutdown".into()); }
         self.distortion.shutdown();
+        if !self.environments.drained() { return Err("FX environment pool retains a live chain after shutdown".into()); }
         if !self.rumble.drained() { return Err("FX rumble pool retains a live chain after shutdown".into()); }
         self.rumble.shutdown();
         if !self.fovs.drained()||!self.quads.drained(){return Err("FX FOV/quad pool retains a live chain after shutdown".into());}
@@ -1748,6 +1782,7 @@ impl WorldParticleState {
             fov_head: u16::MAX,
             quad_head: u16::MAX,
             rumble_head: u16::MAX,
+            environment_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
@@ -2128,9 +2163,11 @@ impl WorldParticleState {
                 &mut instance.fov_head,
                 &mut instance.quad_head,
                 &mut instance.rumble_head,
+                &mut instance.environment_head,
                 &mut instance.gameplay_events,
                 &mut instance.sub_effects,
                 &mut GroupContext {
+                    view_mask: 1,
                     gameplay: &mut self.gameplay,
                     frame: instance.pose,
                     entity_context: instance.entity_context,
@@ -2139,6 +2176,7 @@ impl WorldParticleState {
                     lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
                     decals: &mut self.decals,
@@ -2213,6 +2251,7 @@ impl WorldParticleState {
                     },
                 };
                 let mut context = GroupContext {
+                    view_mask: update.particle.view_mask,
                     gameplay: &mut self.gameplay,
                     frame: instance.pose,
                     entity_context: instance.entity_context,
@@ -2221,6 +2260,7 @@ impl WorldParticleState {
                     lights: &mut self.lights,
                     distortion: &mut self.distortion,
                     rumble: &mut self.rumble,
+                    environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
                     decals: &mut self.decals,
@@ -2243,6 +2283,7 @@ impl WorldParticleState {
                 &mut instance.fov_head,
                 &mut instance.quad_head,
                 &mut instance.rumble_head,
+                &mut instance.environment_head,
                     &mut instance.gameplay_events,
                     &update,
                     &mut context,
@@ -2637,6 +2678,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             fov_head: u16::MAX,
             quad_head: u16::MAX,
             rumble_head: u16::MAX,
+            environment_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,

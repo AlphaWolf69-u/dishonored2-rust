@@ -202,6 +202,7 @@ impl EnvironmentTracks {
         self.frame.apply_numeric_overrides(explicit, environments)?;
         Ok(&self.frame)
     }
+    pub fn current_mut(&mut self)->&mut EnvironmentParameters{&mut self.frame}
     pub fn current(&self) -> &EnvironmentParameters {
         &self.frame
     }

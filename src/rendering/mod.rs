@@ -4,6 +4,8 @@ pub mod ambient_occlusion;
 pub mod environment;
 pub mod environment_effects;
 pub mod environment_effect_runtime;
+pub mod environment_frame;
+pub mod environment_resources;
 pub mod environment_images;
 pub mod environment_overrides;
 pub mod environment_parameter_overrides;

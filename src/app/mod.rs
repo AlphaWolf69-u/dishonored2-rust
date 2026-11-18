@@ -119,6 +119,7 @@ mod materials;
 mod sky_sprite;
 mod fog_scene;
 mod display_scene;
+mod environment_effects;
 mod camera_effects;
 mod alpha_depth_pass;
 mod lens_scene;

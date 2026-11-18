@@ -1596,7 +1596,30 @@ fn finish_retirement(world: &mut World, id: EntityId, mode: RetireMode) -> Resul
     if alive && !retire_components(world, id)? {
         return Ok(false);
     }
-    if !alive && (!super::world_models::retired_entity(world,id) || !super::projectiles::retired(world,id)) { return Ok(false); }
+    if !alive {
+        // The shared whole-world destructor can retire a constructor-owned
+        // child's header before this late GameLocal journal is visited.
+        // Its actual renderer/effect owners still require withdrawal; merely
+        // waiting for their receipts cannot initiate that work.
+        let removing = world.resource::<RuntimeEntities>().actors.get(&id)
+            .ok_or("late runtime retirement actor journal absent")?.removing;
+        if !removing {
+            let source = world.resource::<RuntimeEntities>().actors.get(&id)
+                .and_then(|actor| actor.definition.as_ref()).map(|definition| definition.entity.as_str());
+            eprintln!("RUNTIME_ACTOR_LATE_RETIREMENT_BEGIN id={id:?} source={source:?} actual_model={} live_generation_absent=true receipts_not_fabricated=true",
+                super::world_models::descriptor(world,id).is_some());
+            super::projectiles::begin_retirement(world,id);
+            // This is the existing runtime model owner, keyed by the full
+            // generation. remove_entity's placed-name lookup needs a live
+            // header and therefore is inappropriate after the shared drain.
+            super::world_models::remove(world,id)?;
+            super::entity_graphs::retire(world,id)?;
+            world.resource_mut::<RuntimeEntities>().actors.get_mut(&id)
+                .ok_or("late runtime retirement actor journal vanished")?.removing = true;
+        }
+        if !super::world_models::retired_entity(world,id)
+            || !super::projectiles::retired(world,id) { return Ok(false); }
+    }
     if world.contains_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>() {
         super::time_sync::retire_entity_time(world, id)?;
     }

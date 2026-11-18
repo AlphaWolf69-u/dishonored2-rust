@@ -123,12 +123,16 @@ pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persis
     Ok(())
 }
 pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
+    if let Some(owner) = catalog.environment_resources.get() {
+        owner.lock().map_err(|_| "environment resource registry is poisoned")?.promote_bootstrap();
+    }
     if let Some(owner) = catalog.fx_resources.get() {
         owner.lock().map_err(|_| "FX declaration registry is poisoned")?.promote_bootstrap();
     }
     Ok(())
 }
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
+    crate::rendering::environment_resources::release(catalog, marker);
     if let Some(owner) = catalog.fx_resources.get() {
         let mut owner = owner.lock().unwrap_or_else(|error| error.into_inner());
         owner.release(catalog.identity(), "fx", marker);

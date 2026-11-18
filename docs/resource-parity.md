@@ -25149,3 +25149,42 @@ holster. Startup acquires only the newly selected power's missing switch
 dependencies through the existing worker; no CPU/FPS gain is claimed.
 `blocked: coherent runtime verification` — parent owns the next build and
 actual Blink hold-F/redraw sequence. This correction ran no build or test.
+
+
+### Combat action and shader admission evidence — 2026-11-18,8169c98e
+
+The coherent dev game build and independent core feature check passed. The same executable (SHA256987F3ACC406D0B87F892F5E68268B96F2982ACE0A098B9A16CE0EF202E122D9B) completed real gun/bottle, ordinary-sword/bottle and charged-poke/bottle damage; power-equipped ordinary WORLD contact with two actual early Slash replacements; three power-equipped charged-forward WORLD contacts; actual power/sword Undraw and shortcut redraw; and exact fired-bolt focus/pickup/ammunition restoration after moving away. These are production-input owner receipts, not displayed-pixel, heard-sound or FPS claims. The Heart receipt establishes selected source onset only, not full speech playback.
+
+Actual runtime decal material/fullkey/layout/view receipts matched the loading-time preparation set for all377 observed proxy-ready rows across16 impact material variants, with zero pipeline-ID reuse mismatches, zero uncovered rows and zero matching pipeline creations after action admission. All75 temporary metadata material bindings were released after immutable properties capture. The same-binary deferred comparison remains pending; this normal-run result does not establish a compiler speedup or whole-frame improvement.
+
+The run remains FAILED: ordinary exit exceeded its retirement deadline, grenade removal re-entered a component drain while an entity-scoped destructor owned it, and Blink travel rejected the unimplemented environment-override family. No release/main acceptance is claimed. Evidence is retained in analysis/gameplay-repair-20261116/8169-action-results/ and8169-decal-normal.json.
+
+`host:` shared component drain continuation now distinguishes completed7ea870 state retained solely for real reference-actor receipts from pending common work. A resumable7eac80 destructor retains its isolated queues;8ab380 does not admit another removal snapshot until that owner completes. Genuine new common requests still enter the next pass when the registry is free. No fabricated acknowledgement, discarded callback or extra queue is introduced. Prediction: idle gameplay cost unchanged; completed common-drain re-entry during a pending scoped destructor becomes zero. This repair awaits combined grenade/exit validation.
+
+
+### General environment FX consumer (isolated patch, pending integration validation)
+
+- `ported`: `222f80/21a080/21a240/21a310/21a090`, `21d720`, `21a190/21a3c0` — shared immutable Catalog environment resources, real World/SubFX lifecycle and the same64-entry family allocator shared by pause/focused attack. Retain source clocks/RNG ordering; pre-admit heads before producer constructor RNG; actual view mask and activation order govern stable16 view slots.
+- `ported`: `890150/890970/8911a0/88e220` — full16 returns NULL after returning diagnostic (`890189 -> 89018e XOR EAX,EAX/RET`); `21a1c9` tests null and later retries. Preserve the owner and pending producer, distinguish other failures, run zero retirement visits after partial publication. All typed explicit/inherited numeric values use one exact resolver before canonical display/camera/lens/fog inputs. Three special image branches use existing grouping/dirt kernels. Other images/materials have no weighted-resource assignment in this branch.
+- `host`: monotonic activation identity replaces native global linked append chronology; one relaxed atomic at admitted constructor, one reusable order list bounded by the actual shared64 pool, stable per-view16 frame with no unchanged Arc cloning. No separate legacy capacity/pool, parallel pause/combat mixer, per-frame archive work or image cache.
+- `host`: ResidentImages now owns demanded Texture3D colour tables as well as2D/layered images; existing AssetBatch/IO/cancellation/GPU publication/purge/read-history rules apply. Environment projection leases hold canonical handles; extracted weak receipt contains only IDs/token. Real GPU views gate FX admission. Stop/cancel/join, legacy clear before manager drain, deferred zero view visits, explicit empty render generation ACK, then image projection release precede source purge. Explicit initialization reopens the persistent scene owner only after prior retirement; no late owner recreation.
+- `source boundary`: installed61 FX ->37 effective profiles/59 keys, including real Blink colour cube, are inventoried in ignored environment-fx-coverage.json.13 old env/atm/fog keys have no known executable/shader name consumer; four remaining legacy fog values belong to separate source-established per-volume/computed settings. No invented fog/water material equations. No enabled authored water/ocean/shadow numeric key occurs in this installed family union; existing canonical captured inputs still consume typed overrides when actually supplied.
+- `verification`: source and staged Rust parser checks only. Root must apply both halves/phase hooks, compile and verify loading, actual Blink admission/audio/render receipt, overlap ordering, full16 retry, tails and level teardown. No game/GPU run, appearance, measured CPU/GPU/time/bytes comparison or completed-family runtime claim is made by this staging work. Prediction: preparation incurs only demanded canonical image reads/uploads, no new draw/pass/pipeline; steady state has bounded stack merges and no new frame allocation/IO. Existing ordinary world/area Vec collections remain unchanged.
+
+
+`host:` late GameLocal runtime journals now initiate canonical WorldModels/Projectile/entity-graph withdrawal even when whole-scene component destruction already returned the managed header. Original8a4830/8ab380 preserve child render ownership until withdrawal. The journal's existing removing bit records that initiation; subsequent polls wait for actual generation-scoped receipts, retaining the same metadata. This removes the source-proven wait-before-request cycle at late constructor-owned children. Idle gameplay is unchanged; exit validation remains pending.
+
+`ported:` generic Usable offscreen resource retirement now uses AnimBasic input_playing (6e4af0 output9ac/53e770) rather than a clip playback bit. Native held-first/held-last clips can have an active BlendIn despite a false clip-playing flag. Their actual node/rig remain until the authored blend finishes; settled invisible nodes still release normally. No initial state/pose or timing is fabricated. Prediction: zero premature node/rig returns during a live blend; no added draw/pass or idle gameplay cost.
+
+Completed same-binary decal preparation comparison (8169c98e, exact executable above): matching first-use gameplay pipeline creations fell22→0, with0 reused-key mismatches. Both sides completed identical actual full combat action receipts; their shared ordinary-exit failure remains recorded separately. The compiler work moved to loading; no compiler-speed, pixel-output or FPS claim is inferred. Actual35 pipeline IDs covered16 impact material variants, not every possible future program/layout/view. Analysis:8169-decal-ab.json.
+
+
+Environment integration: session image extraction/ACK registers before the
+loading schedule baseline, so it continues after ScenePublished withdrawal.
+Metadata preparation follows actual source publication and precedes early FX
+advance; per-view overrides then publish before Display/Fog/Water. Readonly
+binding/preparation conditions skip unchanged mutable/exclusive scheduling.
+Paused fog publication also keys its early return by the actual override-frame
+revision, preserving updates driven by the real pause/focus producer clock.
+This reuses the existing fog publication/pass and does not introduce another
+GPU pass. Runtime readiness and lifecycle verification remain pending.

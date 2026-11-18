@@ -386,10 +386,28 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .add_plugins(super::audio::AudioAssetsPlugin)
         .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin);
+    // This session owner and its render acknowledgement must survive scene
+    // publication withdrawal, so register before the loading schedule snapshot.
+    super::environment_effects::register(&mut app);
     if let HostMode::Offscreen { extent } = mode {
         super::offscreen_runtime::install(&mut app, extent)?;
     }
     let loading_schedules = super::loading_screen::Schedules::capture(&mut app);
+    app.add_systems(Update, super::environment_effects::bind_legacy_pools
+        .run_if(super::environment_effects::needs_bind_legacy_pools)
+        .before(gameplay_system(super::player::prepare_animation_frame))
+        .before(super::player::update_player)
+        .before(super::pause_fx::update_pause_screen_fx));
+    app.add_systems(PostUpdate,
+        gameplay_system(super::environment_effects::prepare)
+            .run_if(super::environment_effects::needs_prepare)
+            .after(super::usable_effects::publish)
+            .before(super::particle_view::advance_view_effects));
+    app.add_systems(PostUpdate, super::environment_effects::publish
+        .after(super::particle_view::advance_view_effects)
+        .before(super::display_scene::publish_display_frame)
+        .before(super::fog_scene::publish_fog_frame)
+        .before(super::water_scene::publish_water_frame));
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_systems(PreUpdate, super::objectives::connect)
         // Graph spawn requests from the previous effect update are

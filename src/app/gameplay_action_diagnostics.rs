@@ -11,7 +11,8 @@ pub(super) mod grenade;
 
 #[derive(Resource, Default)]
 struct Receipts { heart_uses: u64, heart: Option<EntityId>, heart_selected:Option<bool>,
-    heart_events:HashSet<(u32,crate::gameplay::sound::Emitter)>, heart_audio_start:usize }
+    heart_events:HashSet<(u32,crate::gameplay::sound::Emitter)>, heart_audio_start:usize,
+    heart_source:Option<(u32,u32,crate::gameplay::sound::Emitter,u32)> }
 /// Called only after the real Heart owner accepts its pending use request.
 pub(super) fn heart_used(world: &mut World, entity: EntityId, selected:bool) {
     if let Some(mut receipts) = world.get_resource_mut::<Receipts>() {
@@ -922,7 +923,7 @@ impl Observation {
                     self.heart_before=world.resource::<Receipts>().heart_uses;
                     let start=super::audio::observation::snapshot(world).admissions.len();
                     let mut receipts=world.resource_mut::<Receipts>();
-                    receipts.heart_audio_start=start;receipts.heart_events.clear();drop(receipts);
+                    receipts.heart_audio_start=start;receipts.heart_events.clear();receipts.heart_source=None;drop(receipts);
                     self.tap(world,20)?;self.stage(Stage::HeartUse,world)?;
                 }
             }
@@ -939,17 +940,33 @@ impl Observation {
                     if world.resource_mut::<Receipts>().heart_events.insert(event){eprintln!("ACTION_SMOKE_HEART_SELECTED_EVENT entity={id:?} event={:#010x} object={:?} source=canonical_Heart_Device_voice",event.0,event.1);}
                 }
                 let audio=super::audio::observation::snapshot(world);
-                let expected=&world.resource::<Receipts>().heart_events;
-                let positive=audio.source_samples.iter().find(|source|
-                    expected.contains(&(source.event,source.object))
-                    && source.decoded_peak>0. && (source.dry_peak>0. || source.aux_peak>0.)
-                    && audio.source_processed_ids.contains(&source.playing_id)
-                    && audio.admissions.iter().skip(world.resource::<Receipts>().heart_audio_start).any(|admission|admission.error.is_none()
-                        && admission.playing_id==source.playing_id && admission.event==source.event
-                        && admission.object==format!("{:?}",source.object)));
-                if let Some(source)=positive{
-                    eprintln!("ACTION_SMOKE_PASS check=Heart_actual_bark_selection_and_nonzero_pre_bus_samples entity={id:?} selection=true source_callback=true actual_admission=true event={:#010x} playing_id={} object={:?} selected_source={:#010x} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_gain_peak={} route_next_block_gain={:?} master_next_block_gain={:?} receipt_reason={} final_bus_or_physical_audibility_not_claimed=true",
-                        source.event,source.playing_id,source.object,source.selected_source,source.decoded_peak,source.dry_peak,source.aux_peak,source.gain_peak,source.route_next_block_gain,source.master_next_block_gain,source.reason);
+                if world.resource::<Receipts>().heart_source.is_none(){
+                    let receipts=world.resource::<Receipts>();
+                    let source=audio.source_samples.iter().find(|source|
+                        receipts.heart_events.contains(&(source.event,source.object))
+                        && audio.source_processed_ids.contains(&source.playing_id)
+                        && audio.admissions.iter().skip(receipts.heart_audio_start).any(|admission|
+                            admission.error.is_none()&&admission.playing_id==source.playing_id&&admission.event==source.event
+                            &&admission.object==format!("{:?}",source.object)));
+                    if let Some(source)=source{
+                        let key=(source.event,source.playing_id,source.object,source.selected_source);
+                        eprintln!("ACTION_SMOKE_HEART_PLAYBACK_RETAIN event={:#010x} playing_id={} object={:?} selected_source={:#010x} first_receipt_reason={} first_receipt_peak={} lifecycle_not_complete=true",key.0,key.1,key.2,key.3,source.reason,source.dry_peak);
+                        world.resource_mut::<Receipts>().heart_source=Some(key);
+                    }
+                }
+                let retained=world.resource::<Receipts>().heart_source;
+                let finished=retained.and_then(|(event,playing,object,node)|audio.source_samples.iter().find(|source|
+                    source.terminal&&source.event==event&&source.playing_id==playing&&source.object==object&&source.selected_source==node
+                    &&audio.ended_ids.contains(&playing)));
+                if let Some(source)=finished{
+                    eprintln!("ACTION_SMOKE_HEART_PLAYBACK_COMPLETE entity={id:?} event={:#010x} playing_id={} object={:?} selected_source={:#010x} frames={} terminal_reason={} decoded_peak={} lifetime_post_voice_dry_peak={} lifetime_post_voice_aux_peak={} speaker_gain_peak={} route_bus={:?} route_target_peak={:?} master_target_peak={:?} final_route_next_block_gain={:?} final_master_next_block_gain={:?} actual_End_callback=true aggregate_output_samples={} aggregate_output_peak={} individual_final_bus_contribution_not_attributed=true physical_audibility_not_claimed=true",
+                        source.event,source.playing_id,source.object,source.selected_source,source.frames,source.reason,
+                        source.decoded_peak,source.dry_peak,source.aux_peak,source.gain_peak,source.route_bus,source.route_target_peak,source.master_target_peak,
+                        source.route_next_block_gain,source.master_next_block_gain,audio.samples,audio.peak);
+                    if source.decoded_peak==0.||(source.dry_peak==0.&&source.aux_peak==0.){
+                        return Err("actual selected Heart source ended without decoded/nonzero post-voice output; complete lifecycle receipt emitted".into());
+                    }
+                    eprintln!("ACTION_SMOKE_PASS check=Heart_actual_bark_selection_and_nonzero_pre_bus_samples entity={id:?} selection=true source_callback=true actual_admission=true source_lifecycle_complete=true actual_End_callback=true final_bus_or_physical_audibility_not_claimed=true");
                     let input=input_for(45)?;send(world,input,true)?;self.held=Some(input);self.stage(Stage::WheelOpen,world)?;
                 }
             }

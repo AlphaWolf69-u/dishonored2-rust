@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 const TOP: &str = "models/effects/gameplay/powers/blink/blink_target_01.fx";
 const BOTTOM: &str = "models/effects/gameplay/powers/blink/blink_target_02.fx";
+const TRAVEL: &str = "models/effects/gameplay/powers/blink/blink_travel_01.fx";
+const CUBE: &str = "env/tonemapping/colorcube";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage { Select, AimCancel, Cancel, Rearm, AimCast, Cast, Recharge, Holster, Redraw, Done }
 
@@ -35,6 +37,12 @@ pub(super) struct Observation {
     regen_source_ready: bool,
     regen_callback: bool,
     audio_before: usize,
+    travel_owner: Option<(String, u64)>,
+    travel_environments: Vec<std::sync::Weak<crate::rendering::environment_resources::PreparedEnvironment>>,
+    travel_emitters: Vec<crate::gameplay::sound::Emitter>,
+    travel_started: bool,
+    travel_environment_seen: bool,
+    travel_source_seen: bool,
 }
 
 impl Observation {
@@ -66,7 +74,9 @@ impl Observation {
             use_input, selection_input: selection, holster_input, owners: [None, None], aiming_ready: None, ledge_reported: false, cancel_seen: false,
             blink_seen: false, mantle_seen: false, cast_start: Vec3::ZERO, mana_before: mana,
             mana_low: mana, spent: false, regen_event, regen_admitted: false,
-            regen_source_ready: false, regen_callback: false, audio_before })
+            regen_source_ready: false, regen_callback: false, audio_before,
+            travel_owner: None, travel_environments: Vec::new(), travel_emitters: Vec::new(),
+            travel_started: false, travel_environment_seen: false, travel_source_seen: false })
     }
 
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
@@ -128,6 +138,88 @@ impl Observation {
             })))
     }
 
+    /// Retain only real owner/emitter identities and weak metadata identities.
+    /// No FX request, admission, clock, image readiness or source is fabricated.
+    fn observe_travel(&mut self, world: &World) -> Result<(), String> {
+        use std::sync::{Arc, atomic::Ordering};
+        if self.travel_owner.is_none() {
+            if let Some(entry) = world.get_resource::<crate::rendering::bevy_backend::world_effects::DynamicEffects>()
+                .and_then(|effects| effects.0.iter().find(|entry| entry.effect == TRAVEL)) {
+                let definition = entry.sources.effects.get(TRAVEL)
+                    .ok_or("actual Blink travel owner has no acquired definition")?
+                    .as_ref().map_err(Clone::clone)?;
+                for group in definition.groups.iter().filter(|group| group.asset.enabled) {
+                    for source in &group.environments {
+                        if !group.asset.environments[source.index].enabled
+                            || !source.environment.values.contains_key(CUBE) { continue; }
+                        if self.travel_environments.len() == crate::rendering::environment_effect_runtime::ENVIRONMENT_CAPACITY {
+                            return Err("Blink travel metadata exceeds the actual64 environment family slots".into());
+                        }
+                        self.travel_environments.push(Arc::downgrade(&source.environment));
+                    }
+                }
+                if self.travel_environments.is_empty() {
+                    return Err("actual Blink travel definition has no enabled colour-cube environment".into());
+                }
+                self.travel_owner = Some((entry.owner.clone(), entry.revision));
+                eprintln!("ACTION_SMOKE_BLINK_TRAVEL_OWNER owner={} revision={} effect={} environment_identities={}",
+                    entry.owner, entry.revision, entry.effect, self.travel_environments.len());
+            }
+        }
+        let Some((owner, revision)) = &self.travel_owner else { return Ok(()) };
+        let Some(simulation) = world.get_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() else { return Ok(()) };
+        let started = simulation.observe_fx_owner(owner);
+        self.travel_started |= !started.handles.is_empty() && started.pending_starts == 0 && started.environments > 0;
+        if !self.travel_source_seen {
+            for emitter in simulation.observe_fx_owner_audio(owner)? {
+                if self.travel_emitters.contains(&emitter) { continue; }
+                //19a7e0/19fcc0:512 real sound-family slots; one actual cast.
+                if self.travel_emitters.len() == 512 {
+                    return Err("Blink travel observation exceeds actual512 sound-family identities".into());
+                }
+                self.travel_emitters.push(emitter);
+            }
+        }
+        if !self.travel_started || self.travel_environment_seen { return Ok(()) }
+        let Some(effects) = world.get_resource::<app::environment_effects::EnvironmentEffects>() else { return Ok(()) };
+        let Some(display) = world.get_resource::<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>()
+            .and_then(|frame| frame.0.as_ref()).and_then(|frame| frame.overrides.as_ref()) else { return Ok(()) };
+        for source in &self.travel_environments {
+            let Some(environment) = source.upgrade() else { continue };
+            let Some(row) = effects.frame.rows().iter().find(|row| Arc::ptr_eq(&row.environment, &environment)
+                && row.weight > 0. && row.influence > 0.) else { continue };
+            if !environment.prepared.load(Ordering::Acquire) { continue; }
+            let image = effects.image(&environment, CUBE)?;
+            let weights = display.weights.to_array();
+            let Some(index) = display.images.iter().enumerate().position(|(index, candidate)|
+                candidate.id() == image.id() && weights[index] > 0.) else { continue };
+            self.travel_environment_seen = true;
+            eprintln!("ACTION_SMOKE_PASS check=blink_travel_actual_environment_display owner={owner} revision={revision} environment={} identity={:p} GPU_image_prepared=true native_environment_started=true row_weight={} row_influence={} display_image={:?} display_slot={index} display_weight={} display_publication=true pixels_verified=false",
+                environment.name, Arc::as_ptr(&environment), row.weight, row.influence, image.id(), weights[index]);
+            break;
+        }
+        Ok(())
+    }
+    fn observe_travel_audio(&mut self, audio: &app::audio::observation::Snapshot) -> Result<(), String> {
+        if self.travel_source_seen { return Ok(()) }
+        for source in &audio.source_samples {
+            if !self.travel_emitters.contains(&source.object) { continue; }
+            let object = format!("{:?}", source.object);
+            let Some(admission) = audio.admissions.iter().skip(self.audio_before).find(|admission|
+                admission.playing_id == source.playing_id && admission.event == source.event && admission.object == object) else { continue };
+            if let Some(error) = &admission.error { return Err(format!("actual Blink travel sound admission failed: {error}")); }
+            if !audio.source_processed_ids.contains(&source.playing_id) || source.frames == 0
+                || !(source.decoded_peak > 0.) || !(source.dry_peak > 0. || source.aux_peak > 0.) { continue; }
+            self.travel_source_seen = true;
+            eprintln!("ACTION_SMOKE_PASS check=blink_travel_actual_sound_nonzero owner={:?} event={:#010x} playing_id={} object={:?} selected_source={:#010x} actual_admission=true source_processed=true frames={} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_gain_peak={} route_bus={:?} route_target_peak={:?} master_target_peak={:?} reason={} final_bus_contribution_or_physical_audibility_not_claimed=true",
+                self.travel_owner, source.event, source.playing_id, source.object, source.selected_source, source.frames,
+                source.decoded_peak, source.dry_peak, source.aux_peak, source.gain_peak, source.route_bus,
+                source.route_target_peak, source.master_target_peak, source.reason);
+            break;
+        }
+        Ok(())
+    }
+
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         let p = player(world)?;
         self.cancel_seen |= p.machine.is_active(StateId::CANCEL_ACTION);
@@ -137,10 +229,25 @@ impl Observation {
             self.spent |= p.mana() < self.mana_before;
             self.mana_low = self.mana_low.min(p.mana());
         }
+        if matches!(self.stage, Stage::Cast | Stage::Recharge) {
+            self.observe_travel(world)?;
+            let audio = app::audio::observation::snapshot(world);
+            self.observe_travel_audio(&audio)?;
+            if let Some(event) = self.regen_event {
+                for admission in audio.admissions.iter().skip(self.audio_before).filter(|admission| admission.event == event) {
+                    if let Some(error) = &admission.error { return Err(format!("actual mana regeneration event failed: {error}")); }
+                    self.regen_admitted = true;
+                }
+                for callback in audio.callbacks.iter().filter(|callback| callback.declaration == event) {
+                    self.regen_source_ready |= callback.kind == "SourceReady";
+                    self.regen_callback = true;
+                }
+            }
+        }
         if let Some(input) = self.release.take() { send(world, input, false)?; return Ok(false); }
         if self.since.elapsed() > Duration::from_secs(90) {
             let mut snapshot = String::new(); player(world)?.write_combat_diagnostics(&mut snapshot);
-            return Err(format!("Blink actual-input timeout stage={:?} cancel74={} blink12={} spent={} snapshot={snapshot}", self.stage, self.cancel_seen, self.blink_seen, self.spent));
+            return Err(format!("Blink actual-input timeout stage={:?} cancel74={} blink12={} spent={} travel_owner={:?} travel_started={} environment_display={} sound_nonzero={} emitters={:?} snapshot={snapshot}", self.stage, self.cancel_seen, self.blink_seen, self.spent, self.travel_owner, self.travel_started, self.travel_environment_seen, self.travel_source_seen, self.travel_emitters));
         }
         let stage = self.stage;
         match stage {
@@ -181,18 +288,8 @@ impl Observation {
                 self.stage(Stage::Recharge, world)?;
             }
             Stage::Recharge => {
-                let audio = app::audio::observation::snapshot(world);
-                if let Some(event) = self.regen_event {
-                    for admission in audio.admissions.iter().skip(self.audio_before).filter(|admission| admission.event == event) {
-                        if let Some(error) = &admission.error { return Err(format!("actual mana regeneration event failed: {error}")); }
-                        self.regen_admitted = true;
-                    }
-                    for callback in audio.callbacks.iter().filter(|callback| callback.declaration == event) {
-                        self.regen_source_ready |= callback.kind == "SourceReady";
-                        self.regen_callback = true;
-                    }
-                }
-                if player(world)?.mana() > self.mana_low && (self.regen_event.is_none() || self.regen_admitted) {
+                if player(world)?.mana() > self.mana_low && (self.regen_event.is_none() || self.regen_admitted)
+                    && self.travel_environment_seen && self.travel_source_seen {
                     eprintln!("ACTION_SMOKE_PASS check=blink_mana_regenerates current={} low={} actual_regen_event={:?} admitted={} source_ready_callback={} any_callback={} audible_line_not_claimed=true", player(world)?.mana(), self.mana_low, self.regen_event, self.regen_admitted, self.regen_source_ready, self.regen_callback);
                     send(world, self.holster_input, true)?;
                     self.held = Some(self.holster_input);
@@ -216,6 +313,9 @@ impl Observation {
                 self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
+                if !self.travel_environment_seen || !self.travel_source_seen {
+                    return Err("Blink cannot complete without actual environment display and nonzero sound source receipts".into());
+                }
                 eprintln!("ACTION_SMOKE_PASS check=blink_input_sequence_complete GPU_record_receipt_required_separately=ACTION_SMOKE_FSDISTO_RENDER pixels_verified=false exit=ordinary_ExitDrain");
                 return Ok(true);
             }

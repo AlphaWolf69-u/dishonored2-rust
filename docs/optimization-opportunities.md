@@ -2646,3 +2646,18 @@ readback diagnostics, head/particle/water clients, exact submission generations,
 borrowing and shutdown. No CPU-time gain is assigned without scoped measurement.
 It is deferred from the current readiness repair to avoid changing both its
 storage lifetime and completion semantics before actual water behavior passes.
+
+
+## Existing environment consumer scratch (2026-11-18)
+
+DisplayScene, CameraScene and LensScene still collect their active ordinary
+area references into a new Vec on each publication, then reuse it across their
+parameter loops. The new FX override Frame does not add another such collection:
+it reuses64 activation-order entries and16 rows, resolves numeric/image values
+on the stack, and clones a row Arc only on identity change. The preparation and
+legacy-pool binding systems have readonly run conditions so unchanged frames
+avoid exclusive/mutable owner scheduling. Existing area scratch elimination is
+not bundled into the new family: it needs scoped allocator/caller measurements
+and a same-build comparison against the existing area traversal. The exact
+removable allocation count is up to three per published view; no CPU time or
+byte-saving claim is made without actual active-area capacities/call counts.

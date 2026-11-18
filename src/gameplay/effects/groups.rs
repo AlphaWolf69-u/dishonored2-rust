@@ -50,6 +50,7 @@ pub fn update_environment_chain(
             Ok(true)
         } else {
             retire(current, effect)?;
+            effects[usize::from(current)] = None;
             Ok(false)
         }
     })

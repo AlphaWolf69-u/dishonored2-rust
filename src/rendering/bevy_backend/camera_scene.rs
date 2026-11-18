@@ -79,6 +79,18 @@ impl FxSimulation {
     /// Read the last completed canonical FX parameter publication; never
     /// advances an effect or samples its random stream.
     pub(crate) fn observe_screen_quads(&self)->crate::gameplay::effects::screen_quad::Frame{self.world_particles.screen_quad_frame()}
+    pub(crate) fn environment_pool(&self)->crate::rendering::environment_effect_runtime::SharedEnvironmentPool{self.world_particles.environment_pool()}
+    pub(crate) fn visit_environment_orders(&self,mask:u8,visit:impl FnMut(u64))->Result<(),String>{self.world_particles.visit_environment_orders(mask,visit)}
+    pub(crate) fn flush_environment_retirements(&self,view:u64,slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<std::sync::Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.world_particles.flush_environment_retirements(view,slots)
+    }
+    pub(crate) fn publish_environment(&mut self,order:u64,view:u64,mask:u8,slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<std::sync::Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.world_particles.publish_environment(order,view,mask,slots)
+    }
+    pub(crate) fn publish_environments(&mut self,view:u64,mask:u8,
+        slots:&mut crate::rendering::environment_overrides::EnvironmentOverrides<std::sync::Arc<crate::rendering::environment_resources::PreparedEnvironment>>)->Result<(),String>{
+        self.world_particles.publish_environments(view,mask,slots)
+    }
     pub(crate) fn apply_fov(&self,base:f32)->f32{self.world_particles.apply_fov(base)}
     pub(crate) fn observe_rumble(&self) -> Option<(u32,[f32;4])> { self.world_particles.rumble_frame() }
     pub(crate) fn observe_screen_distortion(&self) -> crate::gameplay::effects::screen_distortion::Frame {

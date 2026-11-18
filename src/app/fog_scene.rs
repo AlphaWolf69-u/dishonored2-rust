@@ -1,6 +1,6 @@
 //! Level-owned atmosphere inputs and resident images, loaded from archives.
-use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{archive, resident_images::prepare_image};
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use crate::rendering::{
     environment::AreaEnvironment,
     environment_parameters::{EnvironmentParameters, EnvironmentTracks, EnvironmentValue},
@@ -33,7 +33,6 @@ pub(super) fn canvas_camera_view(
         focus_distance,
     }
 }
-
 
 #[derive(Resource)]
 pub(super) struct FogScene {
@@ -100,8 +99,10 @@ impl FogScene {
             .definition(b"PostFX_Sun_Sprite")?
             .ok_or("missing PostFX_Sun_Sprite program definition")?
             .render_state();
-        let ray_program = programs.definition(b"PostFX_GodRays_Scattering")?
-            .ok_or("missing PostFX_GodRays_Scattering definition")?.render_state();
+        let ray_program = programs
+            .definition(b"PostFX_GodRays_Scattering")?
+            .ok_or("missing PostFX_GodRays_Scattering definition")?
+            .render_state();
         let area_states = crate::rendering::bevy_backend::fog::AreaFogStates {
             interval: programs
                 .definition(b"atm/distanceFog/renderMinMax")?
@@ -124,10 +125,14 @@ impl FogScene {
             "env/atm/sky/maskingfactor".into(),
             EnvironmentValue::Float(Vec4::from_array(masking)),
         );
-        let world_lookup = world.parameter("atm/worlddistancefog/colorlut")
-            .and_then(|_|match prepared.values.get("atm/worlddistancefog/colorlut") {
-                Some(EnvironmentValue::Image(image))=>Some(image.clone()),_=>None,
-            });
+        let world_lookup = world
+            .parameter("atm/worlddistancefog/colorlut")
+            .and_then(
+                |_| match prepared.values.get("atm/worlddistancefog/colorlut") {
+                    Some(EnvironmentValue::Image(image)) => Some(image.clone()),
+                    _ => None,
+                },
+            );
         let world = prepared;
         let defaults = EnvironmentParameters::defaults(catalog, &world)?;
         let areas = areas
@@ -144,10 +149,11 @@ impl FogScene {
                 let EnvironmentValue::Image(name) = value else {
                     continue;
                 };
-                prepare_image(catalog,name,images,&resident,&mut aliases)?;
+                prepare_image(catalog, name, images, &resident, &mut aliases)?;
             }
         }
-        let EnvironmentValue::Image(default_shadow) = &defaults.values["ocean/projectedshadowheightmap"]
+        let EnvironmentValue::Image(default_shadow) =
+            &defaults.values["ocean/projectedshadowheightmap"]
         else {
             return Err("projected fog shadow default is not an image".into());
         };
@@ -155,11 +161,12 @@ impl FogScene {
             .get(default_shadow)
             .ok_or("unprepared projected fog shadow default")?
             .clone();
-        let fallback=super::texture_streaming::load_resident_2d(catalog,"_default",images,&resident)?;
-        aliases.insert("_default".into(),fallback);
-        let registered_curve=match defaults.values.get("atm/worlddistancefog/colorlut") {
-            Some(EnvironmentValue::Image(image))=>Some(image.clone()),
-            _=>return Err("fog curve registered default is not an image".into()),
+        let fallback =
+            super::texture_streaming::load_resident_2d(catalog, "_default", images, &resident)?;
+        aliases.insert("_default".into(), fallback);
+        let registered_curve = match defaults.values.get("atm/worlddistancefog/colorlut") {
+            Some(EnvironmentValue::Image(image)) => Some(image.clone()),
+            _ => return Err("fog curve registered default is not an image".into()),
         };
         Ok(Self {
             shadow_options,
@@ -172,9 +179,13 @@ impl FogScene {
             world,
             areas,
             tracks: EnvironmentTracks::new(&defaults),
-            lookup:crate::rendering::environment_tracks::FogLookupTrack::new(registered_curve,None,0.),
+            lookup: crate::rendering::environment_tracks::FogLookupTrack::new(
+                registered_curve,
+                None,
+                0.,
+            ),
             world_lookup,
-            lookup_initialized:false,
+            lookup_initialized: false,
             sun,
             images: aliases,
             resident,
@@ -191,7 +202,9 @@ impl FogScene {
     ) -> Result<std::sync::Arc<PreparedEnvironmentProfile<Handle<Image>>>, String> {
         let resident = &self.resident;
         let aliases = &mut self.images;
-        self.profiles.load(catalog,name,|_,source| prepare_image(catalog,source,images,resident,aliases))
+        self.profiles.load(catalog, name, |_, source| {
+            prepare_image(catalog, source, images, resident, aliases)
+        })
     }
 
     pub(super) fn update(
@@ -202,6 +215,17 @@ impl FogScene {
         delta: f32,
         far_clip: f32,
     ) -> Result<FogSettings, String> {
+        self.update_with_environment_frame(areas, world_duration, position, delta, far_clip, None)
+    }
+    pub(super) fn update_with_environment_frame(
+        &mut self,
+        areas: &[AreaEnvironment],
+        world_duration: f32,
+        position: [f32; 3],
+        delta: f32,
+        far_clip: f32,
+        environment: Option<&crate::rendering::environment_frame::Frame>,
+    ) -> Result<FogSettings, String> {
         if areas.len() != self.areas.len() {
             return Err("fog area environments changed without reloading level inputs".into());
         }
@@ -211,21 +235,33 @@ impl FogScene {
             .filter(|(_, area)| area.contains(position))
             .map(|(index, area)| (index, &self.areas[index], area.blend_duration))
             .collect::<Vec<_>>();
-        let mut selection=self.world_lookup.clone().map(|image|
-            (crate::rendering::environment::EnvironmentSource::World,Some(image)));
-        let mut duration=world_duration;
-        for (index,area,blend_duration) in &active {
-            if let Some(EnvironmentValue::Image(image))=area.values.get("atm/worlddistancefog/colorlut") {
-                selection=Some((crate::rendering::environment::EnvironmentSource::Area(*index),Some(image.clone())));
-                duration=*blend_duration;
+        let mut selection = self.world_lookup.clone().map(|image| {
+            (
+                crate::rendering::environment::EnvironmentSource::World,
+                Some(image),
+            )
+        });
+        let mut duration = world_duration;
+        for (index, area, blend_duration) in &active {
+            if let Some(EnvironmentValue::Image(image)) =
+                area.values.get("atm/worlddistancefog/colorlut")
+            {
+                selection = Some((
+                    crate::rendering::environment::EnvironmentSource::Area(*index),
+                    Some(image.clone()),
+                ));
+                duration = *blend_duration;
             }
         }
-        self.lookup.update(selection,duration,delta,self.lookup_initialized);
-        self.lookup_initialized=true;
-        let frame = self
-            .tracks
+        self.lookup
+            .update(selection, duration, delta, self.lookup_initialized);
+        self.lookup_initialized = true;
+        self.tracks
             .update(&self.world, world_duration, &active, delta)?;
-        FogSettings::resolve(frame, self.sun, far_clip)
+        if let Some(environment) = environment {
+            environment.apply_parameters(self.tracks.current_mut());
+        }
+        FogSettings::resolve(self.tracks.current(), self.sun, far_clip)
     }
 
     pub(super) fn image(&self, source: &str) -> Result<Handle<Image>, String> {
@@ -234,9 +270,10 @@ impl FogScene {
             .cloned()
             .ok_or_else(|| format!("fog image was not prepared: {source}"))
     }
-    pub(super) fn lookup_frame(&self)->Result<(Handle<Image>,f32),String> {
-        let target=self.lookup.target().as_deref().unwrap_or("_default");
-        self.image(target).map(|image|(image,self.lookup.weight()))
+    pub(super) fn lookup_frame(&self) -> Result<(Handle<Image>, f32), String> {
+        let target = self.lookup.target().as_deref().unwrap_or("_default");
+        self.image(target)
+            .map(|image| (image, self.lookup.weight()))
     }
 
     pub(super) fn shadow_frame(
@@ -311,10 +348,7 @@ impl WorldWind {
                 crate::entities::wind::world_wind(document, |name| {
                     catalog
                         .read(name)
-                        .map(|bytes| {
-                            bytes
-                                .map(crate::entities::owned_declaration_text)
-                        })
+                        .map(|bytes| bytes.map(crate::entities::owned_declaration_text))
                         .map_err(|error| error.to_string())
                 })
             })
@@ -378,6 +412,7 @@ impl FogMotion {
 }
 
 pub(super) fn publish_fog_frame(
+    environment: Res<super::environment_effects::EnvironmentEffects>,
     scene: Res<super::SceneData>,
     mut object_sources: super::fog_objects::FogObjectSources,
     view_settings: Res<super::ViewSettings>,
@@ -394,9 +429,12 @@ pub(super) fn publish_fog_frame(
     mut ray_sources: ResMut<crate::rendering::bevy_backend::sun_rays::SunRaySources>,
     mut last_error: Local<Option<String>>,
     mut normal_extent: Local<super::fog_objects::NormalTagExtent>,
+    mut published_environment: Local<u64>,
 ) {
     use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
-    if scene.is_added() { *normal_extent = Default::default(); }
+    if scene.is_added() {
+        *normal_extent = Default::default();
+    }
     let Some(fog) = fog.as_mut() else {
         output.0 = None;
         ray_sources.0 = None;
@@ -407,18 +445,35 @@ pub(super) fn publish_fog_frame(
     let mut settings_changed = false;
     if generation != motion.settings_generation {
         match crate::platform::game_settings::read_fog_render_settings() {
-            Ok((_, settings)) => { settings_changed = settings != motion.settings; motion.settings = settings; motion.settings_generation = generation; }
-            Err(error) => { output.0 = None; ray_sources.0 = None; error!("Fog settings unavailable: {error}"); return; }
+            Ok((_, settings)) => {
+                settings_changed = settings != motion.settings;
+                motion.settings = settings;
+                motion.settings_generation = generation;
+            }
+            Err(error) => {
+                output.0 = None;
+                ray_sources.0 = None;
+                error!("Fog settings unavailable: {error}");
+                return;
+            }
         }
     }
     let advanced = clock.advanced();
     // Loading can hold the simulation at time zero before any view exists.
-    if !advanced && !settings_changed && output.0.is_some() { return; }
+    if !advanced && !settings_changed && output.0.is_some()
+        && *published_environment == environment.revision {
+        return;
+    }
+    *published_environment = environment.revision;
     output.0 = None;
     material.object_frame = None;
     let result = (|| -> Result<FogFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
-        let delta = if advanced { clock.delta(3).ok_or("fog gameplay clock unavailable")? } else { 0. };
+        let delta = if advanced {
+            clock.delta(3).ok_or("fog gameplay clock unavailable")?
+        } else {
+            0.
+        };
         let (camera, transform, projection, camera_view) =
             cameras.single().map_err(|error| error.to_string())?;
         let full = camera_view
@@ -440,12 +495,13 @@ pub(super) fn publish_fog_frame(
             .previous_position
             .replace(position)
             .ok_or("fog camera history awaits its second observation")?;
-        let settings = fog.update(
+        let settings = fog.update_with_environment_frame(
             &scene.area_environments,
             scene.environment_blend_duration,
             position.to_array(),
             delta,
             projection.far,
+            Some(&environment.frame),
         )?;
         let matrix = projection.rows();
         let clip_rows = crate::tome::render_query_base_rows(
@@ -483,7 +539,14 @@ pub(super) fn publish_fog_frame(
             .revision
             .checked_add(1)
             .ok_or("fog frame revision overflow")?;
-        let (curve,curve_weight)=fog.lookup_frame()?;
+        let (curve, curve_weight) = fog.lookup_frame()?;
+        let overrides = environment
+            .frame
+            .image_overrides("atm/worlddistancefog/colorlut", |env, _| {
+                environment.image(env, "atm/worlddistancefog/colorlut")
+            })?;
+        let curve_overrides = crate::rendering::bevy_backend::fog::FogLookupOverrideFrame::from_environment(
+            overrides, &fog.image("_default")?);
         let frame = FogFrame {
             shadow: fog.shadow_frame(&settings.shadow)?,
             areas: fog.volume_frames(
@@ -506,7 +569,7 @@ pub(super) fn publish_fog_frame(
             curve_weight,
             // Scripted/external environment-curve controllers are a separate
             // producer; ordinary camera-area tracks do not synthesize overlays.
-            curve_overrides:None,
+            curve_overrides,
             noise: fog.image(&settings.noise_map)?,
             settings: motion.settings,
             rays: settings.rays,

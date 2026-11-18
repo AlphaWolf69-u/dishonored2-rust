@@ -24,10 +24,16 @@ impl<T> Default for EnvironmentOverrides<T> {
     }
 }
 impl<T> EnvironmentOverrides<T> {
+    ///Actual zero-weight retirement visits must empty slots before view/image
+    ///ownership can be withdrawn; replacing the array is not that ACK.
+    pub fn is_empty(&self) -> bool {
+        self.slots.iter().all(|slot| slot.environment.is_none())
+    }
     /// Reserve the first empty slot. Duplicate environments keep separate
     /// slots. An absent environment leaves its returned slot reusable.
-    /// None means exhaustion; the original caller reports a fatal capacity
-    /// failure, which an integrating owner must surface rather than ignore.
+    ///890150 reports exhaustion then returns NULL (89018e);21a190 preserves
+    ///its owner and retries on a later eligible callback. None is not a fatal
+    ///failure or an acknowledgement of successful registration.
     pub fn register(&mut self, environment: Option<T>) -> Option<usize> {
         let index = self
             .slots

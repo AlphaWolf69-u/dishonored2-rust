@@ -593,6 +593,7 @@ fn acquire(world: &mut World) {
             .or_else(|| super::runtime_materials::equipment_admission::startup_error(world))
             .or_else(|| super::power_wheel::startup_error(world))
             .or_else(|| super::projected_decals::pipelines_error(world))
+            .or_else(|| super::environment_effects::startup_error(world))
             .or_else(|| super::animation_effects::startup_error(world))
             .or_else(|| super::ai_world::creation::startup_error(world).map(str::to_owned))
             .or_else(|| super::fx_lights::error(world).map(str::to_owned))
@@ -633,6 +634,7 @@ fn acquire(world: &mut World) {
             && !super::animation_effects::startup_pending(world)
             && !super::power_wheel::startup_pending(world)
             && !super::projected_decals::pipelines_pending(world)
+            && !super::environment_effects::startup_pending(world)
             && !super::grenade_cooking::startup_pending(world)
             && !super::water_impacts::startup_pending(world)
             && !grenade_pending
@@ -852,6 +854,13 @@ fn acquire(world: &mut World) {
                     let _span = super::load_timing::Span::new("remaining startup");
                     startup.run(world);
                     state.startup = Some(startup);
+                }
+                if let Err(error) = super::environment_effects::initialize(world) {
+                    lifetime.published(world, &resources);
+                    state.lifetime = lifetime;
+                    fail_initial_images(world, &format!("Environment resource initialization failed: {error}"));
+                    world.insert_resource(state);
+                    return;
                 }
                 lifetime.published(world, &resources);
                 state.lifetime = lifetime;

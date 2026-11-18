@@ -21,6 +21,7 @@ pub(super) struct Chains<'a> {
     pub(super) fovs: &'a mut super::world_fov::Systems,
     pub(super) quads: &'a mut super::world_screen_quads::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
+    pub(super) environments: &'a mut crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     pub(super) sound_systems: &'a mut SoundSystems,
     pub(super) sounds: &'a WorldSounds,
 }
@@ -52,6 +53,7 @@ pub(super) struct SubEffect {
     pub(super) fov_head: u16,
     pub(super) quad_head: u16,
     pub(super) rumble_head: u16,
+    pub(super) environment_head: u16,
     pub(super) children: Vec<SubEffect>,
 }
 
@@ -121,6 +123,7 @@ impl SubEffect {
             fov_head: u16::MAX,
             quad_head: u16::MAX,
             rumble_head: u16::MAX,
+            environment_head: u16::MAX,
             children: Vec::new(),
             owner,
             group,
@@ -173,6 +176,7 @@ impl SubEffect {
         context.lights.stop(self.light_head, now, true)?;
         context.distortion.stop(self.distortion_head, now, true)?;
         context.rumble.stop(self.rumble_head, now, true)?;
+        context.environments.stop_chain(self.environment_head, now, true)?;
         context.fovs.stop(self.fov_head,now,true)?;
         context.quads.stop(self.quad_head,now,true)?;
         context.decals.stop(self.decal_head, now);
@@ -192,6 +196,7 @@ impl SubEffect {
         context.lights.clear(&mut self.light_head)?;
         context.distortion.clear(&mut self.distortion_head)?;
         context.rumble.clear(&mut self.rumble_head)?;
+        context.environments.clear(&mut self.environment_head)?;
         context.fovs.clear(&mut self.fov_head)?;
         context.quads.clear(&mut self.quad_head)?;
         context.decals.clear(&mut self.decal_head, |_| {})?;
@@ -259,6 +264,7 @@ impl SubEffect {
                     &mut self.fov_head,
                     &mut self.quad_head,
                     &mut self.rumble_head,
+                    &mut self.environment_head,
                     &mut self.gameplay_events,
                     &mut self.children,
                     context,

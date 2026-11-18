@@ -83,11 +83,26 @@ impl CameraScene {
         world_duration: f32,
         delta: f32,
     ) -> Result<CameraEffectsFrame, String> {
-        self.update_with_player_fx(areas, screen_fx, position, world_duration, delta, None)
+        self.update_internal(areas, screen_fx, position, world_duration, delta, None)
     }
-    pub(super) fn update_with_player_fx(
-        &mut self, areas: &[AreaEnvironment], screen_fx: f32, position: [f32; 3],
-        world_duration: f32, delta: f32, player_fx: Option<&crate::gameplay::player::combat_fx::Runtime>,
+    pub(super) fn update_with_environment_frame(
+        &mut self,
+        areas: &[AreaEnvironment],
+        position: [f32; 3],
+        world_duration: f32,
+        delta: f32,
+        frame: &crate::rendering::environment_frame::Frame,
+    ) -> Result<CameraEffectsFrame, String> {
+        self.update_internal(areas, 0., position, world_duration, delta, Some(frame))
+    }
+    fn update_internal(
+        &mut self,
+        areas: &[AreaEnvironment],
+        screen_fx: f32,
+        position: [f32; 3],
+        world_duration: f32,
+        delta: f32,
+        frame: Option<&crate::rendering::environment_frame::Frame>,
     ) -> Result<CameraEffectsFrame, String> {
         let generation = crate::platform::console::shared().generation();
         if generation != self.controls_generation {
@@ -127,12 +142,21 @@ impl CameraScene {
                 )
                 .0
                 .x;
-            //81fe00 registers the player's real environment override. The
-            //pause UI is subsequently registered and remains the final slot.
-            if let Some(effect) = player_fx { effect.apply(i, &mut values[i]); }
-            // 88e220's override stage: base + (v - base)·w.
-            if let Some(v) = self.screen_fx.as_ref().and_then(|s| s.values[i]).filter(|_| screen_fx > 0.) {
-                values[i] += (v.x - values[i]) * screen_fx.clamp(0., 1.);
+            if let Some(frame) = frame {
+                values[i] = frame.vector(PARAMETER_NAMES[i], [values[i]; 4])[0];
+            } else if let Some(value) = self
+                .screen_fx
+                .as_ref()
+                .and_then(|screen| screen.values[i])
+                .filter(|_| screen_fx > 0.)
+            {
+                values[i] = f32::from_bits(
+                    crate::rendering::environment_parameter_overrides::blend_environments(
+                        crate::rendering::environment_parameter_overrides::ParameterKind::Float,
+                        [values[i].to_bits(); 4],
+                        std::iter::once((value.to_array().map(f32::to_bits), screen_fx, 1.)),
+                    )[0],
+                );
             }
         }
         self.initialized = true;

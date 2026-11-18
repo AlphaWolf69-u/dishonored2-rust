@@ -16,6 +16,8 @@ pub mod camera_alpha_composite;
 pub mod camera_view;
 #[cfg(feature = "game")]
 pub mod camera_scene;
+#[cfg(feature = "game")]
+pub mod environment_images;
 
 /// Mirror absence as well as changes for map-owned render publications.
 #[cfg(feature = "game")]

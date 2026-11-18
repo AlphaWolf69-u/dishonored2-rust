@@ -103,11 +103,14 @@ impl<E: Clone, V: Clone + PartialEq> EnvironmentEffectBinding<E, V> {
         }
         if self.slot.is_none() {
             self.owner = Some(view.clone());
-            self.slot = Some(
-                slots
-                    .register(Some(self.environment.clone()))
-                    .ok_or_else(|| "all environment override slots are taken".to_owned())?,
-            );
+            //890150: diagnostic166830 returns;89018e XOR EAX,EAX returns
+            //NULL on full16.21a1c9 skips weights and retries registration on
+            //the next eligible view callback while preserving the owner.
+            self.slot = slots.register(Some(self.environment.clone()));
+            if self.slot.is_none() {
+                eprintln!("all environment override slots are taken");
+                return Ok(());
+            }
         }
         if self.owner.as_ref() == Some(&view) {
             slots.set_weights(self.slot, blend, 1.);

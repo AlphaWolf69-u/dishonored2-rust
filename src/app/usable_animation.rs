@@ -476,7 +476,7 @@ pub(super) fn advance(
         let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
         let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
-        let playing = slot.node.as_ref().and_then(AnimBasicNode::current_clip).is_some_and(|(_, _, playing)| playing);
+        let playing = slot.node.as_ref().is_some_and(AnimBasicNode::input_playing);
         if !scene_active && !visible && !playing && slot.command.is_none() && slot.asset.is_some() {
             slot.asset = None;
             slot.node = None;

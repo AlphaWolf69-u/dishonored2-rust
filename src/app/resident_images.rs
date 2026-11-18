@@ -65,6 +65,9 @@ struct LayeredRegistration {
 
 #[derive(Default)]
 struct Registry {
+    // The same image owner also owns display's Texture3D colour tables.
+    // Ordinary 2D and layered consumers never alias this dimensional class.
+    volumes: HashMap<String, Handle<Image>>,
     resident: HashMap<String, Arc<ResidentImage>>,
     inline: HashMap<String, Arc<ResidentImage>>,
     layered: HashMap<String, LayeredRegistration>,
@@ -116,6 +119,29 @@ impl Default for ResidentImages {
     }
 }
 impl ResidentImages {
+    pub(super) fn colour_cube(&self, catalog:&archive::Catalog, name:&str,
+        images:&mut dyn AssetWrite<Image>)->Result<Handle<Image>,String>{
+        if name.eq_ignore_ascii_case("_defaultColorCube") {
+            let mut registry=self.registry.lock().map_err(|_|"resident image registry poisoned")?;
+            return Ok(registry.default_colour_cube.get_or_insert_with(||images.add(crate::rendering::bevy_backend::colour_cube::identity_image())).clone());
+        }
+        let key=crate::material::compiled_image_stem(catalog,name).ok_or_else(||format!("unresolved display colour cube {name}"))?;
+        let mut registry=self.registry.lock().map_err(|_|"resident image registry poisoned")?;
+        registry.requests+=1;
+        let share=!self.separate && !catalog.image_has_overlay(&key);
+        if share {if let Some(image)=registry.volumes.get(&key){return Ok(image.clone());}}
+        let bytes=catalog.read(&key).map_err(|error|error.to_string())?.ok_or_else(||format!("missing colour cube {key}"))?;
+        let volume=crate::texture::compressed_inline_volume_owned(bytes)?;
+        if (volume.info.width,volume.info.height,volume.depth,volume.info.mip_count)!=(32,32,32,1){return Err(format!("display colour cube requires32^3 with one mip: {key}"));}
+        let format=match volume.info.format{crate::texture::ImageFormat::Rgba8=>bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            crate::texture::ImageFormat::Rgba8Srgb=>bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,other=>return Err(format!("unsupported colour-cube format {other:?}: {key}"))};
+        let bytes=volume.payload.len();
+        let image=images.add(Image::new(bevy::render::render_resource::Extent3d{width:32,height:32,depth_or_array_layers:32},
+            bevy::render::render_resource::TextureDimension::D3,volume.payload,format,bevy::asset::RenderAssetUsages::RENDER_WORLD));
+        registry.loads+=1;registry.bytes+=bytes;
+        if share{registry.volumes.insert(key,image.clone());}
+        Ok(image)
+    }
     ///2ec020 assigns ImageManager's first pointer to the real `_default`
     ///resource. Borrow its already prepared view; model reset never performs
     ///archive IO or substitutes a new white/checker image on the frame thread.
@@ -371,6 +397,7 @@ impl ResidentImages {
         registry.resident.retain(|path, _| persistent(path));
         registry.inline.retain(|path, _| persistent(path));
         registry.layered.retain(|path, _| persistent(path));
+        registry.volumes.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
         registry.scene_leases.retain(|_, image| image.strong_count() != 0);
         registry.editable_layered.retain(|_, generations| {
@@ -394,6 +421,8 @@ impl ResidentImages {
 
     fn discard_batch(&self, batch: &AssetBatch<Image>) {
         let mut registry = self.registry.lock().unwrap_or_else(|error| error.into_inner());
+        registry.volumes.retain(|_,image|!batch.contains(image.id()));
+        if registry.default_colour_cube.as_ref().is_some_and(|image|batch.contains(image.id())){registry.default_colour_cube=None;}
         let keep = |image: &ResidentImage| {
             if !batch.contains(image.handle.id()) { return true; }
             image.discarded.store(true, Ordering::Relaxed);
@@ -639,6 +668,7 @@ impl ResidentImages {
             .chain(registry.resident.keys().map(String::as_str))
             .chain(registry.inline.keys().map(String::as_str))
             .chain(registry.layered.keys().map(String::as_str))
+            .chain(registry.volumes.keys().map(String::as_str))
             .chain(registry.editable.keys().map(String::as_str))
             .chain(registry.editable_layered.keys().map(String::as_str))
             .chain(registry.leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
@@ -658,6 +688,7 @@ impl ResidentImages {
                 || registry.resident.contains_key(path)
                 || registry.inline.contains_key(path)
                 || registry.layered.contains_key(path)
+                || registry.volumes.contains_key(path)
                 || registry.editable.contains_key(path)
                 || registry.editable_layered.contains_key(path)
                 || registry.leases.get(path).is_some_and(|lease| lease.strong_count() != 0)

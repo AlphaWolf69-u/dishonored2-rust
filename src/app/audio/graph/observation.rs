@@ -23,10 +23,14 @@ pub(super) struct Meter {
     route_next_block_gain: Option<f32>,
     master_next_block_gain: Option<f32>,
     reported: bool,
+    lifetime: bool,
+    route_target_peak:Option<f32>,
+    master_target_peak:Option<f32>,
 }
 impl Meter {
     pub(super) fn new(node: u32,sink:Option<super::super::observation::SourceSamples>) -> Self {
         Self {
+            lifetime:sink.is_some(),
             sink,
             identity: None,
             node,
@@ -41,6 +45,8 @@ impl Meter {
             route_next_block_gain: None,
             master_next_block_gain: None,
             reported: false,
+            route_target_peak:None,
+            master_target_peak:None,
         }
     }
     pub(super) fn identify(&mut self, audio: &ScheduledAudio) {
@@ -55,14 +61,16 @@ impl Meter {
         }
     }
     pub(super) fn decoded(&mut self, samples: &[f32]) {
-        if !self.reported {
+        if !self.reported||self.lifetime {
             for sample in samples {
                 self.decoded_peak = self.decoded_peak.max(sample.abs());
             }
         }
     }
     pub(super) fn reported(&self) -> bool {
-        self.reported
+        //The offline observer follows the real source through Drop. Trace-only
+        //mode keeps its existing onset-only cost and release behavior.
+        self.reported&&!self.lifetime
     }
     pub(super) fn frame(
         &mut self,
@@ -73,7 +81,7 @@ impl Meter {
         parent_gain: f32,
         route: Option<(u32, f32, f32)>,
     ) {
-        if self.reported {
+        if self.reported&&!self.lifetime {
             return;
         }
         self.frames += 1;
@@ -90,8 +98,10 @@ impl Meter {
             self.route_bus = Some(bus);
             self.route_next_block_gain = Some(gain);
             self.master_next_block_gain = Some(master);
+            self.route_target_peak=Some(self.route_target_peak.map_or(gain,|peak|peak.max(gain)));
+            self.master_target_peak=Some(self.master_target_peak.map_or(master,|peak|peak.max(master)));
         }
-        if self.decoded_peak > 0. && (self.dry_peak > 0. || self.aux_peak > 0.) {
+        if !self.reported&&self.decoded_peak > 0. && (self.dry_peak > 0. || self.aux_peak > 0.) {
             self.report("first_nonzero");
         }
     }
@@ -103,7 +113,10 @@ impl Meter {
             self.node,self.frames,self.decoded_peak,self.dry_peak,self.aux_peak,self.speaker_gain_peak,
             self.source_gain,self.parent_gain,self.route_bus,self.route_next_block_gain,self.master_next_block_gain);
         if let Some(sink)=&self.sink {sink.lock().unwrap_or_else(|error|error.into_inner()).push(super::super::observation::SourceReceipt{
-            event,playing_id:playing,object,selected_source:self.node,decoded_peak:self.decoded_peak,
+            event,playing_id:playing,object,selected_source:self.node,frames:self.frames,
+            terminal:reason!="first_nonzero",route_bus:self.route_bus,
+            route_target_peak:self.route_target_peak,master_target_peak:self.master_target_peak,
+            decoded_peak:self.decoded_peak,
             dry_peak:self.dry_peak,aux_peak:self.aux_peak,gain_peak:self.speaker_gain_peak,
             route_next_block_gain:self.route_next_block_gain,master_next_block_gain:self.master_next_block_gain,reason,
         });}
@@ -112,10 +125,12 @@ impl Meter {
 }
 impl Drop for Meter {
     fn drop(&mut self) {
-        if !self.reported {
-            self.report(if self.frames == 0 {
+        if self.lifetime||!self.reported {
+            self.report(if self.frames==0 {
                 "source_retired_before_post_gain_sample"
-            } else {
+            }else if self.decoded_peak>0.&&(self.dry_peak>0.||self.aux_peak>0.){
+                "source_retired_after_nonzero_post_gain"
+            }else{
                 "source_retired_without_nonzero_post_gain"
             });
         }

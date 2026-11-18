@@ -151,6 +151,9 @@ impl LevelLifetime {
         // Keep physics, player and audio callback owners throughout this drain.
         self.retirement_phase = "FX requests";
         if !self.effect_requests_retired {
+            // Pause/focus share the FX manager's actual environment pool.
+            // Their producers must release it before that manager drains.
+            super::environment_effects::begin_retirement(world)?;
             super::physics_scene::fx_component::begin_retirement(world);
             super::physics_scene::fx_component::update(world)?;
             super::usable_effects::begin_retirement(world)?;
@@ -170,6 +173,8 @@ impl LevelLifetime {
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
         }
+        self.retirement_phase = "environment view and image receipts";
+        if !super::environment_effects::retire(world)? { return Ok(false); }
         if !super::script_spawner::shutdown(world)? { return Ok(false); }
         // Real FX shutdown fulfills the tickets; consume those receipts before
         // the component registry attempts Stop/Deinit or releases source IDs.
@@ -234,11 +239,14 @@ impl LevelLifetime {
         if !self.ai_worlds_retired {
             // Constructor-owned managers retain actual child generations until
             // their shared component Stop/Deinit callbacks have completed.
+            self.retirement_phase = "late runtime actor render and component receipts";
             if !super::runtime_entities::retire_ai_worlds(world)? { return Ok(false); }
+            self.retirement_phase = "AIWorld creation identity receipts";
             if !super::ai_world::creation::shutdown(world)? { return Ok(false); }
             // FX have stopped; retire shader-preparation metadata before its
             // real source and receiver geometry owners leave the level.
             super::projected_decals::retire_pipeline_inputs(world);
+            self.retirement_phase = "shared runtime model render receipts";
             if !super::world_models::shutdown(world)? { return Ok(false); }
             super::entity_functions::begin_retirement(world);
             self.ai_worlds_retired = true;

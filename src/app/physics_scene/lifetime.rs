@@ -97,6 +97,28 @@ pub(super) fn finish_gameplay_drain(
     let Some(mut state) = scene.gameplay_component_drain.take() else {
         return Ok(true);
     };
+    if state.components_drained {
+        //bevy_backend: a completed7ea870 cursor can remain solely to own
+        //reference-actor receipts until their entity destructors detach them.
+        //That is not unfinished common release work. In particular,7eac80's
+        //resumable scoped drain must keep the registry it already isolated;
+        //do not re-enter7ea870 while resuming that actual owner.
+        let Some(registry) = scene.registry.as_ref() else {
+            scene.gameplay_component_drain = Some(state);
+            return Err("component drain registry borrowed".into());
+        };
+        if registry.scoped_release.is_some() || registry.scoped_release_running
+            || !common_drain_work(registry) {
+            if !state.retained_actors.is_empty() {
+                scene.gameplay_component_drain = Some(state);
+            }
+            return Ok(true);
+        }
+        //A real new Stop/release/update request, with no scoped owner, starts
+        //the next common pass. Reuse this receipt allocation; no queue or ACK
+        //is invented and the ordinary poll below still observes every owner.
+        state.components_drained = false;
+    }
     let result = poll_requested_components(world, scene, live, events, &mut state);
     state.components_drained = matches!(result, Ok(true));
     if matches!(result, Ok(true)) {
@@ -183,6 +205,13 @@ pub(in crate::app) fn prepare_entity_removal(
         .as_ref()
         .is_some_and(|driver| driver.is_idle())
     {
+        return Ok(false);
+    }
+    let registry = scene.registry.as_ref().ok_or("entity removal registry borrowed")?;
+    //8ab380 cannot snapshot/admit another ordinary batch while an earlier
+    //actual entity destructor owns7eac80's isolated queues. Its producer must
+    //resume that retained cursor first; yielding never transfers ownership.
+    if registry.scoped_release.is_some() || registry.scoped_release_running {
         return Ok(false);
     }
     if !finish_gameplay_drain(world, scene, live, events)? {

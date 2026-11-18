@@ -28,6 +28,7 @@ const PAUSE_STATE: &str = "ui/gamelogic/state_pause.gamelogicstatepause";
 const TIME_SCALE: f32 = 1.0;
 
 pub(super) struct ScreenFx {
+    prepared: Arc<crate::rendering::environment_resources::PreparedEnvironment>,
     _source: Arc<crate::assets::fx::definition::Definition>,
     timings: EffectTimingRanges,
     effect: Arc<EnvironmentEffectDefinition>,
@@ -40,39 +41,73 @@ pub(super) struct ScreenFx {
 pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     let state = read_edit(&mut read, "gamelogicstatepause", PAUSE_STATE)?;
-    let name = atom(&state, "m_screenFX").ok_or("the pause state has no m_screenFX")?.to_string();
-    let source = crate::assets::fx::declaration::acquire(catalog, &name,
-        crate::assets::fx::definition::Consumer::Common, None)?;
-    if !source.groups_present { return Err(format!("{name} has no m_groups")); }
+    let name = atom(&state, "m_screenFX")
+        .ok_or("the pause state has no m_screenFX")?
+        .to_string();
+    let source = crate::assets::fx::declaration::acquire(
+        catalog,
+        &name,
+        crate::assets::fx::definition::Consumer::Common,
+        None,
+    )?;
+    if !source.groups_present {
+        return Err(format!("{name} has no m_groups"));
+    }
     for group in &source.groups {
         let group = &group.asset;
-        if !group.enabled { continue; }
-        if let Some(env) = group.environments.iter().find(|e| e.enabled && e.environment.is_some()) {
-            return Ok(ScreenFx { timings: group.timings, effect: env.blend.clone(),
-                environment: env.environment.as_ref().unwrap().clone(), _source: source.clone() });
+        if !group.enabled {
+            continue;
+        }
+        if let Some(env) = group
+            .environments
+            .iter()
+            .find(|e| e.enabled && e.environment.is_some())
+        {
+            let prepared = crate::rendering::environment_resources::PreparedEnvironment::acquire(
+                catalog,
+                env.environment.as_ref().unwrap(),
+                0,
+            )?;
+            return Ok(ScreenFx {
+                prepared,
+                timings: group.timings,
+                effect: env.blend.clone(),
+                environment: env.environment.as_ref().unwrap().clone(),
+                _source: source.clone(),
+            });
         }
     }
     Err(format!("{name} has no environment override"))
 }
 
 /// An environment decl's render parameters, following its inherit chain.
-pub(super) fn environment_parameters(catalog: &Catalog, name: &str) -> Result<crate::assets::entities::EnvironmentRenderParameters, String> {
-    let read = |name: &str| -> Result<Option<String>, String> {
-        let resource = format!("generated/decls/env/{name}.decl");
-        catalog.read(&resource).map(|bytes| bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "pause-env")))
-            .map_err(|error| error.to_string())
-    };
-    let source = read(name)?.ok_or_else(|| format!("environment {name} is not installed"))?;
-    crate::assets::entities::environment_render_parameters_with_inheritance(name, &source, read)
+pub(super) fn environment_parameters(
+    catalog: &Catalog,
+    name: &str,
+) -> Result<crate::assets::entities::EnvironmentRenderParameters, String> {
+    Ok(
+        crate::rendering::environment_resources::PreparedEnvironment::acquire(catalog, name, 0)?
+            .parameters
+            .clone(),
+    )
 }
 
 struct Active {
     effect: EnvironmentBlendEffect,
     time: f32,
+    binding: crate::rendering::environment_effects::EnvironmentEffectBinding<
+        Arc<crate::rendering::environment_resources::PreparedEnvironment>,
+        u64,
+    >,
+    lease: crate::rendering::environment_effect_runtime::EnvironmentPoolLease,
 }
 
 #[derive(Resource)]
 pub(super) struct PauseScreenFx {
+    pool: Option<crate::rendering::environment_effect_runtime::SharedEnvironmentPool>,
+    retirements: Vec<(u64, Option<usize>)>,
+    closed: bool,
+    error: Option<String>,
     fx: Option<ScreenFx>,
     active: Option<Active>,
     /// `EnableUIPostFX` (true) / `DisableUIPostFX` (false) from the movie.
@@ -86,7 +121,18 @@ pub(super) struct PauseScreenFx {
 
 impl PauseScreenFx {
     pub(super) fn new(fx: Option<ScreenFx>) -> Self {
-        Self { fx, active: None, requested: None, was_paused: false, seed: 0, weight: 0. }
+        Self {
+            fx,
+            active: None,
+            requested: None,
+            was_paused: false,
+            seed: 0,
+            weight: 0.,
+            pool: None,
+            retirements: Vec::new(),
+            closed: false,
+            error: None,
+        }
     }
 
     pub(super) fn environment(&self) -> Option<&str> {
@@ -94,56 +140,188 @@ impl PauseScreenFx {
     }
 
     /// `FUN_1407912e0` / `FUN_140791240`: a new FX instance at time zero.
-    fn start(&mut self) {
-        let Some(fx) = &self.fx else { return };
-        let offsets = sample_offsets(&fx.timings, 0., &mut self.seed);
-        match EnvironmentBlendEffect::new(fx.effect.clone(), offsets, 1, &mut self.seed) {
-            Ok(effect) => self.active = Some(Active { effect, time: 0. }),
-            Err(e) => warn!("Pause screen FX: {e}"),
+    fn start(&mut self) -> Result<bool, String> {
+        let Some(fx) = &self.fx else { return Ok(true) };
+        if !fx
+            .prepared
+            .prepared
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(false);
         }
+        let Some(pool) = self.pool.clone() else {
+            return Ok(false);
+        };
+        self.remove()?;
+        let fx = self.fx.as_ref().unwrap();
+        let offsets = sample_offsets(&fx.timings, 0., &mut self.seed);
+        let Some(lease) = pool.acquire_external()? else {
+            return Ok(true);
+        };
+        let effect = EnvironmentBlendEffect::new(fx.effect.clone(), offsets, 1, &mut self.seed)?;
+        self.active = Some(Active {
+            effect,
+            time: 0.,
+            lease,
+            binding: crate::rendering::environment_effects::EnvironmentEffectBinding::new(
+                fx.prepared.clone(),
+            ),
+        });
         self.weight = 0.;
+        Ok(true)
     }
 
     /// `FUN_140791370`: the FX is stopped and removed from its entity.
-    fn remove(&mut self) {
-        self.active = None;
+    fn remove(&mut self) -> Result<(), String> {
+        if let Some(active) = &mut self.active {
+            active.lease.release()?;
+        }
+        if let Some(active) = self.active.take() {
+            if let Some((view, slot)) = active.binding.into_registration() {
+                self.retirements.push((view, Some(slot)));
+            }
+        }
         self.weight = 0.;
+        Ok(())
+    }
+    pub(super) fn set_environment_pool(
+        &mut self,
+        pool: crate::rendering::environment_effect_runtime::SharedEnvironmentPool,
+    ) -> Result<(), String> {
+        if self.pool.as_ref().is_some_and(|old| old.is_same(&pool)) {
+            return Ok(());
+        }
+        if self.active.is_some() {
+            return Err("pause environment pool changed while active".into());
+        }
+        self.pool = Some(pool);
+        Ok(())
+    }
+    pub(super) fn initialize_environment_pool(
+        &mut self,
+        pool: crate::rendering::environment_effect_runtime::SharedEnvironmentPool,
+    ) -> Result<(), String> {
+        if self.active.is_some() || !self.retirements.is_empty() {
+            return Err("previous pause environment generation is still owned".into());
+        }
+        self.set_environment_pool(pool)?;
+        self.closed = false;
+        self.error = None;
+        Ok(())
+    }
+    pub(super) fn environment_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub(super) fn visit_environment_sources(
+        &self,
+        mut visit: impl FnMut(&Arc<crate::rendering::environment_resources::PreparedEnvironment>),
+    ) {
+        if let Some(fx) = &self.fx {
+            visit(&fx.prepared);
+        }
+    }
+    pub(super) fn visit_environment_orders(&self, mask: u8, mut visit: impl FnMut(u64)) {
+        if let Some(active) = &self.active {
+            if active.effect.view_mask & mask != 0 {
+                visit(active.effect.registration_order);
+            }
+        }
+    }
+    pub(super) fn publish_environment(
+        &mut self,
+        order: u64,
+        view: u64,
+        mask: u8,
+        slots: &mut crate::rendering::environment_overrides::EnvironmentOverrides<
+            Arc<crate::rendering::environment_resources::PreparedEnvironment>,
+        >,
+    ) -> Result<(), String> {
+        let active = self
+            .active
+            .as_mut()
+            .filter(|active| active.effect.registration_order == order)
+            .ok_or("pause environment registration disappeared")?;
+        active.binding.publish(
+            view,
+            slots,
+            active.effect.view_mask,
+            mask,
+            active.effect.blend,
+        )
+    }
+    pub(super) fn flush_environment_retirements(
+        &mut self,
+        view: u64,
+        slots: &mut crate::rendering::environment_overrides::EnvironmentOverrides<
+            Arc<crate::rendering::environment_resources::PreparedEnvironment>,
+        >,
+    ) {
+        for (owner, slot) in self.retirements.drain(..) {
+            if owner == view {
+                slots.retire(slot);
+            }
+        }
+    }
+    pub(super) fn clear_environments(&mut self) -> Result<(), String> {
+        self.closed = true;
+        self.requested = None;
+        self.remove()
     }
 }
 
-pub(super) fn update_pause_screen_fx(mut fx: ResMut<PauseScreenFx>, paused: Res<GamePaused>, clock: Res<ClockRuntime>, wheel:Option<Res<super::power_wheel::State>>) {
+pub(super) fn update_pause_screen_fx(
+    mut fx: ResMut<PauseScreenFx>,
+    paused: Res<GamePaused>,
+    clock: Res<ClockRuntime>,
+    wheel: Option<Res<super::power_wheel::State>>,
+) {
     let fx = &mut *fx;
-    let entered = paused.0 && !fx.was_paused;
-    fx.was_paused = paused.0;
-    //State8 uses this same authored pause.fx while m_pause remains false.
-    //Its explicit791240/791370 request owns activation/removal.
-    if !paused.0 && !wheel.as_ref().is_some_and(|wheel|wheel.screen_fx_active()) {
-        fx.remove();
-        fx.requested = None;
+    if fx.closed {
         return;
     }
-    if entered {
-        fx.start();
-        return;
-    }
-    match fx.requested.take() {
-        // `EnableUIPostFX` starts it on the next FX update, which then does
-        // not advance it.
-        Some(true) => {
-            fx.start();
-            return;
+    let result = (|| -> Result<(), String> {
+        let entered = paused.0 && !fx.was_paused;
+        fx.was_paused = paused.0;
+        if !paused.0 && !wheel.as_ref().is_some_and(|wheel| wheel.screen_fx_active()) {
+            fx.remove()?;
+            fx.requested = None;
+            return Ok(());
         }
-        Some(false) => fx.remove(),
-        None => {}
-    }
-    let Some(delta) = clock.clock().ok().and_then(|c| c.delta(0)) else { return };
-    let seed = &mut fx.seed;
-    if let Some(active) = &mut fx.active {
-        active.time += delta * TIME_SCALE;
-        match active.effect.update(active.time, 1, seed) {
-            Ok(()) => fx.weight = active.effect.blend,
-            Err(e) => warn!("Pause screen FX: {e}"),
+        if entered {
+            if !fx.start()? {
+                fx.requested = Some(true);
+            }
+            return Ok(());
         }
+        match fx.requested.take() {
+            Some(true) => {
+                if !fx.start()? {
+                    fx.requested = Some(true);
+                }
+                return Ok(());
+            }
+            Some(false) => fx.remove()?,
+            None => (),
+        }
+        if fx
+            .active
+            .as_ref()
+            .is_some_and(|active| !active.effect.active)
+        {
+            fx.remove()?;
+        }
+        let Some(delta) = clock.clock().ok().and_then(|clock| clock.delta(0)) else {
+            return Ok(());
+        };
+        if let Some(active) = &mut fx.active {
+            active.time += delta * TIME_SCALE;
+            active.effect.update(active.time, 1, &mut fx.seed)?;
+            fx.weight = active.effect.blend;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        fx.error = Some(error);
     }
 }
 
@@ -160,14 +338,17 @@ mod tests {
         assert_eq!(fx.environment, "env/fx/ui_pause");
         let environment = environment_parameters(&catalog, &fx.environment).unwrap();
         assert!(environment.parameter("env/tonemapping/colorcube").is_some());
-        assert!(environment.parameter("env/dof/settings/bokeh_size").is_some());
-        let mut state = PauseScreenFx::new(Some(fx));
-        state.start();
-        let seed = &mut state.seed;
-        let active = state.active.as_mut().unwrap();
+        assert!(environment
+            .parameter("env/dof/settings/bokeh_size")
+            .is_some());
+        // This installed-data timing oracle exercises the actual kernel. Host
+        // image readiness/native-pool admission require the full scene owner.
+        let mut seed = 0;
+        let offsets = sample_offsets(&fx.timings, 0., &mut seed);
+        let mut effect = EnvironmentBlendEffect::new(fx.effect.clone(), offsets, 1, &mut seed).unwrap();
         let mut blend = |t: f32| {
-            active.effect.update(t, 1, seed).unwrap();
-            active.effect.blend
+            effect.update(t, 1, &mut seed).unwrap();
+            effect.blend
         };
         // A 0.1 s fade-in, then the looping duration holds it.
         let (start, middle, held) = (blend(0.0), blend(0.05), blend(0.5));

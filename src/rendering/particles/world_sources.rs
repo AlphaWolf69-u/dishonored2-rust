@@ -9,7 +9,13 @@ use crate::{
 use hashbrown::HashMap;
 use std::sync::Arc;
 
+pub struct WorldEnvironment {
+    pub index: usize,
+    pub environment: Arc<crate::rendering::environment_resources::PreparedEnvironment>,
+}
+
 pub struct WorldEffectGroup {
+    pub environments: Vec<WorldEnvironment>,
     pub asset: Arc<EffectGroupAsset>,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
@@ -90,7 +96,7 @@ pub struct WorldEffectDefinition {
 impl WorldEffectDefinition {
     pub(crate) fn gameplay_ready(&self) -> bool {
         self.groups.iter().all(|group| {
-            group
+            group.environments.iter().all(|entry| entry.environment.prepared.load(std::sync::atomic::Ordering::Acquire)) && group
                 .entity_defs
                 .iter()
                 .all(|entry| entry.prepared.load(std::sync::atomic::Ordering::Acquire))
@@ -143,6 +149,10 @@ fn fx_event_effects(
 }
 
 impl WorldFxSources {
+    pub(crate) fn environments(&self) -> impl Iterator<Item=&Arc<crate::rendering::environment_resources::PreparedEnvironment>> {
+        self.effects.values().filter_map(|effect| effect.as_ref().ok()).flat_map(|effect| &effect.groups)
+            .flat_map(|group| &group.environments).map(|entry| &entry.environment)
+    }
     pub(crate) fn gameplay_ready(&self) -> bool {
         self.effects
             .values()
@@ -675,7 +685,18 @@ impl WorldFxSources {
                         .iter().map(|asset| asset.as_ref().map_err(Clone::clone)
                             .and_then(|asset| crate::assets::fx::screen_distortion::Prepared::new(asset.clone(), catalog).map(Arc::new)))
                         .collect();
+                    let environment_marker = catalog.fx_resources.get().map(|owner| owner.lock()
+                        .map_err(|_| "FX declaration registry is poisoned")
+                        .map(|owner| owner.producer_scope(&format!("generated/decls/fx/{name}.decl").replace('\\', "/").to_ascii_lowercase())))
+                        .transpose()?.unwrap_or(0);
+                    let environments = asset.environments.iter().enumerate()
+                        .filter(|(_, environment)| environment.enabled && environment.environment.is_some())
+                        .map(|(index, environment)| Ok(WorldEnvironment { index,
+                            environment: crate::rendering::environment_resources::PreparedEnvironment::acquire(catalog,
+                                environment.environment.as_deref().expect("filtered resource"), environment_marker)? }))
+                        .collect::<Result<Vec<_>, String>>()?;
                     groups.push(WorldEffectGroup {
+                        environments,
                         asset,
                         particles,
                         sounds,

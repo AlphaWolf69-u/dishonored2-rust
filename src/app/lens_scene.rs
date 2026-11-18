@@ -147,6 +147,26 @@ impl LensScene {
         camera_axis: f32,
         white_level: f32,
     ) -> Result<LensFrame, String> {
+        self.update_with_environment_frame(
+            areas,
+            position,
+            world_duration,
+            delta,
+            camera_axis,
+            white_level,
+            None,
+        )
+    }
+    pub(super) fn update_with_environment_frame(
+        &mut self,
+        areas: &[AreaEnvironment],
+        position: [f32; 3],
+        world_duration: f32,
+        delta: f32,
+        camera_axis: f32,
+        white_level: f32,
+        environment: Option<&super::environment_effects::EnvironmentEffects>,
+    ) -> Result<LensFrame, String> {
         if areas.len() != self.areas.len()
             || areas
                 .iter()
@@ -202,6 +222,15 @@ impl LensScene {
                 |start, target, t| blend_unsigned(*start, *target, t),
             );
         }
+        if let Some(environment) = environment {
+            for (index, value) in values.iter_mut().enumerate() {
+                *value =
+                    Vec4::from_array(environment.frame.vector(FLOATS[index], value.to_array()));
+            }
+            for (index, value) in integers.iter_mut().enumerate() {
+                *value = environment.frame.unsigned(INTEGERS[index], *value);
+            }
+        }
         let mut selected_profile = self
             .world
             .profile
@@ -226,6 +255,17 @@ impl LensScene {
             None,
             &[],
         )?;
+        let mut dirt = self.dirt_track.value().clone();
+        if let Some(environment) = environment {
+            for row in environment.frame.rows() {
+                if row.environment.values.contains_key("env/bloom/lensdirt") {
+                    dirt.apply_overlay(
+                        environment.image(&row.environment, "env/bloom/lensdirt")?,
+                        row.weight,
+                    );
+                }
+            }
+        }
         self.initialized = true;
         Ok(LensFrame {
             black: self.black.clone(),
@@ -236,13 +276,13 @@ impl LensScene {
             veil_strength: values[1].x,
             dirt_strength: values[2].x,
             // 3586a0 overrides this view uniform from resolved image identity.
-            use_default_dirt: self.dirt_track.value().from.id() == self.dirt_track.value().to.id(),
+            use_default_dirt: dirt.from.id() == dirt.to.id(),
             threshold: [values[3].x, values[4].x],
             ghost: [values[5].x, values[6].x, values[7].x, values[8].x],
             streak: [values[9].x, values[10].x, values[11].x, values[12].x],
             blur_radius: integers[0],
             ghost_samples: integers[1],
-            dirt: self.dirt_track.value().clone(),
+            dirt,
             profile: self.profile.value(),
         })
     }

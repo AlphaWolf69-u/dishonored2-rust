@@ -138,7 +138,9 @@ impl DisplayScene {
             tracks: std::array::from_fn(|i| EnvironmentTrack::new(defaults[i])),
             cube_track: EnvironmentTrack::new((default_cube, 1.)),
             lens: super::lens_scene::LensScene::load(catalog, world, areas, images, registry)?,
-            camera_effects: super::camera_effects::CameraScene::load(catalog, world, areas, screen_fx)?,
+            camera_effects: super::camera_effects::CameraScene::load(
+                catalog, world, areas, screen_fx,
+            )?,
         })
     }
     /// `screen_fx` is the pause screen FX's weight in the override slots.
@@ -150,6 +152,35 @@ impl DisplayScene {
         world_duration: f32,
         delta: f32,
         camera_axis: f32,
+    ) -> Result<
+        (
+            ToneMappingParameters,
+            Handle<Image>,
+            f32,
+            ExposureParameters,
+            crate::rendering::bevy_backend::lens_scene::LensFrame,
+        ),
+        String,
+    > {
+        self.update_with_environment_frame(
+            areas,
+            screen_fx,
+            position,
+            world_duration,
+            delta,
+            camera_axis,
+            None,
+        )
+    }
+    fn update_with_environment_frame(
+        &mut self,
+        areas: &[AreaEnvironment],
+        screen_fx: f32,
+        position: [f32; 3],
+        world_duration: f32,
+        delta: f32,
+        camera_axis: f32,
+        environment: Option<&super::environment_effects::EnvironmentEffects>,
     ) -> Result<
         (
             ToneMappingParameters,
@@ -182,10 +213,23 @@ impl DisplayScene {
                 self.tracks[i].advance_with(source, target, duration, delta, |start, target, t| {
                     (*target - *start) * t + *start
                 });
-            // 88e220's override stage, after the area/world blend: a slot's
-            // value v with weight w (influence 1) gives base + (v - base)·w.
-            if let Some(v) = self.screen_fx.as_ref().and_then(|s| s.values[i]).filter(|_| screen_fx > 0.) {
-                values[i] += (v - values[i]) * screen_fx.clamp(0., 1.);
+            if let Some(environment) = environment {
+                values[i] =
+                    Vec4::from_array(environment.frame.vector(NAMES[i], values[i].to_array()));
+            } else if let Some(value) = self
+                .screen_fx
+                .as_ref()
+                .and_then(|screen| screen.values[i])
+                .filter(|_| screen_fx > 0.)
+            {
+                values[i] = Vec4::from_array(
+                    crate::rendering::environment_parameter_overrides::blend_environments(
+                        crate::rendering::environment_parameter_overrides::ParameterKind::Float,
+                        values[i].to_array().map(f32::to_bits),
+                        std::iter::once((value.to_array().map(f32::to_bits), screen_fx, 1.)),
+                    )
+                    .map(f32::from_bits),
+                );
             }
         }
         let (mut source, mut target, mut duration) =
@@ -241,13 +285,14 @@ impl DisplayScene {
             use_curve: !post_process.skip_tone_mapping && !cvars.2,
             use_colour_cube: true,
         };
-        let lens = self.lens.update(
+        let lens = self.lens.update_with_environment_frame(
             areas,
             position,
             world_duration,
             delta,
             camera_axis,
             hdr_white_level,
+            environment,
         )?;
         Ok((parameters, cube, fraction, exposure, lens))
     }
@@ -255,11 +300,16 @@ impl DisplayScene {
     /// The override colour cubes (`m_overrideColorCubes`, 88e220): the pause
     /// screen FX's cube with its weight (weights summing above one are
     /// scaled down to one; a single slot never is).
-    fn cube_overrides(&self, screen_fx: f32) -> Option<crate::rendering::bevy_backend::display_scene::DisplayCubeOverrides> {
+    fn cube_overrides(
+        &self,
+        screen_fx: f32,
+    ) -> Option<crate::rendering::bevy_backend::display_scene::DisplayCubeOverrides> {
         let cube = self.screen_fx.as_ref()?.cube.clone()?;
-        (screen_fx > 0.).then(|| crate::rendering::bevy_backend::display_scene::DisplayCubeOverrides {
-            images: [cube.clone(), cube.clone(), cube.clone(), cube],
-            weights: Vec4::new(screen_fx.min(1.), 0., 0., 0.),
+        (screen_fx > 0.).then(|| {
+            crate::rendering::bevy_backend::display_scene::DisplayCubeOverrides {
+                images: [cube.clone(), cube.clone(), cube.clone(), cube],
+                weights: Vec4::new(screen_fx.min(1.), 0., 0., 0.),
+            }
         })
     }
 }
@@ -271,56 +321,11 @@ fn load_cube(
     resident: &mut HashMap<String, Handle<Image>>,
     registry: &super::resident_images::ResidentImages,
 ) -> Result<Handle<Image>, String> {
-    let key = if name.eq_ignore_ascii_case("_defaultColorCube") {
-        "_defaultColorCube".into()
-    } else {
-        crate::material::compiled_image_stem(catalog, name)
-            .ok_or_else(|| format!("unresolved display colour cube {name}"))?
-    };
-    if let Some(image) = resident.get(&key) {
+    if let Some(image) = resident.get(name) {
         return Ok(image.clone());
     }
-    let handle = if key == "_defaultColorCube" {
-        let shared = registry.default_colour_cube();
-        let reused = shared.is_some();
-        let handle = shared.unwrap_or_else(|| {
-            images.add(crate::rendering::bevy_backend::colour_cube::identity_image())
-        });
-        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
-            eprintln!("DISPLAY_DEFAULT_COLOUR_CUBE shared={reused} handle={:?}", handle.id());
-        }
-        handle
-    } else {
-        let bytes = catalog
-            .read(&key)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("missing colour cube {key}"))?;
-        let volume = crate::texture::compressed_inline_volume_owned(bytes)?;
-        if (
-            volume.info.width,
-            volume.info.height,
-            volume.depth,
-            volume.info.mip_count,
-        ) != (32, 32, 32, 1)
-        {
-            return Err(format!(
-                "display colour cube requires32^3 with one mip: {key}"
-            ));
-        }
-        let format = match volume.info.format {
-            crate::texture::ImageFormat::Rgba8 => TextureFormat::Rgba8Unorm,
-            crate::texture::ImageFormat::Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
-            other => return Err(format!("unsupported colour-cube format {other:?}: {key}")),
-        };
-        images.add(Image::new(
-            Extent3d { width: 32, height: 32, depth_or_array_layers: 32 },
-            TextureDimension::D3,
-            volume.payload,
-            format,
-            RenderAssetUsages::RENDER_WORLD,
-        ))
-    };
-    resident.insert(key, handle.clone());
+    let handle = registry.colour_cube(catalog, name, images)?;
+    resident.insert(name.to_owned(), handle.clone());
     Ok(handle)
 }
 
@@ -329,7 +334,8 @@ pub(super) fn publish_display_frame(
     mut display: Option<ResMut<DisplayScene>>,
     clock: Res<crate::gameplay::game_clock_runtime::ClockRuntime>,
     screen_fx: Option<Res<super::pause_fx::PauseScreenFx>>,
-    player: Option<Res<super::player::PlayerState>>,
+    effects: Res<super::environment_effects::EnvironmentEffects>,
+    mut published_environment: Local<u64>,
     mut published_screen_fx: Local<f32>,
     mut cameras: Query<(Entity, &GlobalTransform, &mut ExposureParameters), With<Camera3d>>,
     mut output: ResMut<DisplaySceneFrame>,
@@ -342,15 +348,24 @@ pub(super) fn publish_display_frame(
     // A paused frame keeps the environment (its tracks do not advance), but
     // the override slots still apply: the pause screen FX blends in.
     let weight = screen_fx.as_ref().map_or(0., |f| f.weight);
-    if !clock.advanced() && weight == *published_screen_fx && output.0.is_some() {
+    if !clock.advanced()
+        && weight == *published_screen_fx
+        && output.0.is_some()
+        && *published_environment == effects.revision
+    {
         return;
     }
     *published_screen_fx = weight;
+    *published_environment = effects.revision;
     let advanced = clock.advanced();
     output.0 = None;
     let result = (|| -> Result<DisplayFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
-        let delta = if advanced { clock.delta(3).ok_or("display gameplay clock unavailable")? } else { 0. };
+        let delta = if advanced {
+            clock.delta(3).ok_or("display gameplay clock unavailable")?
+        } else {
+            0.
+        };
         let (camera, transform, mut exposure) = match cameras.single_mut() {
             Ok(camera) => camera,
             Err(_) => return Err("display requires one exposure-controlled gameplay camera".into()),
@@ -364,23 +379,41 @@ pub(super) fn publish_display_frame(
                 super::view_to_game(pose.rotation * Vec3::Y),
             ],
         );
-        let (parameters, cube, cube_weight, frame_exposure, lens) = display.update(
-            &scene.area_environments,
-            weight,
-            super::view_to_game(transform.translation()),
-            scene.environment_blend_duration,
-            delta,
-            view[0][2] + view[2][1],
-        )?;
+        let (parameters, cube, cube_weight, frame_exposure, lens) = display
+            .update_with_environment_frame(
+                &scene.area_environments,
+                weight,
+                super::view_to_game(transform.translation()),
+                scene.environment_blend_duration,
+                delta,
+                view[0][2] + view[2][1],
+                Some(&effects),
+            )?;
         *exposure = frame_exposure;
-        let camera_effects = display.camera_effects.update_with_player_fx(
+        let camera_effects = display.camera_effects.update_with_environment_frame(
             &scene.area_environments,
-            weight,
             super::view_to_game(transform.translation()),
             scene.environment_blend_duration,
             delta,
-            player.as_ref().and_then(|state| state.player.as_ref()).and_then(|player| player.combat_fx.as_ref()),
+            &effects.frame,
         )?;
+        let override_cubes = effects
+            .frame
+            .image_overrides("env/tonemapping/colorcube", |env, _| {
+                effects.image(env, "env/tonemapping/colorcube")
+            })?;
+        let overrides = if override_cubes.weights.iter().all(|weight| *weight == 0.) {
+            None
+        } else {
+            Some(
+                crate::rendering::bevy_backend::display_scene::DisplayCubeOverrides {
+                    images: override_cubes
+                        .images
+                        .map(|image| image.unwrap_or_else(|| cube.clone())),
+                    weights: Vec4::from_array(override_cubes.weights),
+                },
+            )
+        };
         Ok(DisplayFrame {
             camera,
             camera_effects: Some(camera_effects),
@@ -389,7 +422,7 @@ pub(super) fn publish_display_frame(
             cube,
             weight: cube_weight,
             custom_ev: frame_exposure.camera.z,
-            overrides: display.cube_overrides(weight),
+            overrides,
             lens: Some(lens),
         })
     })();

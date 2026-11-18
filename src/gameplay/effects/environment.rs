@@ -37,6 +37,9 @@ impl Default for EnvironmentEffectDefinition {
 }
 
 pub struct EnvironmentBlendEffect {
+    /// bevy_backend identity for21d720 global append chronology across the
+    /// shared family, focus and pause producers; never reused during a session.
+    pub registration_order: u64,
     definition: Arc<EnvironmentEffectDefinition>,
     pub timing: EffectTimings,
     pub parameter: EffectParameterSample,
@@ -58,7 +61,9 @@ impl EnvironmentBlendEffect {
         let parameter = EffectParameterSample::new(definition.scale, seed);
         let initial_main = definition.duration.sample(0., parameter.curve_mix)? * parameter.scale;
         let last_main = definition.fade_in.sample(0., parameter.curve_mix)? * initial_main;
+        static NEXT_ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Ok(Self {
+            registration_order: NEXT_ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             definition,
             timing,
             parameter,
