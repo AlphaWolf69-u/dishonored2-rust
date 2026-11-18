@@ -27,6 +27,16 @@ pub struct EffectDefinition {
     pub(crate) _source: Arc<crate::assets::fx::definition::Definition>,
     pub groups: Vec<GroupDefinition>,
 }
+/// darkVisionDepthWaveColor (POSTPROC 140327270) and darkVisionDepthWaveDisto
+/// (DISTORTION 1403222f0): their authored states and registered parameters.
+pub struct DarkVisionWaveSources {
+    pub colour_state: crate::render_state::RenderState,
+    pub distortion_state: crate::render_state::RenderState,
+    /// (noise power, colour noise power, colour power, 0), edge thickness
+    /// (x, y), tint, edge tint.
+    pub parameters: [[f32; 4]; 4],
+}
+
 pub struct ScreenEffectSources {
     pub swimming: crate::gameplay::player::swimming::SwimmingSettings,
     pub underwater: EffectDefinition,
@@ -35,6 +45,8 @@ pub struct ScreenEffectSources {
     pub resolve_state: crate::render_state::RenderState,
     pub fullscreen_state: crate::render_state::RenderState,
     pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
+    /// The Dark Vision sonar wave programs (rendering/darkVisionDepthWave*).
+    pub dark_vision: DarkVisionWaveSources,
 }
 impl ScreenEffectSources {
     /// Every particle material of the player screen effects.
@@ -106,6 +118,28 @@ impl ScreenEffectSources {
                     .map(|d| d.render_state())
                     .ok_or_else(|| "weighted transparency resolve definition absent".into())
             });
+        let empty = crate::render_program::SerializedParameterBlock { flags: 0, parameters: Vec::new() };
+        let mut parameter = |name: &str| -> Result<[f32; 4], String> {
+            Ok(library.registered_float_vector(catalog, &empty, name.as_bytes(), None)
+                .map_err(|e| format!("{name}: {e}"))?.map(f32::from_bits))
+        };
+        let thickness = parameter("rendering/darkVisionDepthWaveEdgeThickness")?;
+        let parameters = [
+            [parameter("rendering/darkVisionDepthWaveNoisePower")?[0],
+                parameter("rendering/darkVisionDepthWaveColorNoisePower")?[0],
+                parameter("rendering/darkVisionDepthWaveColorPower")?[0], 0.],
+            [thickness[0], thickness[1], 0., 0.],
+            parameter("rendering/darkVisionDepthWaveTint")?,
+            parameter("rendering/darkVisionDepthWaveEdgeTint")?,
+        ];
+        let mut state = |name: &str| -> Result<crate::render_state::RenderState, String> {
+            Ok(library.definition(name.as_bytes())?.ok_or_else(|| format!("{name} definition absent"))?.render_state())
+        };
+        let dark_vision = DarkVisionWaveSources {
+            colour_state: state("rendering/darkVisionDepthWaveColor")?,
+            distortion_state: state("rendering/darkVisionDepthWaveDisto")?,
+            parameters,
+        };
         Ok(Self {
             swimming: crate::gameplay::player::swimming::SwimmingSettings::read(
                 &declarations.controller,
@@ -117,6 +151,7 @@ impl ScreenEffectSources {
             fullscreen_state: library.definition(b"PostFX_uberMotionVector")?
                 .ok_or("fullscreen distortion program definition absent")?.render_state(),
             transparency_resolve_state,
+            dark_vision,
         })
     }
 }

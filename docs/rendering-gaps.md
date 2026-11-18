@@ -15,29 +15,88 @@ materials (potion and oil liquids), not by FX particles.
 | `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | connected: see "Character hair" below |
 | `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected: see "Character eyes" below |
 | `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | connected; the rune's loot payload is player-systems work, see "Outsider shrine" below |
-| Dark Vision | every Dark Vision layer material, the reveal wave | mapped; blocked until the power publishes its per-frame record, see "Dark Vision" below |
+| Dark Vision | every Dark Vision layer material, the sonar and reveal waves | decoded; port in progress, see "Dark Vision" below |
 
-## Dark Vision (`ARK_RENDERPASS_DARKVISION`, 14031f960), mapped, blocked by the power
+## Dark Vision (power id 9), decoded, port in progress
 
-The pass runs only while `renderer+0x4238 | r_debugDarkVisionLayers`
-(cvar object 0x1432f54f0, value +0x28 = DAT_1432f5518) is nonzero. The same
-mask admits surfaces in 14033b350: a material's `rendering/darkVisionLayer`
-(material+0x4a bits 7:5) whose bit is set adds a row under key layer+8
-with the program 3119a0(material, 0x14/0x15); world surfaces route through
-`material_lists::WorldDrawList::DarkVision`. The pass draws layers 1 and 3
-(device and pickup tints) into its own target against zBuffer with
-decompressedDepth bound, redraws them over the scene, then draws layer 2
-(living) into quarter-resolution targets for the blit/blur and composite
-programs (`rendering/darkvision*`: darkVision, darkVisionBlitLiving,
-darkVisionBlurDisto, darkVisionDepthWaveColor, darkVisionDepthWaveDisto).
-Every program clips by the reveal wave: `darkVisionWaveCenter`,
-`darkVisionDepthClip`, `darkVisionRevealWaveRadius/Power`, the depth-wave
-radii, noise, edge and tints, and the per-layer opacities. Those come from
-renderer +0x423c..+0x4264, which arkCpntPowerDarkVision fills each frame
-from its declaration and the wave's progress. With the debug cvar alone the
-depth clip is zero and nothing draws, so the pass cannot be ported against
-a real input until the power's gameplay (cpntDarkVision proxies and the
-power update, see resource-parity.md) publishes that record.
+Gameplay (arkCpntDarkVision, decl `cpntDarkVision`, player's
+`darkvision_manager`; power `cpntPowerDarkVision` costs m_manaCost through
+`powers::world_effects::DarkVision::cast`, which nothing dispatches yet).
+- Declaration (constructor 14049db20): +0x6c m_duration (30, installed 24),
+  +0x78 sound played at each reveal pulse start (m_sonarPulseSfx),
+  +0x88..+0x94 m_cullingDistancePerLayer[4] (30, installed 20),
+  +0xac sonar pulse and +0xdc reveal pulse blocks: +0 initialDelay, +4
+  period, +8 propagationDuration, +0xc greater, +0x10 inner, +0x14 inner
+  greater, +0x18 lifetimeAtRadiusMax, +0x1c fadeOutDuration, +0x20
+  maximumRadius (15; not edited), +0x24 extendedMaximumRadius, +0x28
+  innerMaximumRadius, +0x2c innerExtendedMaximumRadius. Defaults 0.1, 1,
+  1.5, 2.5, 1.5, 2.5, 1, 5, 15, 25, 15, 25; installed 0, 4, 1, 1, 1, 1, 2.5,
+  0.5, -, 15, 0, 0 for both.
+- Attributes resolved at init (14049e9d0, names from 14137be60): +0x318
+  SONAR_ENABLED_WHEN_MOVING, +0x31c ELECTRIC_FIELD, +0x320
+  GREATER_DISTANCE, +0x324 THIEFS_EYES, +0x328 DARK_VISION_HEALING,
+  +0x32c MAGIC_SUPPRESSED (all ARK_ATTRIBUTE_*; "current" is the
+  attribute record +0x24, base +8).
+- Pulse (0x3c bytes; sonar at component +0x40, reveal at +0x7c). Start
+  14049fe70(greater = GREATER_DISTANCE > 0): radius limit = max or
+  extended, inner limit = inner max or inner extended, speeds = limit /
+  propagation (greater variants when greater), hold 0 of lifetime, fade 0
+  of fadeOut, active, centre = player position (+0x300). 14049f450 starts
+  one only while the player's velocity squared is <= 141ab3810 or
+  SONAR_ENABLED_WHEN_MOVING > 0. Advance 14049f3c0: radius and inner
+  radius grow by speed x dt; once either passes its limit both are
+  clamped and the hold timer runs; past the lifetime the fade timer runs;
+  past the fade it deactivates.
+- Update 14049ff50: record defaults (mask 0, radii 0, powers 1, centre
+  from DAT_1431af658, depth clips from +0x88..+0x94); sonar timer +0xf0
+  += dt, an inactive sonar restarts once the timer passes period (then
+  timer 0, centre published); an active one advances and publishes its
+  radii (+0x4244 radius, +0x4248 inner), power 1 - fade/fadeOut clamped
+  (+0x424c) and centre (+0x4254). Reveal timer +0xec likewise (+0x423c,
+  +0x4240, power +0x4250); its start clears the revealed lists and plays
+  the +0x78 sound; while active, entities of the +0x180 list inside the
+  radius get message 0x153 once. HEALING adds dt x value to health. Mask
+  = 10 (living, pulsar), | 1 with ELECTRIC_FIELD, | 4 with THIEFS_EYES.
+  Stop (1407e7c00) without a player, outside player state 0xe, when
+  MAGIC_SUPPRESSED changed, at elapsed >= duration, or a player veto.
+- Renderer record (component +0x30 owner +0x898.. -> renderer +0x4238..):
+  mask, reveal (radius, inner), sonar (radius, inner), sonar power,
+  reveal power, centre, depth clips per layer.
+Rendering.
+- Parameters (handles 1422b2xxx, name at handle-0x10):
+  darkVisionRevealWaveRadius = (max(inner, e), max(radius, that + e)) of
+  the reveal pulse; darkVisionDepthWaveColorRadius the same of the sonar;
+  darkVisionWaveCenter; darkVisionDepthWavePower = sonar power;
+  darkVisionRevealWavePower = reveal power; darkVisionDepthClip = the
+  layer's culling distance; darkVisionPass 1 while redrawing living.
+- ARK_RENDERPASS_DARKVISION 14031f960, layers 1..4 each with a model list
+  and a world list (layer L admitted by mask bit L-1): device (1) and
+  pickup (3) programs `rendering/darkvision` against zBuffer with the
+  colour and depth inputs; living (2) to quarter-resolution targets, then
+  darkVisionBlurDisto (material `rendering/powers/darkvisionBlurDisto`),
+  separable Gaussian (PostFX_Separable_Gaussian_Blur), MaskedBlit and
+  darkVisionBlitLiving; pulsar (4) last with its depth clip.
+- Mask bit 8 also draws the sonar wave outside the pass:
+  darkVisionDepthWaveDisto in ARK_RENDERPASS_DISTORTION (1403222f0) and
+  darkVisionDepthWaveColor in ARK_RENDERPASS_POSTPROC (140327270).
+- Connected (2026-11-18): `gameplay::powers::dark_vision` (settings,
+  pulses, update, record), `app::dark_vision` (the player body's
+  cpntDarkVision, power id 9 cast through DarkVision::cast with the
+  14043d490 cost, per-frame update after the power actions, pulse/stop
+  sounds, `DarkVisionFrame` published with the FX frame) and the sonar wave
+  (`screen_effects::dark_vision_wave`, dh2_dark_vision_wave.wgsl: the
+  distortion last in the vector pass, the colour into the scene before the
+  resolves, both when mask | r_debugDarkVisionLayers has bit 8).
+  bevy_backend: the depth target is not filterable, so the wave reads the
+  full-resolution texel instead of the linear-clamp fetch.
+  `DH2_DEBUG_DARK_VISION_START=1` requests the component's start at level
+  start for windowless captures. Not connected: DARK_VISION_HEALING (no
+  player health owner hook), the revealed-entity message 0x153 and the
+  stop on player state / veto (the player record has no such state yet;
+  the update treats the player as playing).
+- Not yet traced: the vision post FX (m_visionPostFx, an fx with a
+  post-process), the sound FX list, proxies (cpntDarkVisionProxy: living
+  layer for humans, clockworks, wolfhounds, bloodflies; no AI spawns yet).
 
 `particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
 Its 8 materials are the health and mana potion liquids, the institute

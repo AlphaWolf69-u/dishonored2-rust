@@ -923,6 +923,11 @@ impl Attributes {
     pub fn get(&self, tag: &str) -> f32 {
         self.0.get(tag).copied().unwrap_or(0.0)
     }
+    /// The authored base (record +8); a missing attribute reads its
+    /// current value, so current and base compare equal.
+    pub fn base(&self, tag: &str) -> f32 {
+        self.1.get(tag).map_or_else(|| self.get(tag), |attribute| attribute.base)
+    }
     /// Add or remove a modifier and update the current value; unknown tags
     /// are ignored as in the original attribute lookup.
     pub fn modifier(&mut self, tag: &str, increase: f32, percentage: f32, added: bool) -> bool {

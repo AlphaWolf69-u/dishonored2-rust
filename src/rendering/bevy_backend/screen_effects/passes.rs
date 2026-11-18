@@ -57,6 +57,7 @@ pub struct DistortionPasses {
     resolve_uniform: [Buffer; 2],
     resolve_binding: Option<([TextureViewId; 2], [BindGroup; 2])>,
     fullscreen: Option<FullscreenDistortion>,
+    pub(super) dark_vision: Option<super::dark_vision_wave::DarkVisionWave>,
 }
 pub(in crate::rendering::bevy_backend) fn pipeline(
     device: &RenderDevice,
@@ -103,6 +104,9 @@ pub(in crate::rendering::bevy_backend) fn pipeline(
     Ok(pipeline)
 }
 impl DistortionPasses {
+    pub(super) fn clamp_sampler(&self) -> &Sampler {
+        &self.clamp
+    }
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,
@@ -320,6 +324,7 @@ impl DistortionPasses {
             resolve_uniform,
             resolve_binding: None,
             fullscreen: None,
+            dark_vision: None,
         })
     }
     pub fn record_vectors(
@@ -334,6 +339,7 @@ impl DistortionPasses {
         depth: &TextureView,
         unproject: [f32; 3],
         mut quads: Option<QuadInputs<'_>>,
+        wave: Option<&super::dark_vision_wave::WaveFrame<'_>>,
     ) -> Result<(), String> {
         if draws.len() > 8 {
             return Err("screen vector stage capacity exceeded".into());
@@ -464,6 +470,18 @@ impl DistortionPasses {
                     pass.draw(0..3,0..1);
                 })?;
             }
+        }
+        // 1403222f0 draws the sonar wave after the view's UberMV program and
+        // the second-stage quads.
+        if let Some(wave) = wave {
+            if self.dark_vision.is_none() {
+                self.dark_vision = Some(super::dark_vision_wave::DarkVisionWave::new(device, &sources.dark_vision)?);
+            }
+            let wave = super::dark_vision_wave::WaveFrame { target_extent: self.vector_extent, ..*wave };
+            let (pipeline, binding) = self.dark_vision.as_mut().unwrap().distortion(device, queue, &sources.dark_vision, &wave)?;
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, binding, &[]);
+            pass.draw(0..3, 0..1);
         }
         Ok(())
     }

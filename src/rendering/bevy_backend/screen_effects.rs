@@ -1,5 +1,6 @@
 //! Authored player screen quads, after camera effects and before exposure.
 pub(super) mod passes;
+pub(super) mod dark_vision_wave;
 mod fullscreen;
 mod sources;
 mod state;
@@ -38,6 +39,7 @@ pub struct QuadDraw {
 #[derive(Clone, Copy)]
 pub(super) struct FullscreenInputs<'a> {
     pub frame: &'a crate::gameplay::effects::screen_distortion::Frame,
+    pub dark_vision: Option<crate::gameplay::powers::dark_vision::DarkVisionRecord>,
     pub matrices: &'a crate::rendering::view_history::ViewMatrixFrame,
     pub shader_time: f32,
     pub local_time: f32,
@@ -120,7 +122,9 @@ impl ScreenEffects {
         self.completed = false;
         self.fullscreen_recorded = false;
         if !fullscreen.active() { self.last_fullscreen_receipt = None; }
-        if draws.is_empty() && !fullscreen.active() && !quad_frame.iter().any(|draw| matches!(draw.asset.stage,ScreenQuadStage::MotionVectorBegin|ScreenQuadStage::MotionVectorEnd)) {
+        let wave_record = dark_vision_wave::DarkVisionWave::active(fullscreen.dark_vision);
+        if draws.is_empty() && !fullscreen.active() && wave_record.is_none()
+            && !quad_frame.iter().any(|draw| matches!(draw.asset.stage,ScreenQuadStage::MotionVectorBegin|ScreenQuadStage::MotionVectorEnd)) {
             return Ok(());
         }
         // 3222f0 tests DAT14397a8f8, registered at 14397a8d0 as
@@ -157,10 +161,29 @@ impl ScreenEffects {
             ));
         }
         let (_, passes, hdr) = self.gpu.as_mut().unwrap();
+        let sampler = passes.clamp_sampler().clone();
+        let wave = wave_record.map(|record| dark_vision_wave::WaveFrame {
+            record,
+            view_projection: fullscreen.matrices.current.view_projection,
+            local_time,
+            target_extent: extent,
+            full_height: extent[1],
+            host_units: 139.26 * camera_exposure,
+            depth,
+            sampler: &sampler,
+            adaptation,
+        });
         passes.record_vectors(
             device, queue, encoder, sources, draws, Some(fullscreen), local_time, depth, inverse_z,
             Some(passes::QuadInputs{gpu:quads,frame:quad_frame,exposure:adaptation,shader_time:fullscreen.shader_time}),
+            wave.as_ref(),
         )?;
+        // 140327270 adds the sonar wave colour to the scene before its
+        // distortion resolves.
+        if let Some(wave) = &wave {
+            passes.dark_vision.as_mut().ok_or("dark vision wave pipelines absent")?
+                .record_colour(device, queue, encoder, &sources.dark_vision, wave, colour, format)?;
+        }
         let hdr = hdr.prepare(
             device,
             queue,

@@ -7,6 +7,7 @@ pub mod windblast;
 pub mod blast;
 pub mod action;
 pub mod world_effects;
+pub mod dark_vision;
 pub mod traversal;
 pub mod far_reach;
 
