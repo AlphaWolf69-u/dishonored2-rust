@@ -35,19 +35,18 @@ impl Systems {
     }
 
     /// Shakes add only when the FX is visible in the view (+0xed & +0x154)
-    /// and a view camera exists.
+    /// and a view camera exists.22c6d0 passes FXparams+b8 to22b8b0;
+    /// the caller supplies the same contact-speed word used by rumble.
     pub(super) fn update(&mut self, head: &mut u16, age: f32, visible: bool, seed: &mut u32,
-        camera: Option<crate::gameplay::reference_frame::ReferenceFrame>, origin: [f32; 3]) -> Result<u32, String> {
+        camera: Option<crate::gameplay::reference_frame::ReferenceFrame>, origin: [f32; 3], impulse: f32) -> Result<u32, String> {
         let slots = &mut self.slots;
         let accumulator = &mut self.accumulator;
         self.links.update_chain(head, |index| {
             let shake = slots.get_mut(usize::from(index)).and_then(Option::as_mut).ok_or("FX camera shake absent")?;
             let mut scratch = ShakeAccumulator::default();
-            // approximate_: the FX instance's impulse (+0xb8) is not
-            // published; zero samples the impulse fade at its start.
             let target = if visible && camera.is_some() { &mut *accumulator } else { &mut scratch };
             let view = camera.map_or(([0.; 3], [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]), |camera| (camera.position, camera.basis));
-            shake.update(age, seed, view, origin, 0., target)?;
+            shake.update(age, seed, view, origin, impulse, target)?;
             if shake.active {
                 Ok(true)
             } else {

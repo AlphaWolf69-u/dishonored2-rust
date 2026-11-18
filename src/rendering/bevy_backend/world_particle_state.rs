@@ -300,7 +300,8 @@ fn update_chains(
     };
     let shake_count = context.shakes.update(shake_head, frame.age,
         frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed,
-        frame.particle.camera, frame.particle.owner.position)?;
+        frame.particle.camera, frame.particle.owner.position,
+        context.entity_context.map_or(0., |context| context.contact_speed))?;
     let fade_count = context.fades.update(fade_head, frame.age, &mut context.systems.seed)?;
     let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
         frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),

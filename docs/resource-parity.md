@@ -25592,3 +25592,46 @@ Same-image live confirmation before rebuilding: b6dfc160 release3EF8D139...7FB34
 Source-implemented physics thread policy acceptance (2026-11-18): sourceb222d3852774b54dc88af67dcbcd40df0854c89c, clean debug executable SHA25631D49082AD4CBF50F0B3756D267A9256794D66295BB76E6D3E8E0425856C7512. Game compilation and the independent no-game core check completed0. Actual production-input Blink, grenade cooking/detonation, ranged/Heart/wheel/exhaustion, carrying/world support, power-equipped early-recovery sword contacts, ground-bolt recovery and bottle-contact bolt sequences completed without runtime errors; actual coverage boundaries remain recorded rather than promoted to passes. Edge of the World, Dust District, Institute and paused ordinary ExitDrain completed0. These exercise the source-implemented persistent FTZ policy without a debugger or live FP mutation. Exact completed receipts and binary identity retained locally under analysis/gameplay-repair-20261116/b222-ftz-acceptance. No all-map, pixel, heard-audio, whole-FPS or normal-release acceptance is inferred; normal main release remains separately required.
 
 Concurrent main screen-fade integration: FxScreenFadeFrame derives the Bevy Resource only with the game feature, matching the existing DarkVisionFrame boundary. The shared effect record and numerical owner remain usable without Bevy; game builds retain the same Resource derive and render behavior. No timing, pool, fade composition, admission or resource-lifetime algorithm changes. Integrated compilation and ordinary shared view/FX loading checks remain separately required after importing be40f28e.
+
+
+## FX camera-shake and screen-fade owners (imported be40f28e)
+
+`source-implemented; integrated verification pending:` immutable camera-shake
+descriptors belong to `assets/fx.rs::CameraShakeAsset` and screen-fade
+descriptors to `assets/fx/screen_fade.rs` (`22a170`), acquired/released through
+the same canonical FX declaration generation. No second declaration/image
+cache is introduced. These scalar/vector effect families acquire no separate
+image/model/bank payload.
+
+`source-implemented; integrated verification pending:`
+`gameplay/effects/camera_shake.rs` owns shake initialization `22d700`,
+oscillators `22d640`, phase dispatch `22aec0` and kernels
+`22d240/22d0a0/22d3e0`, channels `22ca90/22c900/22cc20`, direction/distance/
+impulse composition `22c6d0/22c430/22afd0/22b8b0/22c190/22c500`, accumulator
+`22d9e0` and per-frame reset `22db30`. Existing `world_camera_shakes.rs`
+retains the32-slot `19a010` family inside WorldParticleState, including
+top-level/nested Start, update, ordinary/looping Stop, Clear and shutdown;
+active tails retain the same descriptor Arc. The host view publication uses
+the existing particle-view/camera owner for the `88c5e0` application.
+
+`source-implemented; integrated verification pending:`
+`gameplay/effects/screen_fade.rs` owns `22a570` initialization and
+`22a220` dispatch into `22a430/22a390/22a4d0`, then registered-order
+composition `22a6b0` and fade-object colour `167030`.
+`world_screen_fades.rs` retains the32-slot `19a6e0` family, registration
+order (`21d720` view+d8), normal/nested Start, Stop/fade tails, Clear and
+shutdown. `particle_view` publishes its numeric frame to the existing
+`loading_fade` owner; there is no parallel fade image/resource owner.
+
+Camera-shake impulse publication correction (2026-11-18): `22c6d0` passes the
+actual FXparams+b8 word into `22b8b0`'s authored impulse attenuation; zero is
+only the generic `21dc10` constructor input when no contact context exists.
+The shared world FX update already retains this word as
+`EntityEffectContext.contact_speed` (the same input used by canonical rumble).
+Thread it into `world_camera_shakes::Systems::update` instead of substituting
+zero. Existing instance/tail owner, shake pool, Start/Stop/Clear, kernel curves,
+RNG, visibility/view policy and accumulator remain intact. No new owner,
+resource residency, per-frame allocation or GPU pass is introduced. Source-only
+review; no build/test/runtime/appearance/performance verification is claimed.
+
+The imported camera-shake frame also conditionally derives Bevy Resource only with the game feature, correcting the independently observed no-game E0433. Its numerical frame and game-feature Resource behavior stay identical. This supplements the screen-fade feature boundary fixed in5c58e25f.
