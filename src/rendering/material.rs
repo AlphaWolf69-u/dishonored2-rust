@@ -250,6 +250,32 @@ pub fn is_null_material(path: &str) -> bool {
     path.eq_ignore_ascii_case("NULL")
 }
 
+/// A material declaration's text, or the definition the decl manager gives
+/// a missing one. 1402d7600 (idMaterial default definition) strips a
+/// `.material` extension and, except for `fonts/` names, fills the installed
+/// `default.material` template (1402d4710) with that name as its diffusemap.
+pub fn declaration(catalog: &crate::archive::Catalog, name: &str) -> Result<Vec<u8>, String> {
+    let path = format!("generated/decls/material/{}.decl", name.to_ascii_lowercase());
+    if let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? {
+        return Ok(bytes);
+    }
+    let stripped = name.len().checked_sub(".material".len())
+        .filter(|&at| name.is_char_boundary(at) && name[at..].eq_ignore_ascii_case(".material"))
+        .map_or(name, |at| &name[..at]);
+    let valid = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '\\' | '_');
+    if name.get(..6).is_some_and(|prefix| prefix.eq_ignore_ascii_case("fonts/")) && name.chars().all(valid) {
+        return Err(format!("implicit font material is not ported: {name}"));
+    }
+    let template = catalog.read("generated/decls/material/default.material.decl")
+        .map_err(|error| error.to_string())?
+        .ok_or("default.material declaration is not installed")?;
+    let text = String::from_utf8(template).map_err(|_| "default.material is not UTF-8".to_owned())?;
+    if !text.contains("##PLACEHOLDERNAME##") {
+        return Err("default.material has no texture placeholder".into());
+    }
+    Ok(text.replacen("##PLACEHOLDERNAME##", stripped, 1).into_bytes())
+}
+
 /// Screen gates are distant-view impostors. Their material's black diffusemap
 /// is a placeholder for a particle shader with distance fade and fx/diffuse.
 /// The viewer loads the full level, so these impostors must not be drawn over it.

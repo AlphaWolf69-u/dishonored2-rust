@@ -60,6 +60,7 @@ fn environment_chain_matches_executed_retirement_and_tick_order() {
     let mut effects = Vec::new();
     let mut seed = 0;
     let mut cases = (0, 0);
+    let mut freed = std::collections::BTreeSet::new();
     for (case, row) in include_str!("../../../tests/fixtures/effect_environment_chain.txt")
         .lines()
         .enumerate()
@@ -97,6 +98,7 @@ fn environment_chain_matches_executed_retirement_and_tick_order() {
                     e.active = w[11 + i] != 0;
                     effects.push(Some(e));
                 }
+                freed.clear();
                 assert_eq!(seed, w[89], "case {case} initial seed");
                 cases.0 += 1;
                 &w[90..]
@@ -134,6 +136,7 @@ fn environment_chain_matches_executed_retirement_and_tick_order() {
                     "case {case} links"
                 );
                 assert_eq!(retired.len(), w[13] as usize);
+                freed.extend(retired.iter().copied());
                 assert_eq!(
                     retired,
                     w[14..14 + retired.len()],
@@ -144,11 +147,16 @@ fn environment_chain_matches_executed_retirement_and_tick_order() {
             }
             _ => panic!("unknown chain command {command}"),
         };
-        let actual = effects
-            .iter()
-            .flat_map(|e| environment_words(e.as_ref().unwrap()))
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "case {case} states");
+        // The original leaves a retired slot's stale memory in place; the
+        // rewrite frees it. Freed slots must be ones the chain retired.
+        assert_eq!(expected.len(), effects.len() * 16, "case {case} state width");
+        for (slot, effect) in effects.iter().enumerate() {
+            match effect {
+                Some(effect) => assert_eq!(environment_words(effect), expected[slot * 16..slot * 16 + 16],
+                    "case {case} slot {slot} state"),
+                None => assert!(freed.contains(&(slot as u32)), "case {case} slot {slot} freed without retirement"),
+            }
+        }
     }
     assert_eq!(cases, (64, 768));
 }

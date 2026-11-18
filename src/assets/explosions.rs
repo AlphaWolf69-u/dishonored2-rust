@@ -42,8 +42,16 @@ impl Declaration {
             .lock()
             .map_err(|_| "explosion declaration registry poisoned")?
             .acquire_with_sharing(&path(name), 0, !catalog.has_overlays(), |_| {
-                let fields = entities::player::resolved_decl("explosion", name, |path| {
-                    super::declaration_texts::read_common_or_catalog(catalog, path)
+                let source = path(name);
+                let fields = entities::player::resolved_decl("explosion", name, |requested| {
+                    let text = super::declaration_texts::read_common_or_catalog(catalog, requested)?;
+                    // 0607f0->05ede0: a missing named declaration is built by its
+                    // constructor (7e3560); arkDeclExplosion keeps the generic
+                    // default definition 022c70, the empty `{ }`. A missing
+                    // inherited parent stays an error.
+                    if text.is_none() && path(requested) == source { return Ok(Some("{ }
+".to_owned())); }
+                    Ok(text)
                 })?;
                 Self::read(catalog, &fields).map(Arc::new)
             })

@@ -333,6 +333,7 @@ mod world_screen_distortion;
 mod world_screen_quads;
 mod world_camera_shakes;
 mod world_screen_fades;
+mod world_skin_decals;
 #[cfg(feature = "game")]
 mod screen_quads;
 mod world_fov;

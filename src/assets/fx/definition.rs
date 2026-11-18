@@ -61,7 +61,7 @@ fn syntax_bytes(value: &Value) -> usize {
 fn other_families(fields: &Fields) -> WorldAdmission {
     let mut result = WorldAdmission { families: Vec::new(), syntax_bytes: 0, payload_bytes: 0 };
     for (name, value) in fields.iter().filter(|(name, value)| {
-        !matches!(name.as_str(), "m_envOverrides" | "m_particleSystems" | "m_lights" | "m_sounds" | "m_decals" | "m_subFXs" | "m_entityDefs" | "m_explosions" | "m_fsDistoParms" | "m_fullScreenQuads" | "m_rumbles" | "m_fovs" | "m_cameraShakes" | "m_screenFades" | "m_frameCaptures")
+        !matches!(name.as_str(), "m_envOverrides" | "m_particleSystems" | "m_lights" | "m_sounds" | "m_decals" | "m_subFXs" | "m_entityDefs" | "m_explosions" | "m_fsDistoParms" | "m_fullScreenQuads" | "m_rumbles" | "m_fovs" | "m_cameraShakes" | "m_screenFades" | "m_frameCaptures" | "m_skinDecals")
             && matches!(value, Value::Scope(_))
             && scope(fields, name).is_some_and(|entries| !list_items(entries).is_empty()
                 || atom(entries, "num").is_some_and(|count| count != "0"))

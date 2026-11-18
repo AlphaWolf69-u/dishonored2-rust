@@ -173,9 +173,31 @@ fn complete_lifetime_and_view_publication_match_executed_pipeline() {
             }
             _ => panic!("unknown pipeline command {command}"),
         };
+        // The original leaves a retired slot's stale memory in place; the
+        // rewrite frees it. A freed slot must be on the pool's free list.
+        let mut expected = w[input_words..].to_vec();
+        {
+            let pool = runtime.pool.lock().unwrap();
+            let ids = runtime.registry.with_active(|ids| ids.len()).unwrap();
+            let base = 3 + pool.next.len() + 2 + ids;
+            let mut free = std::collections::BTreeSet::new();
+            let mut at = pool.free_head;
+            while at != u16::MAX && free.insert(at) {
+                at = pool.next[usize::from(at)];
+            }
+            for (slot, effect) in runtime.effects.iter().enumerate() {
+                // Its registration went to the registry, which still releases
+                // the view slot at FLUSH (checked by the image blend words).
+                if effect.is_none() && expected.len() >= base + slot * 18 + 18 {
+                    assert!(free.contains(&(slot as u16)), "case {case}: slot {slot} freed while linked");
+                    expected[base + slot * 18..base + slot * 18 + 16].fill(0);
+                    expected[base + slot * 18 + 16..base + slot * 18 + 18].copy_from_slice(&[0, u32::MAX]);
+                }
+            }
+        }
         assert_eq!(
             snapshot(&runtime, head, seed, &mut slots),
-            w[input_words..],
+            expected,
             "case {case}: {command}"
         );
         rows += 1;

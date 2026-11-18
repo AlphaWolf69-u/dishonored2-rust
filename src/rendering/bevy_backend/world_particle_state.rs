@@ -72,6 +72,7 @@ struct Instance {
     quad_head: u16,
     shake_head: u16,
     fade_head: u16,
+    skin_decal_head: u16,
     rumble_head: u16,
     environment_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
@@ -81,6 +82,9 @@ struct Instance {
     /// of the instance (1404b20b0); 14021dc10's origin and identity until a
     /// target entity is resolved.
     target: crate::gameplay::particles::beam::BeamTarget,
+    /// Record +0xb8: 1404b1d80 sets it to the animated render model of the
+    /// component's entity (140878470); detached event FX leave it null.
+    skin_target: bool,
 }
 
 /// What a group start (222f80) needs from the FX manager, for top-level
@@ -99,6 +103,7 @@ pub(super) struct GroupContext<'a> {
     pub(super) quads: &'a mut super::world_screen_quads::Systems,
     pub(super) shakes: &'a mut super::world_camera_shakes::Systems,
     pub(super) fades: &'a mut super::world_screen_fades::Systems,
+    pub(super) skin_decals: &'a mut super::world_skin_decals::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
     pub(super) environments: &'a mut crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
@@ -124,6 +129,7 @@ impl GroupContext<'_> {
             quads: self.quads,
             shakes: self.shakes,
             fades: self.fades,
+            skin_decals: self.skin_decals,
             lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
@@ -230,6 +236,8 @@ struct UpdateFrame {
     position: bevy::math::Vec3,
     basis: bevy::math::Mat3,
     sound: super::world_sounds::SoundFrame,
+    /// The record's skinned render model (+0xb8, 1404b1d80/140878470).
+    skin_target: bool,
 }
 
 /// The particle and sound chains of one FX level; true while any is alive.
@@ -243,6 +251,7 @@ fn update_chains(
     quad_head: &mut u16,
     shake_head: &mut u16,
     fade_head: &mut u16,
+    skin_decal_head: &mut u16,
     rumble_head: &mut u16,
     environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -303,10 +312,11 @@ fn update_chains(
         frame.particle.camera, frame.particle.owner.position,
         context.entity_context.map_or(0., |context| context.contact_speed))?;
     let fade_count = context.fades.update(fade_head, frame.age, &mut context.systems.seed)?;
+    let skin_decal_count = context.skin_decals.update(skin_decal_head, frame.delta, frame.skin_target)?;
     let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
         frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),
         &mut context.systems.seed)?;
-    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || view_live || shake_count != 0 || fade_count != 0 || gameplay_live)
+    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || view_live || shake_count != 0 || fade_count != 0 || skin_decal_count != 0 || gameplay_live)
 }
 
 ///222f80/223f60 preserve FOV, distortion and quad family RNG order.
@@ -341,6 +351,7 @@ fn update_sub_effects(
             &mut sub.quad_head,
             &mut sub.shake_head,
             &mut sub.fade_head,
+            &mut sub.skin_decal_head,
             &mut sub.rumble_head,
             &mut sub.environment_head,
             &mut sub.gameplay_events,
@@ -373,6 +384,7 @@ pub(super) fn start_groups(
     quad_head: &mut u16,
     shake_head: &mut u16,
     fade_head: &mut u16,
+    skin_decal_head: &mut u16,
     rumble_head: &mut u16,
     environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -465,6 +477,10 @@ pub(super) fn start_groups(
                 ),
             );
         }
+        //222f80 bit 0x20: skin decals follow the 0x10 family, precede FOV.
+        for decal in &group.asset.skin_decals {
+            context.skin_decals.start(skin_decal_head, decal, offsets, &mut context.systems.seed)?;
+        }
         for fov in &group.fovs {
             context.fovs.start(fov_head,fov.as_ref().map_err(Clone::clone)?.clone(),offsets,&mut context.systems.seed)?;
         }
@@ -537,6 +553,7 @@ pub(crate) struct WorldParticleState {
     quads: super::world_screen_quads::Systems,
     shakes: super::world_camera_shakes::Systems,
     fades: super::world_screen_fades::Systems,
+    skin_decals: super::world_skin_decals::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
@@ -590,6 +607,7 @@ impl Default for WorldParticleState {
             quads: Default::default(),
             shakes: Default::default(),
             fades: Default::default(),
+            skin_decals: Default::default(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
@@ -1266,6 +1284,7 @@ impl WorldParticleState {
                     quads: &mut self.quads,
                     shakes: &mut self.shakes,
                     fades: &mut self.fades,
+                    skin_decals: &mut self.skin_decals,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -1349,6 +1368,7 @@ impl WorldParticleState {
         self.quads.clear(&mut instance.quad_head)?;
         self.shakes.clear(&mut instance.shake_head)?;
         self.fades.clear(&mut instance.fade_head)?;
+        self.skin_decals.clear(&mut instance.skin_decal_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
@@ -1363,6 +1383,7 @@ impl WorldParticleState {
                     quads: &mut self.quads,
                     shakes: &mut self.shakes,
                     fades: &mut self.fades,
+                    skin_decals: &mut self.skin_decals,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -1530,6 +1551,7 @@ impl WorldParticleState {
         self.rumble.shutdown();
         if !self.fovs.drained()||!self.quads.drained(){return Err("FX FOV/quad pool retains a live chain after shutdown".into());}
         self.fovs.shutdown();self.quads.shutdown();
+        if !self.skin_decals.drained() { return Err("FX skin decal pool retains a live chain after shutdown".into()); }
         if !self.shakes.drained() || !self.fades.drained() { return Err("FX shake/fade pool retains a live chain after shutdown".into()); }
         self.shakes.shutdown();
         self.fades.shutdown();
@@ -1768,6 +1790,9 @@ impl WorldParticleState {
         target: crate::gameplay::particles::beam::BeamTarget,
         sources: &WorldFxSources,
     ) -> Result<(), String> {
+        // A detached event FX (14019d100) is not a CpntFX play: record +0xb8
+        // keeps its cleared value.
+        let skin_target = false;
         let definition = sources
             .effects
             .get(&start.fx)
@@ -1841,11 +1866,13 @@ impl WorldParticleState {
             quad_head: u16::MAX,
             shake_head: u16::MAX,
             fade_head: u16::MAX,
+            skin_decal_head: u16::MAX,
             rumble_head: u16::MAX,
             environment_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
+            skin_target,
         });
         self.handles.insert(id, slot);
         self.pending_starts.push(slot);
@@ -1941,7 +1968,7 @@ impl WorldParticleState {
         // No alternate simulation, shader or material is used by this control.
         if self.debug_effect.is_some()
             && super::debug_graphics_capture::rendering_ready_age()
-                .is_some_and(|age| age.as_secs_f64() >= 2.0)
+                .is_some_and(|age| age.as_secs_f64() >= debug_effect_start())
         {
             let effect = self.debug_effect.take().unwrap();
             let pose = frames
@@ -2225,6 +2252,7 @@ impl WorldParticleState {
                 &mut instance.quad_head,
                 &mut instance.shake_head,
                 &mut instance.fade_head,
+                &mut instance.skin_decal_head,
                 &mut instance.rumble_head,
                 &mut instance.environment_head,
                 &mut instance.gameplay_events,
@@ -2244,6 +2272,7 @@ impl WorldParticleState {
                     quads: &mut self.quads,
                     shakes: &mut self.shakes,
                     fades: &mut self.fades,
+                    skin_decals: &mut self.skin_decals,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2302,6 +2331,7 @@ impl WorldParticleState {
                         delta,
                         target: instance.target,
                     },
+                    skin_target: instance.skin_target,
                     underwater,
                     motion: instance.motion,
                     position: bevy::math::Vec3::from_array(instance.pose.position),
@@ -2330,6 +2360,7 @@ impl WorldParticleState {
                     quads: &mut self.quads,
                     shakes: &mut self.shakes,
                     fades: &mut self.fades,
+                    skin_decals: &mut self.skin_decals,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2351,6 +2382,7 @@ impl WorldParticleState {
                 &mut instance.quad_head,
                 &mut instance.shake_head,
                 &mut instance.fade_head,
+                &mut instance.skin_decal_head,
                 &mut instance.rumble_head,
                 &mut instance.environment_head,
                     &mut instance.gameplay_events,
@@ -2608,6 +2640,27 @@ struct InstanceHost<'a> {
     id: u32,
 }
 impl InstanceHost<'_> {
+    /// 1404b1d80 -> 140878470: whether the component's entity has an animated
+    /// render model. The entity is component +0x48 or, when absent, the
+    /// owner; any entity this play can name counts, so a skinned candidate
+    /// never silently drops a decal.
+    fn skin_target(&self) -> Result<bool, String> {
+        use crate::gameplay::event_graph::EntityReference;
+        let parameters = &self.entity.parameters;
+        let owner = match &self.entity.owner {
+            FxEntityOwner::Actor { name, .. } => Some(EntityReference::Named(name.clone())),
+            _ => None,
+        };
+        let candidates = [parameters.location.clone(), parameters.target.clone(), owner];
+        if candidates.iter().all(Option::is_none) { return Ok(false); }
+        let Some(managed) = self.frames.managed else { return Ok(false) };
+        for reference in candidates.iter().flatten() {
+            if let Some(id) = managed.entity(reference)? {
+                if managed.animated_model(id)? { return Ok(true); }
+            }
+        }
+        Ok(false)
+    }
     /// 1404b1880: the target entity's world pose, or the pose of its target
     /// tag or joint (1404b19b0); None while the target entity is absent.
     fn target_pose(&self) -> Result<Option<crate::gameplay::particles::beam::BeamTarget>, String> {
@@ -2689,6 +2742,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         // (1404b19b0) and writes the target pose into the new record
         // (1404b20b0); otherwise the record keeps 14021dc10's defaults.
         let target = self.target_pose()?.unwrap_or_default();
+        let skin_target = self.skin_target()?;
         let name = parameters.effect.as_ref().ok_or("world FX effect absent")?;
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
             bevy::log::info!(effect = name, "World FX play requested");
@@ -2784,11 +2838,13 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             quad_head: u16::MAX,
             shake_head: u16::MAX,
             fade_head: u16::MAX,
+            skin_decal_head: u16::MAX,
             rumble_head: u16::MAX,
             environment_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
             target,
+            skin_target,
         });
         self.state.handles.insert(id, slot);
         if let Some(definition) = contact_definition {
@@ -2874,4 +2930,10 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         }
         Ok(())
     }
+}
+
+/// DH2_DEBUG_PLAY_FX_START=<seconds after complete rendering> (default 2).
+fn debug_effect_start() -> f64 {
+    static VALUE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("DH2_DEBUG_PLAY_FX_START").ok().and_then(|value| value.parse().ok()).unwrap_or(2.0))
 }

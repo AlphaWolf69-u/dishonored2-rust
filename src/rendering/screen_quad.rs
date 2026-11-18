@@ -25,6 +25,9 @@ pub struct ScreenQuadMaterial {
     pub clamp_colour: [f32; 4],
     pub depth: [f32; 4],
     pub alpha_test: f32,
+    /// screenblend fx/opt/use_diffuse: TextureColor's RGB is fx/diffuse at
+    /// the opacity UV.
+    pub diffuse: bool,
 }
 impl ScreenQuadMaterial {
     pub fn load(
@@ -33,14 +36,7 @@ impl ScreenQuadMaterial {
         resources: &mut crate::rendering::particles::definition::ParticleResources,
         name: &str,
     ) -> Result<Self, String> {
-        let path = format!(
-            "generated/decls/material/{}.decl",
-            name.to_ascii_lowercase()
-        );
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("screen quad material absent: {path}"))?;
+        let bytes = crate::material::declaration(catalog, name)?;
         let main = crate::material::authored_program_override(&bytes, "mainProgram")
             .ok_or("screen quad MAIN absent")?;
         let program = match main.to_ascii_lowercase().as_str() {
@@ -147,11 +143,11 @@ impl ScreenQuadMaterial {
                 option("fx/opt/no_opacity_map")?,
             ]
         };
+        let diffuse = program == Program::Blend && option("fx/opt/use_diffuse")? != 0;
         if program == Program::Blend {
             for name in [
                 "fx/opt/radial_ramp",
                 "fx/opt/use_lookup",
-                "fx/opt/use_diffuse",
                 "fx/opt/uv_Disto2xDisto1",
                 "fx/opt/use_disto_has_mask",
                 "fx/opt/uv_disto1_uniform",
@@ -159,7 +155,7 @@ impl ScreenQuadMaterial {
             ] {
                 if option(name)? != 0 {
                     return Err(format!(
-                        "screenblend branch requires its compiled shader port: {name} ({path})"
+                        "screenblend branch requires its compiled shader port: {name}"
                     ));
                 }
             }
@@ -192,6 +188,8 @@ impl ScreenQuadMaterial {
             };
             images.insert(name.to_owned(), resources.image(catalog, &source)?);
         }
+        let diffuse_source = if diffuse { scopes.image_source("fx/diffuse")? } else { "_white".to_owned() };
+        images.insert("fx/diffuse".to_owned(), resources.image(catalog, &diffuse_source)?);
         let layers = ["disto1", "disto2", "opacity"]
             .map(|prefix| -> Result<_, String> {
                 let tile = scopes.vector(&format!("{prefix}_tilling"))?;
@@ -243,6 +241,7 @@ impl ScreenQuadMaterial {
                 [0.; 4]
             },
             alpha_test: scopes.scalar("particleAlphaTest")?,
+            diffuse,
         })
     }
 }

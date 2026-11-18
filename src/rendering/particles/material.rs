@@ -63,11 +63,7 @@ const UNIFORMS: &[&str] = &[
 /// publish desc+0x278 unchanged); only `particle/` MAIN programs are FX-pass
 /// programs. Anything else is a world program drawn by its material passes.
 pub fn world_program(catalog: &Catalog, name: &str) -> Result<bool, String> {
-    let path = format!("generated/decls/material/{}.decl", name.to_ascii_lowercase());
-    let bytes = catalog
-        .read(&path)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("particle material absent: {path}"))?;
+    let bytes = crate::material::declaration(catalog, name)?;
     let program = crate::material::authored_program_override(&bytes, "mainProgram")
         .ok_or_else(|| format!("particle main program absent: {name}"))?;
     Ok(!program.to_ascii_lowercase().starts_with("particle/"))

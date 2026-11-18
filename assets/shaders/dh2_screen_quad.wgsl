@@ -94,6 +94,8 @@ fn screen_pan(uv:vec2<f32>,layer:DistortionLayer)->vec2<f32> {
 // postfx/screenblend installed DXBC: material seed enters the VS texcoord
 // as seed*globalTime; the pixel PanAndReadDistUV multiplies it by seed again.
 @group(0) @binding(7) var<storage,read> exposure:array<vec4<f32>>;
+// fx/diffuse (or the `_frameCapture` copy) when fx/opt/use_diffuse is set.
+@group(0) @binding(8) var diffuse_map:texture_2d<f32>;
 fn blend_rotate(uv:vec2<f32>,angle:f32)->vec2<f32>{
  let c=cos(angle);let s=sin(angle);let p=uv-vec2(0.5);
  return vec2(p.x*c+p.y*s,-p.x*s+p.y*c)+vec2(0.5);
@@ -119,5 +121,12 @@ fn blend_rotate(uv:vec2<f32>,angle:f32)->vec2<f32>{
  }
  if alpha<(0.5/255.0) || alpha*p.viewport_time_fade.w<max(p.unproject_alpha.w,0.0001) {discard;}
  var factor=exposure[0].x;if p.global_post.y>0.0 {factor=1.0;}
- return vec4(p.colour.rgb*p.colour.a/factor,alpha)*p.viewport_time_fade.w;
+ // TextureColor: use_diffuse replaces the white colour with fx/diffuse at
+ // the opacity UV through the same sampler; AdjustColor then scales it.
+ var texture_colour=vec3(1.0);
+ if p.global_post.z!=0.0 {
+  if p.options.z!=0u {texture_colour=textureSample(diffuse_map,linear_clamp,opacity_uv).xyz;}
+  else {texture_colour=textureSample(diffuse_map,trilinear_wrap,opacity_uv).xyz;}
+ }
+ return vec4(texture_colour*p.colour.rgb*p.colour.a/factor,alpha)*p.viewport_time_fade.w;
 }
