@@ -373,6 +373,12 @@ impl PlayerPhysics {
         self.proxy.position
     }
 
+    /// The character proxy's linear velocity (the player +0x33c that Dark
+    /// Vision's pulse admission reads).
+    pub fn velocity(&self) -> Vec3 {
+        self.proxy.velocity
+    }
+
     pub fn axis(&self) -> Mat3 {
         yaw_axis(self.yaw)
     }

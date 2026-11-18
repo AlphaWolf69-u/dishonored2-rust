@@ -1561,6 +1561,8 @@ pub(super) fn prepare(
         // Actual owned power entities prepare their family dependencies in
         // the owned-target worker; Journal metadata alone does not load them.
         commands.insert_resource(super::power_world::PowerWorld::prepare(catalog, &[])?);
+        commands.insert_resource(super::dark_vision::DarkVisionOwner::prepare(catalog,
+            super::player::character_name(character))?);
         commands.insert_resource(super::windblast::Windblasts::prepare(catalog, std::iter::empty::<&str>())?);
         commands.insert_resource(powers);
         commands.insert_resource(super::player_actions::PlayerActions::prepare(

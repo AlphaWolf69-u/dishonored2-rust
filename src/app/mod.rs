@@ -194,6 +194,7 @@ mod player;
 mod player_actions;
 mod powers;
 mod power_world;
+mod dark_vision;
 mod player_lifetime;
 mod player_chaos;
 mod power_execution;

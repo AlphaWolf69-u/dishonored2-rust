@@ -1645,6 +1645,10 @@ impl Player {
         self.physics.position()
     }
 
+    pub fn velocity(&self) -> Vec3 {
+        self.physics.velocity()
+    }
+
     pub fn axis(&self) -> Mat3 {
         self.physics.axis()
     }

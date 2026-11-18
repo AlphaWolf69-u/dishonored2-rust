@@ -2361,7 +2361,7 @@ impl ParticlePass {
                     super::water_hdr::WaterHdr::new(device, queue, input.extent, input.compressed_hdr, self.colour_format)?));
             }
             let (_, _, vectors, hdr) = self.distortion.as_mut().unwrap();
-            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], None, input.local_time, input.depth, input.inverse_z)?;
+            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], None, input.local_time, input.depth, input.inverse_z, None)?;
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("particle distortion vectors"),
                 color_attachments: &[Some(RenderPassColorAttachment {

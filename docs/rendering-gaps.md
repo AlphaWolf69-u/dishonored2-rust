@@ -79,6 +79,21 @@ Rendering.
 - Mask bit 8 also draws the sonar wave outside the pass:
   darkVisionDepthWaveDisto in ARK_RENDERPASS_DISTORTION (1403222f0) and
   darkVisionDepthWaveColor in ARK_RENDERPASS_POSTPROC (140327270).
+- Connected (2026-11-18): `gameplay::powers::dark_vision` (settings,
+  pulses, update, record), `app::dark_vision` (the player body's
+  cpntDarkVision, power id 9 cast through DarkVision::cast with the
+  14043d490 cost, per-frame update after the power actions, pulse/stop
+  sounds, `DarkVisionFrame` published with the FX frame) and the sonar wave
+  (`screen_effects::dark_vision_wave`, dh2_dark_vision_wave.wgsl: the
+  distortion last in the vector pass, the colour into the scene before the
+  resolves, both when mask | r_debugDarkVisionLayers has bit 8).
+  bevy_backend: the depth target is not filterable, so the wave reads the
+  full-resolution texel instead of the linear-clamp fetch.
+  `DH2_DEBUG_DARK_VISION_START=1` requests the component's start at level
+  start for windowless captures. Not connected: DARK_VISION_HEALING (no
+  player health owner hook), the revealed-entity message 0x153 and the
+  stop on player state / veto (the player record has no such state yet;
+  the update treats the player as playing).
 - Not yet traced: the vision post FX (m_visionPostFx, an fx with a
   post-process), the sound FX list, proxies (cpntDarkVisionProxy: living
   layer for humans, clockworks, wolfhounds, bloodflies; no AI spawns yet).

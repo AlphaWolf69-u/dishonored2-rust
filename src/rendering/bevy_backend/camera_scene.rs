@@ -192,6 +192,8 @@ pub(super) struct FxFrame {
     pub capacity: (usize, usize),
     pub retired: u64,
     pub screen_distortion: crate::gameplay::effects::screen_distortion::Frame,
+    /// The Dark Vision record (renderer +0x4238..) for this frame.
+    pub dark_vision: Option<crate::gameplay::powers::dark_vision::DarkVisionRecord>,
     pub screen_draws: Option<Vec<super::screen_effects::QuadDraw>>,
     pub particles: Option<ParticlePublicationFrame>,
     pub decals: Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>,
@@ -1183,6 +1185,7 @@ pub(crate) fn simulate_effects(
     fog_frame: Res<FogSceneFrame>,
     simulation: Option<ResMut<FxSimulation>>,
     mut published: ResMut<FxPublication>,
+    dark_vision: Option<Res<crate::gameplay::powers::dark_vision::DarkVisionFrame>>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
@@ -1307,6 +1310,7 @@ pub(crate) fn simulate_effects(
         camera: water.camera, frame: water.matrices.frame, generation: simulation.generation,
         capacity: simulation.particle_systems.capacity(), retired: simulation.world_particles.dynamic_retired(),
         screen_draws, particles, decals, screen_distortion,
+        dark_vision: dark_vision.and_then(|frame| frame.0),
     }));
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
@@ -1552,6 +1556,7 @@ fn render_camera<const PREPARE_ALPHA: bool>(
                 draws,
                 super::screen_effects::FullscreenInputs {
                     frame: &published.screen_distortion,
+                    dark_vision: published.dark_vision,
                     matrices: &water.matrices,
                     shader_time: water.shader_time,
                     local_time: water.local_time[0],

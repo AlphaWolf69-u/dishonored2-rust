@@ -468,6 +468,7 @@ pub(super) fn before_frame(world: &mut World) {
                     && world.contains_resource::<super::usable_effects::EffectRequests>(),
                 6 => world.get_resource::<super::player_actions::PlayerActions>()
                     .is_some_and(|actions| actions.far_reach.is_some()) && world.contains_resource::<super::NavigationWorld>(),
+                9 => world.get_resource::<super::dark_vision::DarkVisionOwner>().is_some_and(|owner| owner.available()),
                 10 => world.contains_resource::<super::windblast::Windblasts>() && player_id.is_some()
                     && world.contains_resource::<super::physics_scene::PhysicsScene>()
                     && world.contains_resource::<super::usable_effects::EffectRequests>(),
@@ -539,6 +540,11 @@ fn execute_pending(world: &mut World, player: &mut crate::gameplay::player::Play
                 .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(Ok(false))?;
             if accepted { player.commit_power_cast(now, factor); }
             accepted
+        }
+        Some(9) => {
+            // 14043d490: deactivating or a blocked start costs nothing.
+            let factor = super::dark_vision::mana_factor(world, factor);
+            super::dark_vision::cast(world, || { player.commit_power_cast(now, factor); })
         }
         Some(10) => {
             let accepted = service_wind(world, player_id.map(|id| (&mut *player, id)), clock, events, true)?;
@@ -617,6 +623,9 @@ pub(super) fn after_frame(world: &mut World) {
                     .int("ark_shadow_grapple_cast_mode").unwrap_or(0);
                 if let Some(delta) = far_delta { far.update_cast(player, delta, mode); }
             }
+        }
+        if let Ok(delta) = clock.player_delta() {
+            super::dark_vision::update(world, Some(&*player), delta);
         }
         service_far_reach(world, player, &mut clock, &mut events, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
