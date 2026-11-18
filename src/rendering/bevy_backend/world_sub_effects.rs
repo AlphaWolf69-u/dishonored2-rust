@@ -20,6 +20,8 @@ pub(super) struct Chains<'a> {
     pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
     pub(super) fovs: &'a mut super::world_fov::Systems,
     pub(super) quads: &'a mut super::world_screen_quads::Systems,
+    pub(super) shakes: &'a mut super::world_camera_shakes::Systems,
+    pub(super) fades: &'a mut super::world_screen_fades::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
     pub(super) environments: &'a mut crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     pub(super) sound_systems: &'a mut SoundSystems,
@@ -52,6 +54,8 @@ pub(super) struct SubEffect {
     pub(super) distortion_head: u16,
     pub(super) fov_head: u16,
     pub(super) quad_head: u16,
+    pub(super) shake_head: u16,
+    pub(super) fade_head: u16,
     pub(super) rumble_head: u16,
     pub(super) environment_head: u16,
     pub(super) children: Vec<SubEffect>,
@@ -122,6 +126,8 @@ impl SubEffect {
             distortion_head: u16::MAX,
             fov_head: u16::MAX,
             quad_head: u16::MAX,
+            shake_head: u16::MAX,
+            fade_head: u16::MAX,
             rumble_head: u16::MAX,
             environment_head: u16::MAX,
             children: Vec::new(),
@@ -179,6 +185,8 @@ impl SubEffect {
         context.environments.stop_chain(self.environment_head, now, true)?;
         context.fovs.stop(self.fov_head,now,true)?;
         context.quads.stop(self.quad_head,now,true)?;
+        context.shakes.stop(self.shake_head, now, true)?;
+        context.fades.stop(self.fade_head, now, true)?;
         context.decals.stop(self.decal_head, now);
         context
             .sound_systems
@@ -199,6 +207,8 @@ impl SubEffect {
         context.environments.clear(&mut self.environment_head)?;
         context.fovs.clear(&mut self.fov_head)?;
         context.quads.clear(&mut self.quad_head)?;
+        context.shakes.clear(&mut self.shake_head)?;
+        context.fades.clear(&mut self.fade_head)?;
         context.decals.clear(&mut self.decal_head, |_| {})?;
         if self.sound_head != u16::MAX {
             let mut sounds = context.sounds.clone();
@@ -263,6 +273,8 @@ impl SubEffect {
                     &mut self.distortion_head,
                     &mut self.fov_head,
                     &mut self.quad_head,
+                    &mut self.shake_head,
+                    &mut self.fade_head,
                     &mut self.rumble_head,
                     &mut self.environment_head,
                     &mut self.gameplay_events,

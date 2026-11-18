@@ -18,6 +18,12 @@ impl EffectPoolLinks {
     pub fn screen_distortion() -> Self { Self::ascending(64) }
     ///19a3f0/19f710:32 shared fullscreen-quad runtimes.
     pub fn screen_quads() -> Self { Self::ascending(32) }
+    ///19a010/19f160: 32 shared camera-shake slots (FX manager +0x8d9d8,
+    ///acquired by 222f80 through 221940 for 22d700's start).
+    pub fn camera_shakes() -> Self { Self::ascending(32) }
+    ///19a6e0: 32 shared screen-fade slots (FX manager +0x8c970, acquired by
+    ///222f80 through 222180 for 22a570's start).
+    pub fn screen_fades() -> Self { Self::ascending(32) }
     ///19a2f0/19f570: sixteen shared FOV-family slots.
     pub fn fov() -> Self { Self::ascending(16) }
     ///19a650/19fa50:32 shared rumble-family slots.

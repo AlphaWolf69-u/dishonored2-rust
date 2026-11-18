@@ -106,7 +106,7 @@ impl WorldEffectDefinition {
                     .all(|entry| entry.prepared.load(std::sync::atomic::Ordering::Acquire))
         })
     }
-    pub(crate) fn other_families(
+    pub fn other_families(
         &self,
         group: &WorldEffectGroup,
     ) -> &[(String, Result<bool, String>)] {

@@ -64,11 +64,21 @@ pub(super) fn advance_fade(
     paused: Res<crate::gameplay::game_clock_runtime::GamePaused>,
     mut fade: Option<ResMut<LoadingFade>>,
     mut layer: Query<&mut BackgroundColor, With<FadeLayer>>,
+    fx: Option<Res<crate::gameplay::effects::screen_fade::FxScreenFadeFrame>>,
 ) {
     let Some(fade) = fade.as_deref_mut() else {
         return;
     };
-    let Some(elapsed) = fade.elapsed else { return };
+    let Some(elapsed) = fade.elapsed else {
+        // 14022a6b0 -> 140167030: the registered FX screen fades set the
+        // view's fade object colour; with none registered it keeps its last.
+        if let Some(rgba) = fx.and_then(|fx| fx.0) {
+            for mut colour in &mut layer {
+                colour.0 = Color::srgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+            }
+        }
+        return;
+    };
     if paused.0 {
         return;
     }

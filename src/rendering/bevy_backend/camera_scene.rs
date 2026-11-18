@@ -96,6 +96,14 @@ impl FxSimulation {
         self.world_particles.publish_environments(view,mask,slots)
     }
     pub(crate) fn apply_fov(&self,base:f32)->f32{self.world_particles.apply_fov(base)}
+    /// The camera shakes of the last FX update (14022dac0's accumulator).
+    pub(crate) fn shake_frame(&self) -> crate::gameplay::effects::camera_shake::ShakeAccumulator {
+        self.world_particles.shake_frame()
+    }
+    /// The composed FX screen fade of the last FX update (14022a6b0).
+    pub(crate) fn screen_fade_frame(&self) -> Option<[f32; 4]> {
+        self.world_particles.screen_fade_frame()
+    }
     pub(crate) fn observe_rumble(&self) -> Option<(u32,[f32;4])> { self.world_particles.rumble_frame() }
     pub(crate) fn observe_screen_distortion(&self) -> crate::gameplay::effects::screen_distortion::Frame {
         self.world_particles.screen_distortion_frame()

@@ -1162,6 +1162,37 @@ loses w. Remaining, in order:
   `ocean::ocean_query_manager` (the game's single DAT_1432eb1b8) that the
   swimming head queries also use, active while an ocean is enabled
   (140302d20). Not yet seen in the rewrite with an ocean on screen.
+- World FX m_screenFades connected (2026-11-18, 1 FX, Possession travel):
+  arkFXScreenFadeDesc (14022a170: colour vector parameter zero with flat
+  curves, alpha 219ef0(0, 0, 1)); pool 19a6e0 (32 slots, +0x8c970,
+  222f80 -> 222180 -> 22a570). The producer
+  (`gameplay::effects::screen_fade`) runs the colour and alpha envelopes
+  through 22a430/22a390/22a4d0; started fades register in order and
+  14022a6b0 composites them (first clamped, then rgb = rgb (1 - a) + c,
+  a = 1 - (1 - a)(1 - a')) into the view's fade object (140167030), which
+  the rewrite draws with the loading fade's layer while no loading fade
+  runs. Not yet seen on screen (the authored fades start after 4.7 s).
+- World FX m_cameraShakes connected (2026-11-18, 8 FX): arkFXCameraShakeDesc
+  (constructor 14022aba0: magnitude 1 flat, rotation order 5, distance
+  radius 10, impulse 25, two-key fades; oscillators 14022ab20: amplitude
+  0.05, frequency 10) loads with its group; pool 19a010 (32 slots,
+  +0x8d9d8, 222f80 -> 221940 -> 22d700). `gameplay::effects::camera_shake`
+  ports the start (22d700/22d640), phase update (22aec0 -> 22d240 fade-in,
+  22d0a0 duration, 22d3e0 fade-out), channel sums of amplitude x
+  cos(2 pi f age) (22ca90/22c900/22cc20) and the composition 22c6d0
+  (distance and impulse fades, positional X/Y/Z on the camera axes plus
+  the origin channel along the FX direction, angular Euler half angles in
+  the rotation order 22c190, the origin rotation 22c500), accumulated
+  per frame (22d9e0) and applied to the camera after the FX update (particle_view) as 14088c5e0 does
+  (origin + offset, axes = angular x axes x direction; the camera
+  interface vtable 141c722f8 +0x58 -> 1408907d0). approximate_: the FX
+  instance impulse (+0xb8) is not published (zero), 
+- World FX m_frameCaptures admitted (4 FX): ARK_RENDERPASS_POST_TONEMAP
+  (140323e70) copies the tone-mapped scene into `frameCapture` (FNV
+  0x23792d9c) at RENDER_FRAME_CAPTURE whenever g_stopTime is clear, i.e.
+  every frame in normal play, so the FX events change nothing normal play
+  renders. Still open: binding that copy as `_frameCapture` in the
+  screen-quad renderer (the 4 sampling materials also need use_diffuse).
 - m_selfCollisions admitted: SolveSelfContacts only solves constraints
   created from the SpatialPartition's new pairs, and the simulator's
   partition keeps computeNewPairs off (140fd6a00; 1401dfc20 never sets
