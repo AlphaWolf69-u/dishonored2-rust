@@ -24882,6 +24882,15 @@ WORLD repeated-contact observation (2026-11-17): the opt-in `world`/`world-poke`
 
 ## Combat, view FX and animated interactions — 2026-11-18
 
+Global caster query ownership is unchanged by the immutable plane-index
+validation optimization: retained per-job scratch, Tome/source leases and exact
+camera/depth cache keys remain with the existing owner. `verified`: optimized
+same-binary replay removes9.096% of this function's thread cycles over6,144
+calls per variant, preserving all24 job outputs and three saved original output
+rows sets(1,754/7/38). The larger first-capture gain was traced to its higher
+cascade-predicate share; details are in optimization-opportunities.md. No frame
+rate, new resource budget or all-map claim follows from this scoped result.
+
 `ported` physics shape acquisition: the existing PhysWorld/QueryShapes owner now admits inherited `hknpSphereShape` support vertices while preserving its actual shape type2. Source ca6550/c82490 support, ca6160 ray, ca5f50 geometry and ca5ee0/ce0920 mass use the same compressed source and body/geometry leases as other convex shapes. No synthetic polytope, file conversion or second shape cache. Grenade constructor failures retain their first causal error instead of reporting only a later retry's missing listener.
 
 `ported` contact identity: broadphase12871a0 supplies full generational body IDs; Contacts now passes these through the canonical checked body accessor, matching0992c0's slot extraction. This fixes rejection of real world/body pairs before manifold construction. Existing contact geometry, Jacobians, impulses, callbacks and shape invalidation retain their owners. The opt-in carry check now requires a real ordinary world-contact solver impulse opposing gravity after release, rather than accepting motion alone.

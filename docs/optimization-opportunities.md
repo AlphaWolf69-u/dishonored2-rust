@@ -4,7 +4,26 @@
 
 Prediction before implementation: **7.5% fewer thread cycles in GlobalShadowCasterScratch::gather**, expected range5–10%. The existing passive trace assigns115.24 aggregate CPU ms/s to that function;8.64 CPU ms/s is a model, not an achieved saving or frame-time claim. Investigate a result outside5.25–9.75% before accepting; zero gain requires rejection. The gather already validates every initial active-index list and constructs every reduced list from0..plane_count. Only this proven domain can bypass repeated index validation; public/main-view validation, exact MINPS arithmetic, bounds, NaNs, ordered IDs and cascade masks remain unchanged. No camera/depth cache policy changes.
 
-The same optimized binary exposes both implementations through tome-audit's existing-resource DHC1 replay. Stored original ordered outputs must match, then all eight aligned jobs must match before/after alternating A/B/BA cycle batches. Scratch is retained and decode/formatting/comparison stays outside timing. No circular tests or whole-frame timing substitutes. Acceptance is pending measurement.
+Verified 2026-11-18 with the same optimized binary: 6,144 calls per variant,
+alternating A/B and B/A batches. Baseline used 4,815,201,643 thread cycles;
+candidate used 4,377,205,764, a 9.096% reduction in this function. The aggregate
+is within 30% of the 7.5% prediction. Ordered IDs and cascade masks match all
+eight jobs of each capture before/after measurement; saved original job-0
+outputs match all 1,754 / 7 / 38 rows. Decode, allocation of expected rows,
+formatting and comparisons are outside the timed loop. Binary SHA256:
+14d756791bcb2275b3ac99d9bab4b585cc45fb45e84129f3a738d3583738e5eb.
+Raw local evidence: analysis/gameplay-repair-20261116/gather-release-summary.json.
+This is not an FPS or whole-frame result.
+
+The first capture's 11.541% gain exceeded the central prediction by over30%,
+so its input model was investigated before acceptance. Its different Tome has
+70,753 objects and executes 31,652 primary plus 22,856 cascade predicates;
+the Dust District Tome has104,096 objects and executes38,362+4,056 or
+38,366+8,840. Thus the first removes54,508 repeated validations while scanning
+fewer objects, versus42,418/47,206. Reduced list lengths are[8,6,6,6,6] versus
+[9,6,6,6,6]. The extra cascade-survivor work explains its larger removed share;
+the independent input decoder reproduces original row counts1,754/7/38.
+Dust District gains are7.635%/7.961%. No stale query or camera reuse is added.
 
 Opened-module sweep, deferred findings:
 
