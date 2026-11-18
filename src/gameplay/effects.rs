@@ -6,6 +6,8 @@ pub mod environment;
 pub mod screen_distortion;
 pub mod screen_quad;
 pub mod fov;
+pub mod camera_shake;
+pub mod screen_fade;
 pub mod rumble;
 pub mod envelope;
 pub mod groups;

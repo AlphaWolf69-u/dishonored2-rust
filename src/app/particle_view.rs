@@ -12,13 +12,14 @@ pub(super) fn advance_view_effects(
     physics: Option<Res<super::physics_scene::PhysicsScene>>,
     player: Res<super::player::PlayerState>,
     actions: Option<Res<super::player_actions::PlayerActions>>,
-    cameras: Query<(&Transform, &mut Projection), With<Camera3d>>,
+    cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
     frame: Res<bevy::diagnostic::FrameCount>,
     mut last_error: Local<Option<String>>,
+    mut screen_fade: Option<ResMut<crate::gameplay::effects::screen_fade::FxScreenFadeFrame>>,
 ) {
     let (Some(simulation), Some(physics)) = (simulation.as_mut(), physics.as_ref()) else { return };
     let mut cameras = cameras;
-    let Ok((pose, mut projection)) = cameras.single_mut() else { return };
+    let Ok((mut pose, mut projection)) = cameras.single_mut() else { return };
     let camera = crate::gameplay::reference_frame::ReferenceFrame {
         position: super::view_to_game(pose.translation),
         basis: [super::view_to_game(pose.rotation*Vec3::NEG_Z),
@@ -33,6 +34,20 @@ pub(super) fn advance_view_effects(
         let managed=fx.live().map(|live|super::managed_frames::Resolver{live,scene:physics,player:player.player.as_ref()});
         simulation.advance_world(&fx, frame.0, camera,
             player.player.as_ref().is_some_and(|player| player.is_underwater()), &world,managed.as_ref().map(|resolver|resolver as &dyn crate::rendering::bevy_backend::world_effects::ManagedFrames))?;
+        // 14022dac0 -> 14088c5e0: this update's camera shakes move the view
+        // origin and turn its axes (rows: forward, left, up); the FX saw
+        // the unshaken camera above.
+        let shake = simulation.shake_frame();
+        if shake != Default::default() {
+            let mut origin = camera.position;
+            let mut axes = camera.basis;
+            shake.apply(&mut origin, &mut axes);
+            *pose = Transform::from_translation(super::view_geometry::game_to_view(origin))
+                .looking_to(super::view_geometry::game_to_view(axes[0]), super::view_geometry::game_to_view(axes[2]));
+        }
+        if let Some(fade) = screen_fade.as_mut() {
+            fade.0 = simulation.screen_fade_frame();
+        }
         //The base remains the Player camera's unmodified gameplay FOV.
         //Percentage FX never feed their previous output back into the mixer.
         if let Some(player) = player.player.as_ref() {

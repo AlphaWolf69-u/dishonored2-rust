@@ -408,6 +408,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .before(super::display_scene::publish_display_frame)
         .before(super::fog_scene::publish_fog_frame)
         .before(super::water_scene::publish_water_frame));
+    app.init_resource::<crate::gameplay::effects::screen_fade::FxScreenFadeFrame>();
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_systems(PreUpdate, super::objectives::connect)
         // Graph spawn requests from the previous effect update are

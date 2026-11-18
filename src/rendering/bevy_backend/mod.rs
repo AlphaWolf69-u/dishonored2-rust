@@ -331,6 +331,8 @@ mod world_light_effects;
 mod world_screen_distortion;
 #[cfg(feature = "game")]
 mod world_screen_quads;
+mod world_camera_shakes;
+mod world_screen_fades;
 #[cfg(feature = "game")]
 mod screen_quads;
 mod world_fov;

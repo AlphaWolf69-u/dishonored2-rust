@@ -27,6 +27,154 @@ pub mod light;
 pub mod screen_distortion;
 pub mod fov;
 pub mod rumble;
+pub mod screen_fade;
+
+/// arkFXDescStructures::arkStandardParameter<float>: a sampled range
+/// (max, min) and the duration, fade-in and fade-out curve pairs.
+#[derive(Clone)]
+pub struct StandardParameter {
+    pub scale: [f32; 2],
+    pub duration: crate::gameplay::effects::curve::EffectFloatCurvePair,
+    pub fade_in: crate::gameplay::effects::curve::EffectFloatCurvePair,
+    pub fade_out: crate::gameplay::effects::curve::EffectFloatCurvePair,
+}
+impl StandardParameter {
+    /// 1402262d0(value, curve): the range (value, value) and each curve's
+    /// maximum a single key of `curve`.
+    fn constant(value: f32, curve: f32) -> Self {
+        let flat = || crate::gameplay::effects::curve::EffectFloatCurvePair {
+            maximum: crate::gameplay::effects::curve::EffectFloatCurve { times: vec![0.], values: vec![0., curve, 0.] },
+            minimum: Default::default(),
+        };
+        Self { scale: [value; 2], duration: flat(), fade_in: flat(), fade_out: flat() }
+    }
+    fn read(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_max" => self.scale[0] = number(value)?,
+                "m_min" => self.scale[1] = number(value)?,
+                "m_durationCurve" => curves(&mut self.duration, scope(value)?)?,
+                "m_fadeinCurve" => curves(&mut self.fade_in, scope(value)?)?,
+                "m_fadeoutCurve" => curves(&mut self.fade_out, scope(value)?)?,
+                _ => return Err(format!("unknown FX parameter field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// arkFXCameraShakeDesc::shakeDesc_t (constructor 14022ab20): amplitude
+/// (default 0.05) and frequency (default 10 Hz), flat curves.
+#[derive(Clone)]
+pub struct ShakeOscillator {
+    pub amplitude: StandardParameter,
+    pub frequency: StandardParameter,
+}
+fn shake_oscillator(fields: &Fields) -> Result<ShakeOscillator, String> {
+    let mut oscillator = ShakeOscillator {
+        amplitude: StandardParameter::constant(f32::from_bits(0x3d4c_cccd), 1.),
+        frequency: StandardParameter::constant(10., 1.),
+    };
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_amplitude" => oscillator.amplitude.read(scope(value)?)?,
+            "m_frequency" => oscillator.frequency.read(scope(value)?)?,
+            _ => return Err(format!("unknown FX shake oscillator field {name}")),
+        }
+    }
+    Ok(oscillator)
+}
+
+/// arkFXCameraShakeDesc (constructor 14022aba0): standard timings, the
+/// global magnitude (1, flat), positional and angular channels (X, Y, Z,
+/// toward the origin), the rotation order (default 5), the distance
+/// radius (10) and fade, and the impulse range (25) and fade.
+pub struct CameraShakeAsset {
+    pub name: String,
+    pub enabled: bool,
+    pub looping: bool,
+    pub keep_duration_on_stop: bool,
+    pub timing: crate::gameplay::effects::timing::EffectTimingRanges,
+    pub magnitude: StandardParameter,
+    /// Positional X, Y, Z, origin; angular X, Y, Z, origin.
+    pub channels: [Vec<ShakeOscillator>; 8],
+    pub rotation_order: u32,
+    pub distance_radius: [f32; 2],
+    pub distance_fade: crate::gameplay::effects::curve::EffectFloatCurvePair,
+    pub impulse: [f32; 2],
+    pub impulse_fade: crate::gameplay::effects::curve::EffectFloatCurvePair,
+}
+pub fn camera_shake(fields: &Fields) -> Result<CameraShakeAsset, String> {
+    let fade = || crate::gameplay::effects::curve::EffectFloatCurvePair {
+        maximum: crate::gameplay::effects::curve::EffectFloatCurve { times: vec![0., 1.], values: vec![0., 1., 0., 0., 0., 0.] },
+        minimum: Default::default(),
+    };
+    let mut shake = CameraShakeAsset {
+        name: String::new(), enabled: true, looping: false, keep_duration_on_stop: false,
+        timing: Default::default(),
+        magnitude: StandardParameter::constant(1., 1.),
+        channels: Default::default(),
+        rotation_order: 5,
+        distance_radius: [10.; 2],
+        distance_fade: fade(),
+        impulse: [25.; 2],
+        impulse_fade: fade(),
+    };
+    let channel_names = ["m_X", "m_Y", "m_Z", "m_origin"];
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_name" => shake.name = atom(value)?.to_owned(),
+            "m_enabled" => shake.enabled = boolean(value)?,
+            "m_timings" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_looping" => shake.looping = boolean(value)?,
+                        "m_finishLoopOnStop" => shake.keep_duration_on_stop = boolean(value)?,
+                        "m_delay" => bounds(&mut shake.timing.delay, scope(value)?)?,
+                        "m_fadein" => bounds(&mut shake.timing.fade_in, scope(value)?)?,
+                        "m_duration" => bounds(&mut shake.timing.duration, scope(value)?)?,
+                        "m_fadeout" => bounds(&mut shake.timing.fade_out, scope(value)?)?,
+                        _ => return Err(format!("unknown FX timing field {name}")),
+                    }
+                }
+            }
+            "m_globalMagnitude" => shake.magnitude.read(scope(value)?)?,
+            "m_positional" | "m_angular" => {
+                let base = if name == "m_positional" { 0 } else { 4 };
+                for (field, value) in scope(value)? {
+                    if field == "m_rotationOrder" && base == 4 {
+                        shake.rotation_order = rotation_order(atom(value)?)?;
+                        continue;
+                    }
+                    let index = channel_names.iter().position(|channel| channel == field)
+                        .ok_or_else(|| format!("unknown FX shake channel {field}"))?;
+                    descriptor_list(&mut shake.channels[base + index], scope(value)?, shake_oscillator)?;
+                }
+            }
+            "m_distanceRadius" => bounds(&mut shake.distance_radius, scope(value)?)?,
+            "m_impulse" => bounds(&mut shake.impulse, scope(value)?)?,
+            "m_distanceFade" | "m_impulseFade" => {
+                let target = if name == "m_distanceFade" { &mut shake.distance_fade } else { &mut shake.impulse_fade };
+                for (field, value) in scope(value)? {
+                    if field != "m_curve" {
+                        return Err(format!("unknown FX curve field {field}"));
+                    }
+                    curves(target, scope(value)?)?;
+                }
+            }
+            _ => return Err(format!("unknown FX camera shake field {name}")),
+        }
+    }
+    Ok(shake)
+}
+/// idAngles::RotateOrder by name or number.
+fn rotation_order(value: &str) -> Result<u32, String> {
+    Ok(match value {
+        "XYZ" | "ROTATE_XYZ" => 0, "YZX" | "ROTATE_YZX" => 1, "ZXY" | "ROTATE_ZXY" => 2,
+        "XZY" | "ROTATE_XZY" => 3, "YXZ" | "ROTATE_YXZ" => 4, "ZYX" | "ROTATE_ZYX" => 5,
+        other => other.parse().map_err(|_| format!("unknown rotation order {other}"))?,
+    })
+}
 
 pub struct EnvironmentEffectAsset {
     pub name: String,
@@ -55,6 +203,13 @@ pub struct EffectGroupAsset {
     pub sub_effects: Vec<SubEffectAsset>,
     pub entity_defs: Vec<entity_def::EntityDefAsset>,
     pub explosions: Vec<explosion::ExplosionAsset>,
+    pub camera_shakes: Vec<std::sync::Arc<CameraShakeAsset>>,
+    pub screen_fades: Vec<std::sync::Arc<screen_fade::ScreenFadeAsset>>,
+    /// m_frameCaptures (arkFXFrameCaptureDesc, timed by 21a870/21a730).
+    /// With g_stopTime clear, 140323e70 copies the tone-mapped scene into
+    /// `_frameCapture` every frame, so these events change nothing that
+    /// normal play renders; they are kept for their schedule only.
+    pub frame_captures: Vec<crate::gameplay::effects::standard_events::StandardEventTimings>,
 }
 pub type EnvironmentGroupAsset = EffectGroupAsset;
 
@@ -189,6 +344,9 @@ impl Default for EffectGroupAsset {
             sub_effects: Vec::new(),
             entity_defs: Vec::new(),
             explosions: Vec::new(),
+            camera_shakes: Vec::new(),
+            screen_fades: Vec::new(),
+            frame_captures: Vec::new(),
         }
     }
 }
@@ -455,6 +613,19 @@ pub fn effect_group(fields: &Fields) -> Result<EffectGroupAsset, String> {
             "m_subFXs" => descriptor_list(&mut group.sub_effects, scope(value)?, sub_effect)?,
             "m_entityDefs" => descriptor_list(&mut group.entity_defs, scope(value)?, entity_def::entity_def)?,
             "m_explosions" => descriptor_list(&mut group.explosions, scope(value)?, explosion::explosion)?,
+            "m_cameraShakes" => descriptor_list(&mut group.camera_shakes, scope(value)?, |fields| camera_shake(fields).map(std::sync::Arc::new))?,
+            "m_screenFades" => screen_fade::list(&mut group.screen_fades, scope(value)?)?,
+            "m_frameCaptures" => descriptor_list(&mut group.frame_captures, scope(value)?, |fields| {
+                let mut timings = Default::default();
+                for (name, value) in fields {
+                    match name.as_str() {
+                        "m_name" | "m_enabled" => {}
+                        "m_timings" => timings = explosion::standard_timings(scope(value)?)?,
+                        _ => return Err(format!("unknown FX frame capture field {name}")),
+                    }
+                }
+                Ok(timings)
+            })?,
             _ => {} // Other effect families are not environment descriptors.
         }
     }

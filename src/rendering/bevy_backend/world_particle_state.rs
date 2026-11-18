@@ -70,6 +70,8 @@ struct Instance {
     distortion_head: u16,
     fov_head: u16,
     quad_head: u16,
+    shake_head: u16,
+    fade_head: u16,
     rumble_head: u16,
     environment_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
@@ -95,6 +97,8 @@ pub(super) struct GroupContext<'a> {
     pub(super) distortion: &'a mut super::world_screen_distortion::Systems,
     pub(super) fovs: &'a mut super::world_fov::Systems,
     pub(super) quads: &'a mut super::world_screen_quads::Systems,
+    pub(super) shakes: &'a mut super::world_camera_shakes::Systems,
+    pub(super) fades: &'a mut super::world_screen_fades::Systems,
     pub(super) rumble: &'a mut super::world_rumble::Systems,
     pub(super) environments: &'a mut crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
@@ -118,6 +122,8 @@ impl GroupContext<'_> {
             environments: self.environments,
             fovs: self.fovs,
             quads: self.quads,
+            shakes: self.shakes,
+            fades: self.fades,
             lights: self.lights,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
@@ -235,6 +241,8 @@ fn update_chains(
     distortion_head: &mut u16,
     fov_head: &mut u16,
     quad_head: &mut u16,
+    shake_head: &mut u16,
+    fade_head: &mut u16,
     rumble_head: &mut u16,
     environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -290,10 +298,14 @@ fn update_chains(
         Some(live) => live,
         None => update_view_chains(fov_head,distortion_head,quad_head,environment_head,frame,context)?,
     };
+    let shake_count = context.shakes.update(shake_head, frame.age,
+        frame.particle.view_mask & frame.particle.allowed_mask != 0, &mut context.systems.seed,
+        frame.particle.camera, frame.particle.owner.position)?;
+    let fade_count = context.fades.update(fade_head, frame.age, &mut context.systems.seed)?;
     let rumble_count = context.rumble.update(rumble_head, frame.age, frame.delta,
         frame.particle.owner.position, context.entity_context.map_or(0., |context| context.contact_speed),
         &mut context.systems.seed)?;
-    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || view_live || gameplay_live)
+    Ok(rumble_count != 0 || updated != 0 || light_count != 0 || sound_count != 0 || decal_count != 0 || view_live || shake_count != 0 || fade_count != 0 || gameplay_live)
 }
 
 ///222f80/223f60 preserve FOV, distortion and quad family RNG order.
@@ -326,6 +338,8 @@ fn update_sub_effects(
             &mut sub.distortion_head,
             &mut sub.fov_head,
             &mut sub.quad_head,
+            &mut sub.shake_head,
+            &mut sub.fade_head,
             &mut sub.rumble_head,
             &mut sub.environment_head,
             &mut sub.gameplay_events,
@@ -356,6 +370,8 @@ pub(super) fn start_groups(
     distortion_head: &mut u16,
     fov_head: &mut u16,
     quad_head: &mut u16,
+    shake_head: &mut u16,
+    fade_head: &mut u16,
     rumble_head: &mut u16,
     environment_head: &mut u16,
     gameplay_events: &mut Vec<super::world_gameplay_effects::Event>,
@@ -458,6 +474,13 @@ pub(super) fn start_groups(
         for quad in &group.quads {
             context.quads.start(quad_head,quad.as_ref().map_err(Clone::clone)?.clone(),offsets,3,&mut context.systems.seed)?;
         }
+        // 22d700: each camera shake; 22a570: each screen fade.
+        for shake in &group.asset.camera_shakes {
+            context.shakes.start(shake_head, shake, offsets, &mut context.systems.seed)?;
+        }
+        for fade in &group.asset.screen_fades {
+            context.fades.start(fade_head, fade, offsets, &mut context.systems.seed)?;
+        }
         //222f80 bit9: environment overrides follow quads and precede explosions.
         for source in &group.environments {
             let descriptor = &group.asset.environments[source.index];
@@ -511,6 +534,8 @@ pub(crate) struct WorldParticleState {
     environments: crate::rendering::environment_effect_runtime::EnvironmentEffectRuntime<Arc<crate::rendering::environment_resources::PreparedEnvironment>, u64>,
     fovs: super::world_fov::Systems,
     quads: super::world_screen_quads::Systems,
+    shakes: super::world_camera_shakes::Systems,
+    fades: super::world_screen_fades::Systems,
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
@@ -562,6 +587,8 @@ impl Default for WorldParticleState {
             environments: Default::default(),
             fovs: Default::default(),
             quads: Default::default(),
+            shakes: Default::default(),
+            fades: Default::default(),
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
@@ -631,6 +658,12 @@ impl WorldParticleState {
         let Some(first)=samples.next() else{return base;};
         let value=samples.fold(first.apply(base,base),|current,sample|sample.apply(base,current));
         if value<1.{1.}else if value>150.{150.}else{value}
+    }
+    pub(crate) fn shake_frame(&self) -> crate::gameplay::effects::camera_shake::ShakeAccumulator {
+        self.shakes.frame()
+    }
+    pub(crate) fn screen_fade_frame(&self) -> Option<[f32; 4]> {
+        self.fades.frame()
     }
     pub(crate) fn screen_quad_frame(&self)->crate::gameplay::effects::screen_quad::Frame{self.quads.frame(1)}
     pub(crate) fn rumble_frame(&self) -> Option<(u32,[f32;4])> { self.rumble.completed() }
@@ -1214,6 +1247,8 @@ impl WorldParticleState {
                 self.environments.stop_chain(instance.environment_head, instance.age, false)?;
                 self.fovs.stop(instance.fov_head,instance.age,false)?;
                 self.quads.stop(instance.quad_head,instance.age,false)?;
+                self.shakes.stop(instance.shake_head, instance.age, false)?;
+                self.fades.stop(instance.fade_head, instance.age, false)?;
                 self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
@@ -1228,6 +1263,8 @@ impl WorldParticleState {
                     environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
+                    shakes: &mut self.shakes,
+                    fades: &mut self.fades,
                         decals: &mut self.decals,
                         sounds,
                     };
@@ -1309,6 +1346,8 @@ impl WorldParticleState {
         self.environments.clear(&mut instance.environment_head)?;
         self.fovs.clear(&mut instance.fov_head)?;
         self.quads.clear(&mut instance.quad_head)?;
+        self.shakes.clear(&mut instance.shake_head)?;
+        self.fades.clear(&mut instance.fade_head)?;
         self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
@@ -1321,6 +1360,8 @@ impl WorldParticleState {
                     environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
+                    shakes: &mut self.shakes,
+                    fades: &mut self.fades,
                 decals: &mut self.decals,
                 sounds,
             };
@@ -1488,6 +1529,9 @@ impl WorldParticleState {
         self.rumble.shutdown();
         if !self.fovs.drained()||!self.quads.drained(){return Err("FX FOV/quad pool retains a live chain after shutdown".into());}
         self.fovs.shutdown();self.quads.shutdown();
+        if !self.shakes.drained() || !self.fades.drained() { return Err("FX shake/fade pool retains a live chain after shutdown".into()); }
+        self.shakes.shutdown();
+        self.fades.shutdown();
         if !self.lights.drained() { return Err("FX light pool retains a live chain after instance shutdown".into()); }
         self.pending_starts.clear();
         self.pending_actor_starts.clear();
@@ -1794,6 +1838,8 @@ impl WorldParticleState {
             distortion_head: u16::MAX,
             fov_head: u16::MAX,
             quad_head: u16::MAX,
+            shake_head: u16::MAX,
+            fade_head: u16::MAX,
             rumble_head: u16::MAX,
             environment_head: u16::MAX,
             sub_effects: Vec::new(),
@@ -2146,6 +2192,7 @@ impl WorldParticleState {
             .float("pm_screenParticleOffset")
             .ok_or("pm_screenParticleOffset is not registered")?;
         self.distortion.begin_frame();
+        self.shakes.begin_frame();
         //1a3390 selects the last real RenderView callback.806600's
         //interface virtual20=486a50 returns RenderView+a8, the same origin
         //published in this selected camera frame. No Player/body substitute.
@@ -2175,6 +2222,8 @@ impl WorldParticleState {
                 &mut instance.distortion_head,
                 &mut instance.fov_head,
                 &mut instance.quad_head,
+                &mut instance.shake_head,
+                &mut instance.fade_head,
                 &mut instance.rumble_head,
                 &mut instance.environment_head,
                 &mut instance.gameplay_events,
@@ -2192,6 +2241,8 @@ impl WorldParticleState {
                     environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
+                    shakes: &mut self.shakes,
+                    fades: &mut self.fades,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2276,6 +2327,8 @@ impl WorldParticleState {
                     environments: &mut self.environments,
                     fovs: &mut self.fovs,
                     quads: &mut self.quads,
+                    shakes: &mut self.shakes,
+                    fades: &mut self.fades,
                     decals: &mut self.decals,
                     sounds,
                     effects: &instance
@@ -2295,6 +2348,8 @@ impl WorldParticleState {
                 &mut instance.distortion_head,
                 &mut instance.fov_head,
                 &mut instance.quad_head,
+                &mut instance.shake_head,
+                &mut instance.fade_head,
                 &mut instance.rumble_head,
                 &mut instance.environment_head,
                     &mut instance.gameplay_events,
@@ -2350,6 +2405,8 @@ impl WorldParticleState {
         self.query = Some(query);
         self.frame = Some(frame);
         self.distortion.finish_frame();
+        self.shakes.finish_frame();
+        self.fades.finish_frame();
         self.rumble.finish_frame(frame);
         Ok(())
     }
@@ -2724,6 +2781,8 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             distortion_head: u16::MAX,
             fov_head: u16::MAX,
             quad_head: u16::MAX,
+            shake_head: u16::MAX,
+            fade_head: u16::MAX,
             rumble_head: u16::MAX,
             environment_head: u16::MAX,
             sub_effects: Vec::new(),
