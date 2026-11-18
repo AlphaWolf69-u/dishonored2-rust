@@ -1756,6 +1756,8 @@ fn authored_surface_gpu_pipelines_compile() {
                 sss_mask: None,
                 fuzz_mask: None,
                 translucency_mask: None,
+            eye_caustic: None,
+            eye_caustic_source: None,
             },
         });
     // Establish the target, then add a material without a binding while the
@@ -7481,6 +7483,8 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             sss_mask: None,
             fuzz_mask: None,
             translucency_mask: None,
+            eye_caustic: None,
+            eye_caustic_source: None,
         },
     });
     app.insert_resource(materials);

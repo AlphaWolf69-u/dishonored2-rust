@@ -1552,6 +1552,10 @@ impl MaterialResolver<'_> {
                     sss_mask: None,
                     fuzz_mask: None,
                     translucency_mask: None,
+                    eye_caustic: None,
+                    eye_caustic_source: (surface.program() == material_surface::Program::Eye
+                        && surface.eye.internal_caustic)
+                        .then(|| std::sync::Arc::from(surface.eye.caustic_map.as_str())),
                 },
             }))
         };

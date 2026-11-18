@@ -140,6 +140,12 @@ pub(super) struct ProbeExtension {
     pub(super) fuzz_mask: Option<Handle<Image>>,
     #[texture(174)]
     pub(super) translucency_mask: Option<Handle<Image>>,
+    /// arkEyeball eye/causticMap (eye/internalCaustic), bound by
+    /// eye_caustics::bind when the material is created.
+    #[texture(176, dimension = "3d")]
+    pub(super) eye_caustic: Option<Handle<Image>>,
+    #[reflect(ignore)]
+    pub(super) eye_caustic_source: Option<std::sync::Arc<str>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the

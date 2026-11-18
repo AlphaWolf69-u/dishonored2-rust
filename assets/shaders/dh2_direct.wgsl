@@ -10,6 +10,9 @@
 #import dh2_material_samplers::linear_clamp
 @group(#{MATERIAL_BIND_GROUP}) @binding(170) var eye_cornea_normal:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(171) var eye_sss_lut:texture_2d<f32>;
+// eye/causticMap (eye/internalCaustic), a volume indexed by the light's
+// angle around the gaze and its elevation.
+@group(#{MATERIAL_BIND_GROUP}) @binding(176) var eye_caustic_map:texture_3d<f32>;
 #endif
 #ifdef DH2_HAIR
 // arkHair reuses image roles 34..36: hairFlowMap (170), hairSpecularMask
@@ -138,6 +141,10 @@ struct EyeSurface {
     albedo:vec3<f32>, ambient_occlusion:f32,
     occlusion:vec3<f32>,
     basis_r:vec3<f32>, basis_g:vec3<f32>, basis_b:vec3<f32>,
+    // Internal caustic: the gaze, the iris (interior) tangent frame, the
+    // unrefracted UV, and (eye/causticStrength, eye/internalCaustic).
+    eye_direction:vec3<f32>, iris_tangent:vec3<f32>, iris_bitangent:vec3<f32>,
+    caustic_uv:vec2<f32>, caustic:vec2<f32>,
 }
 var<private> eye_surface:EyeSurface;
 // parallaxSelfShadow::ComputeDirectionalOcclusion with the AO-driven
@@ -161,7 +168,17 @@ fn eye_direct(l:WardLight)->vec3<f32> {
     let fresnel_diffuse=vec3(1.0)-fresnel_specular;
     let occlusion=eye_directional_occlusion(l.direction,s.occlusion,s.ambient_occlusion,
         s.basis_r,s.basis_g,s.basis_b,s.interior_normal);
-    let iris=clamp(vertex_ln,0.0,1.0)*occlusion;
+    var iris=clamp(vertex_ln,0.0,1.0)*occlusion;
+    if s.caustic.y!=0.0 {
+        // Rotate the UV about the iris centre so the caustic faces the light.
+        let elevation=dot(l.direction,s.eye_direction);
+        let planar=normalize(l.direction-s.eye_direction*elevation);
+        let c=dot(planar,s.iris_tangent);let sn=dot(planar,s.iris_bitangent);
+        let d=s.caustic_uv-vec2(0.5);
+        let rotated=vec2(0.5)+vec2(c*d.x+sn*d.y,-sn*d.x+c*d.y);
+        iris+=smoothstep(0.7,0.8,s.iris_mask)*s.caustic.x
+            *textureSampleLevel(eye_caustic_map,linear_clamp,vec3(rotated,elevation),0.0).x;
+    }
     let diffuse=s.albedo*(1.0/3.14159265358979323846)*mix(sclera,vec3(iris),s.iris_mask);
     let specular=ward_term(s.normal,l.direction,s.view,s.inverse_roughness_squared)*ln*s.specular_factor;
     return fresnel_diffuse*irradiance*diffuse+fresnel_specular*irradiance*specular;
