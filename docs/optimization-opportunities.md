@@ -2616,3 +2616,15 @@ already ready. Do not claim this explains the first-shot stall. A correction
 requires the real graph submission receipt, matching output and scoped wait
 measurements; neither an earlier frame number nor a guessed timeout can replace
 that receipt. Deferred while the exact-generation correctness repair is checked.
+
+The same handoff also clones all four completed float4 slices into the shared
+query manager on each recorded frame, although only the selected slot changes.
+This retains a second CPU result set and performs four Vec allocations/copies;
+volume is16*sum(completed_ring_lengths) bytes per recorded frame (up to64KiB
+at the actual1,024-point limit), not a measured resident-RAM saving. The source
+304c40 map/copy has one CPU result destination. A future correction can make
+that existing shared destination authoritative, but must preserve direct
+readback diagnostics, head/particle/water clients, exact submission generations,
+borrowing and shutdown. No CPU-time gain is assigned without scoped measurement.
+It is deferred from the current readiness repair to avoid changing both its
+storage lifetime and completion semantics before actual water behavior passes.
