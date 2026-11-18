@@ -42,7 +42,11 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     engine: Res<super::bevy_backend::Engine>, mut commands: Commands,
     playing: Query<(Entity, &super::AudioTarget, &super::graph::Playing)>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
-    (loading_screen, exit): (Option<Res<super::super::loading_screen::Acquisition>>, Option<Res<super::super::loading_screen::ExitState>>),
+    (loading_screen, exit, observer): (
+        Option<Res<super::super::loading_screen::Acquisition>>,
+        Option<Res<super::super::loading_screen::ExitState>>,
+        Option<Res<super::observation::Observation>>,
+    ),
     mut decodes: ResMut<super::SoundDecodeQueue>, mut retiring: ResMut<super::RetiringSounds>,
     mut sound_events: MessageWriter<super::SoundEvent>)
 {
@@ -307,7 +311,16 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                         {
                             Ok((mut source, control)) => {
                                 source.retain_event(ticket.clone());
-                                match engine.submit(source, playing_id, prepared.declaration.declaration.id) {
+                                let admission = engine.submit(source, playing_id, prepared.declaration.declaration.id);
+                                if let Some(observer) = &observer {
+                                    // Observe the real Play submission only. The Ticket
+                                    // keeps its native declaration-reference domain;
+                                    // this admission records the actual engine event.
+                                    observer.record_admission(None, playing_id,
+                                        prepared.declaration.declaration.id, event.object,
+                                        bridge.playing.object_count(event.object), admission.as_ref().err());
+                                }
+                                match admission {
                                     Ok(voice) => {
                                         submitted += 1;
                                         if trace_fx_sound_limits() {

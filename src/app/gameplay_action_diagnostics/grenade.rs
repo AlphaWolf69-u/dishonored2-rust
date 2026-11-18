@@ -94,6 +94,9 @@ impl Observation {
         self.since = Instant::now();
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
+        if let Some(error) = app::runtime_materials::equipment_admission::startup_error(world) {
+            return Err(format!("actual equipment publication failed during {:?}: {error}", self.stage));
+        }
         //Inspect the causal constructor failure before any next global retry
         //can replace it with an entered-component readiness diagnostic.
         if let Some(error) = app::weapon_throwing::startup_error(world) {

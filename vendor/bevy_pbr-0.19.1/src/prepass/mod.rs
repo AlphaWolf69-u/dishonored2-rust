@@ -907,7 +907,8 @@ fn specialize_material_prepass(world:&mut World,material_type:TypeId,properties:
     };
     if draw_function.is_none(){return Ok(None);}
     static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
-    let trace=*TRACE.get_or_init(||std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref()==Ok("1"));
+    let trace=*TRACE.get_or_init(||std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref()==Ok("1")
+        ||std::env::var_os("DH2_TRACE_WORLD_FX").is_some());
     let hashes=trace.then(||{
         use core::hash::{Hash,Hasher};
         let mut layout_hash=std::collections::hash_map::DefaultHasher::new();

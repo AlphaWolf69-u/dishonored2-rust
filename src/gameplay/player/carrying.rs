@@ -208,11 +208,15 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default()->Self {
         Self{pending:None,held:None,changes:Vec::new(),release:Default::default(),released:false,pulling_started:false,
-            debug_trace:(cfg!(debug_assertions)&&std::env::var_os("DH2_DEBUG_ACTION_SCENARIO").is_some()).then(std::collections::VecDeque::new)}
+            debug_trace:(std::env::var("DH2_DEBUG_ACTION_SCENARIO").ok().is_some_and(|scenario|cfg!(debug_assertions)||matches!(scenario.as_str(),"carry"|"full"))).then(std::collections::VecDeque::new)}
     }
 }
 impl Runtime {
     pub(crate) fn tracing_enabled(&self)->bool {self.debug_trace.is_some()}
+    pub(crate) fn observed_throw_ack(&self, entity:EntityId)->bool {
+        self.debug_trace.as_ref().is_some_and(|rows|rows.iter().any(|row|
+            *row==("throw-owner-ack",Some(entity),14,true)))
+    }
     ///Debug action evidence only. Disabled gameplay retains no history or
     ///allocations; the enabled fixture keeps at most64 transition receipts.
     pub(crate) fn trace(&mut self,event:&'static str,target:Option<EntityId>,state:i32,accepted:bool){

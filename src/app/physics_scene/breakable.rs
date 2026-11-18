@@ -103,6 +103,24 @@ impl ComponentInstance for BreakableComponent {
     }
 }
 impl PhysicsScene {
+    /// Scope-local diagnostics borrow only this actor's real component slots;
+    /// no scene sweep, mutable runtime access or resource acquisition.
+    pub(in crate::app) fn visit_breakable_progress(&self, id: EntityId,
+        mut visit: impl FnMut(CheckedComponent, usize, &Arc<Definition>)) -> Result<(), String> {
+        let Some(&index) = self.shared_indices.get(&id) else { return Ok(()); };
+        let entity = self.entities.get(index).ok_or("Breakable diagnostic entity absent")?;
+        if entity.shared != id { return Err("Breakable diagnostic entity generation stale".into()); }
+        for &packed in entity.components.entries.values() {
+            let handle = ComponentHandle::from_packed(packed)?;
+            if handle.class_id != self.classes[11] { continue; }
+            let component = self.breakables.get(handle.slot).ok_or("Breakable diagnostic payload absent")?;
+            if component.owner.entity != Some(index) { return Err("Breakable diagnostic component owner stale".into()); }
+            visit(CheckedComponent { handle, generation: component.owner.generation },
+                component.runtime.current_step, &component.runtime.definition);
+        }
+        Ok(())
+    }
+
     pub(in crate::app) fn report_breakable_selector(&self, phase: &str) {
         self.pending_breakable_journals.report(phase);
     }

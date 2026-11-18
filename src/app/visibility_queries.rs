@@ -882,6 +882,21 @@ pub(super) fn stream_visible_models(
                         MeshTag(instance.probe_index),
                         GlobalTransform::from(instance.transform),
                     ));
+                    // Same immutable source and actual asset/entity IDs as
+                    // this newly published draw. Only opt-in source tracing;
+                    // settled visibility frames allocate/format nothing.
+                    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if *TRACE.get_or_init(|| std::env::var_os("DH2_TRACE_WORLD_FX").is_some()) {
+                        let material = match &instance.material {
+                            MaterialHandle::Probe(value) => Some(("Probe", value.id().untyped())),
+                            MaterialHandle::Decal(value) => Some(("Decal", value.id().untyped())),
+                            _ => None,
+                        };
+                        if let Some((family, material)) = material {
+                            eprintln!("FX_MATERIAL_SOURCE owner=placed family={family} instance={index} entity={:?} mesh={:?} material={material:?} source={:?} probe_index={}",
+                                entity.id(), instance.mesh.id(), instance.source, instance.probe_index);
+                        }
+                    }
                     instance.entity = Some(entity.id());
                     instance.visible = true;
                     active += 1;

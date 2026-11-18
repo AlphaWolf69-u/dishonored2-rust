@@ -4,6 +4,21 @@ use crate::gameplay::{collision_hit::ShapeHitInfo, entity_lifetime::EntityId};
 use std::fmt::Write;
 
 impl PhysicsScene {
+    /// Opt-in fixture read of the actual completed solver body, not actor velocity.
+    pub(in crate::app) fn observe_rigid_completed_motion(
+        &self,live:&crate::gameplay::entity_lifetime::LiveEntities,id:EntityId,
+    )->Result<Option<(i32,u32,[f32;4],[f32;4],[f32;4])>,String>{
+        let Some(frame)=self.simulation.as_ref().and_then(|driver|driver.observed_completed_frame()) else{return Ok(None)};
+        if live.get(id).is_none(){return Err("throw motion entity generation retired".into())}
+        let index=*self.shared_indices.get(&id).ok_or("throw motion Scene identity absent")?;
+        let handle=self.document_rigid(index)?.ok_or("throw motion rigid component absent")?;
+        let body=self.rigid_component(handle)?.body().ok_or("throw motion body absent")?;
+        let world=self.world.read().map_err(|_|"throw motion world poisoned")?;
+        let body=world.storage.bodies.get(body).ok_or("throw motion body generation stale")?;
+        let motion=world.storage.motions.get(body.motion_id).ok_or("throw motion actual motion absent")?;
+        Ok(Some((frame,body.id,motion.pose.center,motion.linear_velocity,motion.world_angular_velocity())))
+    }
+
     /// Reads the accepted solver's retained rows; never submits a query or
     /// substitutes the level navigation mesh for the actual physical world.
     pub(in crate::app) fn observe_rigid_world_support(

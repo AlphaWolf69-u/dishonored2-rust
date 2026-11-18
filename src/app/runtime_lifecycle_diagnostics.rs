@@ -213,6 +213,7 @@ pub fn inspect_runtime_lifecycles(
             Err(error) => {
                 failure.get_or_insert(error);
                 if !exit_requested {
+                    if let Some(actions) = actions.as_mut() { actions.release_contact_effects(); }
                     runtime.request_exit();
                     exit_requested = true;
                     draining_since = Some(Instant::now());
@@ -389,6 +390,7 @@ pub fn inspect_runtime_lifecycles(
         if complete {
             milestone_reached = true;
             record(runtime.app.world(), "exit-request")?;
+            if let Some(actions) = actions.as_mut() { actions.release_contact_effects(); }
             runtime.request_exit();
             exit_requested = true;
             draining_since = Some(Instant::now());
@@ -399,6 +401,7 @@ pub fn inspect_runtime_lifecycles(
                 fx.as_ref().map(|fx| fx.pending_description())
             ));
             record(runtime.app.world(), "incomplete")?;
+            if let Some(actions) = actions.as_mut() { actions.release_contact_effects(); }
             runtime.request_exit();
             exit_requested = true;
             draining_since = Some(Instant::now());

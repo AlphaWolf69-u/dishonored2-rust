@@ -14,6 +14,14 @@ const CUBE: &str = "env/tonemapping/colorcube";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage { Select, AimCancel, Cancel, Rearm, AimCast, Cast, Recharge, Holster, Redraw, Done }
 
+#[derive(Clone, Copy)]
+struct FirstEnvironment {
+    order: u64,
+    age: f32,
+    duration_end: f32,
+    native_zero: bool,
+}
+
 pub(super) struct Observation {
     stage: Stage,
     since: Instant,
@@ -42,6 +50,8 @@ pub(super) struct Observation {
     travel_emitters: Vec<crate::gameplay::sound::Emitter>,
     travel_started: bool,
     travel_environment_seen: bool,
+    travel_environment_zero_seen: bool,
+    travel_environment_first: Option<FirstEnvironment>,
     travel_source_seen: bool,
     travel_environment_trace: Option<String>,
 }
@@ -78,6 +88,7 @@ impl Observation {
             regen_source_ready: false, regen_callback: false, audio_before,
             travel_owner: None, travel_environments: Vec::new(), travel_emitters: Vec::new(),
             travel_started: false, travel_environment_seen: false, travel_source_seen: false,
+            travel_environment_zero_seen: false, travel_environment_first: None,
             travel_environment_trace: None })
     }
 
@@ -172,6 +183,10 @@ impl Observation {
         let Some(simulation) = world.get_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() else { return Ok(()) };
         let started = simulation.observe_fx_owner(owner);
         self.travel_started |= !started.handles.is_empty() && started.pending_starts == 0 && started.environments > 0;
+        // Preserve the first actual eligible producer state, rather than
+        // accepting any later zero after an otherwise positive envelope.
+        let mut eligible = 0;
+        let mut candidate = None;
         if !self.travel_source_seen {
             for emitter in simulation.observe_fx_owner_audio(owner)? {
                 if self.travel_emitters.contains(&emitter) { continue; }
@@ -182,17 +197,38 @@ impl Observation {
                 self.travel_emitters.push(emitter);
             }
         }
-        if !self.travel_environment_seen {
+        if !self.travel_environment_seen && !self.travel_environment_zero_seen {
             use std::fmt::Write as _;
             let mut trace = String::new();
             let _ = write!(trace,"owner={owner} revision={revision} pending={} environment_heads={} ",
                 started.pending_starts, started.environments);
             simulation.observe_fx_owner_environments(owner,|age,effect|{
                 let timing=&effect.timing;
+                if effect.view_mask & 1 != 0 {
+                    eligible += 1;
+                    candidate=Some(FirstEnvironment {
+                        order: effect.registration_order, age, duration_end: timing.duration_end,
+                        //21a240 initializes last_main from fadein(0);21a090
+                        //jumps to fadeout*last_main at duration_end.
+                        native_zero: effect.active && !effect.can_loop()
+                            && age >= timing.duration_end && timing.duration_end > timing.fade_in_end
+                            && timing.fade_in_end == timing.delay_end
+                            && timing.fade_out_rate.is_finite() && timing.fade_out_rate > 0.
+                            && timing.fading_out && effect.initial_main == 1.
+                            && effect.last_main == 0. && effect.blend == 0.,
+                    });
+                }
                 let _=write!(trace,"producer[order={} age={} active={} mask={:#x} blend={} initial_main={} last_main={} delay_end={} fadein_end={} duration_end={} fadein_rate={} duration_rate={} fadeout_rate={} fading_out={}] ",
                     effect.registration_order,age,effect.active,effect.view_mask,effect.blend,effect.initial_main,effect.last_main,
                     timing.delay_end,timing.fade_in_end,timing.duration_end,timing.fade_in_rate,timing.duration_rate,timing.fade_out_rate,timing.fading_out);
             })?;
+            if self.travel_environment_first.is_none() {
+                if let Some(mut first)=candidate {
+                    first.native_zero &= eligible == 1 && self.travel_environments.len() == 1
+                        && started.environments == 1;
+                    self.travel_environment_first=Some(first);
+                }
+            }
             if let Some(images)=world.get_resource::<crate::rendering::bevy_backend::environment_images::EnvironmentImages>(){
                 let _=write!(trace,"image_generation={} image_ACK={} ",images.generation,images.completed.load(Ordering::Acquire));
             }
@@ -222,10 +258,33 @@ impl Observation {
                 self.travel_environment_trace=Some(trace);
             }
         }
-        if !self.travel_started || self.travel_environment_seen { return Ok(()) }
+        if !self.travel_started || self.travel_environment_seen || self.travel_environment_zero_seen { return Ok(()) }
         let Some(effects) = world.get_resource::<app::environment_effects::EnvironmentEffects>() else { return Ok(()) };
         let Some(display) = world.get_resource::<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>()
-            .and_then(|frame| frame.0.as_ref()).and_then(|frame| frame.overrides.as_ref()) else { return Ok(()) };
+            .and_then(|frame| frame.0.as_ref()) else { return Ok(()) };
+        // This separate receipt describes the observed native zero-output
+        // edge. It never stands in for a positive contribution or GPU pixels.
+        if let (Some(first), Some(current)) = (self.travel_environment_first, candidate) {
+            let image_ack = world.get_resource::<crate::rendering::bevy_backend::environment_images::EnvironmentImages>()
+                .is_some_and(|images| images.generation != 0 && images.completed.load(Ordering::Acquire) == images.generation);
+            if first.native_zero && current.native_zero && first.order == current.order
+                && eligible == 1 && started.environments == 1 && started.pending_starts == 0
+                && self.travel_environments.len() == 1 && effects.frame.rows().len() == 1
+                && display.overrides.is_none() && image_ack {
+                if let Some(environment) = self.travel_environments[0].upgrade() {
+                    let row = &effects.frame.rows()[0];
+                    if Arc::ptr_eq(&row.environment,&environment) && row.weight == 0. && row.influence == 1.
+                        && environment.prepared.load(Ordering::Acquire) {
+                        let image = effects.image(&environment,CUBE)?;
+                        self.travel_environment_zero_seen=true;
+                        eprintln!("ACTION_SMOKE_PASS check=blink_travel_environment_native_zero_weight owner={owner} revision={revision} order={} first_observed_eligible_age={} duration_end={} first_last_main_zero=true first_blend_zero=true initial_main=1 zero_fadein=true source_branch=21a240_21a090 current_age={} environment={} identity={:p} source_image={:?} GPU_image_prepared=true image_generation_ACK=true Frame_weight=0 Frame_influence=1 display_overrides_absent=true native_zero_output_matched=true positive_environment_contribution=false pixels_verified=false",
+                            first.order,first.age,first.duration_end,current.age,environment.name,Arc::as_ptr(&environment),image.id());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        let Some(display) = display.overrides.as_ref() else { return Ok(()) };
         for source in &self.travel_environments {
             let Some(environment) = source.upgrade() else { continue };
             let Some(row) = effects.frame.rows().iter().find(|row| Arc::ptr_eq(&row.environment, &environment)
@@ -300,7 +359,7 @@ impl Observation {
         if let Some(input) = self.release.take() { send(world, input, false)?; return Ok(false); }
         if self.since.elapsed() > Duration::from_secs(90) {
             let mut snapshot = String::new(); player(world)?.write_combat_diagnostics(&mut snapshot);
-            return Err(format!("Blink actual-input timeout stage={:?} cancel74={} blink12={} spent={} travel_owner={:?} travel_started={} environment_display={} sound_nonzero={} emitters={:?} snapshot={snapshot}", self.stage, self.cancel_seen, self.blink_seen, self.spent, self.travel_owner, self.travel_started, self.travel_environment_seen, self.travel_source_seen, self.travel_emitters));
+            return Err(format!("Blink actual-input timeout stage={:?} cancel74={} blink12={} spent={} travel_owner={:?} travel_started={} environment_display={} environment_native_zero={} sound_nonzero={} emitters={:?} snapshot={snapshot}", self.stage, self.cancel_seen, self.blink_seen, self.spent, self.travel_owner, self.travel_started, self.travel_environment_seen, self.travel_environment_zero_seen, self.travel_source_seen, self.travel_emitters));
         }
         let stage = self.stage;
         match stage {
@@ -342,7 +401,7 @@ impl Observation {
             }
             Stage::Recharge => {
                 if player(world)?.mana() > self.mana_low && (self.regen_event.is_none() || self.regen_admitted)
-                    && self.travel_environment_seen && self.travel_source_seen {
+                    && (self.travel_environment_seen || self.travel_environment_zero_seen) && self.travel_source_seen {
                     eprintln!("ACTION_SMOKE_PASS check=blink_mana_regenerates current={} low={} actual_regen_event={:?} admitted={} source_ready_callback={} any_callback={} audible_line_not_claimed=true", player(world)?.mana(), self.mana_low, self.regen_event, self.regen_admitted, self.regen_source_ready, self.regen_callback);
                     send(world, self.holster_input, true)?;
                     self.held = Some(self.holster_input);
@@ -366,9 +425,10 @@ impl Observation {
                 self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
-                if !self.travel_environment_seen || !self.travel_source_seen {
-                    return Err("Blink cannot complete without actual environment display and nonzero sound source receipts".into());
+                if !(self.travel_environment_seen || self.travel_environment_zero_seen) || !self.travel_source_seen {
+                    return Err("Blink cannot complete without actual positive ENV display or source-proven native zero-weight publication, plus nonzero sound source receipts".into());
                 }
+                eprintln!("ACTION_SMOKE_BLINK_ENV_RESULT positive_display={} source_proven_native_zero={} positive_pixels_not_claimed=true",self.travel_environment_seen,self.travel_environment_zero_seen);
                 eprintln!("ACTION_SMOKE_PASS check=blink_input_sequence_complete GPU_record_receipt_required_separately=ACTION_SMOKE_FSDISTO_RENDER pixels_verified=false exit=ordinary_ExitDrain");
                 return Ok(true);
             }

@@ -669,12 +669,25 @@ impl LiveEntities {
     /// reference-frame owner performs this only after its other attachment
     /// preconditions have been validated.
     pub(crate) fn link_child(&mut self, parent: EntityId, child: EntityId) -> Result<(), String> {
-        if parent == child { return Err("entity cannot parent itself".into()); }
+        self.preflight_reparent(parent, child)?;
         let child_index = child.0 as u32 as usize;
-        if self.get(child).is_none() { return Err("child identity is stale".into()); }
         if self.slots[child_index].entry.as_ref().ok_or("child retired")?.parent.is_some() {
             return Err("child already has a parent".into());
         }
+        let parent_index = parent.0 as u32 as usize;
+        let children = &mut self.slots[parent_index].entry.as_mut().ok_or("parent retired")?.children;
+        if children.contains(&child) { return Err("child is already in the parent list".into()); }
+        children.try_reserve(1).map_err(|e| format!("entity child list: {e}"))?;
+        children.push(child);
+        self.slots[child_index].entry.as_mut().ok_or("child retired")?.parent = Some(parent);
+        Ok(())
+    }
+
+    ///875e80 rejects cyclic/stale parenting before752900 removes the old
+    ///reciprocal link. Reuse this same check for first attachment and reparent.
+    pub(crate) fn preflight_reparent(&self, parent: EntityId, child: EntityId) -> Result<(), String> {
+        if parent == child { return Err("entity cannot parent itself".into()); }
+        if self.get(child).is_none() { return Err("child identity is stale".into()); }
         let mut ancestor = Some(parent);
         let mut remaining = self.slots.len();
         while let Some(id) = ancestor {
@@ -684,13 +697,6 @@ impl LiveEntities {
             if self.get(id).is_none() { return Err("attachment ancestor identity is stale".into()); }
             ancestor = self.slots[id.0 as u32 as usize].entry.as_ref().ok_or("attachment ancestor retired")?.parent;
         }
-        let parent_index = parent.0 as u32 as usize;
-        if self.get(parent).is_none() || self.get(child).is_none() { return Err("attachment identity is stale".into()); }
-        let children = &mut self.slots[parent_index].entry.as_mut().ok_or("parent retired")?.children;
-        if children.contains(&child) { return Err("child is already in the parent list".into()); }
-        children.try_reserve(1).map_err(|e| format!("entity child list: {e}"))?;
-        children.push(child);
-        self.slots[child_index].entry.as_mut().ok_or("child retired")?.parent = Some(parent);
         Ok(())
     }
 

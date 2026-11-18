@@ -1097,6 +1097,27 @@ pub(crate) fn specialize_material_meshes(
         };
         match base_specialize(world, key, &item.layout, &item.properties) {
             Ok(pipeline_id) => {
+                // Host diagnostic at an ACTUAL requested specialization, not
+                // a per-frame renderable scan or a new pipeline/history cache.
+                static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if *TRACE.get_or_init(|| std::env::var_os("DH2_TRACE_WORLD_FX").is_some()) {
+                    use core::hash::Hasher;
+                    // Collection and this processing pass are one exclusive
+                    // batch. Both canonical registries use THIS MainEntity;
+                    // recover IDs only here instead of widening work items.
+                    let mesh = world.resource::<RenderMeshInstances>().mesh_asset_id(item.visible_entity);
+                    let material = world.resource::<RenderMaterialInstances>().instances
+                        .get(&item.visible_entity).map(|instance| instance.asset_id);
+                    let mut layout_hash = std::collections::hash_map::DefaultHasher::new();
+                    item.layout.hash(&mut layout_hash);
+                    let mut material_hash = std::collections::hash_map::DefaultHasher::new();
+                    item.properties.material_key.hash(&mut material_hash);
+                    let event_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default().as_micros();
+                    eprintln!("FX_MATERIAL_SPECIALIZATION phase=visible event_us={event_us} entity={:?} view={:?} mesh={:?} material={:?} layout_hash={:016x} material_key_hash={:016x} mesh_key={:?} pipeline={pipeline_id:?}",
+                        item.visible_entity, item.retained_view_entity, mesh, material,
+                        layout_hash.finish(), material_hash.finish(), item.mesh_key);
+                }
                 world
                     .resource_mut::<SpecializedMaterialPipelineCache>()
                     .entry(item.retained_view_entity)

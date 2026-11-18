@@ -285,7 +285,9 @@ pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, vie
                 &properties,
             )
             .map_err(|error| format!("world model specialization: {error}"))?;
-            if model_diagnostics && crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if model_diagnostics && (crate::rendering::bevy_backend::world_effects::trace_lifecycle()
+                || *TRACE.get_or_init(|| std::env::var_os("DH2_TRACE_WORLD_FX").is_some())) {
                 let state = match world
                     .resource::<PipelineCache>()
                     .get_render_pipeline_state(id)
@@ -294,8 +296,15 @@ pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, vie
                     CachedPipelineState::Err(_) => "error",
                     _ => "pending",
                 };
+                use std::hash::{Hash, Hasher};
+                let mut layout_hash = std::collections::hash_map::DefaultHasher::new();
+                layout.hash(&mut layout_hash);
+                let mut material_hash = std::collections::hash_map::DefaultHasher::new();
+                properties.material_key.hash(&mut material_hash);
+                let layout_hash = layout_hash.finish();
+                let material_hash = material_hash.finish();
                 eprintln!(
-                    "FX_MODEL_PIPELINE mesh={:?} material={:?} mesh_key={mesh_key:?} pipeline={id:?} state={state}",
+                    "FX_MODEL_PIPELINE mesh={:?} material={:?} mesh_key={mesh_key:?} pipeline={id:?} state={state} layout_hash={layout_hash:016x} material_key_hash={material_hash:016x}",
                     surface.mesh, surface.material,
                 );
             }

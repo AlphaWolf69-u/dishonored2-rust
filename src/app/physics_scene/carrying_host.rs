@@ -886,6 +886,12 @@ impl super::super::carrying::Host for CarryHost<'_> {
                 .impulse_posted = true;
         }
         self.release_body(target, player, true)?;
+        if player.carrying.tracing_enabled() {
+            let progress=&self.state.progress[&target.entity];
+            eprintln!("ACTION_SMOKE_THROW_NATIVE entity={:?} frame={} release_position={:?} requested_linear={:?} requested_angular={:?} message149_posted={} release_complete={} source=83de90 actual_solver_consumption_required=true",
+                target.entity,self.clock.frame_marker(),progress.position,progress.velocity,
+                progress.angular,progress.impulse_posted,progress.release==3);
+        }
         if let Some(path) = hold.throw_fx.as_deref() {
             let name = self
                 .live

@@ -121,7 +121,11 @@ impl Carrying {
                     let declaration = target.hold.clone();
                     match kind {
                         Release::Drop => host.drop(&target, &declaration, player)?,
-                        Release::Throw => host.throw(&target, &declaration, player)?,
+                        Release::Throw => {
+                            host.throw(&target, &declaration, player)?;
+                            // Only after the actual83de90 host transaction succeeds.
+                            player.carrying.trace("throw-owner-ack",Some(target.entity),14,true);
+                        }
                         Release::Consumed => host.consumed(&target)?,
                     }
                 }

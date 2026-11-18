@@ -25327,3 +25327,58 @@ strict. No callback identity, mix/gain or media lifetime changed. An opt-in
 same-owner borrowed ENV-chain observer records actual timing, weights, image
 ACK and display identity to locate the separate missing receipt. It changes
 no clock/RNG, fade, ordinary-frame traversal, GPU work or readiness policy.
+
+8bfecd0b dev game/core checks passed; executable SHA256
+E93387EE405AC52BB49416072D0E6D2B9ADAAF473EB39726F4330897B6DCE226.
+The actual Blink trace established a native skipped-duration edge, not a missing
+ENV consumer: first observed age0.10000001 exceeds duration_end0.1, original
+21a240/21a090 leaves last_main/blend zero, prepared image generation2 is actually
+acknowledged, exact Frame row has weight0/influence1, and Display has no override.
+The observer now separately reports this source-proven zero publication or the
+unchanged positive-display case. It never calls zero a positive contribution,
+changes timing or fabricates readiness. Remaining cold PBR pipelines are still
+unattributed: actual Blink creations reach1.69s. Exact visible specialization
+and source-birth receipts now run under the existing opt-in trace; identities
+are recovered from canonical registries without widening normal work items.
+No new program, GPU pass, image or ordinary-frame recorder was added.
+
+The8bf grenade run still failed Hold:95 equipment-publication warnings prove
+the parent update was attempted and rejected by the common binding service.
+That service incorrectly demanded a separate unbind. Source875e80/752900/879100
+changed-parent behavior is now ported: validate the same live-generation/cycle
+rules, detach the old reciprocal topology, then use the ordinary new link and
+final bound-body refresh. No transient full-unbind physics mode is introduced.
+Same-parent fast paths remain unchanged; there is no grenade/name exception.
+The actual source is animated equipment, so this evidence does not certify the
+separate model-less80cd60 path. Coherent cooking/throw/exit verification pending.
+
+`host diagnostic:` FX Play submissions now feed the same optional audio observer
+as ordinary posts; the prior observer recorded no FX admissions at all. Exact
+ticket PlayingId/emitter and submitted engine event are recorded only from real
+Engine::submit results. FX Ticket declaration references/callbacks remain in
+their original domain. No observer adds no formatting/allocation/history/lock.
+Multiple Play actions can share one native event cookie; receipt count is not
+an event-count or audibility claim. Mix, clock and media lifetimes are unchanged.
+
+`host diagnostic:` contact gun/sword/poke checks now wait for the actual advanced
+Breakable steps' destruction requests to start and retire before ending the
+session. Damage alone previously canceled those effects during early exit.
+Existing Tail records carry source/component-generation/step provenance (about
+32 additional bytes per active tail); weak tickets identify the same requests.
+Scope metadata uses weak declaration references, copies only actual path/count
+expectations, and clears before normal/error ExitDrain. Canonical resource
+headers remain unpinned. Observations require actual unconditional particle
+chains and middleware sound admission/processing where authored; game-defined
+events intentionally produce no middleware voice. No extra FX request, clock,
+RNG or ACK is generated; actual runtime and visible/audible output remain
+separate acceptance boundaries.
+
+The5c carry receipt already compared the held pre-release pose with later
+unparented movement; it was not measuring pickup displacement from the spawn.
+The observer now additionally requires the actual83de90 Throw transaction ACK,
+records the posted149 request and727100 acceptance, then reads canonical body
+motion only at a completed post-release solver step and support at a later
+completed step. It adds no guessed direction/speed/offset threshold or gameplay
+change. Explicit carry/full diagnostics enable the existing bounded trace in
+dev and release; ordinary release retains no history. This still does not
+certify continuous support, full ballistic parity or the separate plate report.

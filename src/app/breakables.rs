@@ -45,9 +45,22 @@ impl Drop for Breakables {
     }
 }
 struct Tail {
+    source: EntityId,
+    component: crate::gameplay::pickable_component::CheckedComponent,
+    step: usize,
     owner: EntityId,
     ticket: super::usable_effects::EffectTicket,
     remove_owner: bool,
+}
+/// Borrow only this damaged source generation's real destruction requests.
+/// Retained child FX targets remain attributable to their originating component.
+pub(super) fn visit_tails(world: &World, source: EntityId,
+    mut visit: impl FnMut(crate::gameplay::pickable_component::CheckedComponent, usize, &super::usable_effects::EffectTicket)) {
+    if let Some(owner) = world.get_resource::<Breakables>() {
+        for tail in owner.tails.iter().filter(|tail| tail.source == source) {
+            visit(tail.component, tail.step, &tail.ticket);
+        }
+    }
 }
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Breakables>();
@@ -176,7 +189,9 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                         super::usable_effects::EntityPlacement { target: crate::gameplay::event_graph::EntityReference::Named(target_name),
                             tag: String::new(), local: fx.local, attached: fx.attached },
                         crate::gameplay::reference_frame::compose(frame.pose, fx.local), context);
-                    owner.tails.push(Tail { owner: target, ticket, remove_owner: hold_owner });
+                    owner.tails.push(Tail { source: component,
+                        component: crate::gameplay::pickable_component::CheckedComponent { handle, generation },
+                        step, owner: target, ticket, remove_owner: hold_owner });
                 }
                 Effect::SoundOcclusion { owner: id, strength } => {
                     let acoustic=world.get_resource::<super::audio::level::LevelAudio>().map(|level|level.acoustic_world());

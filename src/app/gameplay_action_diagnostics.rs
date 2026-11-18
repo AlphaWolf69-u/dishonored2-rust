@@ -8,6 +8,7 @@ use std::{collections::HashSet, time::{Duration, Instant}};
 mod blink;
 mod bolt;
 pub(super) mod grenade;
+mod contact_fx;
 
 #[derive(Resource, Default)]
 struct Receipts { heart_uses: u64, heart: Option<EntityId>, heart_selected:Option<bool>,
@@ -91,6 +92,7 @@ pub(super) struct Observation {
     object: Option<(EntityId,[f32;3])>,
     object_motion_seen: bool,
     object_throw_frame: Option<i32>,
+    object_motion_frame: Option<i32>,
     focus_samples: u32,
     focus_nonzero: bool,
     focus_release_attack: bool,
@@ -105,6 +107,8 @@ pub(super) struct Observation {
     contact_windows: u64,
     contact_damage_seen: bool,
     contact_health: Option<f32>,
+    contact_health_reported: bool,
+    contact_effects: Option<contact_fx::ContactEffects>,
     approach_move: Option<Input>,
     fixture_gate: Option<(bool,bool,bool,bool)>,
     fixture_reports: u32,
@@ -166,9 +170,9 @@ impl Observation {
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
         Ok(Self { bolt,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
-            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,
+            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,object_motion_frame:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
-            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
+            contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,contact_health_reported:false,contact_effects:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
             world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
     }
@@ -306,6 +310,7 @@ impl Observation {
         self.contact_health=Some(scene.entity_health(live,id)?.ok_or("contact fixture has no source Health component")?.0);
         if self.contact_health.is_some_and(|health|health<=0.){return Err("contact fixture is already dead before attack input".into())}
         if scene.breakable_component(live,id)?.is_none(){return Err("contact fixture lacks actual Started Breakable component".into())}
+        self.contact_effects=Some(contact_fx::ContactEffects::baseline(world,id)?);
         self.contact_serial=super::melee::action_receipt(world,id).map_or(0,|receipt|receipt.0);
         self.contact_windows=super::melee::active_windows(world);
         eprintln!("ACTION_SMOKE_CONTACT_BEFORE entity={id:?} source_health={:?} source_expected_health=2 melee_receipt_serial={} active_windows={}",self.contact_health,self.contact_serial,self.contact_windows);
@@ -1133,7 +1138,11 @@ impl Observation {
                 self.stage(Stage::ContactPokeAim,world)?;
             }
             Stage::ContactDamage => {
-                let id=self.object.unwrap().0;let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                let id=self.object.unwrap().0;
+                // Observe real tickets from the first damage frame, including
+                // while the existing poke focus fade is still progressing.
+                let effects_done=self.contact_effects.as_mut().ok_or("contact FX baseline absent")?.update(world,id)?;
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
                 let scene=world.resource::<super::physics_scene::PhysicsScene>();
                 let receipt=super::melee::action_receipt(world,id);
                 let focused_receipt=super::melee::focused_action_receipt(world,id);
@@ -1145,12 +1154,16 @@ impl Observation {
                 let retired=live.get(id).is_none();
                 self.contact_damage_seen |= consumed && (retired || health.is_some_and(|(current,_)|current<self.contact_health.unwrap()));
                 let fade_done=!self.poke_only||focus.is_some_and(|(requested,count,_)|!requested&&count==0);
-                if self.contact_damage_seen&&fade_done {
+                if self.contact_damage_seen&&fade_done&&!self.contact_health_reported {
                     let mut details=String::new();scene.write_breakable_diagnostics(player(world)?.feet().to_array(),&mut details);
                     let check=if self.poke_only{"actual_poke_bottle_damage"}else if self.melee_only{"actual_melee_bottle_damage"}else{"actual_gun_bottle_damage"};
                     eprintln!("ACTION_SMOKE_PASS check={check} entity={id:?} before={:?} after={health:?} retired={retired} melee_receipt={receipt:?} focused_forward_receipt={focused_receipt:?} active_windows={} breakable_state={details}",self.contact_health,super::melee::active_windows(world));
-                    eprintln!("ACTION_SMOKE_NOT_COVERED check=contact_particles_and_sound reason=health_breakable_state_is_not_output_receipt");
                     self.weapon_evidence(world,"contact-health-changed")?;
+                    self.contact_health_reported=true;
+                }
+                if self.contact_health_reported&&effects_done {
+                    self.contact_effects.as_ref().unwrap().report(id);
+                    self.contact_effects=None;
                     self.stage(Stage::Done,world)?;
                 }
             }
@@ -1177,17 +1190,22 @@ impl Observation {
             }
             Stage::ObjectMotion if !player(world)?.carrying.has_work() => {
                 let (id,before)=self.object.unwrap();
+                if !player(world)?.carrying.observed_throw_ack(id){return Ok(false)}
                 let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
                 if live.get(id).is_none(){return Err(format!("thrown object retired before actual world-support receipt; motion_seen={}; this fixture cannot establish support after retirement",self.object_motion_seen))}
                 let scene=world.resource::<super::physics_scene::PhysicsScene>();
                 if let Some(frame)=scene.entity_frame(live,id)? {
                     if frame.position!=before && live.parent(id)?.is_none(){
+                        let Some(motion)=scene.observe_rigid_completed_motion(live,id)? else{return Ok(false)};
+                        if self.object_throw_frame.is_none_or(|release|motion.0<=release){return Ok(false)}
                         if !self.object_motion_seen {
+                            eprintln!("ACTION_SMOKE_PASS check=actual_throw_owner_ack_and_completed_motion entity={id:?} actual_body_motion={motion:?} held_baseline={before:?} actor_position={:?} scope=throw_branch_ack_plus_postrelease_body_motion_not_direction_or_ballistic_parity",frame.position);
+                            self.object_motion_frame=Some(motion.0);
                             eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion unparented=true entity={id:?} before={before:?} after={:?} world_support_still_required=true",frame.position);
                             self.object_motion_seen=true;
                         }
                         if let Some(support)=scene.observe_rigid_world_support(live,id)? {
-                            if self.object_throw_frame==Some(support.completed_frame){return Ok(false)}
+                            if self.object_motion_frame.is_none_or(|motion|support.completed_frame<=motion){return Ok(false)}
                             eprintln!("ACTION_SMOKE_PASS check=actual_throw_world_support unparented=true entity={id:?} after={:?} actual_solver_support={support:?} scope=observed_completed_physics_step continuous_support_or_never_falls_not_claimed=true",frame.position);
                             self.stage(Stage::Done,world)?;
                         }
@@ -1199,5 +1217,6 @@ impl Observation {
         }
         Ok(false)
     }
+    pub(super) fn release_contact_effects(&mut self) { self.contact_effects = None; }
     pub(super) fn completed(&self)->bool{self.stage==Stage::Done}
 }

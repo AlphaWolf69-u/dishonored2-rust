@@ -201,10 +201,17 @@ impl PhysicsScene {
             //80bc50 ->727100 retains/coalesces the actual typed motion
             // request. Its component update/publication owner consumes it.
             0x149 => match &event.payload {
-                Payload::Bytes(bytes) => rigid_pool_mut!(self, handle.class_id)?
-                    .get_mut(handle.slot)
-                    .ok_or("rigid component slot is absent")?
-                    .apply_motion_request(bytes),
+                Payload::Bytes(bytes) => {
+                    rigid_pool_mut!(self, handle.class_id)?
+                        .get_mut(handle.slot)
+                        .ok_or("rigid component slot is absent")?
+                        .apply_motion_request(bytes)?;
+                    static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+                    if *TRACE.get_or_init(||matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("carry"|"full"))){
+                        eprintln!("ACTION_SMOKE_MOTION149_ACCEPTED body={body} component={handle:?} payload={bytes:?} source=727100 consumption_by_body_owner_still_required=true");
+                    }
+                    Ok(())
+                },
                 _ => Err("rigid velocity request has no source message payload".into()),
             },
             0xfa | 0x148 => {

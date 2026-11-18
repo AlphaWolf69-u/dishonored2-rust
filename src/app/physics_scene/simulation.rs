@@ -60,6 +60,9 @@ pub(super) struct PhysicsFrameDriver {
     last_solver: Option<SolverParameters>,
 }
 impl PhysicsFrameDriver {
+    pub(super) fn observed_completed_frame(&self)->Option<i32> {
+        if self.is_idle() {self.completed} else {None}
+    }
     pub(super) fn observe_world_support(&self, storage: &WorldStorage, body: u32) -> Option<crate::gameplay::physics_world::contacts::WorldSupportObservation> {
         if !self.is_idle() { return None; }
         self.contacts.observe_world_support(storage, body, self.completed?)

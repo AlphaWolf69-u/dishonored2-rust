@@ -96,6 +96,9 @@ pub(super) struct EntityPlacement {
 }
 #[derive(Clone)]
 pub(super) struct EffectTicket { lifetime: Weak<Lifetime>, path: Arc<str> }
+impl EffectTicket {
+    pub(super) fn same_request(&self, other: &Self) -> bool { self.lifetime.ptr_eq(&other.lifetime) }
+}
 
 /// Match the actual retained request identity, without extending its lifetime.
 pub(super) fn ticket_request_identity(world:&bevy::prelude::World,ticket:&EffectTicket)->Option<(Arc<str>,Arc<str>)>{

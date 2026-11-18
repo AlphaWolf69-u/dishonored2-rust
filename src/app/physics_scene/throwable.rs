@@ -788,7 +788,13 @@ impl PhysicsScene {
                 self.request_post_physics_actor(usize::from(handle.slot), generation)?;
                 return self.refresh_bound_body_mode(live, child, registry);
             }
-            return Err("entity must detach its previous live binding before rebinding".into());
+            //752900 changes parents in this same bind operation:879100
+            //removes the old reciprocal child link, then the normal path
+            //below links/publishes the new parent. Keep the actual child
+            //world frame/body;8762b0's temporary unbound body-mode restore
+            //does not occur during a direct reparent in the source.
+            live.preflight_reparent(self.entities[parent].shared, self.entities[child].shared)?;
+            self.detach_document(live, child)?;
         }
         let result: Result<(), String> = (|| {
             let child_handle = self.reference_actor(child, registry)?;
