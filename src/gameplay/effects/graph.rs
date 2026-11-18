@@ -22,6 +22,9 @@ use std::{
 pub type FxRuntimeParameters = FxNodeParameters<EntityReference>;
 
 pub trait FxGraphWorld {
+    fn managed_entity(&self,_entity:&EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>{Err("managed entity resolver is not connected".into())}
+    fn managed_frame(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<Option<crate::gameplay::reference_frame::ReferenceFrame>,String>{Err("managed frame resolver is not connected".into())}
+    fn managed_spawn_tag(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>{Err("managed spawn tag resolver is not connected".into())}
     fn entity_effect_ready(&self, _entity: &EntityReference) -> Result<bool, String> {
         Err("scene FX actor playback is not connected".into())
     }
@@ -84,6 +87,9 @@ pub struct FxGraphRuntime {
     spawner: Option<Arc<super::spawner::EntitySpawner>>,
     /// 14079dc40's per-node once flag (+0x30) and m_createdEntity.
     spawned: HashMap<u32, Option<EntityReference>>,
+    instance_id:Option<u64>,
+    spawn_attempt:u64,
+    pending_spawns:HashMap<u32,u64>,
 }
 #[derive(Default)]
 struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3] }
@@ -232,18 +238,24 @@ impl FxGraphRuntime {
             gameflow: None,
             spawner: None,
             spawned: HashMap::new(),
+            instance_id:None,spawn_attempt:0,pending_spawns:HashMap::new(),
         }
     }
     pub(super) fn set_spawner(&mut self, spawner: Option<Arc<super::spawner::EntitySpawner>>) { self.spawner = spawner; }
     /// The host's construction result completes the node's continuation:
     /// Succeeded with m_createdEntity, or Failed.
-    pub(super) fn spawn_result(&mut self, node: u32, result: Result<String, String>) -> Result<(), String> {
+    pub(super) fn set_instance_id(&mut self,id:Option<u64>){self.instance_id=id;}
+    pub(super) fn spawn_result(&mut self, receipt:super::spawner::Receipt, result: Result<crate::gameplay::entity_lifetime::EntityId, String>) -> Result<(), String> {
+        let node=receipt.node;
+        if self.instance_id!=Some(receipt.instance)||self.pending_spawns.get(&node)!=Some(&receipt.attempt){return Err("entity spawner reply has a stale graph/node attempt".into());}
+        self.pending_spawns.remove(&node);
         match result {
-            Ok(name) => {
-                self.spawned.insert(node, Some(EntityReference::Named(name)));
+            Ok(entity) => {
+                self.spawned.insert(node, Some(EntityReference::Managed(entity)));
                 self.emit(node, "Succeeded")
             }
             Err(error) => {
+                self.spawned.remove(&node); //79dc40 sets its once flag only on success.
                 self.emit(node, "Failed")?;
                 Err(format!("entity spawner node {node}: {error}"))
             }
@@ -508,13 +520,13 @@ impl FxGraphRuntime {
                 let target=|field:&str|atom(&node.params,field).filter(|name|!name.is_empty()&&*name!="NULL").map(|name|EntityReference::Named(name.to_owned()));
                 let entity=self.entity_input(&node,"m_target",target("m_target"))?;
                 let replacement=self.entity_input(&node,"m_newTarget",target("m_newTarget"))?;
-                let accepted=if let Some(EntityReference::Named(entity))=entity {
-                    if world.entity_exists(&EntityReference::Named(entity.clone()))? {
-                        let replacement=match replacement{Some(EntityReference::Named(entity))=>entity,_=>String::new()};
-                        if port.name=="Replace Target"&&(replacement.is_empty()||!world.entity_exists(&EntityReference::Named(replacement.clone()))?){false}else{
-                            let target=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_targetName")?,entity};
-                            let replacement=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_newTargetName")?,entity:replacement};
-                            self.gameflow.as_ref().map_or(Ok(false),|owner|owner.control_marker(self.string_id_input(&node,"m_taskId")?,&port.name,target,replacement))?
+                let accepted=if let Some(entity)=entity {
+                    if let Some(id)=world.managed_entity(&entity)? {
+                        let replacement=if let Some(replacement)=replacement{world.managed_entity(&replacement)?}else{None};
+                        if port.name=="Replace Target"&&replacement.is_none(){false}else{
+                            let target=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_targetName")?,entity:EntityReference::Managed(id)};
+                            let replacement=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_newTargetName")?,entity:replacement.map_or(EntityReference::Invalid,EntityReference::Managed)};
+                            self.gameflow.as_ref().map_or(Ok(false),|owner|owner.control_marker(self.string_id_input(&node,"m_taskId")?,&port.name,target,replacement,|reference|world.managed_entity(reference)))?
                         }
                     }else{false}
                 }else{false};
@@ -562,8 +574,8 @@ impl FxGraphRuntime {
                 return Ok(GraphStep::PickupReset { node: id });
             }
             "arkKisculeNodeEntitySpawnerControl" if port.name == "Spawn" => {
-                // 14079dc40 spawns once per node; later Spawn inputs only
-                // forward the regular outputs.
+                // 14079dc40 spawns once per node; later Spawn inputs also
+                // repeat Succeeded without constructing another entity.
                 if !self.spawned.contains_key(&id) {
                     let spawner = self.spawner.clone().ok_or("entity spawner host is not connected")?;
                     if self.input(&node, "m_entityDef").is_some() || self.input(&node, "m_spawnTag").is_some()
@@ -574,17 +586,26 @@ impl FxGraphRuntime {
                         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
                         .map(|name| EntityReference::Named(name.to_owned()));
                     let target = self.entity_input(&node, "m_target", target_default)?;
+                    let target=target.as_ref().map(|reference|world.managed_entity(reference)).transpose()?.flatten();
+                    let target_frame=target.map(|id|world.managed_frame(id)).transpose()?.flatten();
+                    let target_spawn_tag=target.map(|id|world.managed_spawn_tag(id)).transpose()?;
+                    self.spawn_attempt=self.spawn_attempt.checked_add(1).ok_or("entity spawner attempt identity exhausted")?;
+                    let receipt=super::spawner::Receipt{instance:self.instance_id.ok_or("entity spawner graph generation absent")?,node:id,attempt:self.spawn_attempt};
                     let fields = node.params.as_slice();
                     spawner.submit(super::spawner::EntitySpawnRequest {
+                        receipt,
                         owner: self.owner.clone(),
-                        node: id,
+                        graph_entity:world.managed_entity(&EntityReference::Named(self.owner.clone()))?,
                         declaration: atom(&node.params, "m_entityDef").unwrap_or("").to_owned(),
-                        target,
+                        target:target.map(EntityReference::Managed),target_frame,target_spawn_tag,
                         location: super::variables::read_vector(fields, "m_location")?,
                         rotation: super::variables::read_vector(fields, "m_rotation")?,
                         spawn_tag: atom(&node.params, "m_spawnTag").unwrap_or("").to_owned(),
                     })?;
                     self.spawned.insert(id, None);
+                    self.pending_spawns.insert(id,receipt.attempt);
+                } else if self.spawned.get(&id).is_some_and(Option::is_some) {
+                    self.emit(id, "Succeeded")?;
                 }
                 true
             }

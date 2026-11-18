@@ -235,7 +235,8 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<bool, String> {
     }
     if let Some(id) = id {
         if super::super::player_animation_events::blocks_retirement(world, id)
-            || super::super::animation_effects::blocks_retirement(world, id) { return Ok(false); }
+            || super::super::animation_effects::blocks_retirement(world, id)
+            || super::super::script_spawner::blocks_retirement(world,id) { return Ok(false); }
         if !super::super::weapon_firing::retired(world, identity) { return Ok(false); }
         super::super::weapon_throwing::remove_owned(world, identity);
         super::super::melee::remove_owned(world, identity);
@@ -456,6 +457,7 @@ pub(in crate::app) fn startup_pending(world: &World) -> bool {
         || super::super::equipment_attachment_admission::startup_pending(world)
         || super::super::weapon_throwing::startup_pending(world)
         || super::super::melee::startup_pending(world)
+        || super::super::script_spawner::startup_pending(world)
         || super::super::heart::startup_pending(world)
         || world
             .get_resource::<RuntimeMaterialCoordinator>()
@@ -719,7 +721,8 @@ pub(in crate::app) fn advance(world: &mut World) {
             // Keep both the real rig and its managed ID until accepted
             // animation FX have completed their actual factory handoff.
             if let Some(id) = super::super::equipment_identity::id(world, &path) {
-                if super::super::animation_effects::blocks_retirement(world, id) {
+                if super::super::animation_effects::blocks_retirement(world, id)
+                    || super::super::script_spawner::blocks_retirement(world,id) {
                     actions.removed_equipment.push(path);
                     continue;
                 }

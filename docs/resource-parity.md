@@ -24960,3 +24960,31 @@ children and then their arm/equipment parents. Runtime verification is pending.
 `ported` first-person arm managed identities:770560/8ae9b0 create the two actual declared **arkPlayer** derived actors at the player's transform, retaining Player owner/MAIN tag, source binding and constructor time selector0. Both installed base arm definitions explicitly author that class; there is no idEntity constructor override.784450 initializes the derived model/optional component state;784c10 retains the real current model and birth-position aim vector, looks up optional Attributes and spawns an audiocard child only when authored (absent on the installed arms).7846a0 applies actual D4bit3 for declaration paths containing `/player/` before managed allocation; this class flag does not change the separate Arm ownership role into Equipment. The existing Arm rigs, palettes, controllers, sound objects and PlayerArms render resources remain sole owners. Tagged FX reads their same published joint palettes. The shared identity/reference owner distinguishes Arm from Equipment and Attachment; arm surface withdrawal uses its existing per-model GPU receipt before managed-generation release.784540's normal derived/base destruction frees no second gameplay Player. No extra skeleton, render model or audio cache is created.
 
 Validation for this coordinated source batch is pending its single combined debug build and production-input/loading/exit runs. Source review and parser checks are not runtime, appearance or performance acceptance. The measured Voronoi query improvement from the preceding batch does not establish whole-frame performance or first-shot latency for this one.
+
+### Graph-created actor lifetime integration (2026-11-18)
+
+Owner: `app/script_spawner` accepted journal, canonical runtime-entity
+definition/prototype/actor owners and the existing graph instance generations.
+Source79dc40 resolves the target and captures its transform before8ae9b0;
+8ae9b0 installs inherited owner/tag before Initialize. The created result is
+an actual managed weak generation, not a name alias. Successful creation sets
+the once flag; failed creation emits Failed and permits another source attempt.
+Original shared destruction remains8ab380/8791f0.
+
+`ported` in source, runtime verification pending: exact graph/node/attempt
+receipts route asynchronous replies even when declaration children share the
+same owner name. Each accepted request owns one prototype scope, releases it
+after handoff, and retains source identities until that acknowledgement.
+Actor leases then follow existing component/render/audio retirement. Loading
+and pause pump accepted work. Level close rejects new requests and drains
+accepted work and graph replies before source owners close.
+
+`host:` declaration acquisition uses the existing IO pool; the accepted request
+retains the activation transform, owner and tag across that boundary. Managed
+frame/marker resolution borrows current Live/Scene/Player owners on demand;
+there is no extra pose cache, resource conversion or entity scan. Expected
+effect is removing declaration IO from gameplay and unreleased shared request
+scopes, with no numeric timing/memory improvement claimed. Nonzero standalone
+rotation remains blocked on its untraced source branch. EntityFx graph control
+of dynamically created CpntFX actors is not covered by the legacy placed-actor
+map; their ordinary component lifecycle uses the canonical FX owner.

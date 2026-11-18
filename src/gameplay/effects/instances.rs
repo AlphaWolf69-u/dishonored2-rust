@@ -245,12 +245,9 @@ impl FxGraphInstances {
         let mut errors=Vec::new();
         let Some(spawner)=self.spawner.clone() else{return errors};
         let results=match spawner.take_results(){Ok(results)=>results,Err(error)=>{errors.push(error);return errors;}};
-        for (owner,node,result) in results{
-            let Some(index)=(0..self.runtimes.len()).find(|&index|self.live[index]
-                &&self.runtimes[index].as_ref().is_some_and(|runtime|runtime.graph_owner()==owner)) else{
-                errors.push(format!("entity spawner result for retired graph {owner} node {node}"));continue;
-            };
-            if let Err(error)=self.runtimes[index].as_mut().unwrap().spawn_result(node,result){errors.push(error);}
+        for reply in results{
+            let Some(index)=self.instance_index(reply.receipt.instance)else{continue;};
+            if let Err(error)=self.runtimes[index].as_mut().unwrap().spawn_result(reply.receipt,reply.result){errors.push(error);}
             errors.extend(self.collect(index));
         }
         errors
@@ -336,6 +333,7 @@ impl FxGraphInstances {
         // Zero is reserved for exhaustion; never wrap and alias old work.
         self.generations[index] = u32::try_from(NEXT_GRAPH_GENERATION.fetch_add(1, Ordering::Relaxed)).unwrap_or(0);
         let generation=self.instance_id(index);
+        self.runtimes[index].as_mut().unwrap().set_instance_id(generation);
         if let Some(generation)=generation {
             let definition=self[index].as_ref().unwrap().shared_definition();
             for node in &definition.nodes {

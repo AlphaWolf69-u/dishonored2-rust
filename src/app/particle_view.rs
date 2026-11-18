@@ -30,8 +30,9 @@ pub(super) fn advance_view_effects(
         }
         let world = physics.point_queries()?;
         let world = world.read().map_err(|_| "level physics query owner is poisoned")?;
+        let managed=fx.live().map(|live|super::managed_frames::Resolver{live,scene:physics,player:player.player.as_ref()});
         simulation.advance_world(&fx, frame.0, camera,
-            player.player.as_ref().is_some_and(|player| player.is_underwater()), &world)?;
+            player.player.as_ref().is_some_and(|player| player.is_underwater()), &world,managed.as_ref().map(|resolver|resolver as &dyn crate::rendering::bevy_backend::world_effects::ManagedFrames))?;
         //The base remains the Player camera's unmodified gameplay FOV.
         //Percentage FX never feed their previous output back into the mixer.
         if let Some(player) = player.player.as_ref() {

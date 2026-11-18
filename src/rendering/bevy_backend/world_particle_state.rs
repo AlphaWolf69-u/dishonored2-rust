@@ -2,7 +2,7 @@
 //! their components allocate manager instances before deferred group starts.
 use super::{
     particle_systems::ParticleSystems,
-    world_effects::{WorldEffectDefinitions, WorldEffectFrames, WorldFxClock},
+    world_effects::{WorldEffectDefinitions, WorldEffectFrames, WorldFxClock, FrameReferences, ManagedFrames},
 };
 use crate::{
     assets::entities::event_graph::atom,
@@ -641,6 +641,7 @@ impl WorldParticleState {
     ) {
         self.graphs.set_gameflow(mailbox);
     }
+    pub(crate) fn poll_script_spawns(&mut self){for error in self.graphs.poll_spawns(){self.report(error);}}
     pub(crate) fn set_spawner(&mut self, spawner: Arc<crate::gameplay::effects::spawner::EntitySpawner>) {
         self.graphs.set_spawner(spawner);
     }
@@ -791,6 +792,7 @@ impl WorldParticleState {
     ) -> Result<(), String> {
         let target = match target {
             EntityReference::Named(name) => live.find(&name),
+            EntityReference::Managed(id) => live.get(id).map(|_|id),
             EntityReference::Invalid => None,
             EntityReference::Player => {
                 return Err(
@@ -876,6 +878,7 @@ impl WorldParticleState {
         use crate::gameplay::entity_lifetime::Stage;
         let target = match target {
             EntityReference::Named(name) => live.find(&name),
+            EntityReference::Managed(id) => live.get(id).map(|_|id),
             EntityReference::Invalid => None,
             // This host does not admit a managed player slot yet. Never bind
             // a symbolic player to worldspawn or an arbitrary map entity.
@@ -1087,7 +1090,7 @@ impl WorldParticleState {
         &mut self,
         sources: &WorldEffectDefinitions,
         assets: &WorldFxSources,
-        frames: &WorldEffectFrames,
+        frames: &FrameReferences<'_>,
         live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
     ) -> Result<(), String> {
         if self
@@ -1212,7 +1215,7 @@ impl WorldParticleState {
         &mut self,
         id: u32,
         systems: &mut ParticleSystems,
-        frames: &WorldEffectFrames,
+        frames: &FrameReferences<'_>,
         sources: &WorldFxSources,
     ) -> Result<Option<u32>, String> {
         let mut entity = self.entities.remove(&id).ok_or("FX actor was removed")?;
@@ -1473,7 +1476,7 @@ impl WorldParticleState {
         &mut self,
         snapshot: &super::world_effects::DynamicEffects,
         systems: &mut ParticleSystems,
-        frames: &WorldEffectFrames,
+        frames: &FrameReferences<'_>,
     ) -> Result<(), String> {
         if self
             .dynamic_snapshot
@@ -1639,7 +1642,7 @@ impl WorldParticleState {
     ///4b22d0/4b1cc0, delivered through the same immutable FX publication.
     ///The receipt lives with the existing component kernel and real lifetime.
     fn dynamic_reference_event(&mut self,id:u32,entry:&super::world_effects::DynamicEffect,
-        systems:&mut ParticleSystems,frames:&WorldEffectFrames)->Result<(),String>{
+        systems:&mut ParticleSystems,frames:&FrameReferences<'_>)->Result<(),String>{
         let Some((revision,parent_present,stopping))=entry.reference_event else{return Ok(());};
         let Some(mut entity)=self.entities.remove(&id)else{return Ok(());};
         let mut component=std::mem::take(&mut entity.component);
@@ -1768,7 +1771,10 @@ impl WorldParticleState {
         underwater: bool,
         world: &crate::gameplay::world_point_query::level::LevelPointQueries,
         live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
+        managed: Option<&dyn ManagedFrames>,
     ) -> Result<(), String> {
+        let references=FrameReferences{frames,managed};
+        let frames=&references;
         if self.closed || self.frame == Some(frame) {
             return Ok(());
         }
@@ -2298,14 +2304,22 @@ impl WorldParticleState {
 struct GraphHost<'a> {
     state: &'a mut WorldParticleState,
     systems: &'a mut ParticleSystems,
-    frames: &'a WorldEffectFrames,
+    frames: &'a FrameReferences<'a>,
     sources: &'a WorldFxSources,
     clock: WorldFxClock,
     graph: usize,
 }
 impl FxGraphWorld for GraphHost<'_> {
+    fn managed_entity(&self,entity:&EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>{
+        self.frames.managed.ok_or("script entity resolver is unavailable")?.entity(entity)
+    }
+    fn managed_spawn_tag(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>{self.frames.managed.ok_or("script spawn tag resolver unavailable")?.spawn_tag(id)}
+    fn managed_frame(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<Option<ReferenceFrame>,String>{
+        self.frames.managed.ok_or("script frame resolver is unavailable")?.frame(id,"")
+    }
+
     fn entity_effect_ready(&self, entity: &EntityReference) -> Result<bool, String> {
-        let EntityReference::Named(name) = entity else {
+        let Some(name) = self.frames.entity_name(entity)? else {
             return Ok(false);
         };
         Ok(self
@@ -2324,7 +2338,7 @@ impl FxGraphWorld for GraphHost<'_> {
         target: Option<&EntityReference>,
         target_tag: &str,
     ) -> Result<Option<u32>, String> {
-        let EntityReference::Named(name) = entity else {
+        let Some(name) = self.frames.entity_name(entity)? else {
             return Ok(None);
         };
         let Some(id) = self.state.actors.get(name).copied() else {
@@ -2367,7 +2381,7 @@ impl FxGraphWorld for GraphHost<'_> {
         node: u32,
         entity: &EntityReference,
     ) -> Result<Option<u32>, String> {
-        let EntityReference::Named(name) = entity else {
+        let Some(name) = self.frames.entity_name(entity)? else {
             return Ok(None);
         };
         let Some(id) = self.state.actors.get(name).copied() else {
@@ -2476,7 +2490,7 @@ impl FxGraphWorld for GraphHost<'_> {
 struct InstanceHost<'a> {
     state: &'a mut WorldParticleState,
     systems: &'a mut ParticleSystems,
-    frames: &'a WorldEffectFrames,
+    frames: &'a FrameReferences<'a>,
     sources: &'a WorldFxSources,
     entity: &'a FxEntity,
     id: u32,

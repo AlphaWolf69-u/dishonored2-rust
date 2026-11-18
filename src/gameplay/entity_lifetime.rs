@@ -533,6 +533,14 @@ impl LiveEntities {
         Ok(())
     }
 
+    ///Borrow the already-published spelling from the canonical tag owner.
+    pub fn spawn_tag_text(&self,id:EntityId)->Result<&str,String>{
+        let slot=self.slots.get(id.0 as u32 as usize).ok_or("entity tag slot absent")?;
+        if slot.generation!=(id.0>>32)as u32{return Err("entity tag generation stale".into());}
+        let entry=slot.entry.as_ref().ok_or("entity tag owner retired")?;
+        let group=entry.tag_group.ok_or("entity tag is not published")?;
+        Ok(&self.tag_groups.get(group as usize).ok_or("entity tag group absent")?.spelling)
+    }
     /// Reflected storage before the spawn callback publishes the tag index.
     /// Later changes must go through the indexed tag owner (14087c360).
     pub fn set_unpublished_spawn_tag(&mut self, id: EntityId, tag: NameId) -> Result<(), String> {

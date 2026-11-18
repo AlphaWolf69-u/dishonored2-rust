@@ -165,7 +165,7 @@ pub(super) fn retire(world: &mut World) -> Result<(), String> {
     let entity = owner
         .entity
         .ok_or("player retirement lost its managed generation")?;
-    if super::animation_effects::blocks_retirement(world, entity) {
+    if super::animation_effects::blocks_retirement(world, entity)||super::script_spawner::blocks_retirement(world,entity) {
         return Err("player retirement precedes accepted animation FX callbacks".into());
     }
     let live = world

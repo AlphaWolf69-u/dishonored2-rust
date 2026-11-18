@@ -303,6 +303,7 @@ impl PhysicsScene {
         if component.target.is_none() {
             component.target = match component.definition.target.as_ref() {
                 Some(crate::gameplay::event_graph::EntityReference::Named(name)) => live.find(name),
+                Some(crate::gameplay::event_graph::EntityReference::Managed(id)) => live.get(*id).map(|_|*id),
                 Some(crate::gameplay::event_graph::EntityReference::Player) => {
                     self.damage_player.as_ref().map(|player| player.id)
                 }

@@ -183,6 +183,9 @@ pub(super) fn update(
     bounds: Option<Res<super::scene_queue::ShadowModelBoundsSources>>,
     joints: Option<Res<super::joint_frames::JointFrames>>,
     frames: Option<Res<WorldEffectFrames>>,
+    scene:Option<Res<super::physics_scene::PhysicsScene>>,
+    runtime_models:Option<Res<super::world_models::WorldModels>>,
+    player:Res<super::player::PlayerState>,
     live: Option<Res<LiveEntities>>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     mut menu: NonSendMut<super::pause_menu::PauseMenu>,
@@ -219,13 +222,19 @@ pub(super) fn update(
                 continue;
             }
             for target in progress.marker_targets(task) {
-                let Some(entity) = live.find(&target.entity) else {
-                    continue;
+                use crate::gameplay::event_graph::EntityReference;
+                let entity=match &target.entity{
+                    EntityReference::Named(name)=>live.find(name),
+                    EntityReference::Managed(id)=>live.get(*id).map(|_|*id),
+                    EntityReference::Player=>player.player.as_ref().and_then(|player|player.managed_entity()),
+                    EntityReference::Invalid=>None,
                 };
+                let Some(entity)=entity else{continue;};
                 let Some((name, _)) = live.get(entity) else {
                     continue;
                 };
-                let frame = match frames.published_frame(name) {
+                let managed=matches!(target.entity,EntityReference::Managed(_)|EntityReference::Player);
+                let frame = match if managed{scene.as_ref().map_or(Ok(None),|scene|scene.entity_frame(&live,entity))}else{frames.published_frame(name)} {
                     Ok(Some(frame)) => frame,
                     Ok(None) => continue,
                     Err(error) => {
@@ -234,15 +243,9 @@ pub(super) fn update(
                     }
                 };
                 let kind = (task.lethality.clamp(0, 3) as u8) * 2 + u8::from(task.optional);
-                let point = match positions.point(
-                    entity,
-                    name,
-                    kind as usize,
-                    frame,
-                    &models.0,
-                    &bounds,
-                    &joints,
-                ) {
+                let point = match if managed{
+                    managed_point(entity,kind as usize,frame,&positions,&live,scene.as_deref(),runtime_models.as_deref(),player.player.as_ref())
+                }else{positions.point(entity,name,kind as usize,frame,&models.0,&bounds,&joints)} {
                     Ok(point) => super::game_to_view(point),
                     Err(error) => {
                         warn!("Objective marker: {error}");
@@ -274,4 +277,26 @@ pub(super) fn update(
         .sources
         .retain(|entity, _| buffer.iter().any(|marker| marker.key.entity == *entity));
     menu.publish_markers(buffer);
+}
+
+//676c90: actual managed target/tag, otherwise current entity/model bounds.
+//No per-target pose cache; use the existing canonical palette and model owner.
+fn managed_point(id:EntityId,kind:usize,origin:crate::gameplay::reference_frame::ReferenceFrame,
+    positions:&Positions,live:&LiveEntities,scene:Option<&super::physics_scene::PhysicsScene>,
+    models:Option<&super::world_models::WorldModels>,player:Option<&crate::gameplay::player::Player>)->Result<[f32;3],String>{
+    let tag=&positions.tags[kind];
+    if !tag.is_empty(){
+        if let Some(player)=player{
+            if let Some(frame)=player.animation_entity_tag_world(id,tag)?{return Ok(frame.position);}
+        }
+        if let Some(scene)=scene{
+            if let (Some(rig),Some(matrices))=(scene.runtime_animation_rig(id)?,scene.runtime_animation_matrices(id)?){
+                let published=scene.published_entity_frame(live,id)?;
+                if let Some(frame)=super::joint_frames::current_tag_frame(&rig.rig,matrices,"_info",tag,published.scale,origin)?{return Ok(frame.position);}
+            }
+        }
+    }
+    let mut point=origin.position;
+    if let Some(bounds)=models.and_then(|models|models.interaction_bounds(id)){point[2]+=bounds[1][2]-bounds[0][2];}
+    Ok(point)
 }

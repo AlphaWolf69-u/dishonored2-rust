@@ -70,10 +70,11 @@ impl FxSimulation {
     ///geometry still simulates after the current view query is published.
     pub(crate) fn advance_world(&mut self, fx: &FxUpdateInputs<'_>, frame: u32,
         camera: crate::gameplay::reference_frame::ReferenceFrame, underwater: bool,
-        world: &crate::gameplay::world_point_query::level::LevelPointQueries) -> Result<(), String> {
+        world: &crate::gameplay::world_point_query::level::LevelPointQueries,
+        managed:Option<&dyn super::world_effects::ManagedFrames>) -> Result<(), String> {
         self.world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
             &mut self.particle_systems, &fx.world_sounds, &fx.decals, frame, camera, underwater,
-            world, fx.live.as_deref())
+            world, fx.live.as_deref(), managed)
     }
     /// Read the last completed canonical FX parameter publication; never
     /// advances an effect or samples its random stream.
@@ -95,6 +96,7 @@ impl FxSimulation {
     pub(crate) fn set_gameflow(&mut self, mailbox: std::sync::Arc<crate::gameplay::gameflow::program::Mailbox>) {
         self.world_particles.set_gameflow(mailbox);
     }
+    pub(crate) fn poll_script_spawns(&mut self){self.world_particles.poll_script_spawns();}
     pub(crate) fn set_spawner(&mut self, spawner: std::sync::Arc<crate::gameplay::effects::spawner::EntitySpawner>) {
         self.world_particles.set_spawner(spawner);
     }
@@ -1102,6 +1104,10 @@ pub(crate) struct FxUpdateInputs<'w> {
     decals: Res<'w, super::projected_decals::DecalScene>,
     swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
     live: Option<Res<'w, crate::gameplay::entity_lifetime::LiveEntities>>,
+}
+
+impl FxUpdateInputs<'_>{
+    pub(crate) fn live(&self)->Option<&crate::gameplay::entity_lifetime::LiveEntities>{self.live.as_deref()}
 }
 
 /// Gameplay owns the sole world/player FX simulation and particle pool. The

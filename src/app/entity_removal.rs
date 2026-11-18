@@ -184,7 +184,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
     // 841030 delivers inventory and named pickedUp callbacks synchronously.
     // A retained host callback must finish before the ordinary destructor
     // batch can stop its recipients or reuse their managed identities.
-    if super::pickups::accepted_pending(world) {
+    if super::pickups::accepted_pending(world)||super::script_spawner::startup_pending(world) {
         return Ok(());
     }
     let Some(mut state) = world.remove_resource::<EntityRemoval>() else {

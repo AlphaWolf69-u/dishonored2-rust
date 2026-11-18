@@ -17,7 +17,7 @@ pub struct Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarkerTarget {
     pub name: u32,
-    pub entity: String,
+    pub entity: crate::gameplay::event_graph::EntityReference,
 }
 
 /// 40f670/66eff0: authored target notification, independent of task text.
@@ -138,7 +138,7 @@ fn gather_tasks(node: &Fields, tasks: &mut Vec<Task>, condition: i32) {
                     .filter_map(|value| match value {
                         Value::Scope(fields) => Some(MarkerTarget {
                             name: crate::assets::lang::key_id(atom(fields, "m_name").unwrap_or("")),
-                            entity: text(fields, "m_entity"),
+                            entity: crate::gameplay::event_graph::EntityReference::Named(text(fields, "m_entity")),
                         }),
                         _ => None,
                     })

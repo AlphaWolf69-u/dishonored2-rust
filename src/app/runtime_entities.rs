@@ -113,12 +113,13 @@ struct Actor {
     ///Host destruction edge for actors created by actual manager Initialize;
     ///their typed source manager array remains the lifetime owner.
     startup_parent: Option<EntityId>,
+    script_source:Option<(Option<EntityId>,Option<String>)>,
 }
 struct GrenadeBirth { held: EntityId, target_flags: u32, transferred: bool, targeted: bool }
 impl Actor {
     fn placed()->Self{
         Self{definition:None,prototype:None,removing:false,rollback:false,rollback_queued:false,children:Vec::new(),
-            release:None,stick:None,dynamic:None,breakable_class:None,movable:None,grenade_birth:None,cue:None,startup_parent:None}
+            release:None,stick:None,dynamic:None,breakable_class:None,movable:None,grenade_birth:None,cue:None,startup_parent:None,script_source:None}
     }
 }
 #[derive(Default)]
@@ -226,7 +227,7 @@ pub(super) fn picked_up_builtin(world: &mut World, id: EntityId, successful: boo
         let actor = owner.actors.entry(id).or_insert(Actor {
             definition: None, prototype: None, removing: false, rollback: false,
             rollback_queued: false, children: Vec::new(), release: None, stick: None,
-            dynamic: None, breakable_class: None, movable: Some(actor_class::Movable::new()), grenade_birth: None, cue: None, startup_parent: None,
+            dynamic: None, breakable_class: None, movable: Some(actor_class::Movable::new()), grenade_birth: None, cue: None, startup_parent: None, script_source:None,
         });
         actor.movable.as_mut().ok_or("arkGrenade constructor state is absent")?.picked_up(true);
     }
@@ -963,6 +964,13 @@ pub(super) fn spawn(
 ) -> Result<EntityId, String> {
     spawn_inner(world, definition, options, None, None)
 }
+///79dc40 ->8ae9b0: source owner/tag precede shared Initialize.
+pub(super) fn spawn_script(world:&mut World,definition:Arc<Definition>,frame:ReferenceFrame,source:Option<EntityId>,source_tag:Option<String>)->Result<EntityId,String>{
+    spawn_constructed(world,definition,SpawnOptions{frame,scale:None,hidden_disabled:false},None,None,None,None,None,Some((source,source_tag)),&mut Construction::World)
+}
+pub(in crate::app) fn constructor_script_source(world:&World,id:EntityId)->Option<(Option<EntityId>,Option<String>)>{
+    world.get_resource::<RuntimeEntities>()?.actors.get(&id)?.script_source.clone()
+}
 pub(super) fn spawn_projectile(
     world: &mut World,
     definition: Arc<Definition>,
@@ -999,7 +1007,7 @@ pub(super) fn spawn_animation_effect(world:&mut World, definition:Arc<Definition
         let mut born=None;
         let result=scene.with_runtime_registry(|scene,registry|{
             let id=spawn_constructed(world,definition,SpawnOptions{frame:ReferenceFrame::default(),scale:None,hidden_disabled:false},
-                None,None,None,None,None,&mut Construction::Callback{scene,live,events,registry})?;
+                None,None,None,None,None,None,&mut Construction::Callback{scene,live,events,registry})?;
             born=Some(id);
             scene.bind_animation_effect(live,events,id,owner,binding,joint_world,registry)?;
             scene.configure_animation_fx(live,id,target,culprit,registry)?;
@@ -1073,7 +1081,7 @@ fn spawn_named_inner(world: &mut World, definition: Arc<Definition>, options: Sp
     projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
     grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>, authored_name: Option<Arc<str>>,
     ai_world: Option<AIWorldBirth>) -> Result<EntityId, String> {
-    spawn_constructed(world, definition, options, projectile, grenade, authored_name, ai_world, None, &mut Construction::World)
+    spawn_constructed(world, definition, options, projectile, grenade, authored_name, ai_world, None, None, &mut Construction::World)
 }
 enum Construction<'a> {
     World,
@@ -1114,7 +1122,7 @@ pub(super) fn spawn_component_child_in_registry(world:&mut World,scene:&mut supe
     registry:&mut crate::gameplay::component_state::ComponentRegistry,definition:Arc<Definition>,options:SpawnOptions,
     name:Option<Arc<str>>,parent:EntityId)->Result<EntityId,String>{
     live.get(parent).ok_or("component child parent generation is stale")?;
-    spawn_constructed(world, definition, options, None, None, name, None, Some(parent),
+    spawn_constructed(world, definition, options, None, None, name, None, Some(parent), None,
         &mut Construction::Callback { scene, live, events, registry })
 }
 pub(super) fn prepared_child(world: &World, parent: EntityId, source: &str) -> Result<Arc<Definition>, String> {
@@ -1168,7 +1176,7 @@ pub(super) fn with_ai_cue_mut<R>(world: &mut World, live: &crate::gameplay::enti
 fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: SpawnOptions,
     projectile: Option<crate::gameplay::projectiles::SpawnRequest>,
     grenade: Option<(EntityId, [f32; 3], [f32; 3], EntityId, u32)>, authored_name: Option<Arc<str>>,
-    ai_world: Option<AIWorldBirth>, startup_parent: Option<EntityId>, construction: &mut Construction<'_>) -> Result<EntityId, String> {
+    ai_world: Option<AIWorldBirth>, startup_parent: Option<EntityId>, script_source: Option<(Option<EntityId>,Option<String>)>, construction: &mut Construction<'_>) -> Result<EntityId, String> {
     if (definition.class == "arkAIWorld") != ai_world.is_some() {
         return Err("actual AIWorld construction requires its source world-list admission".into());
     }
@@ -1212,6 +1220,7 @@ fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: Sp
             grenade_birth: grenade.map(|(_, _, _, held, target_flags)| GrenadeBirth { held, target_flags, transferred: false, targeted: false }),
             cue: (definition.class == "arkAICue").then(actor_class::Cue::new),
             startup_parent,
+            script_source:script_source.clone(),
         },
     );
     let result: Result<(), String> = (|| {
@@ -1261,6 +1270,7 @@ fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: Sp
                 None,
                 None,
                 startup_parent.map(|_| id),
+                None,
                 construction,
             )?;
             world
@@ -1281,6 +1291,9 @@ fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: Sp
                     &items, &chunks, projectile, grenade, false, false)
             }
         })?;
+        if script_source.is_some(){
+            construction.visit(world,|_,scene,live,_,_|scene.mark_script_spawn(live,id))?;
+        }
         Ok(())
     })();
     if let Err(error) = result {
@@ -1312,6 +1325,7 @@ fn spawn_constructed(world: &mut World, definition: Arc<Definition>, options: Sp
         .get_mut(&id)
         .ok_or("runtime actor journal disappeared")?;
     actor.rollback = false;
+    actor.script_source = None;
     // Breakable owns the actual chunk array after accepted initialization.
     // The construction-only rollback journal must not duplicate it for life.
     actor.children = Vec::new();
@@ -1486,7 +1500,8 @@ pub(super) fn append_projectile_stick(
 /// GameLocal removal batch owns save-name preparation and final Live ID retire.
 pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool, String> {
     if super::pickups::blocks_retirement(world, id)
-        || super::animation_effects::blocks_retirement(world, id) {
+        || super::animation_effects::blocks_retirement(world, id)
+        || super::script_spawner::blocks_retirement(world,id) {
         return Ok(false);
     }
     let whole_world = world
@@ -1522,6 +1537,7 @@ pub(super) fn retire_components(world: &mut World, id: EntityId) -> Result<bool,
             grenade_birth: None,
             cue: None,
             startup_parent: None,
+            script_source: None,
         });
         actor.removing
     };

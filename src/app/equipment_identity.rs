@@ -485,7 +485,7 @@ pub(super) fn detach(world: &mut World, id: EntityId) -> Result<(), String> {
 /// Called only after the existing PlayerArms submitted-work acknowledgement.
 /// Source/model leases stay with the retired render payload through that ack.
 pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<bool, String> {
-    if super::animation_effects::blocks_retirement(world, id) { return Ok(false); }
+    if super::animation_effects::blocks_retirement(world, id)||super::script_spawner::blocks_retirement(world,id) { return Ok(false); }
     let owner = world
         .get_resource::<Identities>()
         .ok_or("equipment identity owner is absent")?;

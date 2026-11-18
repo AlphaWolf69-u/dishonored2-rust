@@ -16,6 +16,11 @@ pub(in crate::app) struct Retirement {
     pub(in crate::app) rollback_done: bool,
 }
 impl PhysicsScene {
+    pub(in crate::app) fn mark_script_spawn(&mut self,live:&LiveEntities,id:EntityId)->Result<(),String>{
+        live.get(id).ok_or("script spawn generation stale")?;
+        let &index=self.shared_indices.get(&id).ok_or("script spawn header absent")?;
+        self.entity_flags_d4[index]|=4;Ok(())
+    }
     pub(in crate::app) fn with_runtime_registry<R>(&mut self,
         callback:impl FnOnce(&mut Self,&mut ComponentRegistry)->Result<R,String>)->Result<R,String>{
         let mut registry=self.registry.take().ok_or("runtime component registry borrowed")?;
@@ -882,6 +887,15 @@ impl PhysicsScene {
                 )?;
             }
             if !append {
+                let script_source=super::super::runtime_entities::constructor_script_source(world,id);
+                let inherited_tag=if let Some((source,tag))=script_source{
+                    live.set_owner(id,source)?;
+                    if let Some(spelling)=tag{
+                        let tag=definition.types.intern_name(Some(spelling.as_bytes()))?;
+                        live.set_unpublished_spawn_tag(id,tag)?;
+                        Some(spelling)
+                    }else{None}
+                }else{None};
                 if let Some((attacker, linear, angular, _, _)) = grenade {
                     self.configure_grenade_birth(live, id, Some(attacker), linear, angular)?;
                 }
@@ -892,7 +906,7 @@ impl PhysicsScene {
                 live.initialized(id)?;
                 live.initialize_entity_context(id, self.entities[index].components.phase)?;
                 live.spawned(id)?;
-                live.publish_spawn_tag(id, "MAIN")?;
+                live.publish_spawn_tag(id,inherited_tag.as_deref().unwrap_or("MAIN"))?;
                 //8ab180/199350 invokes the actual class Spawn descriptor
                 //before shared component Initialize/Start (8820f0 for Dynamic).
                 if super::super::runtime_entities::spawn_class(world, id)? {

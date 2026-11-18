@@ -94,6 +94,7 @@ impl Mailbox {
         operation: &str,
         target: MarkerTarget,
         replacement: MarkerTarget,
+        resolve: impl Fn(&crate::gameplay::event_graph::EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>,
     ) -> Result<bool, String> {
         let Some(definition) = self
             .program
@@ -113,7 +114,12 @@ impl Mailbox {
             .get(&task)
             .map(Vec::as_slice)
             .unwrap_or(&definition.markers);
-        let at = list.iter().position(|item| *item == target);
+        let target_id=resolve(&target.entity)?;
+        if target_id.is_none(){return Ok(false);}
+        let mut at=None;
+        for (index,item) in list.iter().enumerate(){
+            if item.name==target.name&&resolve(&item.entity)?==target_id{at=Some(index);break;}
+        }
         let valid = match operation {
             "Add Target" => at.is_none(),
             "Remove Target" | "Replace Target" => at.is_some(),
@@ -226,7 +232,7 @@ impl Program {
             .flat_map(|mission| &mission.objectives)
             .flat_map(|objective| &objective.tasks)
             .flat_map(|task| &task.markers)
-            .map(|target| target.entity.as_str())
+            .filter_map(|target|match &target.entity{crate::gameplay::event_graph::EntityReference::Named(name)=>Some(name.as_str()),_=>None})
     }
     pub fn mission(&self, name: &str) -> Option<Arc<Mission>> {
         self.missions

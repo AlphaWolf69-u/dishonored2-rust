@@ -6,6 +6,29 @@ use bevy::{prelude::Resource, render::extract_resource::ExtractResource};
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
+///Borrowed main-world adapter; rendering never owns another entity/pose
+///cache or depends on the application's concrete Scene implementation.
+pub(crate) trait ManagedFrames {
+    fn entity(&self,reference:&crate::gameplay::event_graph::EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>;
+    fn name(&self,id:crate::gameplay::entity_lifetime::EntityId)->Option<&str>;
+    fn spawn_tag(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>;
+    fn frame(&self,id:crate::gameplay::entity_lifetime::EntityId,tag:&str)->Result<Option<ReferenceFrame>,String>;
+}
+pub(crate) struct FrameReferences<'a>{pub frames:&'a WorldEffectFrames,pub managed:Option<&'a dyn ManagedFrames>}
+impl std::ops::Deref for FrameReferences<'_>{type Target=WorldEffectFrames;fn deref(&self)->&Self::Target{self.frames}}
+impl FrameReferences<'_>{
+    pub fn resolve(&self,reference:&crate::gameplay::event_graph::EntityReference,tag:&str)->Result<Option<ReferenceFrame>,String>{
+        if let crate::gameplay::event_graph::EntityReference::Managed(id)=reference{
+            return self.managed.ok_or("managed FX frame resolver is unavailable")?.frame(*id,tag);
+        }
+        self.frames.resolve(reference,tag)
+    }
+    pub fn entity_name<'a>(&'a self,reference:&'a crate::gameplay::event_graph::EntityReference)->Result<Option<&'a str>,String>{
+        use crate::gameplay::event_graph::EntityReference;
+        match reference{EntityReference::Named(name)=>Ok(Some(name)),EntityReference::Managed(id)=>Ok(self.managed.ok_or("managed FX name resolver is unavailable")?.name(*id)),_=>Ok(None)}
+    }
+}
+
 pub(crate) fn trace_lifecycle() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref() == Ok("1"))
@@ -272,6 +295,7 @@ impl WorldEffectFrames {
         use crate::gameplay::event_graph::EntityReference;
         match entity {
             EntityReference::Invalid => Ok(None),
+            EntityReference::Managed(_) => Err("managed FX reference requires its actual live-frame resolver".into()),
             EntityReference::Player => match &self.player {
                 None => Ok(None),
                 Some((root, _)) if tag.is_empty() => Ok(Some(*root)),

@@ -71,6 +71,7 @@ impl LevelLifetime {
         // alive after FX shutdown. Pump their real audio owner and immediately
         // deliver resulting C6/29 messages before any actor can lose that ID.
         self.retirement_phase = "accepted audio and entity events";
+        super::script_spawner::begin_retirement(world)?;
         super::animation_effects::begin_retirement(world);
         super::audio::poll_accepted_effects(world)?;
         super::entity_messages::finish_accepted(world)?;
@@ -116,6 +117,7 @@ impl LevelLifetime {
             if !super::melee::finish_accepted(world)? { return Ok(false); }
             if !super::projectiles::finish_accepted(world)? { return Ok(false); }
             if !super::explosions::finish_accepted(world)? { return Ok(false); }
+            if !super::script_spawner::finish_accepted(world)? { return Ok(false); }
             if !super::animation_effects::finish_accepted(world)? { return Ok(false); }
             super::physics_scene::fx_component::update(world)?;
             super::entity_messages::finish_accepted(world)?;
@@ -168,6 +170,7 @@ impl LevelLifetime {
                 .map_or(Ok(()), |mut effects| effects.shutdown())?;
             self.effects_retired = true;
         }
+        if !super::script_spawner::shutdown(world)? { return Ok(false); }
         // Real FX shutdown fulfills the tickets; consume those receipts before
         // the component registry attempts Stop/Deinit or releases source IDs.
         super::physics_scene::fx_component::update(world)?;

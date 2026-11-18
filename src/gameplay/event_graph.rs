@@ -88,6 +88,9 @@ impl<T> ManagerWork<T> {
 pub enum EntityReference {
     Named(String),
     Player,
+    ///Actual weak managed pointer returned by runtime graph actions.
+    ///A retired generation never resolves through a reused name or slot.
+    Managed(super::entity_lifetime::EntityId),
     /// The game's invalid managed-entity handle (0x3fff0010). Lists retain
     /// these elements; dropping them would change indices and loop counts.
     Invalid,
