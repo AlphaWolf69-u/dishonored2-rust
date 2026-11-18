@@ -60,6 +60,32 @@ pub enum Program {
     /// arkHair: BRDF_hair (two shifted Kajiya-Kay lobes on the flow-map
     /// tangent), drawn as an alpha surface.
     Hair = 12,
+    /// arkEyeball: BRDF_eye (refracted iris UVs, sclera SSS lookup, SSBump
+    /// iris occlusion, cornea Ward specular and two camera-relative fake
+    /// specular lights).
+    Eye = 13,
+}
+
+/// arkEyeball / BRDF_eye inputs. Defaults are the installed renderParm
+/// declarations.
+#[derive(Debug, Clone)]
+pub struct EyeInputs {
+    /// eye/UvSettings: iris distance, hemisphere distance, refraction
+    /// strength, iris transition range (UV units).
+    pub uv_settings: [f32; 4],
+    /// eye/Refraction: cornea IOR ratio, pupil dilation, vein boost, UV scale.
+    pub refraction: [f32; 4],
+    /// eye/glossParm: sclera/iris gloss, sclera/iris specular factor.
+    pub gloss: [f32; 4],
+    /// eye/FakeLight_1/2: camera forward/left/up offsets and intensity.
+    pub fake_lights: [[f32; 4]; 2],
+    pub internal_caustic: bool,
+    pub caustic_strength: f32,
+    /// Layer1_bumpMap: the cornea ("exterior") normal map.
+    pub cornea_normal: String,
+    /// eye/sssLut: sclera diffuse by vertex N.L.
+    pub sss_lut: String,
+    pub caustic_map: String,
 }
 
 /// arkHair / BRDF_hair inputs. Defaults are the installed renderParm
@@ -169,6 +195,7 @@ pub struct Surface {
     pub emissive_clip: [f32; 2],
     pub skin: SkinInputs,
     pub hair: HairInputs,
+    pub eye: EyeInputs,
     /// arkVegetation translucencyMap, bound when translucency/enable is set
     /// and translucencyUseVertexColor is clear (renderParm defaults 0 and 1).
     pub vegetation_translucency_map: Option<String>,
@@ -312,6 +339,7 @@ impl Surface {
             Some("arkboatvolume") => Program::BoatVolume,
             Some("arksssrender") => Program::Skin,
             Some("arkhair") => Program::Hair,
+            Some("arkeyeball") => Program::Eye,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
@@ -459,6 +487,18 @@ impl Surface {
                 flow_map: image(&v, "hairflowmap").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
                 specular_mask: image(&v, "hairspecularmask").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
                 noise_mask: image(&v, "hairspecularnoisemask").unwrap_or_else(|| "ipr_constantColor(0,0,0,0)".into()),
+            },
+            eye: EyeInputs {
+                uv_settings: vector(&v, "eye/uvsettings", [0.23, 0.465, 2.0, 0.05]),
+                refraction: vector(&v, "eye/refraction", [0.746, 0.0, 0.0, 0.0]),
+                gloss: vector(&v, "eye/glossparm", [1.0, 1.0, 1.0, 1.0]),
+                fake_lights: [vector(&v, "eye/fakelight_1", [-0.2, -0.5, 0.8, 1.0]),
+                    vector(&v, "eye/fakelight_2", [-0.2, -0.25, 0.4, 0.5])],
+                internal_caustic: number(&v, "eye/internalcaustic", 0) != 0,
+                caustic_strength: vector(&v, "eye/causticstrength", [1.0])[0],
+                cornea_normal: image(&v, "layer1_bumpmap").unwrap_or_else(|| "_default".into()),
+                sss_lut: image(&v, "eye/ssslut").unwrap_or_else(|| "_default".into()),
+                caustic_map: image(&v, "eye/causticmap").unwrap_or_else(|| "_default".into()),
             },
             skin: SkinInputs {
                 ward2: vector(&v, "wardroughness2", [0.0, 0.5]),
@@ -614,6 +654,9 @@ impl Surface {
             // program library at material load; binding all three is harmless.
             bindings.extend([(34, self.hair.flow_map.as_str()), (35, self.hair.specular_mask.as_str()),
                 (36, self.hair.noise_mask.as_str())]);
+        }
+        if self.program() == Program::Eye {
+            bindings.extend([(34, self.eye.cornea_normal.as_str()), (35, self.eye.sss_lut.as_str())]);
         }
         if self.program() == Program::Skin {
             for (role, name) in [

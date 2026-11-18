@@ -952,7 +952,7 @@ impl MaterialResolver<'_> {
             MaterialGeometry::Model => 1,
         }];
         let mut fog_flags = 0;
-        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11 | 12) {
+        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11 | 12 | 13) {
             let receiver = (|| -> Result<UVec4, String> {
                 let source = resolve_shadow_source_inputs(
                     self.programs.as_deref_mut(),

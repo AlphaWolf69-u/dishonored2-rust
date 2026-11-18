@@ -12,8 +12,8 @@ materials (potion and oil liquids), not by FX particles.
 
 | Gap | Installed content | Status |
 |---|---|---|
-| `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | in progress: see "Character hair" below |
-| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | none: program `renderprog/arkeyeball` with `BRDF_eye` |
+| `arkhair` | 134 materials, 77 models (character hair and lashes, rats, wolfhounds, bloodfly wings) | connected: see "Character hair" below |
+| `arkeyeball` | 23 materials, 286 head models, Delilah statue clones, empress eyes | connected except the internal caustic: see "Character eyes" below |
 | `arkKisculeNodeEntitySpawnerControl` | Outsider shrines (eotw and others): the rune pickup and its FX | none: needs runtime entity spawning, see "Outsider shrine" below |
 
 `particle/filing_container` is connected (`Program::Filling`, 2026-10-18).
@@ -21,7 +21,7 @@ Its 8 materials are the health and mana potion liquids, the institute
 serum, Karnaca oil and the incendiary, sleep and venom crossbow-bolt
 liquids.
 
-## Character eyes (`arkeyeball`), scoped
+## Character eyes (`arkeyeball`), connected except the caustic
 
 Installed `renderprog/arkeyeball` with `BRDF_eye`, sortCoverage,
 useSelfShadowedBumpMap 1.
@@ -42,8 +42,22 @@ useSelfShadowedBumpMap 1.
   specular lights (`eye/FakeLight_1/2`) tinted by the IBL chrominance.
 Defaults: eye/UvSettings (0.23, 0.465, 2.0, 0.05), eye/Refraction
 (0.746, 0, 0, 0), eye/glossParm (1, 1, 1, 1).
-Needs: the eye-direction vertex output for skinned meshes, the HL2
-directional-occlusion helper and the three eye textures.
+Connected (Program::Eye = 13, DH2_EYE): the VS exports the skinned local
+space's first column; the PS builds the iris plane, refracts through the
+cornea normal, dilates the pupil, boosts veins and fills EyeSurface; the
+light loop calls eye_direct (sclera through eye/sssLut by vertex N.L, iris
+N.L times parallaxSelfShadow's directional occlusion on the SSBump, cornea
+Ward specular times the specular factor, FresnelAccurate at IOR 1.38);
+indirect adds SH ambient, IBL times AO and the two camera-relative fake
+lights tinted by the IBL chrominance. Eyes are forward shadow receivers.
+In the prologue view, indirect light on the sclera equals the skin's
+(21,15,15 vs 19,15,16); there is no matched original view of an eye yet.
+
+Open: `eye/internalCaustic` (4 materials, e.g. Emily's) samples
+`eye/causticMap`, a 128x128x5 BGRA8 volume. The resident image owner has
+no volume path; the term is absent until it does. Next step: give
+resident_images a volume acquisition (material::load_3d_image already
+decodes it) and bind it as a 3D material texture.
 
 ## Outsider shrine (`arkKisculeNodeEntitySpawnerControl`)
 

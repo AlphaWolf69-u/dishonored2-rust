@@ -100,6 +100,10 @@ struct VertexOutput {
     // The instance's lighting record index (the mesh tag of ordinary surfaces).
     @location(15) @interpolate(flat) particle_tag: u32,
 #endif
+#ifdef DH2_EYE
+    // arkEyeball @eye_EyeDir: the first column of the skinned local space.
+    @location(16) eye_direction: vec3<f32>,
+#endif
 }
 
 struct FragmentOutput {

@@ -74,6 +74,21 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
 
 /// Only a real admitted player can own equipment (619380). This function is
 /// called after the existing equipment component/runtime and model prepare.
+/// 619380 copies the live player's frame at registration; until the player's
+/// Scene owner has published one, equipment registration waits for it.
+pub(super) fn player_frame_published(world: &World) -> bool {
+    let Some(parent) = world.get_resource::<Identities>().and_then(|owner| owner.player) else {
+        return false;
+    };
+    let (Some(scene), Some(live)) = (
+        world.get_resource::<super::physics_scene::PhysicsScene>(),
+        world.get_resource::<LiveEntities>(),
+    ) else {
+        return false;
+    };
+    matches!(scene.entity_frame(live, parent), Ok(Some(_)))
+}
+
 pub(super) fn admit_equipment(
     world: &mut World,
     identity: &str,
