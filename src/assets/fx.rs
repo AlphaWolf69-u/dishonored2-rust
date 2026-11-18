@@ -205,6 +205,8 @@ pub struct EffectGroupAsset {
     pub explosions: Vec<explosion::ExplosionAsset>,
     pub camera_shakes: Vec<std::sync::Arc<CameraShakeAsset>>,
     pub screen_fades: Vec<std::sync::Arc<screen_fade::ScreenFadeAsset>>,
+    /// m_skinDecals (group +0x70, arkFXSkinDecalDesc 0x70 bytes).
+    pub skin_decals: Vec<std::sync::Arc<SkinDecalAsset>>,
     /// m_frameCaptures (arkFXFrameCaptureDesc, timed by 21a870/21a730).
     /// With g_stopTime clear, 140323e70 copies the tone-mapped scene into
     /// `_frameCapture` every frame, so these events change nothing that
@@ -346,12 +348,51 @@ impl Default for EffectGroupAsset {
             explosions: Vec::new(),
             camera_shakes: Vec::new(),
             screen_fades: Vec::new(),
+            skin_decals: Vec::new(),
             frame_captures: Vec::new(),
         }
     }
 }
 
 type Fields = [(String, Value)];
+/// arkFXSkinDecalDesc (reflection 1415067a0, constructor 22dba0). Only the
+/// fields the family runtime reads are kept: the start (22e8e0) samples
+/// m_delay and its gate (22dcb0) requires a texture. The projection fields
+/// feed 22e180, which runs only for a skinned target.
+pub struct SkinDecalAsset {
+    pub name: String,
+    pub enabled: bool,
+    pub textures: Vec<String>,
+    /// [m_max, m_min]; 22dba0 clears it.
+    pub delay: [f32; 2],
+}
+
+pub fn skin_decal(fields: &Fields) -> Result<SkinDecalAsset, String> {
+    let mut decal = SkinDecalAsset { name: String::new(), enabled: true, textures: Vec::new(), delay: [0.; 2] };
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_name" => decal.name = atom(value)?.to_owned(),
+            "m_enabled" => decal.enabled = boolean(value)?,
+            "m_textures" => {
+                for (field, value) in scope(value)? {
+                    if field == "num" { continue; }
+                    if !field.starts_with("item[") { return Err(format!("unknown FX skin decal texture field {field}")); }
+                    decal.textures.push(atom(value)?.trim_matches('"').to_owned());
+                }
+            }
+            "m_delay" => bounds(&mut decal.delay, scope(value)?)?,
+            "m_projectionAxis" => match atom(value)?.trim_matches('"') {
+                "X" | "Y" | "Z" => {}
+                other => return Err(format!("unknown FX skin decal axis {other}")),
+            },
+            "m_projectionDepth" | "m_projectionDepthOffset" | "m_initialRotation" => bounds(&mut [0.; 2], scope(value)?)?,
+            "m_initialPosition" | "m_size" => {}
+            _ => return Err(format!("unknown FX skin decal field {name}")),
+        }
+    }
+    Ok(decal)
+}
+
 fn scope(value: &Value) -> Result<&Fields, String> {
     match value {
         Value::Scope(fields) => Ok(fields),
@@ -615,6 +656,7 @@ pub fn effect_group(fields: &Fields) -> Result<EffectGroupAsset, String> {
             "m_explosions" => descriptor_list(&mut group.explosions, scope(value)?, explosion::explosion)?,
             "m_cameraShakes" => descriptor_list(&mut group.camera_shakes, scope(value)?, |fields| camera_shake(fields).map(std::sync::Arc::new))?,
             "m_screenFades" => screen_fade::list(&mut group.screen_fades, scope(value)?)?,
+            "m_skinDecals" => descriptor_list(&mut group.skin_decals, scope(value)?, |fields| skin_decal(fields).map(std::sync::Arc::new))?,
             "m_frameCaptures" => descriptor_list(&mut group.frame_captures, scope(value)?, |fields| {
                 let mut timings = Default::default();
                 for (name, value) in fields {

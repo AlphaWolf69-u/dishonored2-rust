@@ -1196,6 +1196,17 @@ loses w. Remaining, in order:
   screenblend fx/opt/use_diffuse multiplies its colour by fx/diffuse at
   the opacity UV (the 4 sampling materials; checked with
   ply_bighit_react_01 at the eotw view, no validation errors).
+- World FX m_skinDecals admitted (10 FX: assassination blood, Shadow
+  Walk impacts, Delilah, bloodflies corpses, a dying NPC). Group +0x70,
+  pool 19a760 (64), start 22e8e0 (gate 22dcb0, one delay draw, after the
+  0x10 family and before FOV), update 220180/22ea00, clear 21e6f0; FX
+  stop leaves armed slots running. A due decal is queued (22e970) only
+  when the record's +0xb8 skinned target is set, which 1404b1d80 takes
+  from 140878470 (the entity's animated render model). Without a target
+  it disarms exactly as the original does. Still open: with a target,
+  the projection (22e180) and the per-model paint pass 14025e8f0 into the
+  r_skinDecalRes target, plus the material consumers (14025efe0,
+  14025f21f, 1406cc9a0); the rewrite reports that case as an error.
 - m_selfCollisions admitted: SolveSelfContacts only solves constraints
   created from the SpatialPartition's new pairs, and the simulator's
   partition keeps computeNewPairs off (140fd6a00; 1401dfc20 never sets

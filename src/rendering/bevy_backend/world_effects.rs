@@ -13,6 +13,8 @@ pub(crate) trait ManagedFrames {
     fn name(&self,id:crate::gameplay::entity_lifetime::EntityId)->Option<&str>;
     fn spawn_tag(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>;
     fn frame(&self,id:crate::gameplay::entity_lifetime::EntityId,tag:&str)->Result<Option<ReferenceFrame>,String>;
+    /// 140878470: whether the entity's render model is the animated kind.
+    fn animated_model(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<bool,String>;
 }
 pub(crate) struct FrameReferences<'a>{pub frames:&'a WorldEffectFrames,pub managed:Option<&'a dyn ManagedFrames>}
 impl std::ops::Deref for FrameReferences<'_>{type Target=WorldEffectFrames;fn deref(&self)->&Self::Target{self.frames}}

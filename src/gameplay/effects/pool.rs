@@ -24,6 +24,9 @@ impl EffectPoolLinks {
     ///19a6e0: 32 shared screen-fade slots (FX manager +0x8c970, acquired by
     ///222f80 through 222180 for 22a570's start).
     pub fn screen_fades() -> Self { Self::ascending(32) }
+    ///19a760/19fbf0: 64 shared skin-decal slots (FX manager +0x727c8,
+    ///acquired by 222f80 through 222240 for 22e8e0's start).
+    pub fn skin_decals() -> Self { Self::ascending(64) }
     ///19a2f0/19f570: sixteen shared FOV-family slots.
     pub fn fov() -> Self { Self::ascending(16) }
     ///19a650/19fa50:32 shared rumble-family slots.

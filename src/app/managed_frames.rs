@@ -30,6 +30,10 @@ impl ManagedFrames for Resolver<'_> {
     fn spawn_tag(&self, id: EntityId) -> Result<String, String> {
         Ok(self.live.spawn_tag_text(id)?.to_owned())
     }
+    fn animated_model(&self, id: EntityId) -> Result<bool, String> {
+        if self.live.get(id).is_none() { return Ok(false); }
+        Ok(self.scene.runtime_animation_rig(id)?.is_some())
+    }
     fn frame(&self, id: EntityId, tag: &str) -> Result<Option<ReferenceFrame>, String> {
         if self.live.get(id).is_none() {
             return Ok(None);
