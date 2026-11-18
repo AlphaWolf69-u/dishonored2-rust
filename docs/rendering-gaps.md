@@ -70,8 +70,20 @@ logs and takes `Failed`; the location and axis come from `m_target`
 (+0x300 origin, +0x30c axis) or else `m_location`/`m_orientation`; spawns
 through 1408ae9b0, sets entity +0xd4 bit 4, applies `m_spawnTag`
 (14087c360), writes the handle to `m_createdEntity`, and returns a task
-continuation. The rewrite has no script-driven entity spawning yet; the
-world-FX graph evaluator (gameplay/effects/graph.rs) refuses the node.
+continuation.
+
+Connected: the graph node submits one request per node to
+gameplay/effects/spawner.rs; app/script_spawner.rs acquires the
+declaration, waits for its runtime prototype, takes the target's frame,
+spawns through runtime_entities with the spawn tag, and the node reports
+Succeeded with m_createdEntity or Failed. A target-less spawn with a
+nonzero m_rotation fails: the angle convention is not traced yet.
+
+Open: eotw's rune spawn fails in runtime construction because
+`components/equipment/loot_pickable.cpntloot` has no runtime payload
+(assets/runtime_entity/component.rs). Placed loot reads cpntloot in
+assets/entities/usable.rs; the next step is a runtime loot kind bound to
+the same pickup owner, so the spawned rune is a usable pickup.
 
 ## Character hair (`arkhair`), connected
 

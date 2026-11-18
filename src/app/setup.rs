@@ -2134,6 +2134,7 @@ pub(super) fn prepare(
         simulation.prepare_entity_graphs(graphs, &sources, live_entities)?;
         commands.queue(move |world:&mut World|{
             super::objectives::attach(world,&mut simulation);
+            super::script_spawner::attach(world,&mut simulation);
             world.insert_resource(simulation);
         });
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));

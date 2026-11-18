@@ -12,6 +12,7 @@ pub mod particle;
 pub mod world_node;
 pub mod world_component;
 pub mod graph;
+pub mod spawner;
 pub mod entity_node;
 pub mod instances;
 pub mod variables;

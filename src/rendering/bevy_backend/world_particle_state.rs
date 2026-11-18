@@ -586,6 +586,9 @@ impl WorldParticleState {
     ) {
         self.graphs.set_gameflow(mailbox);
     }
+    pub(crate) fn set_spawner(&mut self, spawner: Arc<crate::gameplay::effects::spawner::EntitySpawner>) {
+        self.graphs.set_spawner(spawner);
+    }
 
     /// One shared graph manager is constructed before source startup callbacks.
     /// Real admitted entities own gameplay roots; other existing map FX roots
@@ -1803,6 +1806,9 @@ impl WorldParticleState {
             self.collect(index);
         }
         for error in self.graphs.poll_gameflow() {
+            self.report(error);
+        }
+        for error in self.graphs.poll_spawns() {
             self.report(error);
         }
         self.graphs.events.begin_update();
