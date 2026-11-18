@@ -2,6 +2,10 @@
 #import dh2_direct::glass_scale
 #import dh2_fresnel::ward_fresnel
 #import dh2_ward::{ward_surface,WardTranslucency,ward_translucency,rgb_to_hsv,hsv_to_rgb}
+#ifdef DH2_EYE
+#import dh2_direct::{EyeSurface,eye_surface,eye_cornea_normal,ward_term,ward_inverse_roughness_squared}
+#import dh2_indirect::{MaterialLightingValues,evaluate_mapped_diffuse_response}
+#endif
 #ifdef DH2_HAIR
 #import dh2_direct::{HairSurface,hair_surface,hair_shift,hair_kajiya,hair_specular_mask}
 #import dh2_surface::{hair_flow_map,hair_noise_mask}
@@ -163,7 +167,7 @@ fn fragment(
     var skin_kernel=0.0;
     var hair_ibl_tangent=vec3<f32>(0.0);
     var hair_albedo=vec4<f32>(0.0);
-    if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u || compiled_misc.z == 11u || compiled_misc.z == 12u {
+    if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u || compiled_misc.z == 11u || compiled_misc.z == 12u || compiled_misc.z == 13u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
         uv = vertex_output.uv;
@@ -370,6 +374,77 @@ fn fragment(
             pbr_input.material.base_color=vec4(albedo.rgb,select(albedo.a,1.0,albedo.a>=surface.hair[4].w));
         }
 #endif
+#ifdef DH2_EYE
+        {
+            // arkEyeball standard pass. Texcoords are scaled about the iris
+            // centre by eye/Refraction.w (a VS affine map, linear in UV).
+            let eye_uv=(uv-vec2(0.5))*surface.eye[1].w+vec2(0.5);
+            let view_dir=pbr_input.V;
+            let vertex_normal=normalize(vertex_output.world_normal);
+            var vertex_tangent=vec3<f32>(1.0,0.0,0.0);var vertex_bitangent=vec3<f32>(0.0,1.0,0.0);
+#ifdef VERTEX_TANGENTS
+            vertex_tangent=normalize(vertex_output.world_tangent.xyz);
+#ifdef DH2_AUTHORED_BASIS
+            vertex_bitangent=normalize(vertex_output.world_bitangent);
+#else
+            vertex_bitangent=normalize(cross(vertex_output.world_normal,vertex_output.world_tangent.xyz)*vertex_output.world_tangent.w);
+#endif
+#endif
+            let eye_dir=normalize(vertex_output.eye_direction);
+            // Flat iris-plane frame from the gaze and the vertex tangent.
+            let iris_bitangent=-normalize(cross(eye_dir,vertex_tangent));
+            let iris_tangent=normalize(cross(eye_dir,iris_bitangent));
+            // Cornea (exterior) normal and its specular frame.
+            let cornea=unpack_bc5_normal_map(textureSampleGrad(eye_cornea_normal,surface_anisotropic_sampler,
+                eye_uv,dpdx(eye_uv),dpdy(eye_uv)).xy);
+            let exterior_normal=normalize(cornea.x*vertex_tangent+cornea.y*vertex_bitangent+cornea.z*vertex_normal);
+            let exterior_tangent=normalize(cross(vertex_bitangent,exterior_normal));
+            let exterior_bitangent=cross(exterior_normal,exterior_tangent);
+            // Iris mask and the refracted view ray's hit on the iris plane.
+            let settings=surface.eye[0];
+            let distance_uv=length(eye_uv-vec2(0.5));
+            let norm_distance=distance_uv/settings.y;
+            let norm_iris=settings.x/settings.y;
+            let mask=smoothstep(settings.x+settings.w,settings.x-settings.w,distance_uv);
+            let height=clamp(sqrt(1.0-norm_distance*norm_distance)-sqrt(1.0-norm_iris*norm_iris),0.0,1.0);
+            let refracted=refract(-view_dir,exterior_normal,surface.eye[1].x);
+            let hit=(-height/dot(view_dir,refracted))*refracted;
+            var iris_uv=eye_uv+mask*settings.z*vec2(dot(hit,iris_tangent),dot(hit,iris_bitangent));
+            // Pupil dilation about the iris centre.
+            let from_centre=iris_uv-vec2(0.5);
+            let radius=length(from_centre);
+            let dilated=vec2(0.5)+settings.x*(from_centre/radius)
+                *pow(clamp(radius/settings.x,0.0,1.0),1.0/(1.0-0.875*surface.eye[1].y));
+            iris_uv=mix(iris_uv,dilated,mask);
+            var albedo=textureSampleGrad(diffuse0,surface_anisotropic_sampler,iris_uv,dpdx(iris_uv),dpdy(iris_uv));
+            // Vein boost on the sclera.
+            let veins=1.0-albedo.z;
+            albedo.x=mix(albedo.x,max(albedo.x,veins),surface.eye[1].z*pow(1.0-mask,10.0));
+            let ssbump=2.0*textureSampleGrad(bump0,surface_anisotropic_sampler,iris_uv,dpdx(iris_uv),dpdy(iris_uv)).xyz-vec3(1.0);
+            let roughness=1.0-mix(surface.eye[2].x,surface.eye[2].y,mask);
+            // Interior frame (sclera to iris plane) and its HL2 basis.
+            let interior_tangent=normalize(mix(exterior_tangent,iris_tangent,mask));
+            let interior_bitangent=normalize(mix(exterior_bitangent,iris_bitangent,mask));
+            let interior_normal=normalize(mix(exterior_normal,eye_dir,mask));
+            let hl2=vec3(sqrt(2.0/3.0),sqrt(1.0/6.0),sqrt(1.0/3.0));
+            let basis_r=hl2.x*interior_tangent+hl2.z*interior_normal;
+            let basis_g=-hl2.y*interior_tangent+sqrt(0.5)*interior_bitangent+hl2.z*interior_normal;
+            let basis_b=-hl2.y*interior_tangent-sqrt(0.5)*interior_bitangent+hl2.z*interior_normal;
+            eye_surface=EyeSurface(exterior_normal,ward_inverse_roughness_squared(roughness),view_dir,mask,
+                interior_normal,mix(surface.eye[2].z,surface.eye[2].w,mask),albedo.rgb,1.0,ssbump,
+                basis_r,basis_g,basis_b);
+            pbr_input.N=exterior_normal;
+            pbr_input.material.base_color=albedo;
+            pbr_input.material.perceptual_roughness=roughness;
+            // Ambient with the cornea's IOR 1.38 and fresnelStrength 1.
+            let ratio=(1.38-1.0)/(1.38+1.0);
+            specular_reflectance=vec3(ratio*ratio);
+            diffuse_response=evaluate_mapped_diffuse_response(MaterialLightingValues(albedo.rgb,
+                vec3(1.38),specular_reflectance,1.0),roughness);
+            pbr_input.direct_surface=ward_surface(exterior_normal,view_dir,roughness,albedo.rgb,vec3(1.38),
+                surface.direct.x,surface.direct.y,1.0);
+        }
+#endif
         if compiled_misc.z==6u {
             let clip_w=(view.clip_from_world*vertex_output.world_position).w;
             var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz,clip_w);
@@ -454,7 +529,7 @@ fn fragment(
         skin_ambient_out=indirect;
         indirect=vec3(0.0);
 #endif
-        if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u || compiled_misc.z==11u || compiled_misc.z==12u {
+        if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u || compiled_misc.z==11u || compiled_misc.z==12u || compiled_misc.z==13u {
             var reflection_indices_gain=vec4(0.0);
             var reflection_barycentrics=vec2(0.0);
 #ifdef DH2_VERTEX_PROBE
@@ -469,6 +544,34 @@ fn fragment(
                 *reflected_light(probe_index,vertex_output.world_position.xyz,pbr_input.N,hair_view,
                 surface.hair[4].x,specular_reflectance,true,reflection_indices_gain,reflection_barycentrics);
 #else
+#ifdef DH2_EYE
+            {
+                let eye_view=normalize(view.world_position-vertex_output.world_position.xyz);
+                let ibl=pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
+                    pbr_input.N,eye_view,pbr_input.material.perceptual_roughness,specular_reflectance,false,
+                    reflection_indices_gain,reflection_barycentrics);
+                indirect+=ibl;
+                // Fake specular lights placed relative to the camera, tinted by
+                // the IBL chrominance.
+                let chrominance=ibl/(0.00001+max(max(ibl.x,ibl.y),ibl.z));
+                let forward=-view.world_from_view[2].xyz;
+                let left=-view.world_from_view[0].xyz;
+                let up=view.world_from_view[1].xyz;
+                let vn=clamp(dot(eye_view,pbr_input.N),0.0,1.0);
+                let fresnel=ward_fresnel(vec3(1.38),vn,1.0);
+                for (var i=0u;i<2u;i++) {
+                    let fake=surface.eye[3u+i];
+                    let position=view.world_position+fake.x*forward+fake.y*left+fake.z*up;
+                    var to_light=position-vertex_output.world_position.xyz;
+                    let distance=length(to_light);
+                    to_light/=distance;
+                    let ln=clamp(dot(to_light,pbr_input.N),0.0,1.0);
+                    let term=ward_term(pbr_input.N,to_light,eye_view,eye_surface.inverse_roughness_squared)*ln
+                        *eye_surface.specular_factor;
+                    indirect+=fresnel*(distance*distance*chrominance*fake.w)*term;
+                }
+            }
+#else
             // Glass transmittance: ambient by the exit term, IBL by 1/alpha.
             indirect=indirect*glass_scale.x+glass_scale.y*pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
                 pbr_input.N,normalize(view.world_position-vertex_output.world_position.xyz),
@@ -480,6 +583,7 @@ fn fragment(
                 *surface.skin[1].w
 #endif
                 ;
+#endif
 #endif
         }
     }

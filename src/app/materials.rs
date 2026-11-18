@@ -329,6 +329,15 @@ fn specialize_skin(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::
         }
         return;
     }
+    if key.0[6] == 13 {
+        // arkEyeball: BRDF_eye in the light loop; the VS exports the eye
+        // joint's axis (@eye_EyeDir).
+        descriptor.vertex.shader_defs.push("DH2_EYE".into());
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("DH2_EYE".into());
+        }
+        return;
+    }
     if key.0[6] != 11 {
         return;
     }

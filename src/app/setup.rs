@@ -2142,6 +2142,7 @@ pub(super) fn prepare(
                 }
             }
             super::objectives::attach(world,&mut simulation);
+            super::script_spawner::attach(world,&mut simulation);
             world.insert_resource(simulation);
         });
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));

@@ -3,6 +3,9 @@
 #ifdef DH2_SURFACE_ENABLED
 #import dh2_ward::{WardSurface,WardLight,ward_direct}
 #import dh2_direct::{skin_direct,skin_light_diffuse,hair_direct,glass_light_diffuse}
+#ifdef DH2_EYE
+#import dh2_direct::eye_direct
+#endif
 #import dh2_area_light_opaque::opaque_area_lighting
 #endif
 
@@ -706,6 +709,10 @@ fn point_light(
     return skin_direct(WardLight(L,rangeAttenuation*half_point_attenuation,
         (*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
 #endif
+#ifdef DH2_EYE
+    return eye_direct(WardLight(L,rangeAttenuation*half_point_attenuation,
+        (*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
+#endif
 #ifdef DH2_HAIR
     return hair_direct(WardLight(L,rangeAttenuation*half_point_attenuation,
         (*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
@@ -926,6 +933,9 @@ fn directional_light(
     let L = (*light).direction_to_light.xyz;
 #ifdef DH2_SKIN
     return skin_direct(WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));
+#endif
+#ifdef DH2_EYE
+    return eye_direct(WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));
 #endif
 #ifdef DH2_HAIR
     return hair_direct(WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));

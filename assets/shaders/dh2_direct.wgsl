@@ -4,6 +4,13 @@
 #import dh2_material_samplers::linear_clamp
 @group(#{MATERIAL_BIND_GROUP}) @binding(171) var skin_diffuse_lookup:texture_2d<f32>;
 #endif
+#ifdef DH2_EYE
+// arkEyeball image roles 34 and 35: Layer1_bumpMap (cornea normal) and
+// eye/sssLut (sclera diffuse by vertex N.L).
+#import dh2_material_samplers::linear_clamp
+@group(#{MATERIAL_BIND_GROUP}) @binding(170) var eye_cornea_normal:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(171) var eye_sss_lut:texture_2d<f32>;
+#endif
 #ifdef DH2_HAIR
 // arkHair reuses image roles 34..36: hairFlowMap (170), hairSpecularMask
 // (171), hairSpecularNoiseMask (172).
@@ -121,6 +128,45 @@ fn hair_fresnel_disney(ln:f32,vn:f32,lh:f32,sheen:vec3<f32>,importance:f32)->vec
     let exponent=exp2(mix(3.3219280948873623478703194294894,1.0,importance));
     return (vec3(1.0)+fd90_minus_1*pow(comp_l,exponent))*(vec3(1.0)+fd90_minus_1*pow(comp_v,exponent));
 }
+// BRDF_eye's surface: the cornea (exterior) frame for specular, the
+// interior frame (sclera blended to the iris plane by the iris mask) for
+// diffuse, and the SSBump occlusion along the interior HL2 basis.
+struct EyeSurface {
+    normal:vec3<f32>, inverse_roughness_squared:f32,
+    view:vec3<f32>, iris_mask:f32,
+    interior_normal:vec3<f32>, specular_factor:f32,
+    albedo:vec3<f32>, ambient_occlusion:f32,
+    occlusion:vec3<f32>,
+    basis_r:vec3<f32>, basis_g:vec3<f32>, basis_b:vec3<f32>,
+}
+var<private> eye_surface:EyeSurface;
+// parallaxSelfShadow::ComputeDirectionalOcclusion with the AO-driven
+// verticality exponent (1 to 8 by AO squared).
+fn eye_directional_occlusion(direction:vec3<f32>,occlusion:vec3<f32>,ao:f32,
+    r:vec3<f32>,g:vec3<f32>,b:vec3<f32>,n:vec3<f32>)->f32 {
+    let weights=clamp(vec3(dot(direction,r),dot(direction,g),dot(direction,b)),vec3(0.0),vec3(1.0));
+    var verticality=clamp(dot(direction,n),0.0,1.0);
+    verticality=pow(verticality,mix(1.0,8.0,ao*ao));
+    return mix(dot(occlusion,weights),1.0,verticality);
+}
+#ifdef DH2_EYE
+fn eye_direct(l:WardLight)->vec3<f32> {
+    let s=eye_surface;
+    let ln=clamp(dot(l.direction,s.normal),0.0,1.0);
+    let vn=clamp(dot(s.view,s.normal),0.0,1.0);
+    let vertex_ln=dot(s.interior_normal,l.direction);
+    let sclera=textureSampleLevel(eye_sss_lut,linear_clamp,vec2(vertex_ln*0.5+0.5,0.0),0.0).rgb;
+    let irradiance=l.attenuation*l.color;
+    let fresnel_specular=ward_fresnel(vec3(1.38),vn,1.0)*l.specular_attenuation;
+    let fresnel_diffuse=vec3(1.0)-fresnel_specular;
+    let occlusion=eye_directional_occlusion(l.direction,s.occlusion,s.ambient_occlusion,
+        s.basis_r,s.basis_g,s.basis_b,s.interior_normal);
+    let iris=clamp(vertex_ln,0.0,1.0)*occlusion;
+    let diffuse=s.albedo*(1.0/3.14159265358979323846)*mix(sclera,vec3(iris),s.iris_mask);
+    let specular=ward_term(s.normal,l.direction,s.view,s.inverse_roughness_squared)*ln*s.specular_factor;
+    return fresnel_diffuse*irradiance*diffuse+fresnel_specular*irradiance*specular;
+}
+#endif
 const HAIR_LUMINANCE=vec3(0.2126,0.7152,0.0722);
 fn hair_direct(l:WardLight)->vec3<f32> {
     if l.attenuation<=0.0 {return vec3(0.0);}

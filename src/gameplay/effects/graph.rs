@@ -81,6 +81,9 @@ pub struct FxGraphRuntime {
     notifications: Option<Box<HashMap<u32, NotificationState>>>,
     gameflow: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>,
     gameflow_subscriptions: Vec<usize>,
+    spawner: Option<Arc<super::spawner::EntitySpawner>>,
+    /// 14079dc40's per-node once flag (+0x30) and m_createdEntity.
+    spawned: HashMap<u32, Option<EntityReference>>,
 }
 #[derive(Default)]
 struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3] }
@@ -140,6 +143,9 @@ impl GraphInputs for FxGraphRuntime {
         if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeBreakableNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
             return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
                 .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
+        }
+        if node.class == "arkKisculeNodeEntitySpawnerControl" && point.name == "m_createdEntity" {
+            return Ok(Some(GraphValue::Entity(self.spawned.get(&node.id).cloned().flatten())));
         }
         if node.class == "arkKisculeNodeBreakableNotification" {
             let state = self.notifications.as_ref().and_then(|states| states.get(&node.id));
@@ -224,6 +230,23 @@ impl FxGraphRuntime {
             notifications: None,
             gameflow_subscriptions,
             gameflow: None,
+            spawner: None,
+            spawned: HashMap::new(),
+        }
+    }
+    pub(super) fn set_spawner(&mut self, spawner: Option<Arc<super::spawner::EntitySpawner>>) { self.spawner = spawner; }
+    /// The host's construction result completes the node's continuation:
+    /// Succeeded with m_createdEntity, or Failed.
+    pub(super) fn spawn_result(&mut self, node: u32, result: Result<String, String>) -> Result<(), String> {
+        match result {
+            Ok(name) => {
+                self.spawned.insert(node, Some(EntityReference::Named(name)));
+                self.emit(node, "Succeeded")
+            }
+            Err(error) => {
+                self.emit(node, "Failed")?;
+                Err(format!("entity spawner node {node}: {error}"))
+            }
         }
     }
     pub(super) fn set_gameflow(&mut self, mailbox: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>) { self.gameflow = mailbox; }
@@ -537,6 +560,33 @@ impl FxGraphRuntime {
             }
             "arkKisculeNodePickupNotification" if port.name == "Reset" => {
                 return Ok(GraphStep::PickupReset { node: id });
+            }
+            "arkKisculeNodeEntitySpawnerControl" if port.name == "Spawn" => {
+                // 14079dc40 spawns once per node; later Spawn inputs only
+                // forward the regular outputs.
+                if !self.spawned.contains_key(&id) {
+                    let spawner = self.spawner.clone().ok_or("entity spawner host is not connected")?;
+                    if self.input(&node, "m_entityDef").is_some() || self.input(&node, "m_spawnTag").is_some()
+                        || self.input(&node, "m_location").is_some() || self.input(&node, "m_rotation").is_some() {
+                        return Err("connected entity spawner inputs are not prepared".into());
+                    }
+                    let target_default = atom(&node.params, "m_target")
+                        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+                        .map(|name| EntityReference::Named(name.to_owned()));
+                    let target = self.entity_input(&node, "m_target", target_default)?;
+                    let fields = node.params.as_slice();
+                    spawner.submit(super::spawner::EntitySpawnRequest {
+                        owner: self.owner.clone(),
+                        node: id,
+                        declaration: atom(&node.params, "m_entityDef").unwrap_or("").to_owned(),
+                        target,
+                        location: super::variables::read_vector(fields, "m_location")?,
+                        rotation: super::variables::read_vector(fields, "m_rotation")?,
+                        spawn_tag: atom(&node.params, "m_spawnTag").unwrap_or("").to_owned(),
+                    })?;
+                    self.spawned.insert(id, None);
+                }
+                true
             }
             "arkKisculeNodeEntityFx" => {
                 let reference = |name| {

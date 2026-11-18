@@ -58,6 +58,7 @@ pub struct FxGraphInstances {
     gameflow_notifications: Vec<crate::gameplay::gameflow::program::Update>,
     story_root: Option<u64>,
     story_listeners: HashMap<String,Vec<(u64,u32)>>,
+    spawner: Option<Arc<super::spawner::EntitySpawner>>,
 }
 impl Index<usize> for FxGraphInstances {
     type Output = Option<FxGraphRuntime>;
@@ -235,6 +236,25 @@ impl FxGraphInstances {
         }
         errors
     }
+    pub fn set_spawner(&mut self, spawner: Arc<super::spawner::EntitySpawner>) {
+        for runtime in self.runtimes.iter_mut().flatten() {runtime.set_spawner(Some(spawner.clone()));}
+        self.spawner=Some(spawner);
+    }
+    /// Delivers the host's spawn results to the requesting graphs' nodes.
+    pub fn poll_spawns(&mut self)->Vec<String>{
+        let mut errors=Vec::new();
+        let Some(spawner)=self.spawner.clone() else{return errors};
+        let results=match spawner.take_results(){Ok(results)=>results,Err(error)=>{errors.push(error);return errors;}};
+        for (owner,node,result) in results{
+            let Some(index)=(0..self.runtimes.len()).find(|&index|self.live[index]
+                &&self.runtimes[index].as_ref().is_some_and(|runtime|runtime.graph_owner()==owner)) else{
+                errors.push(format!("entity spawner result for retired graph {owner} node {node}"));continue;
+            };
+            if let Err(error)=self.runtimes[index].as_mut().unwrap().spawn_result(node,result){errors.push(error);}
+            errors.extend(self.collect(index));
+        }
+        errors
+    }
     pub fn set_gameflow(&mut self, mailbox: Arc<crate::gameplay::gameflow::program::Mailbox>) {
         for runtime in self.runtimes.iter_mut().flatten() {runtime.set_gameflow(Some(mailbox.clone()));}
         self.gameflow=Some(mailbox);
@@ -287,6 +307,7 @@ impl FxGraphInstances {
         let mut runtime = FxGraphRuntime::new(graph, HashMap::new());
         runtime.set_owner(owner.clone());
         runtime.set_gameflow(self.gameflow.clone());
+        runtime.set_spawner(self.spawner.clone());
         runtime.random_owner = Some(Arc::clone(random));
         let effectful = runtime.definition().nodes.iter().any(|node|
             matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class)

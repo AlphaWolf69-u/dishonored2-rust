@@ -85,6 +85,9 @@ pub struct SurfaceUniform {
     pub oit_mode: UVec4,
     /// ComputeGlassTransmittance: Alpha/RefractionIOR, Alpha/Transmittance.
     pub glass_transmittance: Vec4,
+    /// arkEyeball: eye/UvSettings, eye/Refraction, eye/glossParm,
+    /// eye/FakeLight_1, eye/FakeLight_2, (causticStrength, internalCaustic).
+    pub eye: [Vec4; 6],
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -275,6 +278,14 @@ impl From<&Surface> for SurfaceUniform {
             oit: [Vec4::ZERO; 2],
             oit_mode: UVec4::ZERO,
             glass_transmittance: Vec4::ZERO,
+            eye: [
+                Vec4::from_array(s.eye.uv_settings),
+                Vec4::from_array(s.eye.refraction),
+                Vec4::from_array(s.eye.gloss),
+                Vec4::from_array(s.eye.fake_lights[0]),
+                Vec4::from_array(s.eye.fake_lights[1]),
+                Vec4::new(s.eye.caustic_strength, f32::from(u8::from(s.eye.internal_caustic)), 0.0, 0.0),
+            ],
         }
     }
 }

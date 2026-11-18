@@ -199,6 +199,9 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif
 #endif
 
+#ifdef DH2_EYE
+    out.eye_direction = world_from_local[0].xyz;
+#endif
 #ifdef VERTEX_COLORS
 #ifdef DH2_PARTICLE_INSTANCES
     out.color = particle_surface_colour(particle, vertex.color);

@@ -662,7 +662,15 @@ pub(in crate::app) fn advance(world: &mut World) {
         return;
     };
     if let Some(player) = state.player.as_mut() {
-        for (identity, metadata) in std::mem::take(&mut actions.prepared_owned_metadata) {
+        // Registration copies the player's actual frame; a level whose player
+        // owner publishes it on a later frame admits the equipment then.
+        let frame_ready = super::super::equipment_identity::player_frame_published(world);
+        let prepared = if frame_ready {
+            std::mem::take(&mut actions.prepared_owned_metadata)
+        } else {
+            Vec::new()
+        };
+        for (identity, metadata) in prepared {
             if inventory.quantity(&identity) == 0 {
                 continue;
             }

@@ -95,6 +95,9 @@ impl FxSimulation {
     pub(crate) fn set_gameflow(&mut self, mailbox: std::sync::Arc<crate::gameplay::gameflow::program::Mailbox>) {
         self.world_particles.set_gameflow(mailbox);
     }
+    pub(crate) fn set_spawner(&mut self, spawner: std::sync::Arc<crate::gameplay::effects::spawner::EntitySpawner>) {
+        self.world_particles.set_spawner(spawner);
+    }
 
     pub(crate) fn prepare_entity_graphs(&mut self,
         definitions: &super::world_effects::WorldEffectDefinitions,

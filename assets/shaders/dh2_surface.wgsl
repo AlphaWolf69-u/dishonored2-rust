@@ -45,6 +45,7 @@ struct SurfaceUniform {
     oit:array<vec4<f32>,2>,
     oit_mode:vec4<u32>,
     glass_transmittance:vec4<f32>,
+    eye:array<vec4<f32>,6>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
