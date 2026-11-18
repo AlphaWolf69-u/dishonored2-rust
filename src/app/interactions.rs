@@ -508,6 +508,28 @@ pub(super) fn focus_and_interact(
     mut entity_events: ResMut<crate::gameplay::entity_events::EntityEvents>,
     mut occlusion: Local<crate::gameplay::interaction_sensor::OcclusionScratch>,
 ) {
+    //Existing action-scenario trace only. A previous HUD prompt is not proof
+    //that this frame's sensor retained a primary interaction (7fc420).
+    let trace_input=player.as_deref().and_then(|state|state.player.as_ref())
+        .is_some_and(|player|player.carrying.tracing_enabled()&&{
+            let (_,press,release,_,_)=player.controller.action_input_snapshot(22);
+            press||release
+        });
+    if trace_input {
+        let actual=player.as_deref().and_then(|state|state.player.as_ref()).unwrap();
+        eprintln!("ACTION_INTERACT_INPUT source=7f9ea0+7f8040 advanced={} raw=(allowed,pressed,released,held,enable_count){:?} debug_free_fly={} states={:?} previous_focus={:?} previous_selected={:?} catch_hint={:?} owners=(interactions,nav,physics,models,live){:?} camera_count={} clock=(marker,time0,time1,time3){:?} camera={:?} equipment_side0={:?} equipment_side1={:?} selected_power={:?} pending_read={} pending_read_activation={} pending_pickup={:?} request47=(land_busy,swim_busy,land_typed,swim_typed){:?} player_id={:?} dead={}",
+            clock.advanced(),actual.controller.action_input_snapshot(22),
+            player.as_deref().is_some_and(|state|state.debug_free_fly),actual.active_player_states(),focused.current,
+            interactions.as_deref().and_then(|owner|owner.selected),interactions.as_deref().and_then(|owner|owner.grapple_prompt),
+            (interactions.is_some(),world.is_some(),physics.is_some(),models.is_some(),live.is_some()),camera.iter().count(),
+            clock.clock().map(|clock|(clock.frame_marker(),clock.time(0),clock.time(1),clock.time(3))),
+            camera.single().map(|camera|(camera.translation,camera.forward())),
+            actual.equipment_action_status(0),actual.equipment_action_status(1),actual.selected_power().map(|cast|cast.settings.id),
+            interactions.as_deref().is_some_and(|owner|owner.pending_read.is_some()),
+            interactions.as_deref().is_some_and(|owner|owner.pending_activation.is_some()),
+            interactions.as_deref().and_then(|owner|owner.pending_pickup.as_ref()).map(|pending|(pending.entity,pending.phase)),
+            actual.loot_request_snapshot(),actual.managed_entity(),actual.is_dead());
+    }
     //7f9ea0 retains a press independently from a later release in the
     //same event batch.7f8040 reads that enabled press, not final held state.
     if let Some(player) = player.as_deref_mut().and_then(|state| state.player.as_mut()) {
@@ -540,12 +562,14 @@ pub(super) fn focus_and_interact(
         });
     }
     let Some(mut interactions) = interactions else {
+        if trace_input {eprintln!("ACTION_INTERACT_EARLY reason=interaction_owner_absent");}
         if focused.current.is_some() {
             focused.current = None;
         }
         return;
     };
     let (Some(world), Ok(camera)) = (world, camera.single()) else {
+        if trace_input {eprintln!("ACTION_INTERACT_EARLY reason=navigation_or_single_camera_absent");}
         if focused.current.is_some() {
             focused.current = None;
         }
@@ -948,6 +972,11 @@ pub(super) fn focus_and_interact(
                     continue;
                 };
                 let carrying = pickable.definition.hold.is_some();
+                if trace_input {
+                    eprintln!("ACTION_INTERACT_PICKABLE id={id:?} reference={reference:?} carrying={carrying} item={:?} interaction_visible={} bounds={:?} frame={:?}",
+                        pickable.item.as_ref().map(|item|(&item.path,item.note_type,super::pickups::inventory_family_available(item,player))),
+                        models.interaction_visible(id),models.interaction_bounds(id),scene.entity_frame(live,id));
+                }
                 if (!carrying && pickable.item.as_ref().is_none_or(|item|item.note_type==-1&&!super::pickups::inventory_family_available(item,player)))
                     || !models.interaction_visible(id)
                 {
@@ -970,10 +999,17 @@ pub(super) fn focus_and_interact(
                     target_min_z: bounds[0][2],
                     target_max_z: bounds[1][2],
                 };
-                match admits_candidate(definition, &context, |mode, state, _| {
+                let admission=admits_candidate(definition, &context, |mode, state, _| {
                     Ok(if carrying && state!=47 { player.carry_interaction_allowed(mode, state) }
                         else { player.loot_interaction_allowed(mode, state) } == Some(true))
-                }) {
+                });
+                if trace_input {
+                    let mode=if definition.player_mode==14{context.player_mode}else{definition.player_mode};
+                    let state_allowed=if carrying&&definition.player_state!=47{player.carry_interaction_allowed(mode,definition.player_state)}else{player.loot_interaction_allowed(mode,definition.player_state)};
+                    eprintln!("ACTION_INTERACT_CANDIDATE id={id:?} reference={reference:?} carrying={carrying} primary={definition:?} secondary=not_exposed_by_host retained_component_record={:?} mode={} resolved_mode={mode} state_allowed={state_allowed:?} possessing={} camera={:?} point={:?} forward={:?} min_z={} max_z={} admitted={admission:?}",
+                        pickable.interaction,context.player_mode,context.is_possessing,context.camera,context.point,context.target_forward,context.target_min_z,context.target_max_z);
+                }
+                match admission {
                     Ok(true) => {}
                     Ok(false) => continue,
                     Err(error) => {
@@ -1028,10 +1064,13 @@ pub(super) fn focus_and_interact(
                         &mut physics_queries,
                     ) {
                         Ok(true) => {
+                            if trace_input {eprintln!("ACTION_INTERACT_OCCLUSION id={target:?} radius={radius} blocked=true hit={:?}",hit.position);}
                             blocked = true;
                             break;
                         }
-                        Ok(false) => {}
+                        Ok(false) => {
+                            if trace_input {eprintln!("ACTION_INTERACT_OCCLUSION id={target:?} radius={radius} blocked=false hit={:?}",hit.position);}
+                        }
                         Err(error) => {
                             warn!("Live pickup occlusion: {error}");
                             blocked = true;
@@ -1197,6 +1236,20 @@ pub(super) fn focus_and_interact(
         //Locked interactions still own a descriptor in7fc420/846b50.
         player.set_interaction_presence(interactions.selected.is_some());
     }
+    if trace_input {
+        let actual=player.as_deref().and_then(|state|state.player.as_ref());
+        eprintln!("ACTION_INTERACT_DECISION source=3b8430+7fc420 pressed={pressed} selected={selected:?} retained={:?} focus={:?} catch_hint={:?} pending_pickup={:?} pending47={:?} active47target={:?} mode47={:?} request47={:?}",
+            interactions.selected,focused.current,interactions.grapple_prompt,
+            interactions.pending_pickup.as_ref().map(|pending|(pending.entity,pending.phase)),
+            actual.and_then(|p|p.pending_loot_object()),actual.and_then(|p|p.world_pickup_target()),actual.and_then(|p|p.world_pickup_mode()),actual.map(|p|p.loot_request_snapshot()));
+        if let Some((SelectionKind::Openable(id),_,_))=selected {
+            eprintln!("ACTION_INTERACT_OPENABLE id={id:?} primary={:?} secondary=not_hosted",
+                physics.as_deref().zip(live.as_deref()).map(|(scene,live)|scene.interaction_openable(live,id)));
+        }
+        for (group,hits) in interactions.casts.hits.iter().enumerate(){
+            eprintln!("ACTION_INTERACT_CAST group={group} count={} first={:?}",hits.len(),&hits[..hits.len().min(4)]);
+        }
+    }
     //74b6e0 still processes a locked door use (rattle/key/HUD result).
     //Its locked icon does not turn it into an unclickable pickup.
     let door=selected.is_some_and(|(kind,_,_)|matches!(kind,SelectionKind::Openable(_)));
@@ -1209,6 +1262,7 @@ pub(super) fn focus_and_interact(
     if let SelectionKind::Openable(id)=kind{
         let notify=physics.as_deref().zip(live.as_deref()).and_then(|(scene,live)|scene.interaction_openable(live,id).ok().flatten())
             .is_some_and(|(_,_,definition,_)|definition.has(crate::gameplay::interaction_definition::SEND_USE_NOTIFICATION));
+        if trace_input {eprintln!("ACTION_INTERACT_OPENABLE_REQUEST id={id:?} send_use_notification={notify}");}
         if !notify{return;}
         let Some(instigator)=player.as_deref().and_then(|state|state.player.as_ref()).and_then(|player|player.managed_entity()) else{return;};
         entity_events.post(crate::gameplay::entity_events::Event{id:0x96,target:Some(id),
@@ -1225,9 +1279,14 @@ pub(super) fn focus_and_interact(
                     .as_deref_mut()
                     .and_then(|state| state.player.as_mut()),
             ) {
-                if let Ok(Some((reference, pickable))) = scene.interaction_pickable(live, id) {
+                let current=scene.interaction_pickable(live,id);
+                if trace_input {eprintln!("ACTION_INTERACT_REQUEST_TARGET id={id:?} current={:?}",
+                    current.as_ref().map(|value|value.as_ref().map(|(reference,pickable)|(reference,pickable.item.as_ref().map(|item|&item.path)))));}
+                if let Ok(Some((reference, pickable))) = current {
                     if let Some(item) = pickable.item.as_ref() {
-                        if player.request_loot_object(id) {
+                        let requested=player.request_loot_object(id);
+                        if trace_input {eprintln!("ACTION_INTERACT_REQUEST id={id:?} state=47 requested={requested} item={:?}",item.path);}
+                        if requested {
                             interactions.pending_pickup = Some(super::pickups::Pending {
                                 entity: id,
                                 reference,
@@ -1670,6 +1729,22 @@ pub(super) fn read_action_progress(world: &World) -> Option<ReadActionProgress> 
         accepted_pickups: owner.retire.len(),
         acquisitions_closed: owner.acquisitions_closed.load(Ordering::Acquire),
     })
+}
+
+impl Interactions {
+    ///The accepted ordinary sensor target, distinct from its HUD-only catch hint.
+    ///No selection is reconstructed or changed; validate the actual live ID.
+    pub(super) fn selected_interaction_target(&self,live:&crate::gameplay::entity_lifetime::LiveEntities)
+        ->Option<crate::gameplay::entity_lifetime::EntityId>{
+        let (kind,index,_)=self.selected?;
+        let id=match kind {
+            SelectionKind::Pickup(id)|SelectionKind::CarryLive(id)|SelectionKind::Openable(id)=>id,
+            SelectionKind::Carry=>live.find(&self.carrying.get(index)?.entity)?,
+            SelectionKind::Readable=>live.find(&self.readable.get(index)?.entity)?,
+            SelectionKind::Usable=>live.find(&self.actors.get(index)?.entity)?,
+        };
+        live.get(id).map(|_|id)
+    }
 }
 
 ///Existing F8 callback only; selected is the actual sensor-owned descriptor.

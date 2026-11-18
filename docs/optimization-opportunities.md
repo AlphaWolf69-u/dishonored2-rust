@@ -2661,3 +2661,39 @@ not bundled into the new family: it needs scoped allocator/caller measurements
 and a same-build comparison against the existing area traversal. The exact
 removable allocation count is up to three per published view; no CPU time or
 byte-saving claim is made without actual active-area capacities/call counts.
+
+
+### Already-admitted placed surfaces: first-use program preparation (2026-11-18)
+
+Prediction before implementation: for enrolled, already-created source surfaces,
+matching MAIN/prepass/Alpha program creation moves into existing resource
+preparation, leaving zero uncovered matching first-use keys. This is a startup
+scheduling change, not a claimed steady CPU/FPS improvement. The same-run 58f
+capture proves visible prepass231 and MAIN235 share actual Bmd6 mesh9643 /
+Probe material1279, layout dbb22b87a008de00; prepass231 cost318.092ms. Alpha
+pipeline251's357.517ms is proven to belong to the placed AlphaGpu owner, but its
+exact source tuple is not captured and must not be inferred from nearby lines.
+
+The staged change walks the already-created level roster once, deduplicates
+actual mesh/material/source-route identities, and requests only those current
+canonical keys. It loads no additional world assets or textures. Existing
+PipelineCache and AlphaGpu caches share IDs with visible work; no new cache,
+visible entity, shader permutation enumeration or normal-frame surface scan is
+introduced. Completed roster/view settings bypass the exclusive preparer. Real
+pending assets remain pending; the schedule uses actual current depth targets.
+Surface records add one optional Arc field. A transient roster-build lookup
+interns one Alpha descriptor per admitted material/source-bank, shared by all
+its mesh/material pairs, then is dropped immediately. Existing FX trace reports
+source-instance, unique-pair, Alpha-surface and Alpha-descriptor counts once at
+enrollment. Work adds a MAIN-count scalar and one pending boolean;
+transient vectors disappear on acknowledgement and shutdown drops the roster.
+
+Acceptance still required: matched same-run preload/visible IDs and first-use
+creation timestamps, unchanged draw/pass/barrier/output receipts, startup CPU,
+memory and preparation duration. No measurement or appearance acceptance is
+claimed from source review, parsing or patch checks. The raw count of visible
+specialization receipts does not establish settled churn: it can include real
+pending-key retries. Eliminating those retries needs separate measured evidence
+and is not bundled here. Genuine unresolved skinned-model Alpha bank selectors
+remain explicitly unadmitted; resource/data ownership must be proven before
+their coverage can be extended. No speculative bank/permutation warmup is used.

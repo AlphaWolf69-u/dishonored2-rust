@@ -15,7 +15,7 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::*,
         sync_world::MainEntity,
-        view::{ExtractedView, RetainedViewEntity, ViewTarget},
+        view::{ExtractedView, RetainedViewEntity, ViewTarget, ViewDepthTexture},
     },
 };
 
@@ -24,6 +24,7 @@ pub(in crate::app) struct Surface {
     pub mesh: bevy::asset::AssetId<Mesh>,
     pub material: bevy::asset::UntypedAssetId,
     pub skinned: bool,
+    pub alpha: Option<Arc<crate::rendering::bevy_backend::alpha_depth_scene::AlphaSurface>>,
 }
 #[derive(Clone, Default)]
 pub(super) struct Admission {
@@ -33,6 +34,8 @@ pub(super) struct Admission {
 struct Work {
     surface: Surface,
     base: Vec<CachedRenderPipelineId>,
+    main_count: usize,
+    alpha_queued: bool,
     complete: Arc<AtomicBool>,
     error: Arc<Failure>,
 }
@@ -53,10 +56,10 @@ impl Failure {
         self.failed.store(true, Ordering::Release);
     }
 }
-type ModelView = (&'static MainEntity, &'static ExtractedView, &'static ViewTarget,
+type ModelView = (&'static MainEntity, &'static ExtractedView, &'static ViewTarget, &'static ViewDepthTexture,
     Has<DepthPrepass>, Has<NormalPrepass>, Has<MotionVectorPrepass>, Has<DeferredPrepass>);
 type PrepassView = Option<(MeshPipelineKey, bool)>;
-type ViewSignature = (RetainedViewEntity, MeshPipelineKey, TextureFormat, PrepassView);
+type ViewSignature = (RetainedViewEntity, MeshPipelineKey, TextureFormat, TextureFormat, PrepassView, bool);
 
 #[derive(Resource, Default)]
 pub(super) struct Pending {
@@ -64,6 +67,8 @@ pub(super) struct Pending {
     view: Option<ViewSignature>,
     work: Vec<Work>,
     remaining: HashMap<usize, usize>,
+    console_generation: Option<u64>,
+    oit: bool,
 }
 
 // Read-only condition avoids scheduling an exclusive render-world barrier once
@@ -80,20 +85,26 @@ pub(super) fn needed(
         views
             .iter()
             .find(|(main, ..)| main.id() == water.camera)
-            .and_then(|(_, view, target, depth, normal, motion, deferred)| {
+            .and_then(|(_, view, target, depth_texture, depth, normal, motion, deferred)| {
                 let key=*keys.get(&view.retained_view_entity)?;
                 let prepass=if depth||normal||motion||deferred {
                     Some((*prepass_keys.get(&view.retained_view_entity)?,deferred))
                 }else{None};
-                Some((view.retained_view_entity,key,target.main_texture_format(),prepass))
+                Some((view.retained_view_entity,key,target.main_texture_format(),depth_texture.texture.format(),prepass,pending.oit))
             })
     });
-    !pending.sources.ptr_eq(&Arc::downgrade(&uploads.0))
+    pending.console_generation != Some(crate::platform::console::shared().generation())
+        || !pending.sources.ptr_eq(&Arc::downgrade(&uploads.0))
         || pending.view != view
         || (view.is_some() && !pending.work.is_empty())
 }
 
 pub(super) fn acknowledge(world: &mut World) {
+    let console=crate::platform::console::shared();
+    let console_generation=console.generation();
+    let oit=if world.resource::<Pending>().console_generation==Some(console_generation) {
+        world.resource::<Pending>().oit
+    }else{console.read().cvars.int("r_OIT").unwrap_or(1)!=0};
     let camera = world
         .resource::<WaterSceneFrame>()
         .0
@@ -104,16 +115,18 @@ pub(super) fn acknowledge(world: &mut World) {
         views
             .iter(world)
             .find(|(main, ..)| main.id() == camera)
-            .and_then(|(_, view, target, depth, normal, motion, deferred)| {
+            .and_then(|(_, view, target, depth_texture, depth, normal, motion, deferred)| {
                 let key=*world.resource::<ViewKeyCache>().get(&view.retained_view_entity)?;
                 let prepass=if depth||normal||motion||deferred {
                     Some((*world.resource::<ViewKeyPrepassCache>().get(&view.retained_view_entity)?,deferred))
                 }else{None};
-                Some((view.retained_view_entity,key,target.main_texture_format(),prepass))
+                Some((view.retained_view_entity,key,target.main_texture_format(),depth_texture.texture.format(),prepass,oit))
             })
     });
     let uploads = world.resource::<Uploads>().0.clone();
     world.resource_scope(|world, mut pending: Mut<Pending>| {
+        pending.console_generation=Some(console_generation);
+        pending.oit=oit;
         let view_changed = pending.view != view;
         let changed = !pending.sources.ptr_eq(&Arc::downgrade(&uploads)) || view_changed;
         if changed {
@@ -139,13 +152,15 @@ pub(super) fn acknowledge(world: &mut World) {
                     pending.work.push(Work {
                         surface: surface.clone(),
                         base: Vec::new(),
+                        main_count: 0,
+                        alpha_queued: surface.alpha.is_none(),
                         complete: upload.complete.clone(),
                         error: upload.error.clone(),
                     });
                 }
             }
         }
-        let Some((_, view_key, _, prepass)) = view else {
+        let Some((_, view_key, colour, depth_format, prepass, oit)) = view else {
             return;
         };
         // No per-surface work, cloning or specialization once this exact
@@ -153,7 +168,7 @@ pub(super) fn acknowledge(world: &mut World) {
         // changes and removes its pending work before asset handles can recycle.
         let mut index = 0;
         while index < pending.work.len() {
-            let result = prepare(world, &mut pending.work[index], view_key, prepass);
+            let result = prepare(world, &mut pending.work[index], view_key, prepass, colour, depth_format, oit);
             match result {
                 Ok(false) => index += 1,
                 result => {
@@ -189,9 +204,10 @@ fn ready(world: &World, id: CachedRenderPipelineId) -> Result<bool, String> {
         _ => Ok(false),
     }
 }
-fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: PrepassView) -> Result<bool, String> {
+fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: PrepassView, colour:TextureFormat, depth:TextureFormat, oit:bool) -> Result<bool, String> {
     if item.base.is_empty() {
         let Some(mut ids) = queue_surface(world, &item.surface, view)? else { return Ok(false) };
+        item.main_count=ids.len();
         //Actual model draw admission also owns its enabled depth/normal/motion
         //pass. The separate decal program-only queue_properties API remains
         //main-only: no fictitious prepass entity or material is introduced.
@@ -203,6 +219,23 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: P
     }
     for &id in &item.base {
         if !ready(world, id)? { return Ok(false); }
+    }
+    if !item.alpha_queued {
+        let surface=item.surface.alpha.as_ref().ok_or("placed Alpha admission metadata absent")?;
+        //Only MAIN IDs select Alpha derivatives; the ordinary prepass IDs
+        //must never be cloned into an Alpha colour/depth descriptor.
+        let mut derived=Vec::new();
+        for &id in &item.base[..item.main_count] {
+            let result=world.resource_scope(|world,mut alpha:Mut<crate::rendering::bevy_backend::alpha_depth_scene::AlphaGpu>|{
+                alpha.prepare_surface_pipelines(world.resource::<PipelineCache>(),id,surface,colour,depth,oit)
+            })?;
+            let Some(ids)=result else{return Ok(false);};
+            derived.extend(ids);
+        }
+        item.base.extend(derived);
+        item.alpha_queued=true;
+        //The SAME canonical IDs now include every actual enabled pass.
+        for &id in &item.base {if !ready(world,id)?{return Ok(false);}}
     }
     Ok(true)
 }

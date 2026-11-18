@@ -24,6 +24,12 @@ pub struct AlphaDepthMaterial {
     pub full: bool,
     pub reduced: bool,
 }
+impl AlphaDepthMaterial {
+    ///The actual enabled depth slots, shared by visible work and admission.
+    fn pass_enabled(&self,pass:usize)->bool {
+        [self.full,self.reduced,self.full&&self.flags49&1!=0][pass]
+    }
+}
 /// 14031dce0 draws dynamicAlpha (model bucket 0x37) and worldAlpha (world
 /// list key 0) through writePixel: weighted-blended accumulation when r_OIT
 /// is nonzero, otherwise the material blend into hdrBuffer.
@@ -79,15 +85,133 @@ impl AlphaGpu {
     /// descriptor before an actor exists; it never manufactures a visible draw.
     pub(crate) fn prepare_lit_pipeline(
         &mut self, cache: &PipelineCache, base: CachedRenderPipelineId,
-        route: AlphaLitRoute, colour: TextureFormat, depth: TextureFormat,
+        route: AlphaLitRoute, colour: TextureFormat, depth: TextureFormat, role: &'static str,
     ) -> Result<Option<CachedRenderPipelineId>, String> {
         let key = (base, route, colour, depth);
         if let Some(id) = self.lit_pipelines.get(&key) { return Ok(Some(*id)); }
         if cache.get_render_pipeline(base).is_none() { return Ok(None); }
         let id = cache.queue_render_pipeline(lit_descriptor(cache, base, route, colour, depth)?);
         self.lit_pipelines.insert(key, id);
+        trace_pipeline_queued(role,"lit",base,id,&key);
         Ok(Some(id))
     }
+
+    ///Same selected source pass, bindings and descriptor as visible prepare.
+    fn prepare_depth_pipeline(&mut self,cache:&PipelineCache,base:CachedRenderPipelineId,
+        material:&AlphaDepthMaterial,pass:u8,depth_format:TextureFormat,role:&'static str)
+        ->Result<CachedRenderPipelineId,String>{
+        let state=crate::rendering::render_model::depth_alpha_draw_state(material.state,material.flags49,pass)?.state;
+        let key = (base, state, pass, depth_format);
+        let pipeline = if let Some(id) = self.pipelines.get(&key) {
+            *id
+        } else {
+            let mut descriptor =
+                cache.get_render_pipeline_descriptor(base).clone();
+            descriptor.label = Some("alpha depth mesh".into());
+            descriptor.vertex.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
+            let fragment = descriptor
+                .fragment
+                .as_mut()
+                .ok_or("alpha depth MAIN has no fragment")?;
+            fragment.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
+            fragment.shader = SHADER;
+            // Programs whose alpha test differs in the
+            // alpha-depth passes (arkHair: r_hairAlphaTestAlpha).
+            fragment.shader_defs.push("DH2_ALPHA_DEPTH".into());
+            if material.flags49 & 1 != 0 {
+                fragment.shader_defs.push("DH2_REFRACTION".into());
+            }
+            fragment.entry_point =
+                Some(if pass != 1 { "full" } else { "reduced" }.into());
+            fragment.targets = if pass != 1 {
+                let target = crate::render_state::blend_state(&state)
+                    .targets[0]
+                    .ok_or("alpha depth colour state absent")?;
+                vec![Some(ColorTargetState {
+                    format: TextureFormat::Rg16Float,
+                    blend: super::pipeline_state::blend_target(target)?,
+                    write_mask: ColorWrites::from_bits_truncate(u32::from(
+                        target.write_mask,
+                    )),
+                })]
+            } else {
+                Vec::new()
+            };
+            descriptor.depth_stencil =
+                Some(super::pipeline_state::depth_stencil_gpu(
+                    &state,
+                    depth_format,
+                )?);
+            // Keep the actual mesh's vertex deformation, handedness, culling and bindings.
+            descriptor.multisample.count = 1;
+            descriptor.multisample.alpha_to_coverage_enabled = false;
+            let id = cache.queue_render_pipeline(descriptor);
+            self.pipelines.insert(key, id);
+            trace_pipeline_queued(role,"depth",base,id,&key);
+            id
+        };
+        Ok(pipeline)
+    }
+    fn prepare_hair_pipeline(&mut self,cache:&PipelineCache,base:CachedRenderPipelineId,kind:u8,role:&'static str)
+        ->Result<Option<CachedRenderPipelineId>,String>{
+        let key = (base, kind);
+        let pipeline = if let Some(id) = self.hair_pipelines.get(&key) {
+            *id
+        } else {
+            if cache.get_render_pipeline(base).is_none() { return Ok(None); }
+            let mut descriptor = cache.get_render_pipeline_descriptor(base).clone();
+            let depth = descriptor.depth_stencil.as_mut().ok_or("hair pipeline has no depth state")?;
+            // The lit pass writes depth (capture 10249); OIT only tests it.
+            depth.depth_write_enabled = Some(kind == 0);
+            if kind == 1 {
+                descriptor.label = Some("hair oit mesh".into());
+                let fragment = descriptor.fragment.as_mut().ok_or("hair MAIN has no fragment")?;
+                fragment.shader_defs.extend(["DH2_OIT".into(), "DH2_HAIR_LIST".into()]);
+                let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add };
+                let reveal = BlendComponent { src_factor: BlendFactor::Zero,
+                    dst_factor: BlendFactor::OneMinusSrc, operation: BlendOperation::Add };
+                fragment.targets = vec![
+                    Some(ColorTargetState { format: TextureFormat::Rgba16Float,
+                        blend: Some(BlendState { color: add, alpha: add }), write_mask: ColorWrites::ALL }),
+                    Some(ColorTargetState { format: TextureFormat::R8Unorm,
+                        blend: Some(BlendState { color: reveal, alpha: reveal }), write_mask: ColorWrites::RED }),
+                ];
+            } else {
+                descriptor.label = Some("hair lit mesh".into());
+            }
+            let id = cache.queue_render_pipeline(descriptor);
+            self.hair_pipelines.insert(key, id);
+            trace_pipeline_queued(role,"hair",base,id,&key);
+            id
+        };
+        Ok(Some(pipeline))
+    }
+    ///Program admission consumes exact already-admitted route metadata; no
+    ///draw, bindings, textures, targets or material permutations are created.
+    pub(crate) fn prepare_surface_pipelines(&mut self,cache:&PipelineCache,base:CachedRenderPipelineId,
+        surface:&AlphaSurface,colour:TextureFormat,depth:TextureFormat,oit:bool)
+        ->Result<Option<Vec<CachedRenderPipelineId>>,String>{
+        if cache.get_render_pipeline(base).is_none(){return Ok(None);}
+        let material=surface.depth.as_ref().map_err(Clone::clone)?;
+        let mut ids=Vec::new();
+        for pass in 0..3u8 {
+            if !material.pass_enabled(pass as usize){continue;}
+            ids.push(self.prepare_depth_pipeline(cache,base,material,pass,
+                if pass==2{depth}else{TextureFormat::Depth32FloatStencil8},"preload")?);
+        }
+        if surface.hair {
+            for kind in 0..2u8 {
+                let Some(id)=self.prepare_hair_pipeline(cache,base,kind,"preload")? else{return Ok(None);};
+                ids.push(id);
+            }
+        }else if let Some(route)=surface.lit.as_ref().map_err(Clone::clone)? {
+            let Some(id)=self.prepare_lit_pipeline(cache,base,AlphaLitRoute{accumulate:oit,..*route},colour,depth,"preload")? else{return Ok(None);};
+            ids.push(id);
+        }
+        Ok(Some(ids))
+    }
+
     pub(super) fn ensure_opacity(&mut self, device: &RenderDevice, extent: UVec2) {
         if self.opacity.as_ref().is_none_or(|image| {
             image.texture.width() != extent.x || image.texture.height() != extent.y
@@ -230,73 +354,17 @@ fn prepare(
                         };
                         if cache.get_render_pipeline(item.pipeline).is_some() {
                             for pass in 0..3 {
-                                if ![
-                                    material.full,
-                                    material.reduced,
-                                    material.full && material.flags49 & 1 != 0,
-                                ][pass]
+                                if !material.pass_enabled(pass)
                                 {
                                     continue;
                                 }
-                                let state = crate::rendering::render_model::depth_alpha_draw_state(
-                                    material.state,
-                                    material.flags49,
-                                    pass as u8,
-                                )?
-                                .state;
                                 let depth_format = if pass == 2 {
                                     main_depth.texture.format()
                                 } else {
                                     TextureFormat::Depth32FloatStencil8
                                 };
-                                let key = (item.pipeline, state, pass as u8, depth_format);
-                                let pipeline = if let Some(id) = gpu.pipelines.get(&key) {
-                                    *id
-                                } else {
-                                    let mut descriptor =
-                                        cache.get_render_pipeline_descriptor(item.pipeline).clone();
-                                    descriptor.label = Some("alpha depth mesh".into());
-                                    descriptor.vertex.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
-                                    let fragment = descriptor
-                                        .fragment
-                                        .as_mut()
-                                        .ok_or("alpha depth MAIN has no fragment")?;
-                                    fragment.shader_defs.retain(|value| !matches!(value,bevy::shader::ShaderDefVal::Bool(name,_) if name=="DH2_FOG_VERTEX"));
-                                    fragment.shader = SHADER;
-                                    // Programs whose alpha test differs in the
-                                    // alpha-depth passes (arkHair: r_hairAlphaTestAlpha).
-                                    fragment.shader_defs.push("DH2_ALPHA_DEPTH".into());
-                                    if material.flags49 & 1 != 0 {
-                                        fragment.shader_defs.push("DH2_REFRACTION".into());
-                                    }
-                                    fragment.entry_point =
-                                        Some(if pass != 1 { "full" } else { "reduced" }.into());
-                                    fragment.targets = if pass != 1 {
-                                        let target = crate::render_state::blend_state(&state)
-                                            .targets[0]
-                                            .ok_or("alpha depth colour state absent")?;
-                                        vec![Some(ColorTargetState {
-                                            format: TextureFormat::Rg16Float,
-                                            blend: super::pipeline_state::blend_target(target)?,
-                                            write_mask: ColorWrites::from_bits_truncate(u32::from(
-                                                target.write_mask,
-                                            )),
-                                        })]
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    descriptor.depth_stencil =
-                                        Some(super::pipeline_state::depth_stencil_gpu(
-                                            &state,
-                                            depth_format,
-                                        )?);
-                                    // Keep the actual mesh's vertex deformation, handedness, culling and bindings.
-                                    descriptor.multisample.count = 1;
-                                    descriptor.multisample.alpha_to_coverage_enabled = false;
-                                    let id = cache.queue_render_pipeline(descriptor);
-                                    gpu.pipelines.insert(key, id);
-                                    id
-                                };
+                                let pipeline = gpu.prepare_depth_pipeline(&cache, item.pipeline,
+                                    material, pass as u8, depth_format,"visible")?;
                                 if cache.get_render_pipeline(pipeline).is_some() {
                                     for member in index..(index + count).min(source.items.len()) {
                                         selected[pass].add_retained(copy_item(
@@ -325,38 +393,9 @@ fn prepare(
                 let is_hair = sources.0.get(&item.entity.1).is_some_and(|surface| surface.hair);
                 if is_hair {
                     for kind in 0..2u8 {
-                        let key = (item.pipeline, kind);
-                        let pipeline = if let Some(id) = gpu.hair_pipelines.get(&key) {
-                            *id
-                        } else {
-                            let Some(_) = cache.get_render_pipeline(item.pipeline) else {
-                                pending = true;
-                                break;
-                            };
-                            let mut descriptor = cache.get_render_pipeline_descriptor(item.pipeline).clone();
-                            let depth = descriptor.depth_stencil.as_mut().ok_or("hair pipeline has no depth state")?;
-                            // The lit pass writes depth (capture 10249); OIT only tests it.
-                            depth.depth_write_enabled = Some(kind == 0);
-                            if kind == 1 {
-                                descriptor.label = Some("hair oit mesh".into());
-                                let fragment = descriptor.fragment.as_mut().ok_or("hair MAIN has no fragment")?;
-                                fragment.shader_defs.extend(["DH2_OIT".into(), "DH2_HAIR_LIST".into()]);
-                                let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One,
-                                    operation: BlendOperation::Add };
-                                let reveal = BlendComponent { src_factor: BlendFactor::Zero,
-                                    dst_factor: BlendFactor::OneMinusSrc, operation: BlendOperation::Add };
-                                fragment.targets = vec![
-                                    Some(ColorTargetState { format: TextureFormat::Rgba16Float,
-                                        blend: Some(BlendState { color: add, alpha: add }), write_mask: ColorWrites::ALL }),
-                                    Some(ColorTargetState { format: TextureFormat::R8Unorm,
-                                        blend: Some(BlendState { color: reveal, alpha: reveal }), write_mask: ColorWrites::RED }),
-                                ];
-                            } else {
-                                descriptor.label = Some("hair lit mesh".into());
-                            }
-                            let id = cache.queue_render_pipeline(descriptor);
-                            gpu.hair_pipelines.insert(key, id);
-                            id
+                        let Some(pipeline) = gpu.prepare_hair_pipeline(&cache, item.pipeline, kind,"visible")? else {
+                            pending = true;
+                            break;
                         };
                         if cache.get_render_pipeline(pipeline).is_none() {
                             pending = true;
@@ -417,7 +456,7 @@ fn prepare(
                     let format = target.main_texture_format();
                     // 31dce0 tests zBuffer, the view depth.
                     let depth_format = main_depth.texture.format();
-                    let pipeline = gpu.prepare_lit_pipeline(&cache, item.pipeline, route, format, depth_format)?;
+                    let pipeline = gpu.prepare_lit_pipeline(&cache, item.pipeline, route, format, depth_format,"visible")?;
                     // A compiling pipeline keeps its surfaces out of both paths
                     // for that frame, as the ordinary pipelines do.
                     if let Some(pipeline) = pipeline.filter(|id| cache.get_render_pipeline(*id).is_some()) {
@@ -834,5 +873,15 @@ fn ensure_hair_resolve(gpu: &mut AlphaGpu, device: &RenderDevice, format: Textur
             cache: None,
         });
         gpu.hair_resolve = Some((format, layout, pipeline));
+    }
+}
+
+///No history or new observer: a receipt only when the canonical cache queues
+///a new derived program. Cache-hit rendering does not call this function.
+fn trace_pipeline_queued(role:&'static str,kind:&'static str,
+    base:CachedRenderPipelineId,derived:CachedRenderPipelineId,key:&impl std::fmt::Debug){
+    static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    if *TRACE.get_or_init(||std::env::var_os("DH2_TRACE_WORLD_FX").is_some()){
+        eprintln!("FX_ALPHA_PIPELINE role={role} kind={kind} base={base:?} derived={derived:?} key={key:?}");
     }
 }

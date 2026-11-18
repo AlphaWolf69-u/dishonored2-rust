@@ -56,23 +56,30 @@ fn extract(
         let Some(routes) = materials.0.get(&instance.material) else {
             continue;
         };
-        let unresolved = |error: &str| AlphaSurface {
-            depth: Err(error.into()),
-            hair: routes[0].hair,
-            lit: Err(error.into()),
-        };
-        let source = match instance.source.map(|s| s.surface) {
-            Some(RenderModelSurface::World { .. }) => routes[2].clone(),
-            Some(RenderModelSurface::Bmodel { .. }) => routes[0].clone(),
-            Some(RenderModelSurface::Bmd6 {
-                skin_influences: 0, ..
-            }) => routes[0].clone(),
-            Some(RenderModelSurface::Bmd6 { .. }) if routes[0] == routes[1] => routes[0].clone(),
-            Some(RenderModelSurface::Bmd6 { .. }) => {
-                unresolved("alpha-depth optional mesh bank association unresolved")
-            }
-            None => unresolved("alpha-depth instance source unavailable"),
-        };
+        let source = surface_for(instance, routes);
         sources.0.insert(MainEntity::from(entity), source);
     }
+}
+
+///One source-bank policy for actual draws and program-only admission.
+pub(super) fn surface_for(instance:&super::RenderInstance,
+    routes:&[AlphaSurface;3])->AlphaSurface {
+    let unresolved = |error: &str| AlphaSurface {
+        depth: Err(error.into()),
+        hair: routes[0].hair,
+        lit: Err(error.into()),
+    };
+    let source = match instance.source.map(|s| s.surface) {
+        Some(RenderModelSurface::World { .. }) => routes[2].clone(),
+        Some(RenderModelSurface::Bmodel { .. }) => routes[0].clone(),
+        Some(RenderModelSurface::Bmd6 {
+            skin_influences: 0, ..
+        }) => routes[0].clone(),
+        Some(RenderModelSurface::Bmd6 { .. }) if routes[0] == routes[1] => routes[0].clone(),
+        Some(RenderModelSurface::Bmd6 { .. }) => {
+            unresolved("alpha-depth optional mesh bank association unresolved")
+        }
+        None => unresolved("alpha-depth instance source unavailable"),
+    };
+    source
 }

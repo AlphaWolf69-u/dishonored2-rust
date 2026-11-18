@@ -837,7 +837,8 @@ fn acquire(world: &mut World) {
                 super::entity_removal::initialize(world);
                 world.insert_resource(super::carrying::Carrying::default());
                 world.insert_resource(super::physics_scene::carrying_host::CarryPhysics::default());
-                if let Err(error) = super::fx_gameplay::initialize(world)
+                if let Err(error) = super::audio::open_level(world)
+                    .and_then(|_| super::fx_gameplay::initialize(world))
                     .and_then(|_| super::animation_effects::initialize(world))
                     .and_then(|_| super::water_impacts::initialize(world))
                     .and_then(|_| super::world_models::initialize(world))

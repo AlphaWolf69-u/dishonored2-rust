@@ -9,6 +9,15 @@ use crate::gameplay::{
 };
 
 impl PhysicsScene {
+    ///Opt-in diagnostics: same real header flags written by damage_target,
+    ///including0x800 death, even after the Health component has stopped.
+    pub(in crate::app) fn diagnostic_damage_flags(&self,live:&LiveEntities,id:EntityId)->Result<Option<u32>,String>{
+        if live.get(id).is_none(){return Ok(None);}
+        let Some(&index)=self.shared_indices.get(&id)else{return Ok(None);};
+        let actor=self.entities.get(index).ok_or("damage diagnostic header absent")?;
+        if actor.retired||actor.shared!=id{return Err("damage diagnostic generation differs".into());}
+        Ok(Some(actor.entity_flags))
+    }
     pub(in crate::app) fn mark_player_incapacitated(&mut self,id:EntityId)->Result<(),String>{
         let index=*self.shared_indices.get(&id).ok_or("incapacitated Player has no canonical scene header")?;
         let actor=self.entities.get_mut(index).ok_or("incapacitated Player header is absent")?;

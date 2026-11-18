@@ -25389,7 +25389,7 @@ certify continuous support, full ballistic parity or the separate plate report.
   metadata admission, `physics_scene::explosion_effects::Owner`, the existing
   EffectRequests/FxSimulation and WorldSounds/audio owners. No sound-only
   Group/Sound projection, contact-private RNG, decoder or playback service.
-- **ported (staged/unbuilt):**770990 packet source identity/material leases,
+- **ported (compiled58f/8dad; lifecycle completion changes pending validation):**770990 packet source identity/material leases,
   fixed character mass0, actual Controller5D0 callback predicate;60a480/
   60a8b0 pair/frame/sourceD2/callback handoff;60a540/60a700/60a510/60af50
   native16×4 generation-correct declaration journal;60ad40 ordered removal;
@@ -25403,7 +25403,7 @@ certify continuous support, full ballistic parity or the separate plate report.
   requires the coherent production run. No fake ready/voice or gain change.
   Existing shared FX storage retains stopped instance records through family
   tails; contact-journal occupancy is released at source stop independently.
-- **ported (staged/unbuilt):**accepted packet/error retention, source-scope
+- **ported (compiled58f/8dad; lifecycle completion changes pending validation):**accepted packet/error retention, source-scope
   cancellation and pre-FX-shutdown drain/close, fixed journal retirement check,
   canonical declaration/source/media/render tail release. Unknown/unsupported
   enabled families fail through the existing common owner instead of being
@@ -25449,3 +25449,69 @@ Actual58f dev acceptance (2026-11-18): game build and no-game core check passed;
 Throwable contact saturation: `ported`4c7c50/4c7ee6→4c7eeb skips4c64c0 after166830 returns, dropping the new record at the real fixed inline capacity4. Duplicate/nearest replacement,4c9560 LIFO drain and4c7f40 Stop clear remain unchanged. This repairs the actual58f grenade physics/retirement failure without increasing memory or adding a grenade exception. Runtime verification pending the coherent corrected build; no CPU/FPS gain claimed.
 
 Equipment depletion: `ported`619640 presentation withdrawal now removes the exact retired equipment generation's sampled entity frames and ArmRender model/palette rows in the same mutation that removes its real owned/incoming/current tree. The current hand-root cache is cleared; actual arms/body/other equipment remain. `host:` cached Bevy samples cannot publish after source withdrawal, while canonical actor, audio, child-model and GPU owners retain real Stop/removal/withdrawal acknowledgements. The missing-parent invariant is preserved. Rare depletion uses in-place retain operations on the existing small cache; no new resource, upload, per-frame scan or performance improvement is claimed. Pending actual last-grenade detonation and clean-exit acceptance.
+
+
+### Already-admitted placed material program preparation (2026-11-18, staged)
+
+`host: pending validation` — `world_models` enrolls the existing SceneRenderQueue
+Probe/Decal mesh/material pairs in its existing pipeline admission owner. No
+model, declaration, image, texture, actor or visible proxy is acquired here.
+Existing common/map base-image phases and RenderAssets remain the only residency
+owners; unavailable prepared material/mesh/pipeline inputs remain pending.
+MAIN and enabled ordinary prepass use the same canonical specializers as actual
+draws. AlphaDepthMaterial pass selection and AlphaGpu depth/hair/lit descriptor
+construction are shared by program preparation and visible rendering, preserving
+3119a0 source selection, 31dce0 list routing, bindings and formats. Admission uses
+the current actual view/depth format and r_OIT value, after PrepareResources and
+before the existing PipelineCache processing stage. It does not alter draws,
+targets, shader output, visibility, texture demand or pass routing.
+The existing DH2_TRACE_WORLD_FX control records canonical Alpha cache misses
+only: preload/visible role, base/derived IDs and the full actual depth, hair or
+lit cache key. Cache hits perform no new trace checks or formatting. These
+receipts join existing MAIN source identities and generic creation timestamps;
+they do not assert warmth, appearance or performance without an actual run.
+
+Coverage is explicit: World selects existing bank2; Bmodel and unskinned Bmd6
+select existing bank0; skinned Bmd6 is admitted only when the existing bank0/1
+routes agree. The retained MAIN material/source tuple does not supply the native
+optional-bank selector (material cache distinguishes Model/World geometry only).
+The same existing unresolved-bank/error boundary is logged and excluded from
+Alpha admission; real MAIN/prepass preparation continues. No bank is guessed,
+no unsupported Alpha certificate is issued, and no new fatal all-map gate is
+introduced. Next step for such excluded surfaces is to port their actual
+native model-bank selection into the canonical source tuple, then consume it in
+the shared extraction/admission selector. Dedicated Water/Sky/Interior/Boat
+renderers and runtime particle/model owners retain their existing scope.
+
+The existing Upload roster owns only program-input metadata and generation-local
+completion/error fences; no second program cache or GPU bindings are retained.
+Its transient enrollment lookup shares one descriptor per admitted material/
+source-bank across all mesh pairs and is dropped before roster publication;
+equal skinned bank0/1 routes reuse the same bank0 descriptor as rigid uses.
+Pending per-surface work is released after actual PipelineCache acknowledgement;
+the roster resets on level shutdown, and its weak identity invalidates pending
+render work before handles can be reused. View/key/format/r_OIT changes revoke
+only the real owner certificate through the same admission path.
+Setup always publishes SceneRenderQueue, including an empty instance list,
+before this initialization. Zero enrolled dependencies is a genuine empty
+request; missing source owners remain errors. Shutdown withdraws the admission
+before LevelLifetime purges the source roster.
+
+
+- `host lifecycle diagnostic follow-up`: `audio::update_playing_volume` now skips target refresh only for the exact VoiceHandle terminal marker already used by canonical backend retirement; output may finish asynchronously after that frame's earlier retire pass. This marker is not a media/source-ready or pending-Stop ACK and does not replace native c47a0/708620/c7a20/c8150 End/object-return fences. No source/position/metadata release, fabricated spatial fallback or blanket active-pose retention is added. Existing error warnings identify actual engine event/emitter/joint/terminal status/position presence. Completed58f grenade39683 lacked emitter attribution, so the earlier joint119 terminal receipt does not prove its cause; possible live presentation-withdrawal-before-audio-queue handoff remains a separate unresolved source/runtime boundary. One terminal atomic check plus error-only fields, no new resource/GPU/frame allocation; no performance/audibility claim. Parser/source audit only, root runtime validation pending.
+
+
+- `ported` spatial object-state lifetime: c5b70 stores pending frame; c68e0 and709ee0/709f70 can return without replacing it, retaining last actual position/front until explicit708620->c7ab0/c7a20/c8150 object return. The SAME app::audio::spatial::Scene maps now retain last actual frame/propagation/rate until existing reap_retiring_objects observes real output/ticket/stimulus ACK and calls release_object. No fallback position, TTL, second cache or per-voice heuristic retention.
+- `host` complete unregister/scene boundary: borrowed Scene keys augment existing component-child and global return discovery, covering registered/reserved muted/no-voice/failed-admission objects. Pending equipment can adopt only an actually registered exact-generation Scene owner into its existing audio journal when no declaration populated that journal; inconsistent source parts error, no component/object/voice is synthesized. Ordinary frame admission closes after accepted preflush; accepted A9 handoffs retain their explicit native queue path and FX queued/released ordering stays intact. Poll waits non-Menu Scene maps empty through genuine returns. Outgoing reset preserves SAME closed owner/Menu/observer sink; explicit fallible audio::open_level validates empty maps and reopens only at actual incoming publication, before pose systems. No repeated clear/fake ACK or late owner recreation.
+- `verification/cost`: source audit and staged parser review only; root runtime checks pending.8dad warnings remain unattributed without exact emitter fields, so no claim every warning is fixed. Last-object data retention can increase CPU resident entries to the correct registration/tail lifetime; no new payload cache/GPU pass or measured CPU/FPS/RAM/audibility claim. Existing terminal-voice guard and exact-warning patch remain separate.
+
+
+
+
+Actor velocity admission: `ported`74fb40 returnsFFFFFFFF at ten entries without mutation;752870/7527e0 ignore that return and still schedule the actual actor. The Scene wrapper now lets both canonical lanes independently admit/refuse instead of making either full lane a fatal physics error. Capacities, priority, expiry, storage, generation and actor scheduling remain unchanged. This saturation path is source/assembly-verified; no runtime saturation or CPU/FPS gain is claimed.
+
+Interaction observations: `host: diagnostic only` — the existing bounded action trace now covers native7f9ea0/7f8040 input,3b8430/3b7b90 sensor candidate/occlusion,7fc420 selected descriptor and request47 admission in explicit bolt and bolt-bottle scenarios in both profiles. It records actual raw/enabled/held/released input, HUD versus ordinary selection/catch hint, actual target generation and accepted/rejected request, without changing mechanics, range, timing, focus or lifecycle. The diagnostic prerequisite now requires the real ordinary selected target rather than a HUD-only hint. Door/bolt gameplay acceptance is not claimed from this instrumentation.
+
+Actual8dad dev acceptance (2026-11-18): coherent game build/core check passed, sourceclean SHA256BFFE12745554ED3DD520AF9E3A53C789942AA491AF4A5F51C366D4E66FDC97A4. Blink, grenade cooking/gauge Init/render ACK/throw/Sphere/detonation/removal, full ranged/exhaust/empty/Heart/wheel/sheath/redraw, actual carry/throw/support, gun/sword/poke bottle damage with authored destruction FX, power-equipped ordinary WORLD early recovery replacement and charged-forward WORLD contacts all exited0 without action errors. Ten cases completed successfully; this is CPU/real-input/owner evidence, not heard sound, pixel output or FPS. The bottle-bolt case reported an incorrect diagnostic coverage boundary: actual target header0x1e8809 already contained committed0x800 death while stopped Health lookup returnedNone. The observer correction reads that actual damage-owner flag and continues a surviving physical Bounce only after finite movement stops and Throwable actually starts. No missing-Health-as-death fallback is added.
+
+The final ordinary ground-bolt case FAILED pickup: the same real bolt remained published/visible beyond2m, started/recoverable and HUD-focused, but its single action22 press never admitted pending47 or restored ammo. Prior HUD focus does not prove the press-frame ordinary descriptor. No gameplay repair is claimed until the new actuation receipt resolves that exact gate. The driver stopped there; three-map and paused-exit observations were not run in that failed cycle. Immutable logs/identity/results are retained locally under analysis/gameplay-repair-20261116/8dad-completed-actions. Source changes after8dad remain pending coherent compilation/runtime validation and main release.

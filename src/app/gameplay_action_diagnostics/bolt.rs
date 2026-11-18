@@ -241,6 +241,7 @@ impl Observation {
         } else {
             None
         };
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_DAMAGE_STATE reason={reason} target={target:?} actual_header_flags={:?} death_bit=0x800 Health_mode2_absence_not_death_proof=true",scene.diagnostic_damage_flags(live,target)?);
         eprintln!("ACTION_SMOKE_BOLT_BOTTLE_SUPPORT reason={reason} target={target:?} generation_live={} health={health:?} before_health={} hit={:?} handoff={:?} destroyed_observed={} children={:?}",live.get(target).is_some(),receipt.before_health,receipt.hit,receipt.handoff,self.support_destroyed,if live.get(target).is_some(){Some(live.children(target)?)}else{None});
         if live.get(target).is_some() {
             eprintln!(
@@ -286,6 +287,8 @@ impl Observation {
             .get_resource::<app::interaction_focus::FocusedInteraction>()
             .and_then(|focus| focus.current.as_ref())
             .is_some_and(|prompt| !prompt.locked && prompt.entity.eq_ignore_ascii_case(name))
+            && world.get_resource::<app::interactions::Interactions>()
+                .is_some_and(|owner|owner.selected_interaction_target(live)==Some(id))
     }
     fn center(world: &World, id: EntityId) -> Result<Vec3, String> {
         let live = world.resource::<LiveEntities>();
@@ -383,6 +386,7 @@ impl Observation {
                 }
             }
         }
+        eprintln!("ACTION_SMOKE_BOLT_INTERACTION reason={reason}\n{}",app::interactions::describe_carry_fixture(world,id)?);
         Ok(())
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
@@ -496,11 +500,14 @@ impl Observation {
                             return Err(format!("bolt-bottle actual contact differs: fired={fired:?} observed={id:?} actual={actual:?} target={target:?}"));
                         }
                         let live = world.resource::<LiveEntities>();
-                        self.support_destroyed = live.get(target).is_none()
-                            || world
-                                .resource::<app::physics_scene::PhysicsScene>()
-                                .entity_health(live, target)?
-                                .is_some_and(|health| health.0 <= 0.);
+                        let scene=world.resource::<app::physics_scene::PhysicsScene>();
+                        let damage_flags=scene.diagnostic_damage_flags(live,target)?;
+                        //damage_target commits0x800 on actual death beforeA5/A2;
+                        //later componentStop hides Health from its mode2 lookup.
+                        //Missing Health by itself is never accepted as death.
+                        self.support_destroyed=live.get(target).is_none()
+                            ||damage_flags.is_some_and(|flags|flags&0x800!=0)
+                            ||scene.entity_health(live,target)?.is_some_and(|health|health.0<=0.);
                         if !self.support_destroyed {
                             if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
                                 self.report_support(world, "contact-did-not-destroy-support")?;
@@ -540,7 +547,13 @@ impl Observation {
                         self.stage(Stage::Retry);
                         return Ok(false);
                     }
-                    if runtime.has_hit_and_stopped && scene.projectile_throwable_started(handle)? {
+                    //Native Bounce transfers finite movement to the same real
+                    //Throwable without setting the Stick/Break stopped bit.
+                    let actual_bounce_handoff=self.support.is_some()
+                        &&!runtime.movement_enabled
+                        &&world.resource::<SupportContact>().hit.is_some_and(|hit|hit.0==id&&hit.2==crate::gameplay::projectiles::Response::Bounce);
+                    if (runtime.has_hit_and_stopped||actual_bounce_handoff)
+                        &&scene.projectile_throwable_started(handle)? {
                         self.explain(world, "actual-impact-after-Throwable-Start")?;
                         if !scene.projectile_recoverable(id)? {
                             if self.support.is_some() {

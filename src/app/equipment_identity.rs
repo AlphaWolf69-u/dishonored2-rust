@@ -639,9 +639,21 @@ pub(super) fn poll_retirements(world: &mut World) -> Result<bool, String> {
         let audio = world.get_resource::<Identities>().and_then(|owner| {
             let pending = owner.pending.get(index)?;
             let entry = owner.entries.get(&pending.id)?;
-            (!entry.audio_acknowledged).then_some((pending.id, entry.audio?))
+            (!entry.audio_acknowledged).then_some((pending.id, entry.audio))
         });
-        if let Some((id, emitter)) = audio {
+        if let Some((id, declared)) = audio {
+            // Discover only an object which the canonical spatial owner
+            // actually holds for this full generation. No missing Audio
+            // declaration allocates a component, emitter, voice or position.
+            let emitter = match declared {
+                Some(emitter)=>Some(emitter),
+                None=>super::audio::registered_equipment_object(world,id)?,
+            };
+            let Some(emitter)=emitter else {continue;};
+            if declared.is_none() {
+                world.resource_mut::<Identities>().entries.get_mut(&id)
+                    .ok_or("equipment audio retirement owner disappeared")?.audio=Some(emitter);
+            }
             have_audio = true;
             let acknowledged = super::audio::retire_component_object(world, emitter)?;
             if acknowledged {

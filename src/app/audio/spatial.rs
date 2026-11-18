@@ -50,25 +50,69 @@ pub(super) struct Scene {
     ///component, including its camera-joint sound object, not equipment.
     breath_parameter: Option<(u32, f32)>,
     observe_sources: Option<super::observation::SourceSamples>,
+    closed: bool,
 }
 impl Default for Scene {
     fn default() -> Self { Self { listener: None, motion: Default::default(), minimum: environment::Levels::default(), reflection: false, collects_environment: false,
         rule: Rule::Speakers, panner: Stereo::default(),
-        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None, breath_parameter: None, observe_sources: None } }
+        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None, breath_parameter: None, observe_sources: None, closed: false } }
 }
 impl Scene {
     pub(super) fn observe_sources(&mut self,sink:super::observation::SourceSamples) { self.observe_sources=Some(sink); }
     pub(super) fn observes_sources(&self)->bool {self.observe_sources.is_some()}
     pub(super) fn source_observer(&self)->Option<super::observation::SourceSamples>{self.observe_sources.clone()}
+    pub(super) fn close(&mut self) { self.closed=true; }
+    /// Reopen this SAME owner only after genuine object-return acknowledgements
+    /// emptied outgoing level entries. Menu state and source-observer sink stay.
+    pub(super) fn open_level(&mut self)->Result<(),String>{
+        if self.objects().any(|emitter|emitter!=Emitter::Menu){
+            return Err("audio spatial level opened before registered objects returned".into());
+        }
+        self.listener=None;
+        self.motion=Default::default();
+        self.minimum=environment::Levels::default();
+        self.reflection=false;
+        self.collects_environment=false;
+        self.time_dilation=None;
+        self.breath_parameter=None;
+        self.closed=false;
+        Ok(())
+    }
     pub(super) fn release_object(&mut self, emitter: Emitter) {
         self.emitters.remove(&emitter);
         self.propagated.remove(&emitter);
         self.rates.remove(&emitter);
     }
+    /// The existing object state, including objects which never admitted a
+    /// voice. Iteration borrows identity keys; it owns no second object table.
+    pub(super) fn objects(&self) -> impl Iterator<Item=Emitter> + '_ {
+        self.emitters.keys().chain(self.propagated.keys()).chain(self.rates.keys()).copied()
+    }
+    /// An actual object can have been registered by a delivered animation key
+    /// even when no declaration/startup voice populated the equipment journal.
+    pub(super) fn equipment_owner(&self, entity:crate::gameplay::entity_lifetime::EntityId)
+        -> Result<Option<Emitter>,String> {
+        let mut owner=None;
+        for emitter in self.objects().map(Emitter::player_owner) {
+            if !matches!(emitter,Emitter::Equipment{entity:actual,..} if actual==entity){continue;}
+            if owner.is_some_and(|previous|previous!=emitter){
+                return Err(format!("registered equipment sound objects disagree on owner part for {entity:?}"));
+            }
+            owner=Some(emitter);
+        }
+        Ok(owner)
+    }
 
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
     ///709ee0/709f70 publishes the actual object frame independently of listener availability.
-    pub(super) fn publish_frame(&mut self, emitter: Emitter, position: Position) { self.emitters.insert(emitter, position); }
+    pub(super) fn publish_frame(&mut self, emitter: Emitter, position: Position) {
+        if !self.closed || emitter==Emitter::Menu { self.emitters.insert(emitter, position); }
+    }
+    /// Already accepted A9 posts drain before708620 returns their exact slot.
+    /// This explicit handoff is not admission by a stopped pose producer.
+    pub(super) fn publish_accepted_frame(&mut self, emitter:Emitter, position:Position){
+        self.emitters.insert(emitter,position);
+    }
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
     pub fn listener_motion(&self) -> Option<crate::gameplay::sound::admission::ListenerMotion> {
@@ -76,9 +120,12 @@ impl Scene {
     }
     pub fn minimum(&self) -> environment::Levels { self.minimum }
     pub fn collects_environment(&self) -> bool { self.collects_environment }
-    pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) { self.rates.insert(emitter, (rate, frozen)); }
+    pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) {
+        if !self.closed || emitter==Emitter::Menu { self.rates.insert(emitter, (rate, frozen)); }
+    }
     pub fn reflection_normal(&self) -> Option<Vec3> { self.listener.filter(|_| self.reflection).map(|listener| listener.axis.z_axis) }
     pub fn publish(&mut self, emitter: Emitter, position: Position, propagated: Propagated, rate: f32, frozen: bool) {
+        if self.closed && emitter!=Emitter::Menu { return; }
         self.emitters.insert(emitter, position);
         self.propagated.insert(emitter, propagated);
         self.rates.insert(emitter, (rate, frozen));
@@ -110,18 +157,11 @@ impl Scene {
 
 pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<Camera3d>>,
     player: Option<Res<super::super::player::PlayerState>>, mix: Res<super::AudioMix>,
-    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
-    retiring: Res<super::RetiringSounds>) {
-    if retiring.0.is_empty() {
-        scene.emitters.clear();
-        scene.propagated.clear();
-        scene.rates.clear();
-    } else {
-        let keep = |emitter: &Emitter| retiring.0.get(emitter).is_some_and(|state| *state != super::ObjectRetirement::Complete);
-        scene.emitters.retain(|emitter, _| keep(emitter));
-        scene.propagated.retain(|emitter, _| keep(emitter));
-        scene.rates.retain(|emitter, _| keep(emitter));
-    }
+    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>) {
+    // c5b70 stores the last published frame in the registered sound object;
+    // c68e0/709ee0/709f70 can skip updates without invalidating it. Only
+    // reap_retiring_objects' real return ACK calls release_object. A withdrawn
+    // animation/presentation producer is not middleware unregistration.
     scene.time_dilation = mix.time_dilation;
     scene.listener = None;
     scene.minimum = environment::Levels::default();
@@ -138,6 +178,9 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             scene.reflection = settings.swap_back_to_front;
             scene.collects_environment = settings.collects_environment;
         }
+        // Global listener/UI controls still update; closing only withdraws
+        // world pose admission, so returned aliases cannot be recreated.
+        if !scene.closed {
         for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm,
             Emitter::PlayerLeftEquipment, Emitter::PlayerRightEquipment] {
             if let Some((position, axis)) = player.sound_transform(emitter) {
@@ -165,6 +208,7 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
                 }
             }
         });
+        }
     }
     // G is a host diagnostic camera; ordinary gameplay uses the component's
     // declared skeleton joints above, independently of the rendered camera.

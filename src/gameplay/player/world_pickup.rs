@@ -105,6 +105,13 @@ impl super::Player {
         };
         machine.world_pickup_allowed(StateId(state), &self.body_parts, self.entity_event_time)
     }
+    ///Actual request47 guards for opt-in frontend receipts, without mutation.
+    pub fn loot_request_snapshot(&self)->(bool,bool,bool,bool){
+        use super::states::StateId;
+        (self.machine.world_pickup_busy(),self.swimming_machine.world_pickup_busy(),
+            matches!(self.machine.state(StateId::LOOT_OBJECT).map(|state|&state.decl.kind),Some(Kind::LootObject(_))),
+            matches!(self.swimming_machine.state(StateId::LOOT_OBJECT).map(|state|&state.decl.kind),Some(Kind::LootObject(_))))
+    }
     pub fn request_loot_object(&mut self, id: EntityId) -> bool {
         if self.machine.world_pickup_busy() || self.swimming_machine.world_pickup_busy() {
             return false;

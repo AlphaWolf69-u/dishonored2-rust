@@ -225,7 +225,7 @@ struct Upload {
     error: Arc<pipelines::Failure>,
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
-struct Uploads(Arc<Vec<Upload>>, Arc<HashMap<EntityId, pipelines::Admission>>);
+struct Uploads(Arc<Vec<Upload>>, Arc<HashMap<EntityId, pipelines::Admission>>, Option<pipelines::Admission>);
 
 /// Shared model draw admission, including the actual owned equipment/children.
 /// This stores IDs/readiness only; each existing model owner retains its assets.
@@ -244,10 +244,11 @@ pub(super) fn pipelines_ready(world: &World, id: EntityId) -> Result<bool, Strin
     Ok(admission.complete.load(Ordering::Acquire))
 }
 pub(super) fn pipelines_pending(world:&World)->bool {
-    world.get_resource::<Uploads>().is_some_and(|uploads|uploads.1.values().any(|admission|!admission.complete.load(Ordering::Acquire)))
+    world.get_resource::<Uploads>().is_some_and(|uploads|uploads.1.values().chain(uploads.2.iter()).any(|admission|!admission.complete.load(Ordering::Acquire)))
 }
 pub(super) fn pipelines_error(world:&World)->Option<String> {
-    world.get_resource::<Uploads>()?.1.values().find_map(|admission|admission.error.message())
+    let uploads=world.get_resource::<Uploads>()?;
+    uploads.1.values().chain(uploads.2.iter()).find_map(|admission|admission.error.message())
 }
 pub(super) fn release_pipelines(world: &mut World, id: EntityId) {
     let Some(mut uploads) = world.get_resource_mut::<Uploads>() else { return; };
@@ -272,7 +273,9 @@ pub(super) fn install(app: &mut App) {
                 .before(bevy::render::erased_render_asset::prepare_erased_assets::<MeshMaterial3d<super::DecalMaterial>>));
         render.add_systems(
             bevy::render::Render,
-            pipelines::acknowledge.run_if(pipelines::needed).in_set(bevy::render::RenderSystems::Specialize),
+            pipelines::acknowledge.run_if(pipelines::needed)
+                .in_set(bevy::render::RenderSystems::PrepareBindGroups)
+                .before(crate::rendering::bevy_backend::alpha_depth_scene::AlphaDepthPreparation),
         );
         render.init_resource::<pipelines::Pending>();
     }
@@ -291,6 +294,7 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     }
     world.insert_resource(WorldModels::default());
     world.insert_resource(Uploads::default());
+    register_placed_pipelines(world)?;
     Ok(())
 }
 pub(super) fn prewarm(world: &mut World, descriptor: Arc<Descriptor>) -> Result<(), String> {
@@ -651,7 +655,7 @@ pub(super) fn validate(world: &World, prepared: &Prepared) -> Result<(), String>
 pub(super) fn publish(world: &mut World, mut prepared: Prepared) -> Result<(), String> {
     validate(world, &prepared)?;
     let surfaces = prepared.model.pipeline_surfaces().into_iter().map(|(mesh, material, skinned)| {
-        pipelines::Surface { mesh, material, skinned }
+        pipelines::Surface { mesh, material, skinned, alpha:None }
     }).collect();
     let meshes = prepared.model.receiver_meshes();
     let lease = Arc::downgrade(&world.resource::<WorldModels>().prototypes[&prepared.key].lease);
@@ -886,6 +890,7 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
     drop(owner);
     world.resource_mut::<Uploads>().0 = Arc::default();
     world.resource_mut::<Uploads>().1 = Arc::default();
+    world.resource_mut::<Uploads>().2 = None;
     super::runtime_materials::invalidate_world_models(world);
     Ok(done)
 }
@@ -1016,4 +1021,68 @@ pub(super) fn observe_visibility(mut owner: ResMut<WorldModels>, views: Query<&V
         entry.render.current = models.view_visible(*id, &views);
         entry.render.hidden = !entry.visible;
     }
+}
+
+///bevy_backend: capture only the already-created level source identities.
+///Existing common/map base-image phases own residency; this requests NO
+///resource/media/texture/model and creates NO managed or visible entity.
+fn register_placed_pipelines(world:&mut World)->Result<(),String>{
+    let queue=world.get_resource::<super::SceneRenderQueue>().ok_or("placed pipeline source roster absent")?;
+    let alpha=world.get_resource::<super::material_loading::alpha::AlphaDepthMaterials>()
+        .ok_or("placed Alpha material source owner absent")?;
+    let mut seen=std::collections::HashSet::new();
+    let mut surfaces=Vec::new();
+    let mut exclusions=std::collections::HashSet::new();
+    //Transient roster-build interning only: the selected source metadata
+    //depends on material/route, not on each mesh using that material.
+    let mut alpha_inputs=std::collections::HashMap::new();
+    for instance in &queue.instances {
+        let material=match &instance.material {
+            super::MaterialHandle::Probe(handle)=>handle.id().untyped(),
+            super::MaterialHandle::Decal(handle)=>handle.id().untyped(),
+            _=>continue,
+        };
+        let bank=match instance.source.map(|source|source.surface){
+            Some(super::RenderModelSurface::World{..})=>2u8,
+            Some(super::RenderModelSurface::Bmodel{..})=>0,
+            Some(super::RenderModelSurface::Bmd6{skin_influences:0,..})=>0,
+            Some(super::RenderModelSurface::Bmd6{..})
+                if alpha.0.get(&instance.material).is_some_and(|routes|routes[0]==routes[1])=>0,
+            //3/255 are local unresolved-source discriminators, NOT native
+            //bank choices. They can never produce an admitted descriptor.
+            Some(super::RenderModelSurface::Bmd6{..})=>3,
+            None=>{exclusions.insert("placed source association absent; MAIN/prepass retained, Alpha unadmitted".to_owned());255},
+        };
+        if !seen.insert((instance.mesh.id(),material,bank)){continue;}
+        let route=alpha_inputs.entry((material,bank)).or_insert_with(||{
+            let route=alpha.0.get(&instance.material)
+                .map(|routes|super::alpha_depth_pass::surface_for(instance,routes));
+            match route {
+                Some(surface) if surface.depth.is_err()||surface.lit.is_err()=>{
+                    if let Err(error)=&surface.depth{exclusions.insert(error.clone());}
+                    if let Err(error)=&surface.lit{exclusions.insert(error.clone());}
+                    None //Explicitly UNADMITTED Alpha metadata, never empty-success.
+                },
+                surface=>surface.map(Arc::new),
+            }
+        }).clone();
+        //Placed draw construction has no SkinnedMesh/PreviousSkin marker;
+        //its actual retained vertex layout owns direct source skin inputs.
+        surfaces.push(pipelines::Surface{mesh:instance.mesh.id(),material,skinned:false,alpha:route});
+    }
+    if crate::rendering::bevy_backend::world_effects::trace_lifecycle()
+        || std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+        let alpha_surfaces=surfaces.iter().filter(|surface|surface.alpha.is_some()).count();
+        let alpha_descriptors=alpha_inputs.values().filter(|input|input.is_some()).count();
+        eprintln!("FX_PLACED_PROGRAM_ROSTER source_instances={} unique_pairs={} alpha_surfaces={alpha_surfaces} alpha_descriptors={alpha_descriptors} excluded_reasons={}",
+            queue.instances.len(),surfaces.len(),exclusions.len());
+    }
+    drop(alpha_inputs); //Only enrolled Arc leases survive, no second cache.
+    for error in exclusions {bevy::log::warn!("Placed program admission: Alpha/source coverage excluded: {error}");}
+    let admission=pipelines::Admission::default();
+    if surfaces.is_empty(){admission.complete.store(true,Ordering::Release);}
+    let mut uploads=world.resource_mut::<Uploads>();
+    Arc::make_mut(&mut uploads.0).push(Upload{surfaces,complete:admission.complete.clone(),error:admission.error.clone()});
+    uploads.2=Some(admission);
+    Ok(())
 }

@@ -537,12 +537,20 @@ pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Re
     joints.extend(world.resource::<RetiringSounds>().0.keys().copied());
     joints.extend(world.resource::<SoundCompletions>().component_posts.values().map(|cookie| cookie.emitter));
     joints.extend(world.resource::<SoundCompletions>().component_cookies.values().map(|cookie| cookie.emitter));
+    // Registered no-voice/muted/failed-post joint objects still own their last
+    // frame. Native708620 returns those slots too, not just active voices.
+    joints.extend(world.resource::<spatial::Scene>().objects());
     joints.retain(|joint| *joint != emitter && joint.player_owner() == emitter);
     for joint in &joints { request_object_retirement(world, *joint)?; }
     request_object_retirement(world, emitter)?;
     let retiring = &world.resource::<RetiringSounds>().0;
     Ok(retiring.get(&emitter) == Some(&ObjectRetirement::Complete)
         && joints.iter().all(|joint| retiring.get(joint) == Some(&ObjectRetirement::Complete)))
+}
+
+pub(super) fn registered_equipment_object(world:&World,
+    entity:crate::gameplay::entity_lifetime::EntityId)->Result<Option<Emitter>,String>{
+    world.get_resource::<spatial::Scene>().map_or(Ok(None),|scene|scene.equipment_owner(entity))
 }
 
 /// Called after the component pool actually releases the acknowledged generation.
@@ -647,7 +655,11 @@ pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), St
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
     stimulus::update(world)?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    // Stop ordinary frame publishers before enumerating returns. Accepted
+    // component A9 journals and queued FX posts keep their own drain paths.
+    world.resource_mut::<spatial::Scene>().close();
     let mut emitters = world.resource::<bevy_backend::Engine>().level_emitters();
+    emitters.extend(world.resource::<spatial::Scene>().objects());
     if let Some(level) = world.get_resource::<level::LevelAudio>() { emitters.extend(level.emitters()); }
     emitters.extend(world.resource::<PendingSounds>().0.iter().map(|queued| request_emitter(&queued.request)));
     emitters.extend(world.query::<&AudioTarget>().iter(world).map(|target| target.emitter));
@@ -664,6 +676,21 @@ pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), St
 pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, String> {
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
     stimulus::update(world)?;
+    // Accepted Stop/Deinit posts can publish their final actual frame after
+    // the initial close snapshot. Queue their real object return as well.
+    // An unchanged close poll allocates no vector payload here.
+    let spatial_returns = {
+        let spatial=world.resource::<spatial::Scene>();
+        let retiring=world.resource::<RetiringSounds>();
+        let sounds=world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>();
+        let sounds=sounds.map(|sounds|sounds.lock());
+        spatial.objects().filter(|emitter| *emitter!=Emitter::Menu
+            && !retiring.0.contains_key(emitter)
+            && !sounds.as_ref().is_some_and(|sounds|sounds.released.contains(emitter)
+                || sounds.queued.iter().any(|ticket|ticket.event().object==*emitter)))
+            .collect::<Vec<_>>()
+    };
+    for emitter in spatial_returns { request_object_retirement(world,emitter)?; }
     poll_object_retirements(world)?;
     let pending = world.resource::<PendingSounds>().0.iter().any(|queued| request_emitter(&queued.request) != Emitter::Menu);
     let retiring = world.resource::<RetiringSounds>().0.iter().any(|(&emitter, &state)| emitter != Emitter::Menu && state != ObjectRetirement::Complete);
@@ -675,7 +702,14 @@ pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, S
         }
     }
     let reserved = reservations::drain(world)?;
-    Ok(audiographs::drained(world)? && reserved && !pending && !retiring && !fx_pending)
+    let spatial_pending = world.resource::<spatial::Scene>().objects().any(|emitter|emitter!=Emitter::Menu);
+    Ok(audiographs::drained(world)? && reserved && !pending && !retiring && !fx_pending && !spatial_pending)
+}
+
+/// Called once at actual incoming scene publication, before ordinary audio
+/// pose systems run. Outgoing registry reset below never reopens this owner.
+pub(super) fn open_level(world:&mut World)->Result<(),String>{
+    world.resource_mut::<spatial::Scene>().open_level()
 }
 
 pub(super) fn begin_level(world: &mut World) {
@@ -715,7 +749,6 @@ pub(super) fn begin_level(world: &mut World) {
         completions.dynamic_sources.clear();
         completions.retired_sources.clear();
     }
-    world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
     if let Some(contacts) = world.get_resource::<contacts::ContactSounds>() {
         contacts.release_level_history();
@@ -1417,6 +1450,10 @@ fn update_playing_volume(
     // world's critical path while walking, so voices update in parallel.
     playing.par_iter_mut().batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
         .for_each(|(mut target, sink, scheduled, voice, fallback)| {
+        // The shared output may finish between this frame's canonical retire
+        // pass and target refresh. Its terminal voice needs no new spatial
+        // targets; actual End/object-return fences remain with their owners.
+        if voice.is_some_and(|voice| voice.finished()) { return; }
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same
         // world's global object, and c4550 posts new IDs while paused.
@@ -1433,7 +1470,12 @@ fn update_playing_volume(
             voice.pause(frozen);
             target.paused = frozen;
             if !frozen {
-                if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
+                if let Err(error) = scheduled.update(mixer, &scene) {
+                    warn!(event = target.event, emitter = ?target.emitter,
+                        voice_finished = voice.finished(),
+                        emitter_position_present = scene.emitter(target.emitter).is_some(),
+                        "Wwise shared voice update unavailable: {error}");
+                }
             }
             return;
         }
@@ -1443,7 +1485,11 @@ fn update_playing_volume(
             target.paused = frozen;
         }
         if frozen { return; }
-        if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
+        if let Err(error) = scheduled.update(mixer, &scene) {
+            warn!(event = target.event, emitter = ?target.emitter,
+                emitter_position_present = scene.emitter(target.emitter).is_some(),
+                "Wwise scheduled mix update unavailable: {error}");
+        }
     });
     *previous_pause = world_paused;
     mix.generation = generation;

@@ -208,7 +208,7 @@ pub struct Runtime {
 impl Default for Runtime {
     fn default()->Self {
         Self{pending:None,held:None,changes:Vec::new(),release:Default::default(),released:false,pulling_started:false,
-            debug_trace:(std::env::var("DH2_DEBUG_ACTION_SCENARIO").ok().is_some_and(|scenario|cfg!(debug_assertions)||matches!(scenario.as_str(),"carry"|"full"))).then(std::collections::VecDeque::new)}
+            debug_trace:(std::env::var("DH2_DEBUG_ACTION_SCENARIO").ok().is_some_and(|scenario|cfg!(debug_assertions)||matches!(scenario.as_str(),"carry"|"full"|"bolt"|"bolt-bottle"))).then(std::collections::VecDeque::new)}
     }
 }
 impl Runtime {

@@ -968,7 +968,14 @@ impl Player {
         if marker.is_none() || prepared != marker {
             self.advance_animation_events(dt, now, &mut inventory);
         }
+        if self.carrying.tracing_enabled()&&events.iter().any(|event|event.action==22){
+            eprintln!("ACTION_INTERACT_PLAYER_INPUT marker={marker:?} now={now} dt={dt} frame_delta={frame_delta} dead={} before={:?} events22={:?}",
+                self.health.is_dead(),self.controller.action_input_snapshot(22),events.iter().filter(|event|event.action==22).take(8).collect::<Vec<_>>());
+        }
         if !self.health.is_dead() { self.controller.process_input(events, settings); }
+        if self.carrying.tracing_enabled()&&events.iter().any(|event|event.action==22){
+            eprintln!("ACTION_INTERACT_PLAYER_INPUT_RESULT after={:?}",self.controller.action_input_snapshot(22));
+        }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
         self.physics.update_queries(world);

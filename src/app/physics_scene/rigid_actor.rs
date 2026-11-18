@@ -913,9 +913,9 @@ impl PhysicsScene {
         if actor.owner.entity != Some(index) {
             return Err("carry motion actor owner differs".into());
         }
-        if actor.requests.iter().any(|list| list.entries().len() >= 10) {
-            return Err("carry motion request list full".into());
-        }
+        //74fb40 refuses each full ten-entry list independently.752870/
+        //7527e0 ignore its returnedFFFFFFFF and still schedule the actor;
+        //do not turn ordinary native refusal into a failed physics frame.
         let actor_index = usize::from(handle.slot);
         for (list, velocity) in self.actors.actors[actor_index]
             .requests

@@ -76,7 +76,7 @@ pub(super) fn drain_published_posts(handle: ComponentHandle, audio: &mut AudioCo
         };
         let frame = post_frame(post, frames)?;
         let position = Vec3::from_array(frame.position);
-        scene.publish_frame(emitter, spatial::Position { position, front: Some(Vec3::from_array(frame.basis[0])) });
+        scene.publish_accepted_frame(emitter, spatial::Position { position, front: Some(Vec3::from_array(frame.basis[0])) });
         let message = events.write(SoundEvent(Request::PostAt { event: post.event.id, emitter,
             position, front: Some(Vec3::from_array(frame.basis[0])), parameter: None }));
         completions.component_posts.insert(message.id, Cookie { owner: post.entity, emitter,
@@ -112,7 +112,7 @@ pub(in crate::app) fn drain_component_posts(world: &mut World, handle: Component
         // The ordinary LevelAudio path supplies the SAME acoustic world's
         //propagation. This independent frame handoff also works during Stop.
         world.get_resource_mut::<spatial::Scene>().ok_or("Audio spatial owner absent")?
-            .publish_frame(emitter, spatial::Position { position, front: Some(Vec3::from_array(frame.basis[0])) });
+            .publish_accepted_frame(emitter, spatial::Position { position, front: Some(Vec3::from_array(frame.basis[0])) });
         if !world.contains_resource::<Messages<SoundEvent>>() || !world.contains_resource::<SoundCompletions>() {
             return Err("Audio A9 output FIFO absent".into());
         }

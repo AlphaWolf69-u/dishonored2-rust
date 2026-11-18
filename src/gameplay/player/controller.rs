@@ -238,6 +238,14 @@ impl Controller {
     /// 140866370 consumes the held fire button when a charged/targeted
     /// ranged action is explicitly cancelled.
     pub fn clear_down(&mut self, action: i32) { self.held &= !bit(action); }
+    ///Read-only opt-in receipt of the real input bits and enable counter.
+    ///No input is consumed, latched or enabled by this observation.
+    pub fn action_input_snapshot(&self,action:i32)->(bool,bool,bool,bool,Option<i8>){
+        let mask=bit(action);
+        (self.allowed&mask!=0,self.pressed&mask!=0,self.released&mask!=0,
+            self.held&mask!=0,usize::try_from(action).ok()
+                .and_then(|index|self.action_enable_counts.get(index).copied()))
+    }
     pub fn pressed(&self, action: i32) -> bool {
         self.pressed & self.allowed & bit(action) != 0
     }
