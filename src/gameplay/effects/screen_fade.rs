@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 /// The composed fade colour of the last FX update; None while no fade is
 /// registered (the fade object then keeps its last colour).
-#[derive(bevy::prelude::Resource, Clone, Copy, Default)]
+#[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
+#[derive(Clone, Copy, Default)]
 pub struct FxScreenFadeFrame(pub Option<[f32; 4]>);
 
 pub struct ScreenFade {
