@@ -388,14 +388,14 @@ pub(super) fn prepare(world: &mut World) -> Result<(), String> {
 pub(super) fn needs_bind_legacy_pools(
     simulation: Option<Res<FxSimulation>>,
     pause: Option<Res<super::pause_fx::PauseScreenFx>>,
-    state: Res<super::player::PlayerState>,
+    state: Option<Res<super::player::PlayerState>>,
     effects: Res<EnvironmentEffects>,
 ) -> bool {
     if effects.closed || simulation.is_none() {
         return false;
     }
     (pause.is_some() && !effects.pause_bound)
-        || state.player.as_ref().and_then(|p| p.combat_fx.as_ref())
+        || state.as_ref().and_then(|state| state.player.as_ref()).and_then(|p| p.combat_fx.as_ref())
             .is_some_and(|focus| !focus.environment_pool_bound())
 }
 

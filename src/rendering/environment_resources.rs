@@ -21,7 +21,11 @@ impl PreparedEnvironment {
         let path = format!("generated/decls/env/{name}.decl").replace('\\', "/").to_ascii_lowercase();
         let mut owner = catalog.environment_resources.get_or_init(Default::default).lock()
             .map_err(|_| "environment resource registry is poisoned")?;
-        owner.acquire(&path, marker, |_| {
+        //Host editable generations follow the existing declaration-owner rule:
+        //an unchanged child may inherit a parent whose overlay bytes change.
+        //Keep parsed sharing for installed immutable archives; explicit requests
+        //reparse editable generations through the SAME registry and scope.
+        owner.acquire_with_sharing(&path, marker, !catalog.has_overlays(), |_| {
             let mut source_paths = Vec::new();
             let mut read = |name: &str| {
                 let path = format!("generated/decls/env/{name}.decl").replace('\\', "/").to_ascii_lowercase();

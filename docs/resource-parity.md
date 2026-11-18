@@ -25235,3 +25235,24 @@ ENV syntax trees after preparation and no orphaned parent read credits after
 the last scope/lease retires; no measured MB, CPU-time or FPS saving is claimed.
 The existing raw oracle-fixture helper is test-only and transient; no tests were
 added or run. Combined runtime validation remains pending.
+
+
+cc1a5532 dev game build and independent core check passed (SHA256
+E7F4D4634339075A19BE69CC35FB74A063F5FD82C1E7E13766D8A5826D150080).
+The first windowless check failed before action admission: a readonly condition
+required PlayerState during bootstrap, before the actual player publication.
+Bevy evaluates run conditions independently, so the separate scene condition
+does not protect a required condition parameter. That parameter is now optional
+and observes actual absence; it neither creates a player nor acknowledges
+binding. No action, loading, grenade or exit acceptance is claimed from this
+failed run (cc1a-action-results/). The stuck diagnostic was explicitly closed.
+
+`host:` ENV editable generation acquisition now uses the same existing
+Registry.acquire_with_sharing(...,!catalog.has_overlays(),...) rule as inherited
+FX and other declaration owners. An explicit edited-parent acquisition gets a
+fresh typed identity and real GPU admission; previous accepted generations keep
+their own tails/leases. Installed immutable sharing is unchanged. No watcher,
+extra cache/decoder, reload timer or fabricated ready flag is introduced. Partial
+failed generation parent credits already retire through the actual ENV/final
+level-history sweeps. Prediction: current overlay bytes appear on explicit
+reacquisition; no installed-game frame-time or memory gain is claimed.
