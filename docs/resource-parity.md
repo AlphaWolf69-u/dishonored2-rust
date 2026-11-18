@@ -24891,6 +24891,16 @@ rows sets(1,754/7/38). The larger first-capture gain was traced to its higher
 cascade-predicate share; details are in optimization-opportunities.md. No frame
 rate, new resource budget or all-map claim follows from this scoped result.
 
+The same immutable query source now also supplies a per-call borrowed lazy
+direction header. No source table, persistent cache or resource lease is
+duplicated; stack metadata ends with the call. `verified`: same optimized binary
+reduces this kernel's cycles from5,286,225,162 to5,088,065,485 over6,144 calls
+per variant (3.7486%), beyond its kept-plane control. All three implementations
+match ordered outputs for24 jobs and the three original goldens. Matching-PDB
+inspection verifies the intended fixed-header reads were removed. Sparse-job
+regressions and order sensitivity are retained in optimization-opportunities.md;
+this is not a frame-rate or universal per-job improvement claim.
+
 `ported` physics shape acquisition: the existing PhysWorld/QueryShapes owner now admits inherited `hknpSphereShape` support vertices while preserving its actual shape type2. Source ca6550/c82490 support, ca6160 ray, ca5f50 geometry and ca5ee0/ce0920 mass use the same compressed source and body/geometry leases as other convex shapes. No synthetic polytope, file conversion or second shape cache. Grenade constructor failures retain their first causal error instead of reporting only a later retry's missing listener.
 
 `ported` contact identity: broadphase12871a0 supplies full generational body IDs; Contacts now passes these through the canonical checked body accessor, matching0992c0's slot extraction. This fixes rejection of real world/body pairs before manifold construction. Existing contact geometry, Jacobians, impulses, callbacks and shape invalidation retain their owners. The opt-in carry check now requires a real ordinary world-contact solver impulse opposing gravity after release, rather than accepting motion alone.

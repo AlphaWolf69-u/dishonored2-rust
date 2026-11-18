@@ -40,7 +40,25 @@ must isolate the new header against the kept plane optimization, check ordered
 outputs for all24 jobs and the saved original rows, and verify that the compiled
 control still contains its old helper calls. Investigate a result over30% from
 the prediction; revert no gain. No new allocation, persistent cache or table
-copy is proposed. This candidate is not accepted until measured.
+copy is proposed.
+
+Verified 2026-11-18 with optimized binary SHA256
+e83f09d49d73106f322c43a9428d8a75f95f0dc0fcdd65013299a98a572bdb91:
+the kept-plane control used5,286,225,162 thread cycles and the lazy-header
+candidate5,088,065,485 over6,144 calls each, a3.7486% reduction. All three
+variants preserve every ordered ID/mask across24 jobs and the three original
+goldens. Fresh matching-PDB assembly confirms the control retains its seven
+fixed-header calls, including both+0x13c reads; the candidate replaces them
+with first-use reads and keeps all three indexed reads. Case gains are
+5.5831%,1.3533%,3.9965%, each within30% of its declared7%,1.5%,4.5% prediction.
+Evidence: analysis/gameplay-repair-20261116/direction-header-evidence-20261118.
+
+Limits: the candidate adds initialized-bit branches and318 bytes of code;
+several sparse jobs regress. Dust A's AB-order aggregate is−0.53%, BA+3.24%;
+Dust B's corresponding values are+1.84%/+6.12%. Raw negative jobs/blocks are
+retained, with no unsupported claim about their cause. The measured aggregate
+is not a guarantee for every sparse job, nor an FPS/whole-frame result. Do not
+compound this number with measurements from a different binary.
 
 - CasterDirection repeats immutable header/direction metadata loads. Potential gain is small/unmeasured; inspect generated code before another certificate since LLVM may hoist them already. Preserve both packed formats and malformed-offset errors.
 - Plane sign masks are recomputed per box. Preparing the source's exact22-plane masks may remove comparisons but adds scratch traffic; measure independently before changing SIMD layout or arithmetic.
