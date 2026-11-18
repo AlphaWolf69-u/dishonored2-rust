@@ -7419,7 +7419,9 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.init_resource::<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>();
-    app.insert_resource(Assets::<Image>::default());
+    // The asset plugin's tracking frees an image once its last handle drops.
+    app.add_plugins(bevy::asset::AssetPlugin::default());
+    app.init_asset::<Image>();
     let mut materials = Assets::<ProbeMaterial>::default();
     let material = materials.add(ProbeMaterial {
         base: StandardMaterial::default(),
@@ -7553,7 +7555,9 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
         .world()
         .resource::<SceneRenderQueue>()
         .diffuse_image_handles[0]
-        .clone()
+        .as_ref()
+        .map(|handle| handle.id())
+        // Only the id: a strong handle here would keep the image resident.
         .expect("visible image staged");
     assert_eq!(
         app.world()
@@ -7567,7 +7571,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     assert_eq!(
         app.world()
             .resource::<Assets<Image>>()
-            .get(&image)
+            .get(image)
             .unwrap()
             .texture_descriptor
             .size
@@ -7577,7 +7581,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     assert!(app
         .world()
         .resource::<Assets<Image>>()
-        .get(&image)
+        .get(image)
         .is_some());
     assert!(app
         .world()
@@ -7617,7 +7621,8 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
         .world()
         .resource::<SceneRenderQueue>()
         .diffuse_image_handles[0]
-        .clone()
+        .as_ref()
+        .map(|handle| handle.id())
         .expect("finer authored mip staged");
     assert_eq!(
         app.world()
@@ -7625,11 +7630,13 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             .diffuse_mip_upgrades,
         1
     );
-    assert_ne!(finer.id(), image.id());
+    assert_ne!(finer, image);
+    // Bevy frees an asset whose last handle dropped on the following update.
+    app.update();
     assert_eq!(
         app.world()
             .resource::<Assets<Image>>()
-            .get(&finer)
+            .get(finer)
             .unwrap()
             .texture_descriptor
             .size
@@ -7639,12 +7646,37 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     assert!(app
         .world()
         .resource::<Assets<Image>>()
-        .get(&image)
+        .get(image)
         .is_none());
 
     app.world_mut().resource_mut::<SceneRenderQueue>().instances[0].visible = false;
+    // The streamer reduces only over its memory budget (pressure_bytes);
+    // the unload interval only makes an expired image eligible first. A zero
+    // budget puts this one-texture scene over it.
+    struct Budget;
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            crate::platform::console::shared().write(|console| {
+                console.cvars.command(&["r_textureStreamerMemoryBudgetMB".into(), "-1".into()])
+            });
+        }
+    }
+    let _budget = Budget;
+    crate::platform::console::shared().write(|console| {
+        console.cvars.command(&["r_textureStreamerMemoryBudgetMB".into(), "0".into()])
+    });
     for _ in 0..=TEXTURE_REDUCE_AFTER_FRAMES {
         app.update();
+    }
+    // The reduction is due after the interval; its coarser read completes
+    // on a worker like the upgrade above.
+    for _ in 0..1000 {
+        if app.world().resource::<SceneRenderQueue>().diffuse_mip_states[0]
+            .resident.is_some_and(|level| level.resource_mip.is_none()) {
+            break;
+        }
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let reduced = app
         .world()
@@ -7674,7 +7706,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     assert!(app
         .world()
         .resource::<Assets<Image>>()
-        .get(&finer)
+        .get(finer)
         .is_none());
     assert!(app
         .world()

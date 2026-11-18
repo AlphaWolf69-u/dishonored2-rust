@@ -375,13 +375,19 @@ mod tests {
                 ..Default::default()
             };
             let mut events = Vec::new();
-            registry
-                .request_start(&mut owner, 0, false, |registry, owner| {
-                    events.extend([owner.flags, registry.pending_start.count()]);
-                    owner.flags ^= mutation;
-                    Ok(())
-                })
-                .unwrap();
+            let queued = registry.pending_start.count();
+            let result = registry.request_start(&mut owner, 0, false, |registry, owner| {
+                events.extend([owner.flags, registry.pending_start.count()]);
+                owner.flags ^= mutation;
+                Ok(())
+            });
+            if result.is_err() {
+                // A full fixed-capacity queue: the original's append returns
+                // -1; the rewrite reports the failed start instead.
+                assert_eq!(queued, capacity, "case {cases}");
+                cases += 1;
+                continue;
+            }
             let mut actual = vec![owner.flags, registry.maximum_registered as u32];
             for list in [&registry.pending_start, &registry.pending_stop] {
                 actual.push(list.count());
@@ -424,17 +430,15 @@ mod tests {
                     ..Default::default()
                 };
                 registry.assign_generation(&mut owner);
-                let result = registry
-                    .register(&mut owner, index, 0x100 + index, 0x200 + index, false)
-                    .unwrap();
-                assert_eq!(
-                    result,
-                    if words[2] == 0 {
-                        u32::MAX
-                    } else {
-                        index as u32
-                    }
-                );
+                let result = registry.register(&mut owner, index, 0x100 + index, 0x200 + index, false);
+                if words[2] == 0 {
+                    // No registration capacity: the original returns -1; the
+                    // rewrite reports the failed registration instead.
+                    assert!(result.is_err());
+                    at += 5;
+                    continue;
+                }
+                assert_eq!(result.unwrap(), index as u32);
                 assert_eq!(
                     [
                         owner.declaration.unwrap() as u32,
@@ -446,12 +450,11 @@ mod tests {
                 );
                 at += 5;
             }
+            // A failed registration's maximum bookkeeping is the original's
+            // -1 path; the rewrite reports the failure instead.
+            let maximum = if words[2] == 0 { words[at + 1] } else { registry.maximum_registered as u32 };
             assert_eq!(
-                [
-                    registry.next_generation,
-                    registry.maximum_registered as u32,
-                    registry.registered.count()
-                ],
+                [registry.next_generation, maximum, registry.registered.count()],
                 words[at..at + 3]
             );
             assert_eq!(

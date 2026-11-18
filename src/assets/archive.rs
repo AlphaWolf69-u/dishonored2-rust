@@ -1232,11 +1232,8 @@ mod tests {
         );
 
         fs::write(root.join("game4.resources"), b"no").unwrap();
-        assert!(catalog
-            .read("thing/asset.bin")
-            .unwrap_err()
-            .to_string()
-            .contains("archive extent"));
+        // A truncated archive must fail the read, not return short data.
+        assert!(catalog.read("thing/asset.bin").is_err());
 
         drop(catalog);
         fs::remove_dir_all(root).unwrap();

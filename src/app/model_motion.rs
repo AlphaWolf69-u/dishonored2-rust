@@ -771,7 +771,8 @@ mod tests {
             entity: Some(entity),
             visible: true,
         });
-        app.insert_resource(ModelMotionBindings::default())
+        app.init_resource::<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>()
+            .insert_resource(ModelMotionBindings::default())
             .insert_resource(ModelPoseUpdates::default())
             .insert_resource(RenderSourcePlacements(vec![placement.clone()]))
             .insert_resource(ModelShadowSources(vec![source]))

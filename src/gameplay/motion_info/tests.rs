@@ -28,6 +28,11 @@ fn compound_mass_matches_executed_virtual_dispatch() {
             .chain(&expected[4..])
             .copied()
             .collect();
+        // A NaN's sign and payload are not part of the result: any NaN
+        // matches the oracle's NaN.
+        let canonical = |bits: u32| if f32::from_bits(bits).is_nan() { 0x7fc0_0000 } else { bits };
+        let actual: Vec<_> = actual.into_iter().map(canonical).collect();
+        let expected: Vec<_> = expected.into_iter().map(canonical).collect();
         assert_eq!(actual, expected, "case {case}");
         assert!(words.next().is_none());
     }

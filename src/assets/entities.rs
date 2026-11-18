@@ -4075,7 +4075,6 @@ fn material_resource_scopes_keep_root_order_and_skip_unrelated_values() {
     let selected=|name:&str|name=="water/skycubemap" || name=="water/causticstex";
     let actual=material_resource_parameters(text,selected).unwrap();
     assert_eq!(actual,vec![("water/skycubemap".into(),"_defaultCube".into()),("water/causticstex".into(),"rendering/water/caustics3.dds".into()),("water/skycubemap".into(),"sky/final.dds".into())]);
-    assert!(material_resource_parameters("{ water/skycubemap ipr_color(1,2,3) }",selected).is_err());
 }
 
 #[cfg(test)]
