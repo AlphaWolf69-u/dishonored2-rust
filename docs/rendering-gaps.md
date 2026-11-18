@@ -94,6 +94,21 @@ Rendering.
   player health owner hook), the revealed-entity message 0x153 and the
   stop on player state / veto (the player record has no such state yet;
   the update treats the player as playing).
+- Device (mask 1) and pickup (mask 4) layers connected (2026-11-19,
+  `bevy_backend::dark_vision_layers`, dh2_dark_vision_layers.wgsl): the
+  material layer (+0x4a[7:5]) and darkVisionProgram are kept per probe
+  material; `app::dark_vision::publish_surfaces` lists visible rigid
+  surfaces of layers 1/3; before DISTORTION the pass copies hdrBuffer
+  (ColorIn), clears a depth target, draws each layer's depth prepass
+  (material MAIN depth state) and then rendering/darkvision (program state:
+  additive, depth EQUAL+write, no cull) with the registered device/pickup
+  tint and opacity, darkVisionDepthBias, the reveal wave and the layer clip
+  (+0x4260 device, +0x4268 pickup). Masks come from the record or
+  r_debugDarkVisionLayers (`DH2_DEBUG_CVARS` sets it for captures). Not yet
+  compared with the original on screen. Still open: skinned surfaces (the
+  skinned darkvision variant; reported, not drawn), the living layer
+  (quarter-resolution, blurDisto, blitLiving), the pulsar layer, world
+  (BWM) surfaces of layers 1/3.
 - Vision post FX: the first update with no FX at +0x300 starts
   m_visionPostFx on the player entity (14087cb90); the stop ends it. The
   installed `dvision_ply_pp_01.fx` has a disabled eyelid particle system,

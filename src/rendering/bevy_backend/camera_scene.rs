@@ -200,6 +200,7 @@ pub(super) struct CameraGpu {
     completed: Option<(Entity, u32)>,
     alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
+    dark_vision_layers: Option<super::dark_vision_layers::DarkVisionLayers>,
     pub(super) screen_quads: super::screen_quads::ScreenQuads,
     particles: Option<ParticleGpu>,
     /// The non-isAlpha particle surfaces' zPrePass and opaque colour pass.
@@ -463,6 +464,8 @@ impl CameraGpu {
 }
 pub(super) fn register(app: &mut App) {
     app.init_resource::<FxPublication>();
+    app.init_resource::<super::dark_vision_layers::DarkVisionSurfaces>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::dark_vision_layers::DarkVisionSurfaces>::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<FxPublication>::default());
     app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
     app.init_resource::<super::particle_images::SceneParticleImages>()
@@ -1461,7 +1464,8 @@ fn render_camera<const PREPARE_ALPHA: bool>(
     fog_frame: Res<FogSceneFrame>,
     fog: Res<FogGpu>,
     alpha: Res<super::alpha_depth_scene::AlphaGpu>,
-    clear: Res<ClearColor>,
+    scene_inputs: (Res<ClearColor>, Res<bevy::render::mesh::allocator::MeshAllocator>,
+        Res<RenderAssets<bevy::render::mesh::RenderMesh>>, Res<super::dark_vision_layers::DarkVisionSurfaces>),
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
@@ -1479,6 +1483,7 @@ fn render_camera<const PREPARE_ALPHA: bool>(
     mut last_error: Local<Option<String>>,
 ) {
     let _loading_span = bevy::render::diagnostic::LoadingSpan::new(if PREPARE_ALPHA { "camera alpha preparation" } else { "camera composition" });
+    let clear = &scene_inputs.0;
     gpu.completed = None;
     if PREPARE_ALPHA {gpu.alpha_completed = None;}
     let Some(frame) = display.0.as_ref() else {
@@ -1628,7 +1633,25 @@ fn render_camera<const PREPARE_ALPHA: bool>(
                 .ok_or("player FX commands await current atmosphere")?;
             let draws = published.screen_draws.as_deref()
                 .ok_or("player FX screen commands await current atmosphere")?;
-            let CameraGpu {screen_effects,screen_quads,..}=&mut *gpu;
+            let CameraGpu {screen_effects,screen_quads,dark_vision_layers,..}=&mut *gpu;
+            // ARK_RENDERPASS_DARKVISION precedes DISTORTION and POSTPROC.
+            if let Some(record) = published.dark_vision.as_ref() {
+                let mask = record.mask | crate::platform::console::shared().read().cvars
+                    .int("r_debugDarkVisionLayers").unwrap_or(0) as u32;
+                let surfaces = &scene_inputs.3.0;
+                if super::dark_vision_layers::DarkVisionLayers::active(mask, surfaces) {
+                    let colour_texture = write.as_ref().map_or_else(|| target.main_texture(), |w| w.destination_texture);
+                    dark_vision_layers.get_or_insert_with(|| super::dark_vision_layers::DarkVisionLayers::new(&device))
+                        .record(&device, &queue, context.command_encoder(), &sources.dark_vision_layers,
+                            &super::dark_vision_layers::LayerInputs {
+                                record, mask, surfaces,
+                                matrices: &water.matrices.current, colour_texture, colour, format: config.host_format,
+                                scene_depth: &depth.alpha.full_sample, adaptation: &exposure.buffer, extent: full,
+                                host_units: 139.26 * camera.exposure, white_level: lens.white_level,
+                                compressed: config.compressed,
+                            }, &scene_inputs.1, &scene_inputs.2)?;
+                }
+            }
             screen_effects.record(
                 &device,
                 &queue,

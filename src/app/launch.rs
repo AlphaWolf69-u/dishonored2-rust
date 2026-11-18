@@ -795,6 +795,11 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(
             PostUpdate,
+            super::dark_vision::publish_surfaces
+                .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+        )
+        .add_systems(
+            PostUpdate,
             crate::rendering::bevy_backend::camera_scene::simulate_effects
                 .after(super::particle_view::publish)
                 .after(super::model_motion::publish_model_poses)

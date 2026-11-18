@@ -36,6 +36,9 @@ pub(super) struct ShadowMaterialInputs {
     pub(super) diffuse_image_slot: Option<usize>,
     pub(super) parameters: Result<Option<ShadowMaterialParameters>, String>,
     pub(super) cull_mode: Option<bevy::render::render_resource::Face>,
+    /// Dark Vision layer (1 device, 2 living, 3 pickup, 4 pulsar; 0 none)
+    /// and the material's darkVisionProgram.
+    pub(super) darkvision: Result<(u8, Option<String>), String>,
 }
 
 impl ShadowMaterialInputs {

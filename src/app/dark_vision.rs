@@ -176,3 +176,50 @@ pub(super) fn update(world: &mut World, player: Option<&crate::gameplay::player:
     world.insert_resource(DarkVisionFrame(record));
     world.insert_resource(owner);
 }
+
+/// The visible forward surfaces whose material selects the device (1) or
+/// pickup (3) layer, for ARK_RENDERPASS_DARKVISION. Living (2) is drawn by
+/// the quarter-resolution path and pulsar (4) by particles; neither is here.
+/// Skinned surfaces need the skinned darkvision variant, which is not ported:
+/// they are reported, not drawn rigidly.
+pub(super) fn publish_surfaces(
+    frame: Option<Res<DarkVisionFrame>>,
+    materials: Res<super::ShadowMaterials>,
+    surfaces: Query<(&Mesh3d, &MeshMaterial3d<super::ProbeMaterial>, &GlobalTransform, &ViewVisibility,
+        Has<bevy::mesh::skinning::SkinnedMesh>)>,
+    mut published: ResMut<crate::rendering::bevy_backend::dark_vision_layers::DarkVisionSurfaces>,
+    mut reported: Local<bool>,
+) {
+    use crate::rendering::bevy_backend::dark_vision_layers::DarkVisionSurface;
+    if frame.as_ref().and_then(|frame| frame.0).is_none() {
+        if !published.0.is_empty() { published.0 = Default::default(); }
+        return;
+    }
+    let mut list = Vec::new();
+    let mut skinned = 0usize;
+    for (mesh, material, transform, visibility, is_skinned) in &surfaces {
+        if !visibility.get() { continue; }
+        let Some(Ok(inputs)) = materials.0.get(&super::MaterialHandle::Probe(material.0.clone())) else { continue };
+        let Ok((layer, program)) = inputs.darkvision.as_ref() else { continue };
+        if !matches!(*layer, 1 | 3) { continue; }
+        if is_skinned { skinned += 1; continue; }
+        if program.as_deref().is_none_or(|program| !program.eq_ignore_ascii_case("rendering/darkvision")) {
+            warn!(?program, "Dark Vision layer surface uses an unported darkVisionProgram");
+            continue;
+        }
+        let Some(depth_state) = inputs.source.main_render_state else { continue };
+        list.push(DarkVisionSurface {
+            mesh: mesh.0.id(),
+            model: transform.to_matrix(),
+            layer: *layer,
+            depth_state,
+            // Registered modeldepthhack (1); no installed layer material overrides it.
+            depth_hack: 1.0,
+        });
+    }
+    if skinned != 0 && !*reported {
+        warn!(skinned, "Dark Vision skinned device/pickup surfaces await the skinned darkvision variant");
+        *reported = true;
+    }
+    published.0 = std::sync::Arc::new(list);
+}

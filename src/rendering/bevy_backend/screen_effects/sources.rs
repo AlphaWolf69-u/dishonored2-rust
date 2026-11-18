@@ -47,6 +47,8 @@ pub struct ScreenEffectSources {
     pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
     /// The Dark Vision sonar wave programs (rendering/darkVisionDepthWave*).
     pub dark_vision: DarkVisionWaveSources,
+    /// rendering/darkvision state and the registered layer constants.
+    pub dark_vision_layers: crate::rendering::bevy_backend::dark_vision_layers::DarkVisionLayerSources,
 }
 impl ScreenEffectSources {
     /// Every particle material of the player screen effects.
@@ -124,6 +126,13 @@ impl ScreenEffectSources {
                 .map_err(|e| format!("{name}: {e}"))?.map(f32::from_bits))
         };
         let thickness = parameter("rendering/darkVisionDepthWaveEdgeThickness")?;
+        let device_tint = parameter("rendering/darkVisionDeviceTint")?;
+        let pickup_tint = parameter("rendering/darkVisionPickupTint")?;
+        let layer_tints = [
+            [device_tint[0], device_tint[1], device_tint[2], parameter("rendering/darkVisionDeviceOpacity")?[0]],
+            [pickup_tint[0], pickup_tint[1], pickup_tint[2], parameter("rendering/darkVisionPickupOpacity")?[0]],
+        ];
+        let layer_depth_bias = parameter("rendering/darkVisionDepthBias")?[0];
         let parameters = [
             [parameter("rendering/darkVisionDepthWaveNoisePower")?[0],
                 parameter("rendering/darkVisionDepthWaveColorNoisePower")?[0],
@@ -134,6 +143,11 @@ impl ScreenEffectSources {
         ];
         let mut state = |name: &str| -> Result<crate::render_state::RenderState, String> {
             Ok(library.definition(name.as_bytes())?.ok_or_else(|| format!("{name} definition absent"))?.render_state())
+        };
+        let dark_vision_layers = crate::rendering::bevy_backend::dark_vision_layers::DarkVisionLayerSources {
+            colour_state: state("rendering/darkvision")?,
+            tints: layer_tints,
+            depth_bias: layer_depth_bias,
         };
         let dark_vision = DarkVisionWaveSources {
             colour_state: state("rendering/darkVisionDepthWaveColor")?,
@@ -152,6 +166,7 @@ impl ScreenEffectSources {
                 .ok_or("fullscreen distortion program definition absent")?.render_state(),
             transparency_resolve_state,
             dark_vision,
+            dark_vision_layers,
         })
     }
 }

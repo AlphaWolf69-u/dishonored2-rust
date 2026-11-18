@@ -525,6 +525,7 @@ fn world_shadow_test_material(
         diffuse_image_slot: (class != shader_cache::CachedWorldShadowClass::Opaque).then_some(0),
         parameters: Ok(None),
         cull_mode: None,
+        darkvision: Ok((0, None)),
     };
     (
         material.clone(),

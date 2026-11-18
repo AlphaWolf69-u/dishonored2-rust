@@ -317,6 +317,15 @@ pub(super) fn benchmark_frames(
         if let Ok(mut uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             *uploads = None;
         }
+        if let Some(path) = std::env::var_os("DH2_BENCHMARK_SCREENSHOT").filter(|_| screenshot_delay() == 0.) {
+            commands
+                .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+                .observe(bevy::render::view::screenshot::save_to_disk(std::path::PathBuf::from(path)));
+        }
+    }
+    // debug_: DH2_BENCHMARK_SCREENSHOT_DELAY=<seconds> into the measured frames.
+    let delay = screenshot_delay();
+    if delay > 0. && previous_elapsed < target.1 + delay && *elapsed >= target.1 + delay {
         if let Some(path) = std::env::var_os("DH2_BENCHMARK_SCREENSHOT") {
             commands
                 .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
@@ -570,4 +579,9 @@ pub(super) fn show_frame_rate(
         *elapsed = 0.0;
         *frames = 0;
     }
+}
+
+fn screenshot_delay() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("DH2_BENCHMARK_SCREENSHOT_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.))
 }

@@ -1665,7 +1665,19 @@ impl MaterialResolver<'_> {
                     .map(Some)
                 })(),
             };
+            // Material +0x4a[7:5] (`rendering/darkVisionLayer`) selects the
+            // ARK_RENDERPASS_DARKVISION layer list; +0x140 is darkVisionProgram.
+            let darkvision = (|| {
+                let library = self.programs.as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut().map_err(|error| error.clone())?;
+                let overrides = material_option_overrides(library, bytes)?;
+                let layer = library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8 & 7;
+                Ok((layer, material::authored_program_override(bytes, "darkVisionProgram")
+                    .filter(|program| !program.is_empty() && program != "0")))
+            })();
             ShadowMaterialInputs {
+                darkvision,
                 source,
                 rigid_base_source,
                 base_slot10_present,

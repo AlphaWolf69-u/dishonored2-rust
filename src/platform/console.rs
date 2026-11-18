@@ -28,6 +28,16 @@ pub fn shared() -> &'static Shared {
             .ok()
             .and_then(|base| Console::load(&base, user.as_deref()).ok())
             .unwrap_or_else(|| Console { bindings: Bindings::default(), cvars: CVars::new(), default_versions: (None, None) });
+        let mut console = console;
+        // debug_: DH2_DEBUG_CVARS="name=value,..." for windowless diagnostics.
+        if let Ok(list) = std::env::var("DH2_DEBUG_CVARS") {
+            for (name, value) in list.split(',').filter_map(|pair| pair.split_once('=')) {
+                match console.cvars.find(name.trim()) {
+                    Some(index) => { console.cvars.set(index, Some(value.trim()), true); }
+                    None => eprintln!("DH2_DEBUG_CVARS: unknown cvar {name}"),
+                }
+            }
+        }
         Shared { console: RwLock::new(console), generation: AtomicU64::new(0) }
     })
 }
