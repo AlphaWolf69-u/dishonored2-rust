@@ -66,8 +66,12 @@ fn other_families(fields: &Fields) -> WorldAdmission {
                 || atom(entries, "num").is_some_and(|count| count != "0"))
     }) {
         let Value::Scope(entries) = value else { unreachable!() };
+        // A full-screen quad's stage defaults to NEVER (screen_quad), and
+        // 31da70 publishes only the named stages: such quads never draw.
+        let quads = name == "m_fullScreenQuads";
         let admission = descriptors(entries).map(|items|
-            items.iter().any(|fields| atom(fields, "m_enabled") != Some("false")));
+            items.iter().any(|fields| atom(fields, "m_enabled") != Some("false")
+                && (!quads || atom(fields, "m_stage").is_some_and(|stage| stage != "NEVER"))));
         result.syntax_bytes += std::mem::size_of::<(String, Value)>() + name.len() + syntax_bytes(value);
         result.payload_bytes += std::mem::size_of::<(String, Result<bool, String>)>() + name.len()
             + admission.as_ref().err().map_or(0, |error| error.capacity());

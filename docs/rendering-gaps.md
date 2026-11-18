@@ -94,6 +94,17 @@ Rendering.
   player health owner hook), the revealed-entity message 0x153 and the
   stop on player state / veto (the player record has no such state yet;
   the update treats the player as playing).
+- Vision post FX: the first update with no FX at +0x300 starts
+  m_visionPostFx on the player entity (14087cb90); the stop ends it. The
+  installed `dvision_ply_pp_01.fx` has a disabled eyelid particle system,
+  start/stop sounds, an m_fsDistoParms radial blur, a full-screen quad with
+  no material or stage (NEVER: 31da70 publishes only named stages, so it
+  never draws; world FX admit such quads, 4 of the 42 quad FX) and
+  m_envOverrides. Blocked on m_envOverrides: 61 installed FX use it; the
+  slot logic (`rendering::environment_overrides`, fixture-tested) and the
+  FX binding runtime (`rendering::environment_effect_runtime`) exist but no
+  world FX consumer publishes into the environment frame yet, so the world
+  FX owner refuses these FX.
 - Not yet traced: the vision post FX (m_visionPostFx, an fx with a
   post-process), the sound FX list, proxies (cpntDarkVisionProxy: living
   layer for humans, clockworks, wolfhounds, bloodflies; no AI spawns yet).

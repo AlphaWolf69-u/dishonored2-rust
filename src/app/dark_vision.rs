@@ -23,6 +23,9 @@ pub(super) struct DarkVisionOwner {
     effect: Option<DarkVisionEffect>,
     pending_sounds: Vec<Request>,
     debug_started: bool,
+    /// Component +0x300: the running vision post FX's owner key.
+    post_fx: Option<Arc<str>>,
+    post_fx_serial: u32,
 }
 
 
@@ -49,7 +52,8 @@ impl DarkVisionOwner {
                 sounds.push((name.clone(), source));
             }
         }
-        Ok(Self { settings, sounds, state: DarkVisionState::Stopped, effect: None, pending_sounds: Vec::new(), debug_started: false })
+        Ok(Self { settings, sounds, state: DarkVisionState::Stopped, effect: None, pending_sounds: Vec::new(), debug_started: false,
+            post_fx: None, post_fx_serial: 0 })
     }
 
     pub fn available(&self) -> bool {
@@ -63,8 +67,10 @@ impl DarkVisionOwner {
         }
     }
 
-    /// The component's queued start/stop take effect at its next update.
-    fn settle(&mut self) {
+    /// The component's queued start/stop take effect at its next update;
+    /// returns a vision post FX to stop.
+    fn settle(&mut self) -> Option<Arc<str>> {
+        let mut stop_post_fx = None;
         match self.state {
             DarkVisionState::PendingStart => {
                 if let Some(settings) = &self.settings {
@@ -74,12 +80,14 @@ impl DarkVisionOwner {
             }
             DarkVisionState::PendingStop => {
                 self.effect = None;
+                stop_post_fx = self.post_fx.take();
                 self.state = DarkVisionState::Stopped;
                 let stop = self.settings.as_ref().and_then(|s| s.stop_sound.clone());
                 self.post(stop.as_deref());
             }
             _ => {}
         }
+        stop_post_fx
     }
 }
 
@@ -121,7 +129,28 @@ pub(super) fn update(world: &mut World, player: Option<&crate::gameplay::player:
         owner.debug_started = true;
         owner.request_start();
     }
-    owner.settle();
+    let stop_post_fx = owner.settle();
+    if let Some(key) = stop_post_fx {
+        if let Some(mut effects) = world.get_resource_mut::<super::usable_effects::EffectRequests>() {
+            effects.stop_entity(key);
+        }
+    }
+    // 14049ff50's first block: an absent post FX (+0x300) starts on the
+    // player entity (14087cb90 with the declaration's m_visionPostFx).
+    if owner.effect.is_some() && owner.post_fx.is_none() {
+        let path = owner.settings.as_ref().and_then(|s| s.vision_post_fx.clone());
+        let target = super::player_lifetime::id(world).and_then(|id| world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+            .and_then(|live| live.get(id).map(|(name, _)| crate::gameplay::event_graph::EntityReference::Named(name.to_owned()))));
+        if let (Some(path), Some(target)) = (path, target) {
+            if let Some(mut effects) = world.get_resource_mut::<super::usable_effects::EffectRequests>() {
+                owner.post_fx_serial = owner.post_fx_serial.wrapping_add(1);
+                let key: Arc<str> = format!("dark-vision-post-fx-{}", owner.post_fx_serial).into();
+                effects.start_entity(key.clone(), &path, super::usable_effects::EntityPlacement {
+                    target, tag: String::new(), local: Default::default(), attached: true });
+                owner.post_fx = Some(key);
+            }
+        }
+    }
     let mut record = None;
     if let Some(effect) = owner.effect.as_mut() {
         let attributes = player.map(|p| DarkVisionAttributes::read(&p.attributes)).unwrap_or_default();
