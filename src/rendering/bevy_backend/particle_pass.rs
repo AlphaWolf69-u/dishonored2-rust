@@ -384,8 +384,13 @@ pub enum ParticleList {
     /// m_handleSeenFromUnderwater (bit 4, key 0x15): underWaterPredicated in
     /// FORWARD_DYNAMIC, behind the underwater mark only.
     UnderwaterPredicated,
+    /// The same underWaterPredicated surface as ALPHA_LIT draws it after
+    /// dynamicAlpha (31dce0) while the view's underwater parameter
+    /// (DAT_1422ae020, a water volume around the view) is clear.
+    PredicatedAlpha,
 }
 
+#[derive(Clone)]
 pub struct ParticleDraw {
     pub list: ParticleList,
     pub material: Arc<ParticleMaterial>,

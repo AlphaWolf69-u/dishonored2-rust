@@ -111,7 +111,11 @@ impl SpawnOrientation {
 }
 
 /// Shared six-order Euler composition used by initial velocity and PMODEL
-/// emission. Callers supply their own axes before this common rotation step.
+/// emission (1401f96c0, 1401fa400) and mesh publication (1401eaa40): each
+/// angle in degrees times -pi/180, the principal-axis rotations of 14010e6a0
+/// (rows = axes; X [[1,0,0],[0,c,s],[0,-s,c]], Y [[c,0,-s],[0,1,0],[s,0,c]],
+/// Z [[c,s,0],[-s,c,0],[0,0,1]]) multiplied in the order's sequence by
+/// 1400a55d0, then applied to the caller's axes (14000dce0, M x basis).
 pub fn rotation_basis(
     angles: [f32; 3],
     order: usize,
@@ -129,15 +133,22 @@ pub fn rotation_basis(
     .get(order)
     .copied()
     .ok_or("particle rotation order exceeds six modes")?;
-    let rotation = |axis: usize| {
-        axis_angle_basis(
-            basis[axis],
-            multiply(angles[axis], f32::from_bits(0xbc8e_fa35)),
-        )
+    let rotation = |axis: usize| -> [[f32; 3]; 3] {
+        let angle = multiply(angles[axis], f32::from_bits(0xbc8e_fa35));
+        let (s, c) = (crate::float::sinf(angle), crate::float::cosf(angle));
+        let n = f32::from_bits(s.to_bits() ^ 0x8000_0000);
+        match axis {
+            0 => [[1., 0., 0.], [0., c, s], [0., n, c]],
+            1 => [[c, 0., n], [0., 1., 0.], [s, 0., c]],
+            _ => [[c, s, 0.], [n, c, 0.], [0., 0., 1.]],
+        }
     };
-    Ok(basis_product(
-        basis_product(rotation(order[0]), rotation(order[1])),
-        rotation(order[2]),
+    let product = |left: [[f32; 3]; 3], right: [[f32; 3]; 3]| {
+        basis_product(left, right)
+    };
+    Ok(product(
+        product(product(rotation(order[0]), rotation(order[1])), rotation(order[2])),
+        basis,
     ))
 }
 

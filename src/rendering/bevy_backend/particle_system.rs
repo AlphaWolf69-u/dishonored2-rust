@@ -135,6 +135,37 @@ impl ParticleSystem {
         output: &mut Vec<super::particle_pass::ParticleDraw>,
         world_meshes: &mut Vec<WorldMeshDraw>,
     ) -> Result<(), String> {
+        use super::particle_pass::ParticleList;
+        let start = output.len();
+        let transparency = context.transparency;
+        self.publish_surfaces(frame, context, output, world_meshes)?;
+        // 31dce0 also draws underWaterPredicated, after dynamicAlpha, with
+        // dynamicAlpha's writePixel state and stencil reference 0x44.
+        let mut alpha = Vec::new();
+        for draw in &output[start..] {
+            if draw.list != ParticleList::UnderwaterPredicated {
+                continue;
+            }
+            let mut twin = draw.clone();
+            twin.transparency = transparency.get(draw.material.state)?;
+            let (state, reference) = crate::render_state::alpha_surface_draw_state(
+                draw.material.state, twin.transparency.mode != 0, false);
+            twin.state = state;
+            twin.stencil_reference = reference;
+            twin.list = ParticleList::PredicatedAlpha;
+            alpha.push(twin);
+        }
+        output.extend(alpha);
+        Ok(())
+    }
+
+    fn publish_surfaces(
+        &mut self,
+        frame: u32,
+        context: ParticleDrawContext<'_>,
+        output: &mut Vec<super::particle_pass::ParticleDraw>,
+        world_meshes: &mut Vec<WorldMeshDraw>,
+    ) -> Result<(), String> {
         if self.visible_frame != Some(frame) {
             return Ok(());
         }

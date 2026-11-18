@@ -262,7 +262,18 @@ the same output). Rewrite: `ParticleList` on each draw,
 `ParticleSystem::surface_route`, and `render_underwater_particles` after
 the opaque particle colour pass and before the atmosphere composite, on a
 pass instance of its own. About 16 installed declarations set m_underwater
-and 34 m_handleSeenFromUnderwater. Not verified on screen yet.
+and 34 m_handleSeenFromUnderwater.
+
+ALPHA_LIT also draws underWaterPredicated (31dce0 resolves list 0x6ad867f5
+after dynamicAlpha) with dynamicAlpha's writePixel state and reference 0x44
+whenever the view's underwater parameter `DAT_1422ae020` is clear, so these
+surfaces show above water too; `ParticleList::PredicatedAlpha` carries that
+copy. The 0x40 mark only covers pixels whose near point (reverse-Z 0.05 or
+0.01 with r_znear 0.01) is under the surface, i.e. a submerged camera.
+Verified at the eotw sewer gate (bloody_pipe_spillway_01): the blood was
+also invisible because particle mesh rotations turned the wrong way (see
+`spawn::rotation_basis`, now 14010e6a0's principal-axis matrices); it now
+shows in the canal.
 
 Main-pass alpha (decals 0/3, hair lit) draws after the rewrite's fog
 composite with its own per-pixel fog, which composes to the original's
