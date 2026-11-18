@@ -6,7 +6,9 @@ use super::*;
 use crate::rendering::bevy_backend::water_scene::WaterSceneFrame;
 use bevy::{
     material::key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
-    pbr::{MeshPipelineKey, PreparedMaterial, ViewKeyCache},
+    core_pipeline::{prepass::{DepthPrepass, NormalPrepass, MotionVectorPrepass}, deferred::DeferredPrepass},
+    ecs::query::Has,
+    pbr::{MeshPipelineKey, PreparedMaterial, ViewKeyCache, ViewKeyPrepassCache},
     render::{
         erased_render_asset::ErasedRenderAssets,
         mesh::RenderMesh,
@@ -51,10 +53,15 @@ impl Failure {
         self.failed.store(true, Ordering::Release);
     }
 }
+type ModelView = (&'static MainEntity, &'static ExtractedView, &'static ViewTarget,
+    Has<DepthPrepass>, Has<NormalPrepass>, Has<MotionVectorPrepass>, Has<DeferredPrepass>);
+type PrepassView = Option<(MeshPipelineKey, bool)>;
+type ViewSignature = (RetainedViewEntity, MeshPipelineKey, TextureFormat, PrepassView);
+
 #[derive(Resource, Default)]
 pub(super) struct Pending {
     sources: Weak<Vec<Upload>>,
-    view: Option<(RetainedViewEntity, MeshPipelineKey, TextureFormat)>,
+    view: Option<ViewSignature>,
     work: Vec<Work>,
     remaining: HashMap<usize, usize>,
 }
@@ -66,20 +73,19 @@ pub(super) fn needed(
     pending: Res<Pending>,
     water: Res<WaterSceneFrame>,
     keys: Res<ViewKeyCache>,
-    views: Query<(&MainEntity, &ExtractedView, &ViewTarget)>,
+    prepass_keys: Res<ViewKeyPrepassCache>,
+    views: Query<ModelView>,
 ) -> bool {
     let view = water.0.as_ref().and_then(|water| {
         views
             .iter()
-            .find(|(main, _, _)| main.id() == water.camera)
-            .and_then(|(_, view, target)| {
-                keys.get(&view.retained_view_entity).map(|key| {
-                    (
-                        view.retained_view_entity,
-                        *key,
-                        target.main_texture_format(),
-                    )
-                })
+            .find(|(main, ..)| main.id() == water.camera)
+            .and_then(|(_, view, target, depth, normal, motion, deferred)| {
+                let key=*keys.get(&view.retained_view_entity)?;
+                let prepass=if depth||normal||motion||deferred {
+                    Some((*prepass_keys.get(&view.retained_view_entity)?,deferred))
+                }else{None};
+                Some((view.retained_view_entity,key,target.main_texture_format(),prepass))
             })
     });
     !pending.sources.ptr_eq(&Arc::downgrade(&uploads.0))
@@ -94,21 +100,16 @@ pub(super) fn acknowledge(world: &mut World) {
         .as_ref()
         .map(|frame| frame.camera);
     let view = camera.and_then(|camera| {
-        let mut views = world.query::<(&MainEntity, &ExtractedView, &ViewTarget)>();
+        let mut views = world.query::<ModelView>();
         views
             .iter(world)
-            .find(|(main, _, _)| main.id() == camera)
-            .and_then(|(_, view, target)| {
-                world
-                    .resource::<ViewKeyCache>()
-                    .get(&view.retained_view_entity)
-                    .map(|key| {
-                        (
-                            view.retained_view_entity,
-                            *key,
-                            target.main_texture_format(),
-                        )
-                    })
+            .find(|(main, ..)| main.id() == camera)
+            .and_then(|(_, view, target, depth, normal, motion, deferred)| {
+                let key=*world.resource::<ViewKeyCache>().get(&view.retained_view_entity)?;
+                let prepass=if depth||normal||motion||deferred {
+                    Some((*world.resource::<ViewKeyPrepassCache>().get(&view.retained_view_entity)?,deferred))
+                }else{None};
+                Some((view.retained_view_entity,key,target.main_texture_format(),prepass))
             })
     });
     let uploads = world.resource::<Uploads>().0.clone();
@@ -144,7 +145,7 @@ pub(super) fn acknowledge(world: &mut World) {
                 }
             }
         }
-        let Some((_, view_key, _)) = view else {
+        let Some((_, view_key, _, prepass)) = view else {
             return;
         };
         // No per-surface work, cloning or specialization once this exact
@@ -152,7 +153,7 @@ pub(super) fn acknowledge(world: &mut World) {
         // changes and removes its pending work before asset handles can recycle.
         let mut index = 0;
         while index < pending.work.len() {
-            let result = prepare(world, &mut pending.work[index], view_key);
+            let result = prepare(world, &mut pending.work[index], view_key, prepass);
             match result {
                 Ok(false) => index += 1,
                 result => {
@@ -188,15 +189,47 @@ fn ready(world: &World, id: CachedRenderPipelineId) -> Result<bool, String> {
         _ => Ok(false),
     }
 }
-fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<bool, String> {
+fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey, prepass: PrepassView) -> Result<bool, String> {
     if item.base.is_empty() {
-        let Some(ids) = queue_surface(world, &item.surface, view)? else { return Ok(false) };
+        let Some(mut ids) = queue_surface(world, &item.surface, view)? else { return Ok(false) };
+        //Actual model draw admission also owns its enabled depth/normal/motion
+        //pass. The separate decal program-only queue_properties API remains
+        //main-only: no fictitious prepass entity or material is introduced.
+        if let Some((key,deferred))=prepass {
+            let Some(prepass_ids)=queue_model_prepass(world,&item.surface,key,deferred)? else{return Ok(false);};
+            ids.extend(prepass_ids);
+        }
         item.base = ids;
     }
     for &id in &item.base {
         if !ready(world, id)? { return Ok(false); }
     }
     Ok(true)
+}
+
+///Same prepared material and mesh as this actual model's normal admission.
+///Mesh layout encodes skinning; only its real no-previous/previous-skin
+///lifecycle flags are requested, on the actual prepass view key.
+fn queue_model_prepass(world:&mut World,surface:&Surface,view:MeshPipelineKey,deferred:bool)
+    ->Result<Option<Vec<CachedRenderPipelineId>>,String>{
+    let Some(mesh)=world.resource::<RenderAssets<RenderMesh>>().get(surface.mesh)else{return Ok(None);};
+    let layout=mesh.layout.clone();
+    let mesh_bits=MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+    let Some(material)=world.resource::<ErasedRenderAssets<PreparedMaterial>>().get(surface.material)else{return Ok(None);};
+    let properties=material.properties.clone();
+    let previous_skin=surface.skinned&&view.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS);
+    let mut ids=Vec::with_capacity(1+usize::from(previous_skin));
+    for previous in 0..=usize::from(previous_skin){
+        let mut key=view|mesh_bits;
+        if previous!=0{key|=MeshPipelineKey::HAS_PREVIOUS_SKIN;}
+        if let Some((id,actual_key))=bevy::pbr::specialize_prepared_material_prepass(world,
+            surface.material.type_id(),&properties,&layout,key,deferred,(surface.mesh,surface.material))
+            .map_err(|error|format!("world model prepass mesh={:?} material={:?}: {error}",surface.mesh,surface.material))? {
+            let _=actual_key; //Both phases are observed by the canonical owner.
+            ids.push(id);
+        }
+    }
+    Ok(Some(ids))
 }
 
 /// The canonical material specializer is also used by the decal owner's

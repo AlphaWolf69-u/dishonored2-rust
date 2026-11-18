@@ -812,6 +812,119 @@ pub struct SpecializedPrepassMaterialViewPipelineCache {
     map: MainEntityHashMap<(Tick, CachedRenderPipelineId, DrawFunctionId)>,
 }
 
+/// bevy_backend: admit an existing uploaded material/mesh through the same
+/// prepass policy, specializer and cache as a real first-visible draw. The
+/// caller supplies the actual ViewKeyPrepassCache and mesh-instance flags;
+/// this entry creates no entity, material binding, draw or pipeline cache.
+pub fn specialize_prepared_material_prepass(
+    world: &mut World,
+    material_type: TypeId,
+    properties: &Arc<MaterialProperties>,
+    layout: &MeshVertexBufferLayoutRef,
+    mesh_key: MeshPipelineKey,
+    deferred_view: bool,
+    source: (bevy_asset::AssetId<Mesh>, bevy_asset::UntypedAssetId),
+) -> Result<Option<(CachedRenderPipelineId, MeshPipelineKey)>, SpecializedMeshPipelineError> {
+    if !prepass_material_enabled(properties){return Ok(None);}
+    let msaa=Msaa::from_samples(mesh_key.msaa_samples());
+    let keys=world.get_resource::<DepthPrepassMaterialKeys>();
+    let Some(mesh_key)=prepass_material_mesh_key(properties,material_type,keys,mesh_key,&msaa,deferred_view) else{return Ok(None);};
+    let (mesh_key,_)=finish_prepass_material_mesh_key(properties,material_type,keys,mesh_key);
+    let depth_clip_control_supported=world.resource::<PrepassPipeline>().depth_clip_control_supported;
+    specialize_material_prepass(world,material_type,properties,layout,mesh_key,depth_clip_control_supported,source,"preload")
+        .map(|result|result.map(|(id,key,_)|(id,key)))
+}
+
+#[inline]
+fn prepass_material_enabled(properties:&MaterialProperties)->bool{properties.prepass_enabled}
+
+///One material/view admission policy, shared with actual visible collection.
+///Instance lightmap/visibility/previous-frame bits remain with the caller.
+fn prepass_material_mesh_key(properties:&MaterialProperties,material_type:TypeId,
+    keys:Option<&DepthPrepassMaterialKeys>,mut mesh_key:MeshPipelineKey,msaa:&Msaa,
+    deferred_view:bool)->Option<MeshPipelineKey>{
+    match properties.alpha_mode {
+        AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
+            mesh_key |= alpha_mode_pipeline_key(properties.alpha_mode,msaa);
+        }
+        AlphaMode::Blend if keys.is_some_and(|keys|
+            keys.blended_draws_prepass(material_type,&properties.material_key)) => {
+            mesh_key |= alpha_mode_pipeline_key(AlphaMode::Mask(0.5),msaa);
+        }
+        AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => return None,
+    }
+    if properties.reads_view_transmission_texture{return None;}
+    let forward=match properties.render_method {
+        OpaqueRendererMethod::Forward=>true,OpaqueRendererMethod::Deferred=>false,
+        OpaqueRendererMethod::Auto=>unreachable!(),
+    };
+    if deferred_view && !forward {
+        mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
+    }
+    Some(mesh_key)
+}
+
+///Finalize after the real instance bits have been added. Return the omission
+///fact so only actual visible collection retains its existing counter update.
+fn finish_prepass_material_mesh_key(properties:&MaterialProperties,material_type:TypeId,
+    keys:Option<&DepthPrepassMaterialKeys>,mut mesh_key:MeshPipelineKey)->(MeshPipelineKey,bool){
+    if properties.prepass_reads_material(){mesh_key|=MeshPipelineKey::PREPASS_READS_MATERIAL;}
+    // Same material-free optimization as specialize_prepass_material_meshes.
+    if is_plain_depth_prepass(mesh_key) && mesh_key.msaa_samples()==1
+        && !mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+        && matches!(properties.render_phase_type,RenderPhaseType::Opaque)
+        && keys.is_some_and(|keys|
+            keys.material_is_unused(material_type,&properties.material_key)) {
+        mesh_key.remove(MeshPipelineKey::MAY_DISCARD|MeshPipelineKey::PREPASS_READS_MATERIAL);
+        return (mesh_key,true);
+    }
+    (mesh_key,false)
+}
+
+///One normalized key/draw-function selection and actual specializer call.
+///Real collection passes its once-per-batch device capability; preload uses
+///the same existing pipeline owner. No work-item Vec or cache is allocated.
+fn specialize_material_prepass(world:&mut World,material_type:TypeId,properties:&Arc<MaterialProperties>,
+    layout:&MeshVertexBufferLayoutRef,mesh_key:MeshPipelineKey,depth_clip_control_supported:bool,
+    source:(bevy_asset::AssetId<Mesh>,bevy_asset::UntypedAssetId),phase:&'static str)
+    ->Result<Option<(CachedRenderPipelineId,MeshPipelineKey,DrawFunctionId)>,SpecializedMeshPipelineError>{
+    let Some(specialize)=properties.prepass_specialize else{return Ok(None);};
+    let material_key=if is_plain_depth_prepass(mesh_key) {
+        world.get_resource::<DepthPrepassMaterialKeys>().map_or_else(||properties.material_key.clone(),
+            |keys|keys.normalize(material_type,&properties.material_key))
+    }else{properties.material_key.clone()};
+    let emulate_unclipped_depth=mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+        && !depth_clip_control_supported;
+    let deferred=mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS);
+    let draw_function=match properties.render_phase_type {
+        RenderPhaseType::Opaque if deferred=>properties.get_draw_function(DeferredOpaqueDrawFunction),
+        RenderPhaseType::Opaque if is_depth_only_opaque_prepass(mesh_key)&&!emulate_unclipped_depth=>
+            properties.get_draw_function(PrepassOpaqueDepthOnlyDrawFunction),
+        RenderPhaseType::Opaque=>properties.get_draw_function(PrepassOpaqueDrawFunction),
+        RenderPhaseType::AlphaMask if deferred=>properties.get_draw_function(DeferredAlphaMaskDrawFunction),
+        RenderPhaseType::AlphaMask=>properties.get_draw_function(PrepassAlphaMaskDrawFunction),
+        RenderPhaseType::Transmissive|RenderPhaseType::Transparent=>return Ok(None),
+    };
+    if draw_function.is_none(){return Ok(None);}
+    static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    let trace=*TRACE.get_or_init(||std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref()==Ok("1"));
+    let hashes=trace.then(||{
+        use core::hash::{Hash,Hasher};
+        let mut layout_hash=std::collections::hash_map::DefaultHasher::new();
+        layout.hash(&mut layout_hash);
+        let mut material_hash=std::collections::hash_map::DefaultHasher::new();
+        material_key.hash(&mut material_hash);
+        (layout_hash.finish(),material_hash.finish())
+    });
+    let id=specialize(world,ErasedMaterialPipelineKey{type_id:material_type,
+        mesh_key:ErasedMeshPipelineKey::new(mesh_key),material_key},layout,properties)
+        ?;
+    if let Some((layout_hash,material_hash))=hashes{
+        eprintln!("FX_MODEL_PREPASS phase={phase} mesh={:?} material={:?} layout_hash={layout_hash:016x} material_key_hash={material_hash:016x} mesh_key={mesh_key:?} pipeline={id:?}",source.0,source.1);
+    }
+    Ok(Some((id,mesh_key,draw_function.expect("real draw function checked"))))
+}
+
 #[derive(Resource, Deref, DerefMut, Default, Clone)]
 pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
 
@@ -861,6 +974,8 @@ pub(crate) struct PrepassSpecializationWorkItem {
     layout: MeshVertexBufferLayoutRef,
     properties: Arc<MaterialProperties>,
     material_type_id: TypeId,
+    source_mesh: bevy_asset::AssetId<Mesh>,
+    source_material: bevy_asset::UntypedAssetId,
 }
 
 /// Holds all entities with mesh materials for which the prepass couldn't be
@@ -1027,7 +1142,7 @@ pub(crate) fn specialize_prepass_material_meshes(
                         .insert((*render_entity, *visible_entity));
                     continue;
                 };
-                if !material.properties.prepass_enabled {
+                if !prepass_material_enabled(&material.properties) {
                     // If the material was previously specialized for prepass, remove it
                     removals.push((extracted_view.retained_view_entity, *visible_entity));
                     continue;
@@ -1042,51 +1157,14 @@ pub(crate) fn specialize_prepass_material_meshes(
                 let mut mesh_key =
                     *view_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
 
-                let alpha_mode = material.properties.alpha_mode;
-                match alpha_mode {
-                    AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
-                        mesh_key |= alpha_mode_pipeline_key(alpha_mode, msaa);
-                    }
-                    AlphaMode::Blend
-                        if depth_material_keys.as_deref().is_some_and(|keys| {
-                            keys.blended_draws_prepass(
-                                material_instance.asset_id.type_id(),
-                                &material.properties.material_key,
-                            )
-                        }) =>
-                    {
-                        // The material's prepass shader applies its own discard.
-                        mesh_key |= alpha_mode_pipeline_key(AlphaMode::Mask(0.5), msaa);
-                    }
-                    AlphaMode::Blend
-                    | AlphaMode::Premultiplied
-                    | AlphaMode::Add
-                    | AlphaMode::Multiply => {
-                        // In case this material was previously in a valid alpha_mode, remove it to
-                        // stop the queue system from assuming its retained cache to be valid.
-                        removals.push((extracted_view.retained_view_entity, *visible_entity));
-                        continue;
-                    }
-                }
-
-                if material.properties.reads_view_transmission_texture {
-                    // No-op: Materials reading from `ViewTransmissionTexture` are not rendered in the `Opaque3d`
-                    // phase, and are therefore also excluded from the prepass much like alpha-blended materials.
-                    removals.push((extracted_view.retained_view_entity, *visible_entity));
+                let Some(key)=prepass_material_mesh_key(&material.properties,
+                    material_instance.asset_id.type_id(),depth_material_keys.as_deref(),mesh_key,msaa,
+                    deferred_prepass.is_some()) else {
+                    removals.push((extracted_view.retained_view_entity,*visible_entity));
                     continue;
-                }
-
-                let forward = match material.properties.render_method {
-                    OpaqueRendererMethod::Forward => true,
-                    OpaqueRendererMethod::Deferred => false,
-                    OpaqueRendererMethod::Auto => unreachable!(),
                 };
-
-                let deferred = deferred_prepass.is_some() && !forward;
-
-                if deferred {
-                    mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
-                }
+                mesh_key=key;
+                let deferred=mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS);
 
                 if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
                     // Even though we don't use the lightmap in the forward prepass, the
@@ -1107,10 +1185,6 @@ pub(crate) fn specialize_prepass_material_meshes(
                     mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
                 }
 
-                if material.properties.prepass_reads_material() {
-                    mesh_key |= MeshPipelineKey::PREPASS_READS_MATERIAL;
-                }
-
                 // If the previous frame has skins or morph targets, note that.
                 if motion_vector_prepass.is_some() {
                     if mesh_instance
@@ -1127,24 +1201,10 @@ pub(crate) fn specialize_prepass_material_meshes(
                     }
                 }
 
-                if is_plain_depth_prepass(mesh_key)
-                    && mesh_key.msaa_samples() == 1
-                    && !mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
-                    && matches!(
-                        material.properties.render_phase_type,
-                        RenderPhaseType::Opaque
-                    )
-                    && let Some(keys) = depth_material_keys.as_deref()
-                    && keys.material_is_unused(
-                        material_instance.asset_id.type_id(),
-                        &material.properties.material_key,
-                    )
-                {
-                    mesh_key.remove(
-                        MeshPipelineKey::MAY_DISCARD | MeshPipelineKey::PREPASS_READS_MATERIAL,
-                    );
-                    keys.record_omission();
-                }
+                let (key,omitted)=finish_prepass_material_mesh_key(&material.properties,
+                    material_instance.asset_id.type_id(),depth_material_keys.as_deref(),mesh_key);
+                mesh_key=key;
+                if omitted {depth_material_keys.as_deref().expect("actual omission has registered keys").record_omission();}
 
                 work_items.push(PrepassSpecializationWorkItem {
                     visible_entity: *visible_entity,
@@ -1153,6 +1213,8 @@ pub(crate) fn specialize_prepass_material_meshes(
                     layout: mesh.layout.clone(),
                     properties: material.properties.clone(),
                     material_type_id: material_instance.asset_id.type_id(),
+                    source_mesh: mesh_instance.mesh_asset_id(),
+                    source_material: material_instance.asset_id,
                 });
             }
         }
@@ -1165,67 +1227,16 @@ pub(crate) fn specialize_prepass_material_meshes(
         .depth_clip_control_supported;
 
     for item in work_items.drain(..) {
-        let Some(prepass_specialize) = item.properties.prepass_specialize else {
-            continue;
-        };
-
-        let material_key = if is_plain_depth_prepass(item.mesh_key) {
-            world
-                .get_resource::<DepthPrepassMaterialKeys>()
-                .map_or_else(
-                    || item.properties.material_key.clone(),
-                    |keys| keys.normalize(item.material_type_id, &item.properties.material_key),
-                )
-        } else {
-            item.properties.material_key.clone()
-        };
-        let key = ErasedMaterialPipelineKey {
-            type_id: item.material_type_id,
-            mesh_key: ErasedMeshPipelineKey::new(item.mesh_key),
-            material_key,
-        };
-
-        let emulate_unclipped_depth = item
-            .mesh_key
-            .contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
-            && !depth_clip_control_supported;
-        let deferred = item.mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS);
-        let draw_function = match item.properties.render_phase_type {
-            RenderPhaseType::Opaque => {
-                if deferred {
-                    item.properties
-                        .get_draw_function(DeferredOpaqueDrawFunction)
-                } else if is_depth_only_opaque_prepass(item.mesh_key) && !emulate_unclipped_depth {
-                    item.properties
-                        .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction)
-                } else {
-                    item.properties.get_draw_function(PrepassOpaqueDrawFunction)
-                }
-            }
-            RenderPhaseType::AlphaMask => {
-                if deferred {
-                    item.properties
-                        .get_draw_function(DeferredAlphaMaskDrawFunction)
-                } else {
-                    item.properties
-                        .get_draw_function(PrepassAlphaMaskDrawFunction)
-                }
-            }
-            RenderPhaseType::Transmissive | RenderPhaseType::Transparent => continue,
-        };
-
-        let Some(draw_function) = draw_function else {
-            continue;
-        };
-
-        match prepass_specialize(world, key, &item.layout, &item.properties) {
-            Ok(pipeline_id) => {
+        match specialize_material_prepass(world,item.material_type_id,&item.properties,&item.layout,
+            item.mesh_key,depth_clip_control_supported,(item.source_mesh,item.source_material),"visible") {
+            Ok(Some((pipeline_id,_,draw_function))) => {
                 world
                     .resource_mut::<SpecializedPrepassMaterialPipelineCache>()
                     .entry(item.retained_view_entity)
                     .or_default()
                     .insert(item.visible_entity, (this_run, pipeline_id, draw_function));
             }
+            Ok(None) => continue,
             Err(err) => error!("{}", err),
         }
     }

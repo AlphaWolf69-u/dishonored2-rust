@@ -25188,3 +25188,30 @@ Paused fog publication also keys its early return by the actual override-frame
 revision, preserving updates driven by the real pause/focus producer clock.
 This reuses the existing fog publication/pass and does not introduce another
 GPU pass. Runtime readiness and lifecycle verification remain pending.
+
+
+### Actual model prepass admission
+
+`host: bevy_backend` model admission now waits for the actual uploaded
+mesh/prepared material's enabled prepass as well as its main pass. The actual
+ViewKeyPrepassCache and camera Depth/Normal/Motion/Deferred markers participate
+in the existing view signature. Only actual first/previous-skin lifecycle
+variants are requested. Program-only projected-decal warming remains main-only.
+
+Visible collection and preload share the canonical prepass's same material
+eligibility, custom blended-depth rule, transmission skip, render-method/key
+selection, material-free normalization, draw-function lookup and prepared
+specializer/PipelineCache; the old inline copies were removed. Existing early
+removals, visible omission counters and once-per-batch device capability reads
+are preserved. No dummy draw, mesh, material or extra cache is created. Pending
+roster withdrawal releases the existing admission receipt normally.
+
+Prediction: enabled prepass creation finishes before that model's Admission
+becomes ready, so an unchanged admitted mesh/material/view needs no new prepass
+compilation at first visible use. This shifts work into loading and does not
+claim a compiler-speed or steady-FPS improvement. Actual preload/visible
+receipts include the same source IDs, final key, process-local layout hash,
+normalized material-key hash and pipeline ID under existing diagnostic tracing.
+Runtime verification is pending. The provided prior logs do not establish the
+owner of every late opaque/transparent program; no numerical pipeline ID is
+attributed by comparison with another process.
