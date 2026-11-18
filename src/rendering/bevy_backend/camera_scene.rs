@@ -1114,8 +1114,10 @@ fn render_underwater_particles(
             depth.view(), target.main_texture_view(), None)?;
         underwater.pass.record_underwater(particle_images, &device, &queue, context.command_encoder(), inputs, draws)?;
         if !*reported {
+            let surfaces = draws.iter().map(|draw| format!("{:?} {} at {:?}", draw.list, draw.material.name,
+                draw.instances.first().map(|instance| instance.position))).collect::<Vec<_>>();
             info!(draws = draws.len(), instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
-                "Underwater particle submission active");
+                ?surfaces, "Underwater particle submission active");
             *reported = true;
         }
         Ok(())
