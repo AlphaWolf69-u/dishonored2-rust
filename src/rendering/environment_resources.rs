@@ -77,6 +77,6 @@ fn integer_values(parameters:&EnvironmentRenderParameters, key:&str,
     for (word,part) in words.iter_mut().zip(&parts){
         *word=crate::assets::parm_block::numeric_word(part,storage)?;
     }
-    if parts.len()==1 {words.fill(words[0]);}
+    if parts.len()==1 {words=[words[0];4];}
     Ok(words)
 }
