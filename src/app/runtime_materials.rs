@@ -1697,9 +1697,11 @@ fn publish_batch(
         commands.publish(world);
     }
     if !equipment.is_empty() {
-        let mut arms = world.resource_mut::<super::player_arms::PlayerArms>();
         for model in equipment {
-            arms.publish_equipment_model(model)?;
+            let id = model.entity();
+            let surfaces = model.pipeline_surfaces();
+            world.resource_mut::<super::player_arms::PlayerArms>().publish_equipment_model(model)?;
+            super::world_models::register_pipelines(world, id, surfaces)?;
         }
     }
     for entity in equipment_entities {

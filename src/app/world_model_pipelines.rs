@@ -18,10 +18,15 @@ use bevy::{
 };
 
 #[derive(Clone)]
-pub(super) struct Surface {
+pub(in crate::app) struct Surface {
     pub mesh: bevy::asset::AssetId<Mesh>,
     pub material: bevy::asset::UntypedAssetId,
     pub skinned: bool,
+}
+#[derive(Clone, Default)]
+pub(super) struct Admission {
+    pub complete: Arc<AtomicBool>,
+    pub error: Arc<Failure>,
 }
 struct Work {
     surface: Surface,
@@ -108,13 +113,20 @@ pub(super) fn acknowledge(world: &mut World) {
     });
     let uploads = world.resource::<Uploads>().0.clone();
     world.resource_scope(|world, mut pending: Mut<Pending>| {
-        let changed = !pending.sources.ptr_eq(&Arc::downgrade(&uploads)) || pending.view != view;
+        let view_changed = pending.view != view;
+        let changed = !pending.sources.ptr_eq(&Arc::downgrade(&uploads)) || view_changed;
         if changed {
             pending.work.clear();
             pending.remaining.clear();
             pending.sources = Arc::downgrade(&uploads);
             pending.view = view;
             for upload in uploads.iter() {
+                // An unrelated model entering/leaving the roster cannot revoke
+                // a completed certificate for this same view/layout/material.
+                // Only an actual view/key/format change invalidates it.
+                if !view_changed && upload.complete.load(Ordering::Acquire) {
+                    continue;
+                }
                 upload
                     .complete
                     .store(upload.surfaces.is_empty(), Ordering::Release);
@@ -213,19 +225,32 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<
             } else {
                 key | MeshPipelineKey::HAS_PREVIOUS_SKIN
             };
-            item.base.push(
-                specialize(
-                    world,
-                    ErasedMaterialPipelineKey {
-                        type_id: item.surface.material.type_id(),
-                        mesh_key: ErasedMeshPipelineKey::new(mesh_key),
-                        material_key: properties.material_key.clone(),
-                    },
-                    &layout,
-                    &properties,
-                )
-                .map_err(|error| format!("world model specialization: {error}"))?,
-            );
+            let id = specialize(
+                world,
+                ErasedMaterialPipelineKey {
+                    type_id: item.surface.material.type_id(),
+                    mesh_key: ErasedMeshPipelineKey::new(mesh_key),
+                    material_key: properties.material_key.clone(),
+                },
+                &layout,
+                &properties,
+            )
+            .map_err(|error| format!("world model specialization: {error}"))?;
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                let state = match world
+                    .resource::<PipelineCache>()
+                    .get_render_pipeline_state(id)
+                {
+                    CachedPipelineState::Ok(_) => "ready",
+                    CachedPipelineState::Err(_) => "error",
+                    _ => "pending",
+                };
+                eprintln!(
+                    "FX_MODEL_PIPELINE mesh={:?} material={:?} mesh_key={mesh_key:?} pipeline={id:?} state={state}",
+                    item.surface.mesh, item.surface.material,
+                );
+            }
+            item.base.push(id);
         }
     }
     for &id in &item.base {

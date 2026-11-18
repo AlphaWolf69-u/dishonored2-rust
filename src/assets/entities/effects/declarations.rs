@@ -34,11 +34,16 @@ pub fn instance_declaration(node: &Node) -> Option<&str> {
 impl FxDeclarations {
     pub fn load(roots: &[Arc<FxGraph>], catalog: &Catalog) -> Self {
         let mut declarations = Self::default();
+        declarations.extend_roots(roots,catalog);
+        declarations
+    }
+    /// Extend the same first-reference index when a real named actor program
+    /// is admitted. Existing declarations/leases are never decoded twice.
+    pub fn extend_roots(&mut self,roots:&[Arc<FxGraph>],catalog:&Catalog){
         let mut bootstrap_dependencies = HashSet::new();
         for graph in roots {
-            declarations.load_dependencies(graph, catalog, 0, &mut bootstrap_dependencies);
+            self.load_dependencies(graph, catalog, 0, &mut bootstrap_dependencies);
         }
-        declarations
     }
 
     pub fn get(&self, name: &str) -> Result<&Arc<FxGraph>, String> {

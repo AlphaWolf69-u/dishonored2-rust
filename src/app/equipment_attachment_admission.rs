@@ -419,10 +419,12 @@ pub(super) fn publish(
     let binding = entry.binding.ok_or("prepared child binding disappeared")?;
     let parent = key.weapon;
     let visible = entry.visible;
+    let surfaces = prepared.pipeline_surfaces();
     world
         .resource_mut::<super::player_arms::PlayerArms>()
         .attachments
         .publish(child, parent, weapon, binding, prepared, visible)?;
+    super::world_models::register_pipelines(world, child, surfaces)?;
     super::equipment_identity::mark_rendered(world, child)
 }
 
@@ -490,6 +492,7 @@ pub(super) fn startup_pending(world: &World) -> bool {
                     world
                         .get_resource::<super::player_arms::PlayerArms>()
                         .is_none_or(|arms| !arms.attachments.has(id))
+                        || !matches!(super::world_models::pipelines_ready(world,id),Ok(true))
                 })
         })
 }

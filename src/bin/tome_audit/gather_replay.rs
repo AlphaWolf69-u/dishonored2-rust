@@ -43,12 +43,14 @@ pub fn run(args: &[String]) -> Result<()> {
     if args.len() < 2 {
         return Err("usage: tome-audit --gather-replay <capture-resource-root> <DHC1 capture>... [--repeats N]".into());
     }
+    let direction_header=args.iter().any(|value|value=="--direction-header");
     let root = Path::new(&args[0]);
     let mut paths = Vec::new();
     let mut repeats = 32usize;
     let mut at = 1;
     while at < args.len() {
-        if args[at] == "--repeats" {
+        if args[at] == "--direction-header" {
+        } else if args[at] == "--repeats" {
             at += 1;
             repeats = args.get(at).ok_or("missing repeats")?.parse()?;
         } else {
@@ -171,6 +173,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut plane_control = GlobalShadowCasterScratch::new(tome.object_count(), count);
         let mut reference = GlobalShadowCasterScratch::new(tome.object_count(), count);
         let mut candidate = GlobalShadowCasterScratch::new(tome.object_count(), count);
         for job in 0..jobs {
@@ -184,8 +187,11 @@ pub fn run(args: &[String]) -> Result<()> {
                 job,
                 jobs,
             };
-            let a = reference.gather_reference(&tome, &input)?;
-            let b = candidate.gather(&tome, &input)?;
+            let unchanged = plane_control.gather_reference(&tome,&input)?;
+            let kept = reference.gather_direction_reference(&tome,&input)?;
+            if unchanged != kept || kept != candidate.gather(&tome,&input)? {return Err("three-variant ordered output mismatch".into())}
+            let a = if direction_header { reference.gather_direction_reference(&tome,&input)? } else { reference.gather_reference(&tome,&input)? };
+            let b = (if direction_header {candidate.gather(&tome,&input)?} else {candidate.gather_direction_reference(&tome,&input)?});
             if a != b {
                 return Err(format!("ordered output mismatch {path} job{job}").into());
             }
@@ -204,7 +210,7 @@ pub fn run(args: &[String]) -> Result<()> {
                         &mut candidate
                     };
                     let started = Instant::now();
-                    let cycles = scratch.replay_cycles(&tome, &input, baseline, repeats)?;
+                    let cycles = if direction_header { scratch.replay_direction_cycles(&tome,&input,baseline,repeats)? } else { scratch.replay_cycles(&tome, &input, baseline, repeats)? };
                     let elapsed = started.elapsed();
                     if let Some(cycles) = cycles {
                         if baseline {
@@ -221,7 +227,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     );
                 }
             }
-            if reference.gather_reference(&tome, &input)? != candidate.gather(&tome, &input)? {
+            if (if direction_header { reference.gather_direction_reference(&tome,&input)? } else { reference.gather_reference(&tome,&input)? }) != (if direction_header {candidate.gather(&tome,&input)?} else {candidate.gather_direction_reference(&tome,&input)?}) {
                 return Err("ordered output changed after replay".into());
             }
         }
@@ -231,9 +237,10 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     if all_cycles && baseline_cycles > 0 {
         let saving = (1. - candidate_cycles as f64 / baseline_cycles as f64) * 100.;
+        let prediction=if direction_header {4.0f64} else {7.5};
         println!(
-            "GATHER_AB_TOTAL baseline_cycles={baseline_cycles} candidate_cycles={candidate_cycles} saving_percent={saving:.3} predicted_percent=7.5 investigate_prediction_mismatch={}",
-            (saving - 7.5).abs() > 7.5 * 0.30
+            "GATHER_AB_TOTAL baseline_cycles={baseline_cycles} candidate_cycles={candidate_cycles} saving_percent={saving:.3} predicted_percent={prediction} investigate_prediction_mismatch={}",
+            (saving - prediction).abs() > prediction * 0.30
         );
     } else {
         println!("GATHER_AB_TOTAL thread_cycles_unavailable=true no_cpu_saving_claim=true");

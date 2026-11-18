@@ -1,6 +1,31 @@
 //! Concrete idDynamicEntity constructor881d90, Spawn8820f0 and
 //! activation882070. Its destructor87e350 adds no resource owner to idEntity.
 use super::*;
+///784450's arkPlayer fields for a source-declared body-part actor. This is
+///not another player controller. Its existing Arm owns AnimEvolved/Midnight
+///and Audio; PlayerArms owns its current model through GPU release. Alternate
+///model selection remains with the existing player model owner, not this ID.
+///The14 power pointers and optional Attributes/audiocard slots stay absent
+///for the actual arm component roster.784540 destroys no additional owner.
+pub(in crate::app) struct PlayerPart {
+    #[allow(dead_code)]
+    aim_at_position: [f32;3],
+    #[allow(dead_code)]
+    choke_hostage: Option<EntityId>,
+    #[allow(dead_code)]
+    busy_to_talk: i32,
+}
+impl PlayerPart {
+    pub(in crate::app) fn new(birth_position:[f32;3])->Self {
+        //784c10 copies the actual birth transform after the constructor's
+        //zero aim vector; no optional audiocard is authored on these parts.
+        Self{aim_at_position:birth_position,choke_hostage:None,busy_to_talk:0}
+    }
+    pub(in crate::app) fn declaration_flags(source:&str)->u8 {
+        //7846a0's declaration-name test runs before8aecc0 registration.
+        if source.contains("/player/"){8}else{4}
+    }
+}
 ///Concrete3db480 members survive with the actual arkAICue generation.
 pub(in crate::app) struct Cue {
     pub category: i32,

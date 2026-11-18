@@ -21,7 +21,7 @@ use std::{
     },
 };
 #[path = "world_model_pipelines.rs"]
-mod pipelines;
+pub(super) mod pipelines;
 pub(super) struct Request {
     pub key: usize,
     pub descriptor: Arc<Descriptor>,
@@ -225,7 +225,35 @@ struct Upload {
     error: Arc<pipelines::Failure>,
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
-struct Uploads(Arc<Vec<Upload>>);
+struct Uploads(Arc<Vec<Upload>>, Arc<HashMap<EntityId, pipelines::Admission>>);
+
+/// Shared model draw admission, including the actual owned equipment/children.
+/// This stores IDs/readiness only; each existing model owner retains its assets.
+pub(super) fn register_pipelines(world: &mut World, id: EntityId, surfaces: Vec<pipelines::Surface>) -> Result<(), String> {
+    let mut uploads = world.resource_mut::<Uploads>();
+    if uploads.1.contains_key(&id) { return Err(format!("model pipelines already registered for {id:?}")); }
+    let admission = pipelines::Admission::default();
+    if surfaces.is_empty() { admission.complete.store(true, Ordering::Release); }
+    Arc::make_mut(&mut uploads.0).push(Upload { surfaces, complete: admission.complete.clone(), error: admission.error.clone() });
+    Arc::make_mut(&mut uploads.1).insert(id, admission);
+    Ok(())
+}
+pub(super) fn pipelines_ready(world: &World, id: EntityId) -> Result<bool, String> {
+    let Some(admission) = world.get_resource::<Uploads>().and_then(|uploads|uploads.1.get(&id)) else { return Ok(false); };
+    if let Some(error) = admission.error.message() { return Err(error); }
+    Ok(admission.complete.load(Ordering::Acquire))
+}
+pub(super) fn pipelines_pending(world:&World)->bool {
+    world.get_resource::<Uploads>().is_some_and(|uploads|uploads.1.values().any(|admission|!admission.complete.load(Ordering::Acquire)))
+}
+pub(super) fn pipelines_error(world:&World)->Option<String> {
+    world.get_resource::<Uploads>()?.1.values().find_map(|admission|admission.error.message())
+}
+pub(super) fn release_pipelines(world: &mut World, id: EntityId) {
+    let Some(mut uploads) = world.get_resource_mut::<Uploads>() else { return; };
+    let Some(admission) = Arc::make_mut(&mut uploads.1).remove(&id) else { return; };
+    Arc::make_mut(&mut uploads.0).retain(|upload|!Arc::ptr_eq(&upload.complete,&admission.complete));
+}
 fn key(descriptor: &Arc<Descriptor>) -> usize {
     Arc::as_ptr(descriptor) as usize
 }
@@ -857,6 +885,7 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
     let done = owner.retiring.is_empty() && owner.retiring_resources.is_empty();
     drop(owner);
     world.resource_mut::<Uploads>().0 = Arc::default();
+    world.resource_mut::<Uploads>().1 = Arc::default();
     super::runtime_materials::invalidate_world_models(world);
     Ok(done)
 }

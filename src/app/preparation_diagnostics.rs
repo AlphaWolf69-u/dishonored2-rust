@@ -115,8 +115,8 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 let mut programs = programs.0.lock().map_err(|_| "program library is poisoned")?;
                 let programs = programs.as_mut().map_err(|error| std::io::Error::other(error.clone()))?;
                 let mut resources = crate::rendering::particles::definition::ParticleResources::default();
-                let sources = crate::rendering::particles::world_sources::WorldFxSources::load_shared(
-                    &graphs.graphs, &graphs.actors, &catalog, programs, &mut resources,
+                let sources = crate::rendering::particles::world_sources::WorldFxSources::load_prepared_shared(
+                    &graphs.graphs, &graphs.actors, &catalog, programs, &mut resources,graphs.declarations.clone(),
                 );
                 let mut instances = crate::gameplay::effects::instances::FxGraphInstances::new(
                     &graphs.graphs, &sources.declarations, 0,

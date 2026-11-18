@@ -2122,7 +2122,7 @@ pub(super) fn prepare(
         let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
             .unwrap_or_else(|error| panic!("world FX program library: {error}"));
         let sources = Arc::new(
-            crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
+            crate::rendering::particles::world_sources::WorldFxSources::load_prepared_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources,graphs.declarations.clone())
         );
         let surface_failures = prepare_particle_surfaces(sources.world_meshes(), &mut resolver, meshes,
             &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials, &mut vegetation_meshes,

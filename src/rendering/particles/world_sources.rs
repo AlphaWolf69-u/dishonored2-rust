@@ -115,7 +115,7 @@ impl WorldEffectDefinition {
 #[derive(Default)]
 pub struct WorldFxSources {
     pub effects: HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
-    pub declarations: crate::assets::entities::effects::declarations::FxDeclarations,
+    pub declarations: Arc<crate::assets::entities::effects::declarations::FxDeclarations>,
     /// Heap payload previously retained for unsupported-family syntax, and its
     /// compact replacement. Excludes allocator bookkeeping in both figures.
     pub deferred_syntax_bytes: usize,
@@ -367,10 +367,21 @@ impl WorldFxSources {
         library: &mut ProgramLibrary,
         resources: &mut super::definition::ParticleResources,
     ) -> Self {
+        let declarations=Arc::new(crate::assets::entities::effects::declarations::FxDeclarations::load(graphs,catalog));
+        Self::load_prepared_shared(graphs,actors,catalog,library,resources,declarations)
+    }
+    /// Gameplay preparation already resolves named actor demands through this
+    /// same canonical declaration index. Retain it, rather than decoding or
+    /// constructing another copy at render-source publication.
+    pub fn load_prepared_shared(
+        graphs:&[Arc<FxGraph>],
+        actors:&[crate::assets::entities::effects::actors::ActorDefinition],
+        catalog:&Catalog,library:&mut ProgramLibrary,
+        resources:&mut super::definition::ParticleResources,
+        declarations:Arc<crate::assets::entities::effects::declarations::FxDeclarations>,
+    )->Self{
         let mut result = Self {
-            declarations: crate::assets::entities::effects::declarations::FxDeclarations::load(
-                graphs, catalog,
-            ),
+            declarations,
             ..Default::default()
         };
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {

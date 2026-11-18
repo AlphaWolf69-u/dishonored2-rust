@@ -27,6 +27,21 @@ Dust District gains are7.635%/7.961%. No stale query or camera reuse is added.
 
 Opened-module sweep, deferred findings:
 
+Direction-header candidate prediction, before applying:4% fewer aggregate
+gather cycles beyond the accepted plane validation; first capture approximately
+7%, Dust District A1.5%, B4.5%. Optimized code still performs seven fixed-header
+helper calls per primary survivor, including a repeated+0x13c read; actual
+captures execute69,741 /14,784 /41,370 such calls. Direction face/bin arithmetic
+is already hoisted and must remain unchanged. The proposed change borrows one
+stack header per gather, reading each scalar only at its first reached use;
+indexed table reads stay checked and lazy malformed-input behavior remains.
+One canonical algorithm serves checked and lazy read policies. Same-binary A/B
+must isolate the new header against the kept plane optimization, check ordered
+outputs for all24 jobs and the saved original rows, and verify that the compiled
+control still contains its old helper calls. Investigate a result over30% from
+the prediction; revert no gain. No new allocation, persistent cache or table
+copy is proposed. This candidate is not accepted until measured.
+
 - CasterDirection repeats immutable header/direction metadata loads. Potential gain is small/unmeasured; inspect generated code before another certificate since LLVM may hoist them already. Preserve both packed formats and malformed-offset errors.
 - Plane sign masks are recomputed per box. Preparing the source's exact22-plane masks may remove comparisons but adds scratch traffic; measure independently before changing SIMD layout or arithmetic.
 - Fresh global queries copy eight job slices into independently owned cache rows. Up to eight allocations and8*sum(hit_count) bytes copied per cache miss are concrete; time is unmeasured. Buffer moves/reuse need verified snapshot lease ownership. Scratch cannot alias a retained result, and stale-camera reuse is forbidden.

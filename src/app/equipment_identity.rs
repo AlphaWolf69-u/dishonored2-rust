@@ -31,6 +31,7 @@ struct Entry {
     graph_retired: bool,
     reference_retirement: Option<Box<super::physics_scene::lifetime::Retirement>>,
     movable: Option<super::runtime_entities::actor_class::Movable>,
+    _player_part: Option<super::runtime_entities::actor_class::PlayerPart>,
 }
 struct PendingRetirement {
     id: EntityId,
@@ -90,7 +91,7 @@ fn admit_arms(world: &mut World) -> Result<(), String> {
         for side in 0..player.body.arms.len() {
             let arm=&player.body.arms[side];
             if arm.managed_entity.is_some(){continue;}
-            if arm.entity_class!="idEntity" {return Err(format!("arm {} requires actual constructor {}",arm.entity_declaration,arm.entity_class));}
+            if arm.entity_class!="arkPlayer" {return Err(format!("arm {} requires actual constructor {}",arm.entity_declaration,arm.entity_class));}
             let id=admit(world,&format!("player-arm:{side}"),&arm.entity_declaration,&arm.entity_declaration,
                 &arm.entity_class,parent,Role::Arm,arm.ai_tampering_declared)?;
             player.body.arms[side].managed_entity=Some(id);
@@ -266,7 +267,10 @@ fn admit(
     }
     //4e65a0's arkGrenade constructor precedes619380 equipment admission.
     let constructor_flags = if class == "arkGrenade" { 0x20 } else { 0 };
-    let runtime_flags = constructor_flags | if role == Role::Equipment { 8 } else { 0 };
+    let class_flags=if role==Role::Arm {
+        super::runtime_entities::actor_class::PlayerPart::declaration_flags(declaration)
+    }else{0};
+    let runtime_flags = constructor_flags | class_flags | if role == Role::Equipment { 8 } else { 0 };
     let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
         //619380 writes the actual inventory owner's ID at equipment+ac
@@ -301,6 +305,7 @@ fn admit(
             graph_retired: false,
             reference_retirement: None,
             movable: (class == "arkGrenade").then(super::runtime_entities::actor_class::Movable::new),
+            _player_part: (role==Role::Arm).then(||super::runtime_entities::actor_class::PlayerPart::new(birth_frame.position)),
         },
     );
     let admitted = super::runtime_entities::with_scene(world, |_, scene, live, events| {

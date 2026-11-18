@@ -14,6 +14,7 @@ pub(crate) fn trace_lifecycle() -> bool {
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectDefinitions {
     pub graphs: Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>,
+    pub declarations: Arc<crate::assets::entities::effects::declarations::FxDeclarations>,
     pub actors: Arc<Vec<crate::assets::entities::effects::actors::ActorDefinition>>,
     pub seed: u64,
 }

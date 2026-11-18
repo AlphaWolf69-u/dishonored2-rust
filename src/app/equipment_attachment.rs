@@ -65,6 +65,12 @@ pub(in crate::app) fn prepare_template(descriptor:Arc<Descriptor>,resolver:&mut 
 }
 
 impl PreparedModel {
+    pub(in crate::app) fn pipeline_surfaces(&self) -> Vec<super::super::world_models::pipelines::Surface> {
+        let skinned=matches!(&self.geometry,PreparedGeometry::Animated(_));
+        self.surfaces().iter().map(|surface|super::super::world_models::pipelines::Surface {
+            mesh:surface._mesh.id(),material:match &surface.material {MaterialHandle::Probe(handle)=>handle.id().untyped(),_=>unreachable!("attachment ordinary material")},skinned,
+        }).collect()
+    }
     pub(in crate::app) fn assign_probe_slots(&mut self, records: Option<&[[Vec4; 9]]>, world: &mut World,
         commands: &mut super::super::setup_commands::SetupCommands) -> Result<(), String> {
         let surfaces = match &mut self.geometry {

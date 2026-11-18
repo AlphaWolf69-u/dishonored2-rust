@@ -144,9 +144,32 @@ pub(crate) fn load_with_entities(document: &Document,
                     "arkKisculeNodeActionGameflowTask" | "arkKisculeNodeActionGameflowMarkerControl")));
         let managed = live.is_some_and(|live| live.find(&entity.id).is_some_and(|id|
             live.stage(id) == Some(crate::gameplay::entity_lifetime::Stage::Spawned)));
-        if relevant || (managed && super::event_graph::items(child(fields, "m_nodes")).next().is_some()) {
+        if relevant || (managed && (super::event_graph::items(child(fields, "m_nodes")).next().is_some()
+            || super::event_graph::items(child(fields,"m_variables")).next().is_some())) {
             result.push(std::sync::Arc::new(parse_graph(entity.id.clone(), fields)?));
         }
     }
     Ok(result)
+}
+
+///6cb0d0 resolves the actual entity header before its program variable. Only
+///literal source-qualified names are demands; unknown runtime values cannot
+///create a stand-in actor or a name-only program alias.
+pub(crate) fn named_actor_targets<'a>(graphs:impl IntoIterator<Item=&'a FxGraph>)->std::collections::HashSet<String>{
+    let mut targets=std::collections::HashSet::new();
+    for node in graphs.into_iter().flat_map(|graph|&graph.nodes){
+        if !matches!(node.class.as_str(),"arkKisculeNodeNamedVariableBool"|"arkKisculeNodeNamedVariableInt"|
+            "arkKisculeNodeNamedVariableFloat"|"arkKisculeNodeNamedVariableVec3"|"arkKisculeNodeNamedVariableEntityReference"){continue;}
+        if let Some((entity,name))=super::event_graph::atom(&node.params,"m_variableName").and_then(|name|name.split_once('/')){
+            if !entity.is_empty()&&!name.is_empty(){targets.insert(entity.to_ascii_lowercase());}
+        }
+    }
+    targets
+}
+pub(crate) fn actor_program(document:&Document,name:&str)->Result<Option<std::sync::Arc<FxGraph>>,String>{
+    let Some(entity)=document.definitions.iter().find(|definition|definition.kind=="entity"&&definition.id.eq_ignore_ascii_case(name))else{return Ok(None)};
+    let fields=child(child(&entity.fields,"edit"),"m_kiscule");
+    if super::event_graph::items(child(fields,"m_nodes")).next().is_none()
+        &&super::event_graph::items(child(fields,"m_variables")).next().is_none(){return Ok(None)}
+    parse_graph(entity.id.clone(),fields).map(|graph|Some(std::sync::Arc::new(graph)))
 }

@@ -1107,11 +1107,12 @@ impl PhysicsScene {
         Ok(scene)
     }
 
-    /// Demand admission of actual componentless idEntity marker targets.
+    /// Demand admission of actual componentless idEntity targets: objective
+    /// markers and entity-qualified program variables share this base owner.
     /// Uses the same874c50/8a6180 identity and retirement roster as other
     /// admitted entity headers. Derived actors keep their real class owner;
     /// a reference to an unimplemented NPC/spawner never fabricates that actor.
-    pub(super) fn admit_marker_targets(
+    pub(super) fn admit_base_targets(
         &mut self,
         document: &entities::Document,
         requested: &std::collections::HashSet<String>,
@@ -1156,7 +1157,7 @@ impl PhysicsScene {
             let edit =
                 crate::gameplay::options::decl::scope(&definition.fields, "edit").unwrap_or(&[]);
             if crate::gameplay::options::decl::scope(edit, "m_componentDecls")
-                .is_some_and(|fields| fields.iter().any(|(key, _)| key.starts_with("item_add[")))
+                .is_some_and(|fields| fields.iter().any(|(key, _)| key.starts_with("item_add[")||key.starts_with("item[")))
             {
                 continue;
             }
@@ -1188,7 +1189,7 @@ impl PhysicsScene {
             self.shared_indices.insert(shared, index);
             count += 1;
         }
-        eprintln!("OBJECTIVE_TARGET_LIFETIME admitted_base_entities={count}");
+        eprintln!("BASE_ENTITY_DEMAND_LIFETIME admitted_base_entities={count}");
         Ok(())
     }
 

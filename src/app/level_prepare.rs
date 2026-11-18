@@ -1033,7 +1033,7 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?);
         bound_models.exclude_canonical_bindings(physics.bound_render_entities());
         let marker_targets = std::mem::take(&mut marker_positions.targets);
-        physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
+        physics.admit_base_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
         if !marker_targets.is_empty() {
             physics.capture_removal_components(catalog, document).map_err(std::io::Error::other)?;
         }
@@ -1090,10 +1090,52 @@ pub(super) fn prepare_level(
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
     check_cancelled()?;
-    let graph_definitions = entity_document.as_ref().map(|document|
+    let mut graph_definitions = entity_document.as_ref().map(|document|
         crate::assets::entities::effects::load_with_entities(document,
             app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
         .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
+    let mut graph_declarations=crate::assets::entities::effects::declarations::FxDeclarations::default();
+    if let (Some(document),Some(catalog))=(entity_document.as_ref(),catalog.as_ref()){
+        let mut known:std::collections::HashSet<_>=graph_definitions.iter().map(|graph|graph.owner.to_ascii_lowercase()).collect();
+        let mut visited=std::collections::HashSet::new();
+        loop {
+            // One canonical declaration index grows with actual demanded
+            // programs, including references in nested source declarations.
+            graph_declarations.extend_roots(&graph_definitions,catalog);
+            let mut targets=crate::assets::entities::effects::named_actor_targets(
+                graph_definitions.iter().map(AsRef::as_ref).chain(graph_declarations.declarations.iter().filter_map(|graph|graph.as_ref().ok().map(AsRef::as_ref))));
+            targets.retain(|name|visited.insert(name.clone()));
+            if targets.is_empty(){break;}
+            let mut physics=app.take_resource::<super::physics_scene::PhysicsScene>()
+                .ok_or_else(||std::io::Error::other("qualified graph actor demands have no canonical entity owner"))?;
+            let Some(mut live)=app.take_resource::<crate::gameplay::entity_lifetime::LiveEntities>()else{
+                app.insert_resource(physics);
+                return Err(std::io::Error::other("qualified graph actor demands have no managed identity owner").into());
+            };
+            let before=live.spawned_entities().len();
+            let admission=physics.admit_base_targets(document,&targets,&mut live).and_then(|()|{
+                if live.spawned_entities().len()!=before{physics.capture_removal_components(catalog,document)?;}
+                Ok(())
+            });
+            let mut added=Vec::new();
+            let programs=admission.and_then(|()|{
+                for name in &targets{
+                    if live.find(name).is_some()&&!known.contains(name){
+                        if let Some(graph)=crate::assets::entities::effects::actor_program(document,name)?{
+                            known.insert(name.clone());added.push(graph);
+                        }
+                    }
+                }
+                Ok(())
+            });
+            // Restore the sole preparation owners even on acquisition error;
+            // PreparedLevel Drop then performs their canonical rollback.
+            app.insert_resource(live);app.insert_resource(physics);
+            programs.map_err(std::io::Error::other)?;
+            if added.is_empty(){break;}
+            graph_definitions.extend(added);
+        }
+    }
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         // The original clears the lit HDR target to zero before the opaque
         // pass (Karnaca fish-market capture, event 157); pixels no opaque
@@ -1116,6 +1158,7 @@ pub(super) fn prepare_level(
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions {
                 graphs: std::sync::Arc::new(graph_definitions),
+                declarations:std::sync::Arc::new(graph_declarations),
                 actors: std::sync::Arc::new(
                     entity_document
                         .as_ref()

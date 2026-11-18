@@ -837,6 +837,7 @@ fn acquire(world: &mut World) {
                     .and_then(|_| super::animation_effects::initialize(world))
                     .and_then(|_| super::water_impacts::initialize(world))
                     .and_then(|_| super::world_models::initialize(world))
+                    .and_then(|_| super::player_arms::register_initial_model_pipelines(world))
                     .and_then(|_| {super::flash_surface_movie::initialize(world);Ok(())})
                     .and_then(|_| super::runtime_entities::initialize(world)) {
                     lifetime.published(world, &resources);

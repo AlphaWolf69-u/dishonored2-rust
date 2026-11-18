@@ -458,32 +458,95 @@ impl CasterDirection {
     /// node/global Tome bytes without duplicating the large baked tables.
     #[inline(always)]
     pub fn allows_object(self, bytes: &[u8], index: u32) -> Result<bool, String> {
-        let count = object_count(bytes)?;
+        direction_allows_object(self,index,&mut CheckedDirectionHeader{bytes})
+    }
+}
+
+// Host optimization: per-gather immutable header words, borrowed and lazy.
+// Only their reached first-use sites read bytes; dependent records stay checked.
+#[derive(Clone,Copy)]
+enum DirectionWord {Flags,Records,Stride,Bits,Palette}
+impl DirectionWord {
+    #[inline(always)]
+    fn offset(self)->usize{match self{
+        Self::Flags=>0x10,Self::Records=>0x13c,Self::Stride=>0x148,
+        Self::Bits=>0x140,Self::Palette=>0x144,
+    }}
+}
+trait DirectionHeaderSource<'a> {
+    fn bytes(&self)->&'a [u8];
+    fn count(&mut self)->Result<usize,String>;
+    fn fixed(&mut self,field:DirectionWord)->Result<u32,String>;
+}
+struct CheckedDirectionHeader<'a>{bytes:&'a [u8]}
+impl<'a> DirectionHeaderSource<'a> for CheckedDirectionHeader<'a> {
+    #[inline(always)] fn bytes(&self)->&'a [u8]{self.bytes}
+    #[inline(always)] fn count(&mut self)->Result<usize,String>{object_count(self.bytes)}
+    #[inline(always)] fn fixed(&mut self,field:DirectionWord)->Result<u32,String>{word(self.bytes,field.offset())}
+}
+struct CasterDirectionHeader<'a> {
+    bytes:&'a [u8], count:usize,
+    flags:Option<u32>, records:Option<u32>, stride:Option<u32>,
+    bits:Option<u32>, palette:Option<u32>,
+}
+#[inline(always)]
+fn direction_header_word(slot:&mut Option<u32>,bytes:&[u8],at:usize)->Result<u32,String>{
+    if let Some(value)=*slot{return Ok(value)}
+    let value=word(bytes,at)?;*slot=Some(value);Ok(value)
+}
+impl<'a> CasterDirectionHeader<'a> {
+    fn new(bytes:&'a [u8],count:usize)->Self {
+        Self{bytes,count,flags:None,records:None,stride:None,bits:None,palette:None}
+    }
+    #[inline(always)]
+    fn allows_object(&mut self,direction:CasterDirection,index:u32)->Result<bool,String>{
+        direction_allows_object(direction,index,self)
+    }
+}
+impl<'a> DirectionHeaderSource<'a> for CasterDirectionHeader<'a> {
+    #[inline(always)] fn bytes(&self)->&'a [u8]{self.bytes}
+    #[inline(always)] fn count(&mut self)->Result<usize,String>{Ok(self.count)}
+    #[inline(always)] fn fixed(&mut self,field:DirectionWord)->Result<u32,String>{
+        let at=field.offset();
+        let slot=match field {
+            DirectionWord::Flags=>&mut self.flags,DirectionWord::Records=>&mut self.records,
+            DirectionWord::Stride=>&mut self.stride,DirectionWord::Bits=>&mut self.bits,
+            DirectionWord::Palette=>&mut self.palette,
+        };
+        direction_header_word(slot,self.bytes,at)
+    }
+}
+// One canonical direction algorithm; static read policies have no vtable.
+#[inline(always)]
+fn direction_allows_object<'a>(direction:CasterDirection,index:u32,header:&mut impl DirectionHeaderSource<'a>)->Result<bool,String>{
+
+        let bytes = header.bytes();
+        let count = header.count()?;
         if index as usize >= count
-            || self.face >= 6
-            || !(0..=16).contains(&self.x)
-            || !(0..=16).contains(&self.y)
+            || direction.face >= 6
+            || !(0..=16).contains(&direction.x)
+            || !(0..=16).contains(&direction.y)
         {
             return Err("caster direction/object index out of range".into());
         }
-        let flags = word(bytes, 0x10)? & 3;
+        let flags = header.fixed(DirectionWord::Flags)? & 3;
         if flags == 0 {
             return Ok(true);
         }
-        let bin = i64::from(self.y) * 16 + i64::from(self.x);
+        let bin = i64::from(direction.y) * 16 + i64::from(direction.x);
         let bit_at = if flags & 2 != 0 {
-            bin * count as i64 + i64::from(self.face) * count as i64 * 256 + i64::from(index)
+            bin * count as i64 + i64::from(direction.face) * count as i64 * 256 + i64::from(index)
         } else {
-            let records = word(bytes, 0x13c)? as usize;
+            let records = header.fixed(DirectionWord::Records)? as usize;
             if records == 0 {
                 return Err("caster direction record table is absent".into());
             }
-            let record = records + index as usize * 0x40 + self.face as usize * 8;
-            bin * i64::from(word(bytes, 0x148)?) * 4 + i64::from(word(bytes, record)? as i32) * 4
+            let record = records + index as usize * 0x40 + direction.face as usize * 8;
+            bin * i64::from(header.fixed(DirectionWord::Stride)?) * 4 + i64::from(word(bytes, record)? as i32) * 4
         };
         let bit_at =
             usize::try_from(bit_at).map_err(|_| "negative native caster direction bit offset")?;
-        let bits = word(bytes, 0x140)? as usize;
+        let bits = header.fixed(DirectionWord::Bits)? as usize;
         if bits == 0 {
             return Err("caster direction bit table is absent".into());
         }
@@ -491,9 +554,9 @@ impl CasterDirection {
         if flags & 2 != 0 {
             return Ok(packed & 1 != 0);
         }
-        let records = word(bytes, 0x13c)? as usize;
-        let record = records + index as usize * 0x40 + self.face as usize * 8;
-        let palette_at = word(bytes, 0x144)? as usize;
+        let records = header.fixed(DirectionWord::Records)? as usize;
+        let record = records + index as usize * 0x40 + direction.face as usize * 8;
+        let palette_at = header.fixed(DirectionWord::Palette)? as usize;
         if palette_at == 0 {
             return Err("caster direction palette is absent".into());
         }
@@ -508,7 +571,6 @@ impl CasterDirection {
             .get(at..at + 2)
             .ok_or("truncated native caster direction palette")?;
         Ok(u16::from_le_bytes(value.try_into().unwrap()) == 0x7f7f)
-    }
 }
 
 ///a82710's perspective baked-occlusion test, using the same64-byte
@@ -948,13 +1010,29 @@ impl GlobalShadowCasterScratch {
         tome: &ShadowCasterTome,
         input: &GlobalShadowCasterInput<'_>,
     ) -> Result<&'a [GlobalShadowCasterHit], String> {
-        self.gather_impl::<true>(tome,input)
+        self.gather_impl::<true,true>(tome,input)
     }
 
     /// Same-build offline replay control; no device, image or camera access.
     pub fn gather_reference<'a>(&'a mut self,tome:&ShadowCasterTome,input:&GlobalShadowCasterInput<'_>)
         -> Result<&'a [GlobalShadowCasterHit],String> {
-        self.gather_impl::<false>(tome,input)
+        self.gather_impl::<false,false>(tome,input)
+    }
+
+    /// New direction-only A/B control keeps the accepted plane optimization.
+    pub fn gather_direction_reference<'a>(&'a mut self,tome:&ShadowCasterTome,input:&GlobalShadowCasterInput<'_>)
+        -> Result<&'a [GlobalShadowCasterHit],String> {
+        self.gather_impl::<true,false>(tome,input)
+    }
+    pub fn replay_direction_cycles(&mut self,tome:&ShadowCasterTome,input:&GlobalShadowCasterInput<'_>,reference:bool,repeats:usize)
+        -> Result<Option<u64>,String> {
+        let start=crate::loading::thread_cycles();
+        if reference {
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<true,false>(tome,std::hint::black_box(input))?);}
+        } else {
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<true,true>(tome,std::hint::black_box(input))?);}
+        }
+        Ok(start.zip(crate::loading::thread_cycles()).map(|(a,b)|b.saturating_sub(a)))
     }
 
     /// Reuse the actual thread-cycle provider, outside the measured loop.
@@ -962,14 +1040,14 @@ impl GlobalShadowCasterScratch {
         -> Result<Option<u64>,String> {
         let start=crate::loading::thread_cycles();
         if reference {
-            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<false>(tome,std::hint::black_box(input))?);}
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<false,false>(tome,std::hint::black_box(input))?);}
         } else {
-            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<true>(tome,std::hint::black_box(input))?);}
+            for _ in 0..repeats {std::hint::black_box(self.gather_impl::<true,false>(tome,std::hint::black_box(input))?);}
         }
         Ok(start.zip(crate::loading::thread_cycles()).map(|(a,b)|b.saturating_sub(a)))
     }
 
-    fn gather_impl<'a, const VALIDATED:bool>(
+    fn gather_impl<'a, const VALIDATED:bool, const DIRECTION_HEADER:bool>(
         &'a mut self,
         tome: &ShadowCasterTome,
         input: &GlobalShadowCasterInput<'_>,
@@ -1020,6 +1098,7 @@ impl GlobalShadowCasterScratch {
             active_query_planes_into(receiver.planes, root, &mut self.cascade_active[index]);
         }
         let range = aligned_job_range(input.job, input.jobs, self.object_count as u32, 2)?;
+        let mut direction_header = CasterDirectionHeader::new(input.source,self.object_count);
         for index in range {
             let object = &tome.objects[index];
             if !input.distance.accepts(object.distance_record) {
@@ -1031,7 +1110,9 @@ impl GlobalShadowCasterScratch {
                 bounds,
                 input.primary.planes,
                 &self.primary_active,
-            )? || !input.direction.allows_object(input.source, index as u32)?
+            )? || !(if DIRECTION_HEADER {
+                direction_header.allows_object(input.direction,index as u32)?
+            } else {input.direction.allows_object(input.source,index as u32)?})
             {
                 continue;
             }

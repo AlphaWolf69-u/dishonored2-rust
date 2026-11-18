@@ -139,11 +139,40 @@ pub(super) struct PlayerArms {
 }
 
 pub(super) struct PreparedEquipmentModel(ArmModel);
+impl ArmModel {
+    fn pipeline_surfaces(&self) -> Vec<super::world_models::pipelines::Surface> {
+        self.surfaces.iter().map(|surface|super::world_models::pipelines::Surface {
+            mesh:surface._mesh.id(), material:match &surface.material {
+                MaterialHandle::Probe(handle)=>handle.id().untyped(), _=>unreachable!("equipment ordinary material")
+            }, skinned:true,
+        }).collect()
+    }
+}
 impl PreparedEquipmentModel {
+    pub(super) fn pipeline_surfaces(&self) -> Vec<super::world_models::pipelines::Surface> { self.0.pipeline_surfaces() }
     pub(super) fn assign_probe_slots(&mut self, records: &[[Vec4; 9]], world: &mut World,
         commands: &mut super::setup_commands::SetupCommands) -> Result<(), String> {
         assign_probe_slots(&mut self.0.surfaces, Some(records), world, commands)
     }
+}
+
+/// Called once after per-map pipeline initialization, when the real source arm
+/// actors and primary player have already been admitted. The body's ticket is
+/// owned by that real primary player; it does not rebind a renderer identity.
+pub(super) fn register_initial_model_pipelines(world:&mut World)->Result<(),String> {
+    let Some(player)=super::player_lifetime::id(world) else { return Ok(()); };
+    let requests={
+        let arms=world.get_resource::<PlayerArms>().ok_or("player model pipeline admission has no render owner")?;
+        let body=arms.body_models.checked_sub(1).ok_or("player model pipeline admission has no actual body")?;
+        let mut requests=Vec::with_capacity(arms.body_models);
+        for model in arms.arms.iter().take(body) {
+            requests.push((model.managed_entity.ok_or("initial arm model has no actual actor")?, model.pipeline_surfaces()));
+        }
+        requests.push((player,arms.arms.get(body).ok_or("player body render model is absent")?.pipeline_surfaces()));
+        requests
+    };
+    for (id,surfaces) in requests { super::world_models::register_pipelines(world,id,surfaces)?; }
+    Ok(())
 }
 
 impl PreparedEquipmentModel {
@@ -400,6 +429,7 @@ impl PlayerArms {
             .chain(entry.joints.iter().copied())
             .collect();
         commands.queue(move |world: &mut World| {
+            super::world_models::release_pipelines(world, model);
             for entity in entities {
                 if world.entities().contains(entity) {
                     world.despawn(entity);
@@ -416,6 +446,7 @@ impl PlayerArms {
         id: crate::gameplay::entity_lifetime::EntityId,
         commands: &mut super::setup_commands::SetupCommands,
     ) -> Option<RetiredModel> {
+        commands.queue(move |world:&mut World|super::world_models::release_pipelines(world,id));
         let receipt = self.attachments.remove(id, commands)?;
         self.retiring_equipment.push(receipt.clone());
         Some(receipt)

@@ -82,6 +82,7 @@ pub(in crate::app) fn request_attachment(
 }
 
 pub(in crate::app) fn withdraw_attachment(world: &mut World, id: EntityId) {
+    super::super::world_models::release_pipelines(world,id);
     if let Some(mut state) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
         state.equipment.attachments.remove(&id);
         state.equipment.attachment_failed.remove(&id);
@@ -95,12 +96,16 @@ pub(in crate::app) fn attachment_failure(world: &World, id: EntityId) -> Option<
         .get_resource::<RuntimeMaterialCoordinator>()
         .and_then(|state| state.equipment.attachment_failed.get(&id))
         .cloned()
+        .or_else(||super::super::world_models::pipelines_ready(world,id).err())
 }
 
-fn attachment_admitted(world: &World, id: EntityId) -> bool {
+fn attachment_published(world: &World, id: EntityId) -> bool {
     world
         .get_resource::<super::super::player_arms::PlayerArms>()
         .is_some_and(|arms| arms.attachments.has(id))
+}
+fn attachment_admitted(world: &World, id: EntityId) -> bool {
+    attachment_published(world,id) && matches!(super::super::world_models::pipelines_ready(world,id),Ok(true))
 }
 
 pub(super) fn requested_attachments(
@@ -113,7 +118,7 @@ pub(super) fn requested_attachments(
         .iter()
         .filter(|(id, _)| {
             !state.equipment.attachment_failed.contains_key(*id)
-                && !attachment_admitted(world, **id)
+                && !attachment_published(world, **id)
         })
         .filter_map(|(id, lease)| {
             lease.upgrade().map(|descriptor| AttachmentRequest {
@@ -175,12 +180,15 @@ pub(in crate::app) fn request(
     Ok(())
 }
 
-/// CPU asset publication and the shared image binding gate completed. The
-/// existing Bevy renderer still performs its ordinary GPU readiness checks.
-pub(in crate::app) fn admitted(world: &World, entity: EntityId) -> bool {
+///CPU publication is separate from draw readiness: pending specialization
+///must not reacquire/rebuild a model already retained by its actual owner.
+fn model_published(world: &World, entity: EntityId) -> bool {
     world
         .get_resource::<super::super::player_arms::PlayerArms>()
         .is_some_and(|arms| arms.has_equipment_model(entity))
+}
+pub(in crate::app) fn admitted(world: &World, entity: EntityId) -> bool {
+    model_published(world,entity) && matches!(super::super::world_models::pipelines_ready(world,entity),Ok(true))
 }
 
 pub(in crate::app) fn failure(world: &World, entity: EntityId) -> Option<String> {
@@ -188,12 +196,14 @@ pub(in crate::app) fn failure(world: &World, entity: EntityId) -> Option<String>
         .get_resource::<RuntimeMaterialCoordinator>()
         .and_then(|owner| owner.equipment.failed.get(&entity))
         .cloned()
+        .or_else(||super::super::world_models::pipelines_ready(world,entity).err())
 }
 
 fn withdraw_model(
     world: &mut World,
     entity: EntityId,
 ) -> Option<super::super::player_arms::RetiredModel> {
+    super::super::world_models::release_pipelines(world,entity);
     if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
         owner.equipment.requested.remove(&entity);
         owner.equipment.failed.remove(&entity);
@@ -359,7 +369,7 @@ pub(super) fn requested(
         .equipment
         .requested
         .iter()
-        .filter(|(key, _)| !state.equipment.failed.contains_key(*key) && !admitted(world, **key))
+        .filter(|(key, _)| !state.equipment.failed.contains_key(*key) && !model_published(world, **key))
         .filter_map(|(entity, lease)| {
             lease.upgrade().map(|descriptor| EquipmentRequest {
                 entity: *entity,
@@ -439,10 +449,11 @@ pub(super) fn failed(world: &World, state: &mut RuntimeMaterialCoordinator, erro
     }
 }
 
-/// The loading gate waits only for actual owned material/mesh/image publication.
+/// The loading gate waits for owned uploads and their actual host draw pipelines.
 /// Native staged draws advance after continue on the normal game clock.
 pub(in crate::app) fn startup_pending(world: &World) -> bool {
-    super::super::equipment_attachment_admission::startup_pending(world)
+    super::super::world_models::pipelines_pending(world)
+        || super::super::equipment_attachment_admission::startup_pending(world)
         || super::super::weapon_throwing::startup_pending(world)
         || super::super::melee::startup_pending(world)
         || super::super::heart::startup_pending(world)
@@ -496,6 +507,7 @@ pub(in crate::app) fn startup_error(world: &World) -> Option<String> {
                 .or_else(|| owner.equipment.failed.values().next())
         })
         .cloned()
+        .or_else(||super::super::world_models::pipelines_error(world))
         .or_else(|| super::super::equipment_attachment_admission::startup_error(world))
         .or_else(|| super::super::weapon_throwing::startup_error(world).map(str::to_owned))
         .or_else(|| super::super::melee::startup_error(world).map(str::to_owned))
@@ -848,6 +860,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                 continue;
             };
             if let Some(error) = failure(world, entity) {
+                record_error(world,error.clone());
                 if let Err(error)=ready.cancel_animation_audio(world){record_error(world,error);}
                 bevy::log::warn!("Equipment {identity} material admission failed: {error}");
                 withdraw(world, &ready.item.path);

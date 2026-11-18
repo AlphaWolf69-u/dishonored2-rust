@@ -211,6 +211,10 @@ fn load_arm(
     arm.entity_class = crate::entities::player::entity_chain(def,&mut |path:&str|text_of(catalog,path))?
         .iter().rev().find_map(|layer|crate::entities::scene_motion::atom(layer,"class").map(str::to_owned))
         .ok_or_else(|| format!("arm {def} has no actual entity class"))?;
+    if let Some(child)=crate::entities::scene_motion::atom(&entity,"m_carryAbleAudiocardPlayerDef")
+        .filter(|value|!value.is_empty()&&!value.eq_ignore_ascii_case("NULL")) {
+        return Err(format!("arm {def}: arkPlayer Spawn audiocard child {child} requires its actual constructor owner"));
+    }
     arm.bind_tag = tag.clone();
     arm.rig = Some(rig.clone());
     arm.ai_tampering_declared = crate::entities::player::entity_component(def,"cpntaitampering",read)?.is_some();

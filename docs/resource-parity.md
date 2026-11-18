@@ -24907,6 +24907,32 @@ rate, new resource budget or all-map claim follows from this scoped result.
 
 `ported` Heart graph dependencies: StoryFlagBool920d90/924050/9241f0/926e60 and Int9042e0/9043e0/907270 use the existing shared graph variables and7c07b0/7c0b50 notifications. Actual LoadingEnd writes authored story state; no Heart-specific fallback flag or speech is injected. Qualified NamedVariable923f00/6cb0d0/513720 resolves actual live entity/program generations. Weak bindings and observer indices withdraw before graph retirement/reuse. Diagnostic success now requires actual bark selection, selected Speech event admission, its source callback and nonzero decoded/post-voice samples; the previous request-only Heart receipt did not prove playback.
 
+Qualified program ownership: CPU preparation follows source-literal demands
+through retained roots and the same transitive FxDeclarations index. Actual
+referenced componentless idEntity definitions enter the existing base-header
+owner (874c50/8a6180), with normal initialized/spawned generations, rollback,
+graph withdrawal and8791f0/65afa0 retirement. Both component-list encodings are
+checked; derived actors and entities with components retain their typed owners.
+No eager all-entity namespace, synthetic name binding or default value replaces
+a missing actor. One immutable declaration-index Arc passes from CPU preparation
+to WorldFxSources; the renderer does not decode a second index. Temporary demand
+sets drop after loading. Runtime binding and Heart playback remain pending.
+
+`host:` model pipeline admission extends2be900/2c9f00's installed-program
+dependency with Bevy's translated MAIN specialization. The existing WorldModels
+Uploads owner now admits runtime templates, real owned equipment and child
+attachments, plus the actual initial arm actors and primary player's body mesh.
+It uses those models' existing GPU layouts/material properties and gameplay
+view key, without creating hidden actors or another asset/pipeline cache.
+CPU publication stays separate from GPU readiness to prevent repeated model
+construction while compilation is pending. Actual owned-loadout preparation
+begins during loading; startup and activation wait for real PipelineCache
+completion, and permanent failures reach their existing error gates. Initial
+arm/body registration follows per-map owner initialization. Withdrawal removes
+the registration while existing RetiredModel receipts retain real GPU leases;
+world shutdown clears remaining tickets. Runtime queue/timing validation remains
+pending; no faster JIT, whole-frame or FPS claim is implied by source review.
+
 `ported` grenade cooking resources: HUDGrenade45ba30/45af50/45bc10 owns the authored HUD entity, scale, cooking/sticky tag and FlashSurface-derived component39e9a0 through existing prototype/entity/model/Iggy owners.45b550 reads the real Fire C8, detonation/radius/speed inputs;490cd0 supplies fuse progress.39eb50/39eba0/39ecc0/39ed10/39ed20 call installed `_C_Init`/`_C_UpdateGauge`. Hide45bd60 disables before unbinding; FlashSurface0310c0 awaits actual withdrawal, returns its target and resets the shared material before reuse. Metadata tasks cancel/join and the gauge retires before equipment. `host:` the existing world-Iggy worker coalesces pending scalar updates and uses real render acknowledgements. On-screen warnings for non-held grenades are a separate branch, not claimed by the cooking gauge.
 
 `host:` optional diagnostics observe actual buffers, IDs, poses and completion fences. Per-source audio peaks are measured after voice filtering/gain and before shared bus DSP; route/master numbers are next-block targets, not attributed device output. Cold-pipeline timing distinguishes direct creation, async creation and shader-cache lock waits without changing scheduling. Explicit release RenderDoc capture now enables the already-injected API; ordinary release startup keeps that facility disabled. These controls create no default sample scans, history, additional render pass or resource cache.
@@ -24921,6 +24947,6 @@ snapshot; background preparation cannot recreate it after acknowledged shutdown.
 Real FX completion drains component tickets before GameLocal releases bare FX
 children and then their arm/equipment parents. Runtime verification is pending.
 
-`ported` first-person arm managed identities:770560/8ae9b0 create the two actual declared idEntity actors at the player's transform, retain Player owner/MAIN tag and source binding, and keep constructor time selector0 without equipment/ammo flag substitutions. The existing Arm rigs, palettes, controllers, sound objects and PlayerArms render resources remain sole owners. Tagged FX reads their same published joint palettes. The existing equipment identity/reference owner now distinguishes Arm from Equipment and Attachment roles; arm surface withdrawal uses its existing per-model GPU receipt before managed-generation release. No extra skeleton, render model or audio cache is created.
+`ported` first-person arm managed identities:770560/8ae9b0 create the two actual declared **arkPlayer** derived actors at the player's transform, retaining Player owner/MAIN tag, source binding and constructor time selector0. Both installed base arm definitions explicitly author that class; there is no idEntity constructor override.784450 initializes the derived model/optional component state;784c10 retains the real current model and birth-position aim vector, looks up optional Attributes and spawns an audiocard child only when authored (absent on the installed arms).7846a0 applies actual D4bit3 for declaration paths containing `/player/` before managed allocation; this class flag does not change the separate Arm ownership role into Equipment. The existing Arm rigs, palettes, controllers, sound objects and PlayerArms render resources remain sole owners. Tagged FX reads their same published joint palettes. The shared identity/reference owner distinguishes Arm from Equipment and Attachment; arm surface withdrawal uses its existing per-model GPU receipt before managed-generation release.784540's normal derived/base destruction frees no second gameplay Player. No extra skeleton, render model or audio cache is created.
 
 Validation for this coordinated source batch is pending its single combined debug build and production-input/loading/exit runs. Source review and parser checks are not runtime, appearance or performance acceptance. The measured Voronoi query improvement from the preceding batch does not establish whole-frame performance or first-shot latency for this one.
