@@ -25212,9 +25212,12 @@ compilation at first visible use. This shifts work into loading and does not
 claim a compiler-speed or steady-FPS improvement. Actual preload/visible
 receipts include the same source IDs, final key, process-local layout hash,
 normalized material-key hash and pipeline ID under existing diagnostic tracing.
-Runtime verification is pending. The provided prior logs do not establish the
-owner of every late opaque/transparent program; no numerical pipeline ID is
-attributed by comparison with another process.
+Verified in the exact5c80422b dev binary below: all10 admitted surface keys
+observed during actual weapon actions reused their preloaded canonical IDs,
+with zero post-action-begin creations for those keys. One other alpha prepass
+compiled in1.775ms; it has no admitted source receipt and is not attributed to
+this owner. Static world surfaces are outside this admission roster. No numerical
+pipeline ID was compared across processes and no FPS improvement is claimed.
 
 
 Environment owner lifetime closure: PreparedEnvironment retains resolved typed
@@ -25256,3 +25259,71 @@ extra cache/decoder, reload timer or fabricated ready flag is introduced. Partia
 failed generation parent credits already retire through the actual ENV/final
 level-history sweeps. Prediction: current overlay bytes appear on explicit
 reacquisition; no installed-game frame-time or memory gain is claimed.
+
+5c80422b dev game/core checks passed; executable SHA256
+F54ED68BE9F4013BE528A4694344743C7A7225E90193F9B079D565E50DFC1259.
+Eight completed windowless production-input scenarios passed: full weapons,
+carrying, gun bottle damage, sword bottle damage, charged thrust damage,
+power-equipped WORLD swings, power-equipped WORLD thrusts, and fired-bolt
+back-away/return/pickup. Each completed ordinary ExitDrain. The swing sequence
+accepted two new Slash activations before the previous recovery ended. Carry
+support proves one real completed solver step, not plate-specific continuity.
+Heart speech retained its actual source to End:186257 frames, decoded peak
+0.8828318, post-voice dry peak0.6224583; physical audibility/final individual
+bus contribution remain outside this observation. Raw completed receipts and
+binary identity are retained locally in5c-completed-actions/.
+
+Grenade Hold failed because the rendered EquipmentTree moved to the arm while
+the canonical entity parent stayed on the body. Source61aed0/61b010 attachment
+changes are now ported through the existing reciprocal Scene hierarchy when
+that actual parent changes;619380 inventory ownership remains on the player.
+`host:` final-frame publication bridges the sampled tree without another pose
+cache/decoder. Cooking491080/45bc10 still requires the actual arm parent.
+Prediction: no new resources/GPU commands, one hierarchy change per attachment
+transition; cooking/throw/detonation acceptance is pending the combined rerun.
+
+`host:` individual ENV projection retirement now wakes one prune after an
+actual Frame row releases its last typed generation. Image handles remain in
+the same owner's pending retirement journal until EnvironmentImages observes
+the withdrawal in the real render world. One coalesced withdrawal watermark is
+separate from GPU-ready completion, so unrelated new uploads cannot prolong old
+aliases indefinitely.21a190/21a3c0 and8911a0/88e220 zero-row visits are unchanged.
+Display/Lens handles and actual GPU views retain their own references; this is
+not a GPU-idle receipt. Prediction: retire unowned edited generations without
+an unrelated demand; no per-frame Weak scan, new registry or GPU work. Immutable
+residency pins remain intentional. Runtime validation pending; no byte saving.
+
+Existing FocusedAttack81fda0 and Pause8120b0 environment sampling now borrow the
+canonical FxSimulation ParticleSystems random stream instead of private zero
+seeds. The accepted player tick remains before camera publication; Update
+player/wheel/pause and PostUpdate global FX order is unchanged. No second seed,
+lock or manager is introduced. Prediction: sampled nonconstant ranges and later
+global random samples intentionally change to the shared stream; constant
+ranges remain unchanged. Resource/pool/retirement ownership is unchanged.
+This is a correctness change, not a measured CPU/FPS gain. OrdinaryCombatFocus
+still requires the actual Knowledge roster/producers; it is not enabled here.
+
+`host:` Breakable7ed000/7ed920 canonical pending-effect journals now have a
+Scene-owned numeric membership index. Lowest entity index plus its actual
+component-list order preserves dispatch selection; enqueue, ACK, Stop and
+checked-generation release maintain it without duplicating commands/resources.
+Prediction before implementation: eliminate the measured idle scene scan
+(historical47 exclusive samples/5.875CPUms per second upper bound); no whole-FPS
+claim. Same-binary indexed/legacy modes time only the selector using existing
+thread-cycle hooks; verify compares the exact canonical front address, handle
+and generation. Actual walk_start/walk_end counters exclude load/retirement.
+Pending journals may allocate ordered-map nodes during real damage; maintenance
+cost remains part of that path. Scoped release measurement/output verification
+are required before performance acceptance; no gain is claimed yet.
+
+Blink's5c failure is split by evidence: the real cast/helper retirement and
+mana spend passed; the ENV display receipt remains unresolved. Actual travel
+audio played on Effect144/PlayingId136: decoded peak1.021189, post-voice dry
+peak0.7200098 over123078 source frames. The checker incorrectly compared FX
+Ticket declaration-reference36 with engine event0x7fb1c3e7. It now resolves the
+existing WorldSounds declaration table and requires that mapped engine event,
+the exact PlayingId and emitter; source processing/nonzero requirements remain
+strict. No callback identity, mix/gain or media lifetime changed. An opt-in
+same-owner borrowed ENV-chain observer records actual timing, weights, image
+ACK and display identity to locate the separate missing receipt. It changes
+no clock/RNG, fade, ordinary-frame traversal, GPU work or readiness policy.

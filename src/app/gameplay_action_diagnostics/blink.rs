@@ -43,6 +43,7 @@ pub(super) struct Observation {
     travel_started: bool,
     travel_environment_seen: bool,
     travel_source_seen: bool,
+    travel_environment_trace: Option<String>,
 }
 
 impl Observation {
@@ -76,7 +77,8 @@ impl Observation {
             mana_low: mana, spent: false, regen_event, regen_admitted: false,
             regen_source_ready: false, regen_callback: false, audio_before,
             travel_owner: None, travel_environments: Vec::new(), travel_emitters: Vec::new(),
-            travel_started: false, travel_environment_seen: false, travel_source_seen: false })
+            travel_started: false, travel_environment_seen: false, travel_source_seen: false,
+            travel_environment_trace: None })
     }
 
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
@@ -180,6 +182,46 @@ impl Observation {
                 self.travel_emitters.push(emitter);
             }
         }
+        if !self.travel_environment_seen {
+            use std::fmt::Write as _;
+            let mut trace = String::new();
+            let _ = write!(trace,"owner={owner} revision={revision} pending={} environment_heads={} ",
+                started.pending_starts, started.environments);
+            simulation.observe_fx_owner_environments(owner,|age,effect|{
+                let timing=&effect.timing;
+                let _=write!(trace,"producer[order={} age={} active={} mask={:#x} blend={} initial_main={} last_main={} delay_end={} fadein_end={} duration_end={} fadein_rate={} duration_rate={} fadeout_rate={} fading_out={}] ",
+                    effect.registration_order,age,effect.active,effect.view_mask,effect.blend,effect.initial_main,effect.last_main,
+                    timing.delay_end,timing.fade_in_end,timing.duration_end,timing.fade_in_rate,timing.duration_rate,timing.fade_out_rate,timing.fading_out);
+            })?;
+            if let Some(images)=world.get_resource::<crate::rendering::bevy_backend::environment_images::EnvironmentImages>(){
+                let _=write!(trace,"image_generation={} image_ACK={} ",images.generation,images.completed.load(Ordering::Acquire));
+            }
+            if let Some(effects)=world.get_resource::<app::environment_effects::EnvironmentEffects>(){
+                let _=write!(trace,"frame_revision={} frame_rows=[",effects.revision);
+                for row in effects.frame.rows(){
+                    let _=write!(trace,"({},{:p},{},{})",row.environment.name,Arc::as_ptr(&row.environment),row.weight,row.influence);
+                }
+                let _=write!(trace,"] expected=[");
+                for source in &self.travel_environments{
+                    if let Some(environment)=source.upgrade(){
+                        let _=write!(trace,"({},{:p},prepared={},image={:?})",environment.name,Arc::as_ptr(&environment),
+                            environment.prepared.load(Ordering::Acquire),effects.image(&environment,CUBE).map(|image|image.id()));
+                    }else{let _=write!(trace,"(retired_identity)");}
+                }
+                let _=write!(trace,"] ");
+            }else{let _=write!(trace,"frame_owner_absent=true ");}
+            if let Some(display)=world.get_resource::<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>()
+                .and_then(|frame|frame.0.as_ref()){
+                let _=write!(trace,"display_camera={:?} ",display.camera);
+                if let Some(overrides)=&display.overrides{
+                    let _=write!(trace,"display_images={:?} display_weights={:?}",overrides.images.each_ref().map(Handle::id),overrides.weights);
+                }else{let _=write!(trace,"display_overrides_absent=true");}
+            }else{let _=write!(trace,"display_frame_absent=true");}
+            if self.travel_environment_trace.as_ref()!=Some(&trace){
+                eprintln!("ACTION_SMOKE_BLINK_ENV_GATE FX_frame={:?} {trace}",started.frame);
+                self.travel_environment_trace=Some(trace);
+            }
+        }
         if !self.travel_started || self.travel_environment_seen { return Ok(()) }
         let Some(effects) = world.get_resource::<app::environment_effects::EnvironmentEffects>() else { return Ok(()) };
         let Some(display) = world.get_resource::<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>()
@@ -200,19 +242,30 @@ impl Observation {
         }
         Ok(())
     }
-    fn observe_travel_audio(&mut self, audio: &app::audio::observation::Snapshot) -> Result<(), String> {
+    fn observe_travel_audio(&mut self, world: &World, audio: &app::audio::observation::Snapshot) -> Result<(), String> {
         if self.travel_source_seen { return Ok(()) }
+        let Some(sounds) = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>() else { return Ok(()) };
+        let sounds = sounds.lock();
         for source in &audio.source_samples {
             if !self.travel_emitters.contains(&source.object) { continue; }
+            // WorldSounds::post stores a prepared declaration-reference index
+            // in the native Ticket. Engine::submit records declaration.id.
+            // Meter preserves the Ticket domain; never compare those IDs as
+            // though an FX reference were an authored middleware event ID.
+            let engine_event = sounds.declarations.get(source.event as usize)
+                .and_then(Option::as_ref)
+                .ok_or("actual Blink source declaration reference is no longer owned")?
+                .declaration.id;
             let object = format!("{:?}", source.object);
             let Some(admission) = audio.admissions.iter().skip(self.audio_before).find(|admission|
-                admission.playing_id == source.playing_id && admission.event == source.event && admission.object == object) else { continue };
+                admission.playing_id == source.playing_id && admission.object == object
+                    && admission.event == engine_event) else { continue };
             if let Some(error) = &admission.error { return Err(format!("actual Blink travel sound admission failed: {error}")); }
             if !audio.source_processed_ids.contains(&source.playing_id) || source.frames == 0
                 || !(source.decoded_peak > 0.) || !(source.dry_peak > 0. || source.aux_peak > 0.) { continue; }
             self.travel_source_seen = true;
-            eprintln!("ACTION_SMOKE_PASS check=blink_travel_actual_sound_nonzero owner={:?} event={:#010x} playing_id={} object={:?} selected_source={:#010x} actual_admission=true source_processed=true frames={} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_gain_peak={} route_bus={:?} route_target_peak={:?} master_target_peak={:?} reason={} final_bus_contribution_or_physical_audibility_not_claimed=true",
-                self.travel_owner, source.event, source.playing_id, source.object, source.selected_source, source.frames,
+            eprintln!("ACTION_SMOKE_PASS check=blink_travel_actual_sound_nonzero owner={:?} source_declaration_ref={} admitted_engine_event={:#010x} prepared_mapping_verified=true playing_id={} object={:?} selected_source={:#010x} actual_admission=true source_processed=true frames={} decoded_peak={} post_voice_dry_peak={} post_voice_aux_peak={} speaker_gain_peak={} route_bus={:?} route_target_peak={:?} master_target_peak={:?} reason={} final_bus_contribution_or_physical_audibility_not_claimed=true",
+                self.travel_owner, source.event, engine_event, source.playing_id, source.object, source.selected_source, source.frames,
                 source.decoded_peak, source.dry_peak, source.aux_peak, source.gain_peak, source.route_bus,
                 source.route_target_peak, source.master_target_peak, source.reason);
             break;
@@ -232,7 +285,7 @@ impl Observation {
         if matches!(self.stage, Stage::Cast | Stage::Recharge) {
             self.observe_travel(world)?;
             let audio = app::audio::observation::snapshot(world);
-            self.observe_travel_audio(&audio)?;
+            self.observe_travel_audio(world, &audio)?;
             if let Some(event) = self.regen_event {
                 for admission in audio.admissions.iter().skip(self.audio_before).filter(|admission| admission.event == event) {
                     if let Some(error) = &admission.error { return Err(format!("actual mana regeneration event failed: {error}")); }

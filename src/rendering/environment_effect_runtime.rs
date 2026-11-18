@@ -183,6 +183,24 @@ impl<E: Clone, V: Clone + PartialEq> EnvironmentEffectRuntime<E, V> {
     pub fn drained(&self) -> bool { self.pool.0.lock().map(|pool| pool.allocated_count == 0).unwrap_or(false) }
     pub fn shared_pool(&self)->SharedEnvironmentPool{self.pool.clone()}
 
+    /// Diagnostic traversal of an actual owner's chain; never samples or
+    /// advances its producers. The same allocator validates every link.
+    pub(crate) fn visit_chain(&self, mut head:u16,
+        mut visit:impl FnMut(&EnvironmentBlendEffect))->Result<(),String>{
+        if head==u16::MAX{return Ok(());}
+        let pool=self.pool.lock()?;
+        let mut count=0;
+        while head!=u16::MAX{
+            count+=1;
+            if count>self.effects.len(){return Err("environment observation chain cycle".into());}
+            let index=usize::from(head);
+            visit(self.effects.get(index).and_then(Option::as_ref)
+                .ok_or("observed environment runtime absent")?);
+            head=*pool.next.get(index).ok_or("observed environment pool link absent")?;
+        }
+        Ok(())
+    }
+
     ///21d720 append identity is shared with other actual environment producers.
     pub fn visit_orders(&self, mask:u8, mut visit:impl FnMut(u64))->Result<(),String>{
         self.registry.with_active(|ids| {

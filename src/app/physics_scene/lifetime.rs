@@ -1812,7 +1812,9 @@ impl ComponentReleaseWorld for Host<'_> {
         } else if handle.class_id == scene.classes[10] {
             scene.health.release(handle.slot)?;
         } else if handle.class_id == scene.classes[11] {
+            let generation = scene.breakables.get(handle.slot).ok_or("Breakable release payload absent")?.owner.generation;
             scene.breakables.release(handle.slot)?;
+            scene.pending_breakable_journals.forget(handle, generation);
         } else if handle.class_id == scene.classes[13] {
             scene.release_projectile_interface(handle)?;
             scene.projectiles.release(handle.slot)?;

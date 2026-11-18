@@ -12,6 +12,68 @@ use crate::{
     },
 };
 
+
+/// Host admission index for the SAME canonical component journals. Native
+/// 7ed000 performs these operations synchronously; the host journal preserves
+/// its existing entity/component dispatch order without idle scene scans.
+#[derive(Default)]
+pub(super) struct PendingJournals {
+    entities: std::collections::BTreeMap<usize, std::collections::BTreeMap<u64, u32>>,
+    observed_calls: std::sync::atomic::AtomicU64,
+    timed_calls: std::sync::atomic::AtomicU64,
+    thread_cycles: std::sync::atomic::AtomicU64,
+    compared: std::sync::atomic::AtomicU64,
+    mismatched: std::sync::atomic::AtomicU64,
+}
+impl PendingJournals {
+    fn refresh(&mut self, entity: usize, handle: ComponentHandle, generation: u32, pending: bool) {
+        if pending {
+            self.entities.entry(entity).or_default().insert(handle.packed(), generation);
+        } else if let Some(components) = self.entities.get_mut(&entity) {
+            if components.get(&handle.packed()) == Some(&generation) { components.remove(&handle.packed()); }
+            if components.is_empty() { self.entities.remove(&entity); }
+        }
+    }
+    /// Final typed pool release also covers rollback before Start. Remove only
+    /// this exact generation; a recycled handle can never clear a new journal.
+    pub(super) fn forget(&mut self, handle: ComponentHandle, generation: u32) {
+        self.entities.retain(|_, components| {
+            if components.get(&handle.packed()) == Some(&generation) { components.remove(&handle.packed()); }
+            !components.is_empty()
+        });
+    }
+    fn record_cycles(&self, start: Option<u64>, end: Option<u64>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(cycles) = start.zip(end).and_then(|(start, end)| end.checked_sub(start)) {
+            self.thread_cycles.fetch_add(cycles, Relaxed);
+            self.timed_calls.fetch_add(1, Relaxed);
+        }
+    }
+    fn report(&self, phase: &str) {
+        if journal_selector() == JournalSelector::Indexed { return; }
+        use std::sync::atomic::Ordering::Relaxed;
+        eprintln!("BREAKABLE_SELECTOR phase={phase} mode={:?} calls={} timed_calls={} thread_cycles={} compared={} mismatched={} pending_entities={}",
+            journal_selector(), self.observed_calls.load(Relaxed), self.timed_calls.load(Relaxed),
+            self.thread_cycles.load(Relaxed), self.compared.load(Relaxed), self.mismatched.load(Relaxed), self.entities.len());
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JournalSelector { Indexed, IndexedObserved, Legacy, Verify }
+fn journal_selector() -> JournalSelector {
+    static MODE: std::sync::OnceLock<JournalSelector> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("DH2_DEBUG_BREAKABLE_SELECTOR").as_deref() {
+        Ok("indexed") => JournalSelector::IndexedObserved,
+        Ok("legacy") => JournalSelector::Legacy,
+        Ok("verify") => JournalSelector::Verify,
+        _ => JournalSelector::Indexed,
+    })
+}
+impl Drop for PendingJournals {
+    fn drop(&mut self) {
+        self.report("drop");
+    }
+}
+
 pub(super) struct BreakableComponent {
     pub owner: ComponentOwner,
     pub runtime: Runtime,
@@ -41,6 +103,17 @@ impl ComponentInstance for BreakableComponent {
     }
 }
 impl PhysicsScene {
+    pub(in crate::app) fn report_breakable_selector(&self, phase: &str) {
+        self.pending_breakable_journals.report(phase);
+    }
+    fn refresh_breakable_journal(&mut self, handle: ComponentHandle) -> Result<(), String> {
+        let component = self.breakables.get(handle.slot).ok_or("Breakable journal owner absent")?;
+        let entity = component.owner.entity.ok_or("Breakable journal owner unlinked")?;
+        self.pending_breakable_journals.refresh(entity, handle, component.owner.generation,
+            component.runtime.pending().is_some());
+        Ok(())
+    }
+
     ///On-demand F8 observation. No per-frame history or resource retention.
     pub(in crate::app) fn write_breakable_diagnostics(&self, eye: [f32;3], report: &mut String) {
         use std::fmt::Write;
@@ -258,6 +331,7 @@ impl PhysicsScene {
         if component.runtime.definition.allow_throw_hits {
             self.entities[index].entity_flags_d7 |= 0x10;
         }
+        self.refresh_breakable_journal(handle)?;
         Ok(())
     }
     pub(super) fn stop_breakable(
@@ -294,6 +368,8 @@ impl PhysicsScene {
         component.sound_volume = None;
         component.runtime.stop();
         self.entities[index].entity_flags_d7 &= !0x18;
+        // Stop preserves accepted commands until their ordinary ACKs drain.
+        self.refresh_breakable_journal(handle)?;
         Ok(())
     }
     pub(super) fn breakable_message(
@@ -357,11 +433,15 @@ impl PhysicsScene {
             (0xa5, Payload::Incapacitation {params,..}) => (Message::Incapacitated, *params, true),
             _ => return Err("breakable callback lacks its actual typed damage payload".into()),
         };
-        self.breakables
+        let result = self.breakables
             .get_mut(handle.slot)
             .ok_or("breakable callback disappeared")?
             .runtime
-            .message(id, message, state, params)?;
+            .message(id, message, state, params);
+        // Refresh even on failure: an accepted partial journal must remain
+        // reachable. Never replace, clear or synthesize its actual commands.
+        self.refresh_breakable_journal(handle)?;
+        result?;
         if request_update {
             self.entity_flags_d4[index] |= 4;
         }
@@ -502,6 +582,62 @@ impl PhysicsScene {
     pub(in crate::app) fn pending_breakable_effect(
         &self,
     ) -> Option<(ComponentHandle, u32, &Effect)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mode = journal_selector();
+        if mode != JournalSelector::Indexed {
+            self.pending_breakable_journals.observed_calls.fetch_add(1, Relaxed);
+        }
+        if mode == JournalSelector::Legacy {
+            let start = crate::loading::thread_cycles();
+            let selected = self.pending_breakable_effect_legacy();
+            let end = crate::loading::thread_cycles();
+            self.pending_breakable_journals.record_cycles(start, end);
+            return selected;
+        }
+        if mode == JournalSelector::IndexedObserved {
+            let start = crate::loading::thread_cycles();
+            let selected = self.pending_breakable_effect_indexed();
+            let end = crate::loading::thread_cycles();
+            self.pending_breakable_journals.record_cycles(start, end);
+            return selected;
+        }
+        let indexed = self.pending_breakable_effect_indexed();
+        if mode == JournalSelector::Verify {
+            let legacy = self.pending_breakable_effect_legacy();
+            // Identical handle + full component generation + address of the
+            // canonical journal front proves the exact same stored command,
+            // including all floats, resource refs and target generations.
+            let equal = match (&indexed, &legacy) {
+                (None, None) => true,
+                (Some((a, ag, ae)), Some((b, bg, be))) => a == b && ag == bg && std::ptr::eq(*ae, *be),
+                _ => false,
+            };
+            self.pending_breakable_journals.compared.fetch_add(1, Relaxed);
+            if !equal {
+                self.pending_breakable_journals.mismatched.fetch_add(1, Relaxed);
+                panic!("Breakable pending journal index differs from canonical reference: indexed={indexed:?} legacy={legacy:?}");
+            }
+        }
+        indexed
+    }
+    #[inline(never)]
+    fn pending_breakable_effect_indexed(&self) -> Option<(ComponentHandle, u32, &Effect)> {
+        self.pending_breakable_journals.entities.iter().find_map(|(&index, pending)| {
+            let entity = self.entities.get(index)?;
+            // Actual list order is authoritative; numeric handle/slot order
+            // is NOT a substitute for same-class source insertion ordering.
+            entity.components.entries.values().iter().find_map(|&packed| {
+                let generation = pending.get(&packed)?;
+                let handle = ComponentHandle::from_packed(packed).ok()?;
+                if handle.class_id != self.classes[11] { return None; }
+                let component = self.breakables.get(handle.slot)?;
+                if component.owner.entity != Some(index) || component.owner.generation != *generation { return None; }
+                Some((handle, *generation, component.runtime.pending()?))
+            })
+        })
+    }
+    #[inline(never)]
+    fn pending_breakable_effect_legacy(&self) -> Option<(ComponentHandle, u32, &Effect)> {
         self.entities
             .iter()
             .flat_map(|entity| entity.components.entries.values())
@@ -528,7 +664,9 @@ impl PhysicsScene {
         if component.owner.generation != generation {
             return Err("breakable effect owner generation changed".into());
         }
-        component.runtime.acknowledge()
+        let result = component.runtime.acknowledge();
+        self.refresh_breakable_journal(handle)?;
+        result
     }
     ///7ecc90 destroys only chunks still owned by the component array.
     pub(in crate::app) fn begin_breakable_retirement(

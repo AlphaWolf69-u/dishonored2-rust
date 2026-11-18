@@ -753,7 +753,8 @@ pub(super) fn update_player(
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut contact_sounds: MessageWriter<super::audio::ContactSound>,
     query: (Local<DebugBenchmarkWalk>, Local<std::cell::RefCell<collision::Scratch>>,
-        Option<Res<super::physics_scene::PhysicsScene>>),
+        Option<Res<super::physics_scene::PhysicsScene>>,
+        Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>),
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
@@ -761,7 +762,7 @@ pub(super) fn update_player(
     mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
 ) -> Result<(), bevy::ecs::error::BevyError> {
-    let (mut walk, query_scratch, scene) = query;
+    let (mut walk, query_scratch, scene, mut simulation) = query;
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
@@ -886,6 +887,12 @@ pub(super) fn update_player(
                     now,
                     base,
                 );
+            }
+            //Same accepted player tick, before camera/equipment publication.
+            //Borrow the actual FX owner, never a copied/default random state.
+            if player.combat_fx.is_some() {
+                let simulation=simulation.as_mut().ok_or("Player screen environment has no shared FX random owner")?;
+                simulation.with_effect_random(|seed|player.advance_screen_environment(dt,seed))?;
             }
         }
     }

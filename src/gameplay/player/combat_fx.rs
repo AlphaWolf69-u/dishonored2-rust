@@ -119,7 +119,6 @@ pub struct Runtime {
     definition: Arc<Definition>,
     active: Vec<Active>,
     was_active: bool,
-    seed: u32,
     pool: Option<crate::rendering::environment_effect_runtime::SharedEnvironmentPool>,
     retirements: Vec<(u64, Option<usize>)>,
     closed: bool,
@@ -161,13 +160,12 @@ impl Runtime {
             definition,
             active,
             was_active: false,
-            seed: 0,
             pool: None,
             retirements: Vec::new(),
             closed: false,
         }
     }
-    pub fn advance(&mut self, active: bool, delta: f32) -> Result<(), String> {
+    pub fn advance(&mut self, active: bool, delta: f32, seed: &mut u32) -> Result<(), String> {
         if self.closed {
             return Ok(());
         }
@@ -196,7 +194,7 @@ impl Runtime {
                 .as_ref()
                 .ok_or("focused environment has no canonical pool binding")?;
             for (index, definition) in self.definition.environments.iter().enumerate() {
-                let offsets = sample_offsets(&definition.offsets, 0., &mut self.seed);
+                let offsets = sample_offsets(&definition.offsets, 0., seed);
                 let Some(lease) = pool.acquire_external()? else {
                     continue;
                 };
@@ -206,7 +204,7 @@ impl Runtime {
                         definition.definition.clone(),
                         offsets,
                         1,
-                        &mut self.seed,
+                        seed,
                     )?,
                     time: 0.,
                     stopping: false,
@@ -223,7 +221,7 @@ impl Runtime {
                 effect.stopping = true;
             }
             effect.time += delta;
-            effect.producer.update(effect.time, 1, &mut self.seed)?;
+            effect.producer.update(effect.time, 1, seed)?;
         }
         self.was_active = active;
         Ok(())

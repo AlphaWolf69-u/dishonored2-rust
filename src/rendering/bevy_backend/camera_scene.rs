@@ -53,6 +53,10 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    ///Borrow the canonical effect stream for external environment producers.
+    pub(crate) fn with_effect_random<T>(&mut self,run:impl FnOnce(&mut u32)->Result<T,String>)->Result<T,String>{
+        run(&mut self.particle_systems.seed)
+    }
     pub(crate) fn diagnostic_particle_systems(&self) -> impl Iterator<Item=(usize, &super::particle_system::ParticleSystem)> {
         self.particle_systems.diagnostic_systems()
     }
@@ -156,6 +160,10 @@ impl FxSimulation {
     }
     pub(crate) fn observe_fx_owner_audio(&self,owner:&str)->Result<Vec<crate::gameplay::sound::Emitter>,String>{
         self.world_particles.observe_owner_audio(owner)
+    }
+    pub(crate) fn observe_fx_owner_environments(&self,owner:&str,
+        visit:impl FnMut(f32,&crate::gameplay::effects::environment::EnvironmentBlendEffect))->Result<(),String>{
+        self.world_particles.observe_owner_environments(owner,visit)
     }
     pub(crate) fn observe_fx_pools(&self) -> (usize, usize, u16, u16, u16) {
         let (instances, pending, sounds, decals) = self.world_particles.observe_pool_counts();

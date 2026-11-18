@@ -114,8 +114,6 @@ pub(super) struct PauseScreenFx {
     /// `EnableUIPostFX` (true) / `DisableUIPostFX` (false) from the movie.
     pub requested: Option<bool>,
     was_paused: bool,
-    /// The FX family's shared random state (the pause FX's ranges are fixed).
-    seed: u32,
     /// The current blend: the override environment's weight.
     pub weight: f32,
 }
@@ -127,7 +125,6 @@ impl PauseScreenFx {
             active: None,
             requested: None,
             was_paused: false,
-            seed: 0,
             weight: 0.,
             pool: None,
             retirements: Vec::new(),
@@ -141,7 +138,7 @@ impl PauseScreenFx {
     }
 
     /// `FUN_1407912e0` / `FUN_140791240`: a new FX instance at time zero.
-    fn start(&mut self) -> Result<bool, String> {
+    fn start(&mut self,seed:&mut u32) -> Result<bool, String> {
         let Some(fx) = &self.fx else { return Ok(true) };
         if !fx
             .prepared
@@ -155,11 +152,11 @@ impl PauseScreenFx {
         };
         self.remove()?;
         let fx = self.fx.as_ref().unwrap();
-        let offsets = sample_offsets(&fx.timings, 0., &mut self.seed);
+        let offsets = sample_offsets(&fx.timings, 0., seed);
         let Some(lease) = pool.acquire_external()? else {
             return Ok(true);
         };
-        let effect = EnvironmentBlendEffect::new(fx.effect.clone(), offsets, 1, &mut self.seed)?;
+        let effect = EnvironmentBlendEffect::new(fx.effect.clone(), offsets, 1, seed)?;
         self.active = Some(Active {
             effect,
             time: 0.,
@@ -272,6 +269,7 @@ impl PauseScreenFx {
 
 pub(super) fn update_pause_screen_fx(
     mut fx: ResMut<PauseScreenFx>,
+    mut simulation:Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
     paused: Res<GamePaused>,
     clock: Res<ClockRuntime>,
     wheel: Option<Res<super::power_wheel::State>>,
@@ -280,7 +278,11 @@ pub(super) fn update_pause_screen_fx(
     if fx.closed {
         return;
     }
-    let result = (|| -> Result<(), String> {
+    let Some(simulation)=simulation.as_mut()else{
+        if fx.active.is_some(){fx.error=Some("pause FX outlived the shared FX random owner".into());}
+        return;
+    };
+    let result = simulation.with_effect_random(|seed| -> Result<(), String> {
         let entered = paused.0 && !fx.was_paused;
         fx.was_paused = paused.0;
         if !paused.0 && !wheel.as_ref().is_some_and(|wheel| wheel.screen_fx_active()) {
@@ -289,14 +291,14 @@ pub(super) fn update_pause_screen_fx(
             return Ok(());
         }
         if entered {
-            if !fx.start()? {
+            if !fx.start(seed)? {
                 fx.requested = Some(true);
             }
             return Ok(());
         }
         match fx.requested.take() {
             Some(true) => {
-                if !fx.start()? {
+                if !fx.start(seed)? {
                     fx.requested = Some(true);
                 }
                 return Ok(());
@@ -316,11 +318,11 @@ pub(super) fn update_pause_screen_fx(
         };
         if let Some(active) = &mut fx.active {
             active.time += delta * TIME_SCALE;
-            active.effect.update(active.time, 1, &mut fx.seed)?;
+            active.effect.update(active.time, 1, seed)?;
             fx.weight = active.effect.blend;
         }
         Ok(())
-    })();
+    });
     if let Err(error) = result {
         fx.error = Some(error);
     }

@@ -41,6 +41,22 @@ fn sub_chains(sub: &super::super::world_sub_effects::SubEffect, sample: &mut Own
     for child in &sub.children { sub_chains(child, sample); }
 }
 impl WorldParticleState {
+    pub(crate) fn observe_owner_environments(&self, owner:&str,
+        mut visit:impl FnMut(f32,&crate::gameplay::effects::environment::EnvironmentBlendEffect))->Result<(),String>{
+        fn children(state:&WorldParticleState,sub:&super::super::world_sub_effects::SubEffect,age:f32,
+            visit:&mut impl FnMut(f32,&crate::gameplay::effects::environment::EnvironmentBlendEffect))->Result<(),String>{
+            state.environments.visit_chain(sub.environment_head,|effect|visit(age,effect))?;
+            for child in &sub.children{children(state,child,age,visit)?;}
+            Ok(())
+        }
+        for instance in self.slots.iter().flatten(){
+            if !self.entities.get(&instance.entity).is_some_and(|entity|
+                matches!(&entity.owner,FxEntityOwner::Actor{name,..} if name==owner)){continue;}
+            self.environments.visit_chain(instance.environment_head,|effect|visit(instance.age,effect))?;
+            for sub in &instance.sub_effects{children(self,sub,instance.age,&mut visit)?;}
+        }
+        Ok(())
+    }
     /// Actual sound-object identities for one already admitted actor. This
     /// borrows existing main/sub chains; it never posts or drains an event.
     pub(crate) fn observe_owner_audio(&self,owner:&str)->Result<Vec<crate::gameplay::sound::Emitter>,String>{

@@ -237,6 +237,7 @@ pub(super) fn benchmark_frames(
         Res<super::ViewSettings>,
         Option<Res<super::SceneData>>,
         Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
+        Option<Res<super::physics_scene::PhysicsScene>>,
     ),
     mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>, bool)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
@@ -247,8 +248,11 @@ pub(super) fn benchmark_frames(
     };
     // Async compilation must not produce an apparent speedup by omitting the
     // forward depth or either native shadow owner. Warm up complete rendering.
-    let (forward, directional, sun, local, local_done, view_settings, scene, clock) = render_ready;
+    let (forward, directional, sun, local, local_done, view_settings, scene, clock, physics) = render_ready;
     let probe_boundary = |phase: &str, elapsed: f32| {
+        // Independent of probe diagnostics: these are the same actual warmup
+        // and measured-walk boundaries, excluding load and retirement totals.
+        if let Some(physics) = physics.as_ref() { physics.report_breakable_selector(phase); }
         if scene.as_ref().and_then(|scene| scene.environment_probes.as_ref())
             .is_some_and(|probes| probes.write_query_diagnostics(phase)) {
             println!("PROBE_QUERY_WALK_BOUNDARY phase={phase} elapsed={elapsed} clock_frame={:?} player_time={:?}",

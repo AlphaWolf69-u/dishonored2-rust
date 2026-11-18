@@ -36,14 +36,18 @@ struct Projection {
     images: [Option<Handle<Image>>; 3],
     lifetime: Arc<AtomicBool>,
 }
-impl Drop for Projection {
-    fn drop(&mut self) {
+impl Projection {
+    fn withdraw(&self) {
         self.lifetime.store(false, Ordering::Release);
         if let Some(env) = self.environment.upgrade() {
             env.prepared.store(false, Ordering::Release);
         }
     }
 }
+impl Drop for Projection {
+    fn drop(&mut self) { self.withdraw(); }
+}
+
 struct Prepared {
     images: super::resident_images::PreparedImages,
     projections: Vec<(usize, Projection)>,
@@ -66,6 +70,12 @@ pub(super) struct EnvironmentEffects {
     slots: EnvironmentOverrides<Arc<PreparedEnvironment>>,
     orders: Vec<(u64, Producer)>,
     projections: HashMap<usize, Projection>,
+    /// Structural view-row release schedules one sweep, not per-frame Weak scans.
+    prune_dirty: bool,
+    /// Withdrawn projections keep their actual handles until render receipt ACK.
+    retiring_projections: Vec<Projection>,
+    /// Coalesced actual receipt withdrawal, independent of unrelated GPU uploads.
+    retiring_withdrawal: Option<u64>,
     pending: Option<Pending>,
     error: Option<String>,
     closed: bool,
@@ -84,6 +94,9 @@ impl Default for EnvironmentEffects {
             slots: Default::default(),
             orders: Vec::with_capacity(ENVIRONMENT_CAPACITY),
             projections: HashMap::new(),
+            prune_dirty: false,
+            retiring_projections: Vec::new(),
+            retiring_withdrawal: None,
             pending: None,
             error: None,
             closed: false,
@@ -104,7 +117,7 @@ pub(super) fn register(app: &mut App) {
 pub(super) fn initialize(world: &mut World) -> Result<(), String> {
     let previous = world.get_resource::<EnvironmentEffects>()
         .ok_or("environment consumer was not registered before scene setup")?;
-    if previous.pending.is_some() || !previous.projections.is_empty()
+    if previous.pending.is_some() || !previous.projections.is_empty() || !previous.retiring_projections.is_empty()
         || !previous.slots.is_empty() || !previous.frame.rows().is_empty() {
         return Err("previous environment scene is still owned".into());
     }
@@ -136,11 +149,11 @@ fn focus_identity(world: &World) -> Option<usize> {
 /// preparation barrier or repeats metadata walks/image acquisitions.
 pub(super) fn needs_prepare(world: &World) -> bool {
     let Some(owner) = world.get_resource::<EnvironmentEffects>() else { return false };
-    if owner.pending.is_some() { return true; }
+    if owner.pending.is_some() || !owner.retiring_projections.is_empty() { return true; }
     if owner.closed || owner.error.is_some() { return false; }
     let changed = world.get_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectSources>()
         .is_some_and(|sources| !owner.seen_world.ptr_eq(&Arc::downgrade(&sources.0)));
-    changed || (!owner.seen_pause && world.contains_resource::<super::pause_fx::PauseScreenFx>())
+    owner.prune_dirty || changed || (!owner.seen_pause && world.contains_resource::<super::pause_fx::PauseScreenFx>())
         || owner.seen_focus != focus_identity(world)
 }
 
@@ -228,6 +241,14 @@ pub(super) fn prepare(world: &mut World) -> Result<(), String> {
         return Ok(());
     };
     let result = (|| -> Result<(), String> {
+        if let Some(generation) = owner.retiring_withdrawal {
+            // Actual render-world observation is sufficient for removing this
+            // projection alias. Fresh unrelated images need not be GPU-ready.
+            if world.resource::<EnvironmentImages>().withdrawal_observed(generation) {
+                owner.retiring_projections.clear();
+                owner.retiring_withdrawal = None;
+            }
+        }
         if let Some(pending) = &mut owner.pending {
             if let Some(result) = block_on(poll_once(
                 pending
@@ -269,7 +290,8 @@ pub(super) fn prepare(world: &mut World) -> Result<(), String> {
             !owner.seen_pause && world.contains_resource::<super::pause_fx::PauseScreenFx>();
         let player_identity = focus_identity(world);
         let player_changed = owner.seen_focus != player_identity;
-        if !world_changed && !pause_changed && !player_changed {
+        let demand_changed = world_changed || pause_changed || player_changed;
+        if !demand_changed && !owner.prune_dirty {
             return Ok(());
         }
         if let Some(sources) = sources {
@@ -277,13 +299,22 @@ pub(super) fn prepare(world: &mut World) -> Result<(), String> {
         }
         owner.seen_pause |= pause_changed;
         owner.seen_focus = player_identity;
-        let previous_count = owner.projections.len();
-        owner
-            .projections
-            .retain(|_, projection| projection.environment.strong_count() > 0);
-        if owner.projections.len() != previous_count {
+        owner.prune_dirty = false;
+        let released: Vec<_> = owner.projections.iter()
+            .filter(|(_, projection)| projection.environment.strong_count() == 0)
+            .map(|(&id, _)| id).collect();
+        if !released.is_empty() {
+            for id in released {
+                let projection = owner.projections.remove(&id).expect("selected live projection");
+                projection.withdraw();
+                owner.retiring_projections.push(projection);
+            }
+            // Exclude withdrawn rows now; their handle payloads remain owned
+            // until the render owner acknowledges this or a newer receipt.
             publish_image_receipt(world, &owner);
+            owner.retiring_withdrawal = Some(world.resource::<EnvironmentImages>().generation);
         }
+        if !demand_changed { return Ok(()); }
         let mut needed = HashMap::<usize, Arc<PreparedEnvironment>>::new();
         if let Some(sources) = world
             .get_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectSources>(
@@ -460,6 +491,7 @@ pub(super) fn publish(
             orders,
             frame,
             revision,
+            prune_dirty,
             ..
         } = &mut *owner;
         let registration = (|| -> Result<(), String> {
@@ -505,6 +537,11 @@ pub(super) fn publish(
         let mut changed = false;
         let mut failure = None;
         slots.visit_frame(|env, weight, influence| {
+            // A replaced/truncated Frame row can release the last ENV Arc only
+            // AFTER the earlier source-generation sweep. Wake one later prune.
+            if frame.rows().get(count).is_some_and(|row| !Arc::ptr_eq(&row.environment, env)) {
+                *prune_dirty = true;
+            }
             match frame.update_slot(count, env, weight, influence) {
                 Ok(updated) => changed |= updated,
                 Err(error) => failure = Some(error),
@@ -514,7 +551,9 @@ pub(super) fn publish(
         if let Some(error) = failure {
             return Err(error);
         }
-        changed |= frame.finish_slots(count);
+        let removed_rows = frame.finish_slots(count);
+        *prune_dirty |= removed_rows;
+        changed |= removed_rows;
         if changed {
             *revision = revision.wrapping_add(1);
         }
@@ -610,6 +649,9 @@ pub(super) fn retire(world: &mut World) -> Result<bool, String> {
             return Ok(false);
         }
         owner.projections.clear();
+        owner.retiring_projections.clear();
+        owner.retiring_withdrawal = None;
+        owner.prune_dirty = false;
         Ok(true)
     })();
     world.insert_resource(owner);

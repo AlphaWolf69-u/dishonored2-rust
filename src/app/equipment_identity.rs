@@ -236,7 +236,12 @@ fn admit(
         let live = world
             .get_resource::<LiveEntities>()
             .ok_or("equipment managed owner is absent")?;
-        if live.stage(id) != Some(Stage::Spawned) || live.parent(id)? != Some(parent) {
+        //619380's allocation/inventory owner stays the Player even while
+        //61aed0 attaches the equipped actor to its actual arm. Other child
+        //roles retain the original fixed immediate parent.
+        let parent_matches = if role == Role::Equipment { live.owner(id)? == Some(parent) }
+            else { live.parent(id)? == Some(parent) };
+        if live.stage(id) != Some(Stage::Spawned) || !parent_matches {
             return Err("equipment identity is retiring or stale".into());
         }
         return Ok(id);
@@ -440,7 +445,17 @@ pub(super) fn publish_frame_using(
     entry.frame = Some(frame);
     entry.time_scale = time_scale;
     drop(owner);
-    super::runtime_entities::with_scene(world, |world, scene, live, _| {
+    super::runtime_entities::with_scene(world, |world, scene, live, events| {
+        if let Some(player) = player {
+            let parent = player.equipment_reference_parent(id)
+                .ok_or("published equipment has no actual binding parent")?;
+            //The retained tree has already resolved the source arm/body tag
+            //and world pose. Keep the sole reciprocal Scene hierarchy in sync
+            //with that actual parent, only when the generation changes.
+            if live.parent(id)? != Some(parent) {
+                scene.bind_equipment_reference(live, events, id, parent)?;
+            }
+        }
         let clock = world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
             .ok_or("equipment publication clock is absent")?;
         let timespace = clock.entity_time_state(id).map_err(str::to_owned)?.0;

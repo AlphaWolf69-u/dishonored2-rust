@@ -95,6 +95,12 @@ pub(super) fn debug_gauge(
     Ok(None)
 }
 
+///Small read-only preparation receipt for the opt-in action diagnostic.
+pub(super) fn debug_lead(world: &World) -> Option<(EntityId, usize, bool, bool)> {
+    let lead = world.get_resource::<Hud>()?.lead.as_ref()?;
+    Some((lead.key.0, lead.key.1, lead.pending.is_some(), lead.value.is_some()))
+}
+
 pub(super) fn prepare(world: &mut World) -> Result<(), String> {
     let Some(scene) = world.get_resource::<super::physics_scene::PhysicsScene>() else {
         return Ok(());

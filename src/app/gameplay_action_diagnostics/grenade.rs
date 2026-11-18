@@ -39,6 +39,7 @@ pub(super) struct Observation {
     initial_progress: Option<f32>,
     before: HashSet<EntityId>,
     thrown: Option<EntityId>,
+    hold_observation: Option<(u16, Option<EntityId>, Option<EntityId>)>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -78,6 +79,7 @@ impl Observation {
             initial_progress: None,
             before,
             thrown: None,
+            hold_observation: None,
         })
     }
     fn stage(&mut self, stage: Stage) {
@@ -126,6 +128,36 @@ impl Observation {
             .get_resource::<LiveEntities>()
             .ok_or("Grenade diagnostic identities absent")?;
         let grenades = scene.debug_grenades(live)?;
+        if self.stage == Stage::Hold {
+            //Capture transitions while their owners still exist, before exit
+            //correctly retires them. This is bounded by predicate changes,
+            //not a per-frame history or a new gameplay/state/time input.
+            let held = grenades.iter().find(|entry| Some(entry.entity) == self.held);
+            let runtime = player(world)?.throwable.as_ref().map(|weapon|
+                (weapon.entity, weapon.cooking_duration, weapon.cooking_stage, weapon.ready, weapon.total_ammo));
+            let parent = self.held.map(|id| world.resource::<LiveEntities>().parent(id)).transpose()?.flatten();
+            let arm = parent.is_some_and(|parent| player(world).is_ok_and(|player|
+                player.body.arms.iter().any(|arm| arm.managed_entity == Some(parent))));
+            let gauge = app::grenade_cooking::debug_gauge(world)?;
+            let lead = app::grenade_cooking::debug_lead(world);
+            let flags = u16::from(runtime.is_some())
+                | (u16::from(runtime.is_some_and(|value| value.1 > 0.)) << 1)
+                | (u16::from(held.is_some_and(|value| value.armed)) << 2)
+                | (u16::from(held.is_some_and(|value| value.exploded)) << 3)
+                | (u16::from(gauge.is_some_and(|value| value.1)) << 4)
+                | (u16::from(gauge.is_some_and(|value| value.2)) << 5)
+                | (u16::from(lead.is_some_and(|value| value.2)) << 6)
+                | (u16::from(lead.is_some_and(|value| value.3)) << 7)
+                | (u16::from(arm) << 8);
+            let signature = (flags, parent, gauge.and_then(|value| value.3));
+            if self.hold_observation != Some(signature) {
+                eprintln!("ACTION_SMOKE_GRENADE_HOLD runtime={runtime:?} actual_parent={parent:?} parent_is_actual_arm={arm} fuse={held:?} gauge={gauge:?} lead={lead:?}");
+                self.hold_observation = Some(signature);
+            }
+            if held.is_some_and(|value| value.exploded) {
+                return Err(format!("actual held grenade exploded before gauge/throw readiness; held={held:?} runtime={runtime:?} parent={parent:?} parent_is_arm={arm} gauge={gauge:?} lead={lead:?}"));
+            }
+        }
         match self.stage {
             Stage::Select => {
                 let p = player(world)?;

@@ -878,6 +878,13 @@ impl Player {
         })
     }
 
+    ///81fda0/8120b0: source predicate, sampling from the shared FX stream.
+    pub(crate) fn advance_screen_environment(&mut self, delta:f32, seed:&mut u32)->Result<(),String>{
+        let focused=!self.machine.is_active(StateId(0x4c))&&self.machine.melee_focus_active();
+        if let Some(effect)=&mut self.combat_fx{effect.advance(focused,delta,seed)?;}
+        Ok(())
+    }
+
     /// One simulated frame. `events` are the bound input events accumulated
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
@@ -1200,11 +1207,7 @@ impl Player {
         }
         self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
         self.health.update_with_healing(dt, &self.attributes, self.health_regen_factor, self.health_heal_factor);
-        if let Some(effect) = &mut self.combat_fx {
-            //81fda0 reads actual Slash+d1, suppressed by state4c.
-            let focused = !self.machine.is_active(StateId(0x4c)) && self.machine.melee_focus_active();
-            if let Err(error) = effect.advance(focused, dt) { eprintln!("Player combat screen effect: {error}"); }
-        }
+        //The app advances screen environments with the canonical FX random owner.
         // 1404c0cf0 spends the mana-first share before dispatching the
         // remaining authored water damage to health.
         if self.is_underwater() {
@@ -1631,6 +1634,23 @@ impl Player {
         }
         for &(emitter, p, r, _) in &self.equipment_entity_frames {
             if let crate::gameplay::sound::Emitter::Equipment { entity, .. } = emitter { visit(entity, p, r); }
+        }
+    }
+
+    ///61aed0/61b010 change the actual immediate attachment as well as its
+    ///rendered pose. Borrow the same retained binding owner; no topology cache.
+    pub(crate) fn equipment_reference_parent(&self, entity: crate::gameplay::entity_lifetime::EntityId)
+        -> Option<crate::gameplay::entity_lifetime::EntityId> {
+        if self.body.arms.iter().any(|arm| arm.managed_entity == Some(entity)) {
+            return self.managed_entity;
+        }
+        let tree = self.body.equipment.iter().flatten()
+            .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
+            .find(|tree| tree.managed_entity == Some(entity))?;
+        match tree.binding {
+            equipment::EquipmentBinding::Arm(side) | equipment::EquipmentBinding::ArmEntity(side) =>
+                self.body.arms.get(side)?.managed_entity,
+            equipment::EquipmentBinding::Body | equipment::EquipmentBinding::BodyEntity => self.managed_entity,
         }
     }
 
