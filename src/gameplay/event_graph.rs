@@ -1,6 +1,6 @@
 //! Shared variable and entity inputs for authored event graphs. Domain owners
 //! retain node state and decide which actions to execute.
-use crate::assets::entities::event_graph::{atom, Node};
+use crate::assets::entities::event_graph::{atom, Node, Port};
 
 /// The Kiscule manager owns a startup stack and two alternating update
 /// stacks (7bf290 / 7c10b0). Ordinary callbacks enqueue into the current
@@ -124,6 +124,12 @@ pub trait GraphInputs {
             .and_then(|p| p.links.first())
             .copied()
     }
+    ///7be020 searches incoming variable connections by name when a
+    ///mirrored output is read; outgoing notification links are not inputs.
+    fn mirrored_variable_input<'a>(&self,node:&'a Node,point:&Port)->Option<&'a Port>{
+        if point.kind!="OutputVariable"{return None;}
+        node.ports.iter().find(|input|input.kind=="InputVariable"&&input.name==point.name)
+    }
     /// Typed vector outputs include BreakableNotification's actual owner location (7986b0).
     fn vector(&self, id: u32, port: u32, depth: usize) -> Result<[f32; 3], String> {
         if depth > 64 { return Err("cyclic variable graph".into()); }
@@ -134,6 +140,10 @@ pub trait GraphInputs {
             return super::effects::variables::read_vector(&node.params, &point.name);
         }
         if let Some(value) = self.variable_value(node, port, depth)? { return value.vector(); }
+        if let Some(input)=self.mirrored_variable_input(node,point){
+            if let Some(&(id,port))=input.links.first(){return self.vector(id,port,depth+1);}
+            if node.params.iter().any(|(name,_)|name==&point.name){return super::effects::variables::read_vector(&node.params,&point.name);}
+        }
         if node.class == "arkKisculeNodeVec3" { return super::effects::variables::read_vector(&node.params, "m_value"); }
         Err(format!("unsupported vector output {}.{}", node.class, point.name))
     }
@@ -159,6 +169,12 @@ pub trait GraphInputs {
         }
         if let Some(value) = self.variable_value(n, port, depth)? {
             return value.number();
+        }
+        if let Some(input)=self.mirrored_variable_input(n,p){
+            if let Some(&(id,port))=input.links.first(){return self.number(id,port,depth+1);}
+            if let Some(value)=atom(&n.params,&p.name){
+                return match value{"true"=>Ok(1.),"false"=>Ok(0.),_=>value.parse().map_err(|_|format!("invalid number {}",p.name))};
+            }
         }
         match n.class.as_str() {
             "arkKisculeNodeRandomFloat" => self
@@ -223,6 +239,21 @@ pub trait GraphInputs {
         if let Some(value) = self.variable_value(node, port, depth)? {
             return value.entities();
         }
+        //528040 ->7be020 resolves the connection by reflected variable NAME,
+        //even when a caller requested the node's mirrored output port. Real
+        //instance getters above retain priority over ordinary parameter reads.
+        let mirrored=self.mirrored_variable_input(node,input);
+        if let Some(source)=mirrored{
+            if let Some(&(id,port))=source.links.first(){return self.entity_references_inner(id,port,depth+1);}
+        }
+        //524190 returns the actual reflected parameter field. An explicitly
+        //serialized null is ONE invalid managed reference, not an empty list.
+        //Do not fabricate defaults when an unknown class omitted the field.
+        if input.kind=="InputVariable"||mirrored.is_some(){
+            if let Some(value)=atom(&node.params,&input.name){
+                return Ok(vec![if value.is_empty(){EntityReference::Invalid}else{EntityReference::Named(value.to_owned())}]);
+            }
+        }
         if node.class == "arkKisculeNodeListEntityReference" {
             return crate::assets::entities::event_graph::entity_reference_names(
                 &node.params,
@@ -284,6 +315,15 @@ pub trait GraphInputs {
         if node.class == "arkKisculeNodeGate" && port.name == "m_isOpen" {
             return self.boolean_parameter(node, "m_isOpen", true);
         }
+        if port.kind!="InputVariable"{
+            if let Some(value)=self.variable_value(node,port.id,depth)?{return Ok(value.number()?!=0.);}
+        }
+        if let Some(input)=self.mirrored_variable_input(node,port){
+            if let Some(&(id,port))=input.links.first(){return self.boolean(id,port,depth+1);}
+        }
+        if port.kind=="InputVariable"||self.mirrored_variable_input(node,port).is_some(){
+            match atom(&node.params,&port.name){Some("true")=>return Ok(true),Some("false")=>return Ok(false),_=>{}}
+        }
         Ok(self.number(id, port.id, depth)? != 0.)
     }
     fn boolean_input(&self, node: &Node, name: &str, default: bool) -> Result<bool, String> {
@@ -315,6 +355,10 @@ pub trait GraphInputs {
         if let Some(value) = self.variable_value(node, port.id, depth)? {
             return value.integer();
         }
+        if let Some(input)=self.mirrored_variable_input(node,port){
+            if let Some(&(id,port))=input.links.first(){return self.integer(id,port,depth+1);}
+            if let Some(value)=atom(&node.params,&port.name){return value.parse().map_err(|_|format!("invalid integer {}",port.name));}
+        }
         match node.class.as_str() {
             "arkKisculeNodeInt" | "arkKisculeNodeTime" => atom(&node.params, "m_value")
                 .ok_or("integer literal default is not prepared")?
@@ -336,6 +380,7 @@ pub trait GraphInputs {
             let node=inputs.node(id)?;
             let point=node.ports.iter().find(|point|point.id==port).ok_or("declaration port absent")?;
             if point.kind=="InputVariable" {if let Some(&(id,port))=point.links.first(){return read(inputs,id,port,depth+1);}}
+            if let Some(input)=inputs.mirrored_variable_input(node,point){if let Some(&(id,port))=input.links.first(){return read(inputs,id,port,depth+1);}}
             atom(&node.params,&point.name).or_else(||atom(&node.params,"m_value")).map(str::to_owned)
                 .ok_or_else(||format!("unsupported declaration producer {} {}",node.class,point.name))
         }
@@ -349,6 +394,7 @@ pub trait GraphInputs {
         if point.kind=="InputVariable" {
             if let Some(&(id,port))=point.links.first(){return self.string_id(id,port,depth+1);}
         }
+        if let Some(input)=self.mirrored_variable_input(node,point){if let Some(&(id,port))=input.links.first(){return self.string_id(id,port,depth+1);}}
         let value=atom(&node.params,&point.name).or_else(||
             (node.class.contains("StringId")||node.class.contains("StringID")).then(||atom(&node.params,"m_value")).flatten())
             .ok_or_else(||format!("unsupported string-id producer {} {}",node.class,point.name))?;
