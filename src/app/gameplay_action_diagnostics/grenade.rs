@@ -156,9 +156,11 @@ impl Observation {
                 {
                     let first = *self.initial_progress.get_or_insert(grenade.progress);
                     let gauge = app::grenade_cooking::debug_gauge(world)?;
+                    let actual_arm = world.resource::<LiveEntities>().parent(grenade.entity)?;
                     if grenade.progress > first
-                        && gauge
-                            .is_some_and(|(_, initialized, actual_ack)| initialized && actual_ack)
+                        && gauge.is_some_and(|(_, initialized, actual_ack, parent)| {
+                            initialized && actual_ack && parent.is_some() && parent == actual_arm
+                        })
                     {
                         eprintln!(
                             "ACTION_SMOKE_PASS check=grenade_real_fuse_and_gauge_Init_render_ACK held={:?} total={} initial_progress={first} current_progress={} gauge={gauge:?}",

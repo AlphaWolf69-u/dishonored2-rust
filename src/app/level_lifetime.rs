@@ -236,6 +236,9 @@ impl LevelLifetime {
             // their shared component Stop/Deinit callbacks have completed.
             if !super::runtime_entities::retire_ai_worlds(world)? { return Ok(false); }
             if !super::ai_world::creation::shutdown(world)? { return Ok(false); }
+            // FX have stopped; retire shader-preparation metadata before its
+            // real source and receiver geometry owners leave the level.
+            super::projected_decals::retire_pipeline_inputs(world);
             if !super::world_models::shutdown(world)? { return Ok(false); }
             super::entity_functions::begin_retirement(world);
             self.ai_worlds_retired = true;

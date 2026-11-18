@@ -223,3 +223,16 @@ pub(super) fn begin_retirement(world: &mut World) {
         owner.pending.clear();
     }
 }
+
+///Read-only opt-in diagnostic of an existing exact-generation removal task.
+///The deadline uses the same source group2 clock; this never advances it.
+pub(super) fn diagnostic_hidden_removal(world:&World,target:EntityId)->Result<Option<(f64,f32,i32)>,String>{
+    let Some(owner)=world.get_resource::<EntityFunctions>()else{return Ok(None);};
+    let Some((entry,retry_delay,retries))=owner.pending.iter().find_map(|entry|{
+        if entry.target!=target{return None;}
+        match entry.function{Function::RemoveWhenHidden{retry_delay,retries}=>Some((entry,retry_delay,retries)),_=>None}
+    })else{return Ok(None);};
+    let now=world.get_resource::<ClockRuntime>().ok_or("observed removal lacks its actual clock owner")?
+        .clock()?.time(2).ok_or("observed removal clock group absent")?;
+    Ok(Some((entry.due-now,retry_delay,retries)))
+}

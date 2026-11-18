@@ -41,6 +41,15 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
         paths
     }
 
+    #[cfg(feature = "game")]
+    pub(crate) fn preload_paths(&self) -> Vec<&str> {
+        let mut paths = self.entries.iter().filter(|(_, entry)|
+            !entry.retired && (entry.marker != 0 || entry.bootstrap_phase))
+            .map(|(path, _)| path.as_str()).collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths
+    }
+
     /// Class owners use this at scope boundaries to release dependency read
     /// history without retaining an additional strong payload table.
     pub(crate) fn live_values(&self) -> impl Iterator<Item = Arc<T>> + '_ {

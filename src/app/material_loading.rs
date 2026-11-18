@@ -648,6 +648,7 @@ impl MaterialResolver<'_> {
     }
 
     pub(super) fn register_image(&mut self, name: &str) -> Option<usize> {
+        if self.cache.pipeline_only() { return None; }
         let catalog = self.catalog?;
         let mut stem = material::image_load_resource(catalog, name)?;
         if stem == "_default" && !name.trim().eq_ignore_ascii_case("_default") {
@@ -695,7 +696,7 @@ impl MaterialResolver<'_> {
         geometry: MaterialGeometry,
         game_position: [f32; 3],
     ) -> Option<ResolvedMaterial> {
-        if let Some(cached) = self.cache.get_for(path, geometry) {
+        if let Some(cached) = self.cache.get_for(path, geometry).filter(|_| !self.cache.pipeline_only()) {
             let cached = cached.clone()?;
             let probe_index = self.append_probe_record(game_position);
             return Some(ResolvedMaterial {
@@ -1280,8 +1281,9 @@ impl MaterialResolver<'_> {
                 Err(error) => { eprintln!("Decal program inputs unavailable {path}: {error}"); return None; }
             }
         } else { None };
+        let pipeline_only = self.cache.pipeline_only();
         let mut images = Vec::new();
-        for (role, name) in surface.texture_bindings(program_is_decal).into_iter().filter(|_| !boat_volume && surface.program() != material_surface::Program::Water) {
+        for (role, name) in surface.texture_bindings(program_is_decal).into_iter().filter(|_| !pipeline_only && !boat_volume && surface.program() != material_surface::Program::Water) {
             if let Some(slot) = self.register_image(name) {
                 self.cache.raise_image_priority(slot, crate::texture::image_sampling_priority(surface.texture_parameter_name(role), alpha_test));
                 images.push((slot, surface_gpu::ImageRole(role)));
@@ -1293,7 +1295,7 @@ impl MaterialResolver<'_> {
             .iter()
             .find(|(_, role)| role.0 == 0)
             .map(|&(slot, _)| slot);
-        if diffuse_image_slot.is_none()
+        if !pipeline_only && diffuse_image_slot.is_none()
             && !boat_volume && !matches!(surface.program(), material_surface::Program::InteriorVolume | material_surface::Program::BoatVolume | material_surface::Program::Water)
         {
             self.misses += 1;
@@ -1560,7 +1562,7 @@ impl MaterialResolver<'_> {
                 },
             }))
         };
-        if alpha_mode == AlphaMode::Blend {
+        if alpha_mode == AlphaMode::Blend && !self.cache.pipeline_only() {
             self.blended_materials.insert(handle.clone());
         }
         if surface.program() == material_surface::Program::Vegetation {
@@ -1677,7 +1679,7 @@ impl MaterialResolver<'_> {
                 cull_mode,
             }
         });
-        self.shadow_materials.0.insert(handle.clone(), shadow);
+        if !self.cache.pipeline_only() { self.shadow_materials.0.insert(handle.clone(), shadow); }
         let cached = CachedMaterial {
             physics_material: surface.physics_material.as_deref().map(Into::into),
             physics_material_source_present,
@@ -1689,8 +1691,8 @@ impl MaterialResolver<'_> {
             stage_sort,
             compatible_geometry_routes: boat_routes[0] == boat_routes[1],
         };
-        self.cache.insert(key, geometry, Some(cached.clone()));
-        let probe_index = self.append_probe_record(game_position);
+        if !self.cache.pipeline_only() { self.cache.insert(key, geometry, Some(cached.clone())); }
+        let probe_index = if self.cache.pipeline_only() { 0 } else { self.append_probe_record(game_position) };
         Some(ResolvedMaterial {
             handle: cached.handle,
             diffuse_image_slot: cached.diffuse_image_slot,

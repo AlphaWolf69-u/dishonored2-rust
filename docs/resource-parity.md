@@ -1,5 +1,79 @@
 # Resource parity ledger
 
+## Selected decal program pipeline admission (2026-11-18)
+
+Prediction before implementation: the two actual bullet-on-stone ContactFX
+inherit stone_bullet_decal and pellet_bullet_decal. Both decal headers and all
+eight authored material variants are selected nonstreamed global COMMON
+preloads, independently of a future contact witness. Preparing their exact
+projected material/view/resident receiver-layout pipeline keys during loading
+should produce zero matching first-shot pipeline creations. Compilation moves
+to admission; no faster shader compiler, FPS gain, extra draw/pass or image
+payload acquisition is predicted. Additional metadata material bindings use
+the existing Bevy material owner and retire with the level. Same-binary control
+defers only this early preparation; the normal lazy decal owner stays intact.
+Source 1402be900 selects program inputs; 1402c9f00 reads serialized cache data.
+Bevy vertex-layout/view specialization and early compilation are explicitly
+host behavior, not a claimed native warmup algorithm. Installed coverage is
+recorded in ignored analysis/gameplay-repair-20261116/decal-pipeline-coverage.json.
+
+`ported/host`, awaiting the parent-owned coherent build and A/B measurement:
+`assets::decal::preloaded_materials` visits only active selected registry
+headers, resolving their four authored references through the same Catalog
+registry. The COMMON global/nonstreamed selection contains19 decal headers;
+the EotW section adds zero. Both inherited regular bullet stone FX reference
+stone_bullet_decal and pellet_bullet_decal; both headers and all eight exact
+material variants are selected COMMON resources. This proof does not infer
+coverage of an unselected future program or enumerate ContactSystemDB's7407
+rows. No fabricated contact witness or whole-FX reservation is introduced.
+
+`app::projected_decals::pipelines` cooks exact model/world material inputs
+through the existing MaterialResolver, temporarily suppressing image slots
+and ordinary binding-cache insertion. Bevy's existing material preparation
+publishes the actual MaterialProperties/callback/layout/key. Its user-specialize
+callback is private, so this host bridge briefly owns ordinary material assets,
+uniforms and bindings; it is not a zero-resource warmup. No proxy actor, image
+payload, geometry copy, draw or pass is submitted. Once properties are captured,
+the main owner drops every temporary material handle; normal asset removal and
+material allocator/backend retirement release the bindings. Neither shadow
+material tables nor blended-material sets retain these temporary handles.
+Pending receipts keep no image binding, mesh handle or declaration/source lease.
+
+Key identity is source-backed: DecalKey consists only of SurfaceKey's cooked
+uniform switches, projection kind, use_fx and authored raster state. The base
+StandardMaterialKey ignores base-colour/occlusion image presence; these are the
+only base texture handles the runtime decal image publisher changes. Bump and
+other images belong to DecalExtension and are absent from its key. Both paths
+use the same full cooker and property constructor, not duplicated key logic.
+Selected depth-box programs use the existing canonical cube; other programs
+use GeometryLayouts' actual world/model receiver samples. Existing model
+pipeline admission's exact queue callback is factored for shared use, retaining
+PipelineCache as the sole compiled-pipeline owner. Current DirectMeshSkin
+projections have no previous-skin history, so no such permutation is invented.
+
+Source/layout/view epochs reset only affected admission work. Permanent pipeline
+errors reach loading; missing shaders/imports retry like the existing owner.
+The explicit level-retire hook closes accepted inputs, drops temporary handles
+and withdraws immutable receipts before source/mesh purge. No acquisition worker
+or shutdown join is added. Normal settled frames do not scan materials or queue
+specializations. Cached `DH2_DEBUG_DECAL_PIPELINES=1` emits discrete exact key,
+layout, view and pipeline queue/completion receipts and temporary binding release;
+`DH2_DEBUG_DEFER_DECAL_PIPELINES=1` bypasses only this early preparation for the
+same-binary comparison, leaving lazy real decal admission unchanged. Parser and
+whitespace review only; no compiler, test, device or appearance result is claimed.
+
+The same opt-in flag also records each ordinary projected material's exact
+base/DecalKey and actual material asset ID, including in the deferred run. When
+the existing real decal-proxy generation becomes ready, one discrete receipt
+per proxy associates that material ID with its actual mesh, retained view and
+completed pipeline ID. Early queues and actual receipts include a structural
+vertex-layout signature (same-binary DefaultHasher over layout contents, never
+an Arc address). This supports key association without treating unstable cross-
+run pipeline IDs as identities. It adds no history/cache or readiness writes;
+the existing completed-generation check suppresses repeat receipts. The flag
+getter belongs to the rendering owner and app callers borrow it, preserving
+the dependency direction.
+
 ## Player animation leaf events and swimming closure (2026-11-18)
 
 Source before change: Loco `1406f9a90` dispatches its22 actual inputs in
@@ -24988,3 +25062,90 @@ scopes, with no numeric timing/memory improvement claimed. Nonzero standalone
 rotation remains blocked on its untraced source branch. EntityFx graph control
 of dynamically created CpntFX actors is not covered by the legacy placed-actor
 map; their ordinary component lifecycle uses the canonical FX owner.
+
+### Runtime model screen-area admission (2026-11-18)
+
+`ported` source correction, runtime validation pending:31ad30/31c710 use the
+integer render-width/height product converted to float for the25-pixel minimum
+model area. Runtime `app/world_models` now borrows that actual existing
+`SceneRenderQueue.texture_viewport_pixels` value, as placed-model admission
+already did. The retained Tome descriptor viewport is a normalized64-unit
+spatial/depth tile and remains unchanged. The shared render-model predicate
+owns the calculation; diagnostics use the same inputs. No special bolt flag,
+forced visibility, changed bounds/range, resource cache or conversion is added.
+
+At1366x768 the erroneous area cutoff was256.125 times too large. Correctly
+accepted small models retain their existing model/material/image requests and
+normal withdrawal/GPU retirement leases. More genuine draws can be admitted;
+this is an output correction, not a CPU/GPU/FPS optimization claim. Expected
+change is confined to the minimum-area decision and corresponding visibility
+and image demand. Actual fired-bolt recovery and query receipts remain pending.
+
+Opt-in action observations now require a real new Slash scene replacing an
+unfinished recovery, rather than only an early input. A single armed Midnight
+receipt samples the actual Start/interrupt boundary; ordinary playback adds no
+history, resource acquisition or clock changes. The actual-bolt observation
+retains stopped typed-component generations, uses physical controller input,
+and observes existing pickup/ammo/hidden/removal owners. Native120-second
+post-hit header lifetime is retained; a hidden collected model is not reported
+as an already-destroyed header.
+
+### Retained rigid-contact Jacobian retirement (2026-11-18)
+
+`ported`: the canonical physics Contacts manifold owns its actual ordinary
+ContactRows through dormant frames and destroyed callbacks. Source cf33d0
+(chunk_000599.c5761+) sends event4 with the retained cache;81b420
+(chunk_000342.c2080+) gates its real cache+28/+30 stream pointer/type, and
+cb9320 (chunk_000592.c9744+) reconstructs the old Jacobian against the current
+body motions. Event8 remains null-cache/null-row cf3460. The existing retired
+queue and per-event/per-side acknowledgement cursors retain the whole owned
+manifold across callback errors, before bodies/motions/shapes are destroyed.
+
+Actual c06996bc full/carry/world-power exit logs exposed premature withdrawal:
+pre_collide cleared every manifold's rows while ordinary stream_live remained
+true. Sleeping and disappeared pairs were never prepared again before normal
+retirement, so exit failed with `retired live contact stream absent`. New
+frames now retain those rows. Active Prepare replaces them; source cf1fe0
+clears nonordinary stream pointers before Finish drops their numeric rows.
+No missing-row tolerance, fabricated geometry, forced callback acknowledgement
+or changed shutdown order is introduced. All row construction/withdrawal sites
+and existing retirement resource restoration were reviewed together.
+
+Prediction: correctness repair only, no CPU/FPS gain claimed. ContactRows was
+already stored inline in each retained Manifold; preserving its contents adds
+no heap allocation, cache entry, resource lease, per-frame scan or GPU work.
+Native body/shape/material generations and numeric reconstruction remain
+unchanged. `blocked: coherent runtime validation` — parent owns the next build
+and actual gameplay/ordinary-exit observation. This worker ran no compiler,
+test suite, game or timing acquisition.
+
+### Power equipment-switch scene admission (2026-11-18)
+
+`ported` source selection: `140836f60` obtains the outgoing equipment and
+calls `1408362c0`, which selects its actual normal/fast/sneak unequip pointer
+at declaration +a0/+a8/+b0/+b8 before `140836ad0` starts that scene. Installed
+`blink.cpntpowerblink` explicitly authors `power_unequip.midnightscene` for
+both ordinary and fast unequip. `140836120` likewise selects actual incoming
+equipment scenes. Powers remain actual equipment; their casting scenes do
+not replace these lifecycle dependencies.
+
+`host` worker admission correction: `app::player_actions::request_power` now
+includes the selected power's existing typed `Equipment.scenes` in its SAME
+`prepare_scenes` demand, alongside cast/slash scenes. Sorting/deduplication,
+shared scene/clip acquisition, cancellation, prepared banks, ReadyPower
+publication and the normal owner retirement remain canonical. No hot scene
+load, new cache, retained extra equipment, fallback animation or forced state
+completion is introduced. Current-state diagnostics expose the existing last
+Midnight start error instead of hiding it behind an equipment timeout.
+
+Evidence: `gameplay-actions-blink.log` from c069 ends with left power
+equipped/Unequip/handle0 and right sword unequipped/Idle; the power worker
+previously requested only cast and slash scenes, while the generic equipment
+worker already requested all typed equipment scenes. Prediction before change:
+the first ordinary hold-F power unequip can start its authored scene and finish
+the accepted transaction; selecting that retained power afterward still uses
+the existing request acknowledgement and does not re-issue a nil-target
+holster. Startup acquires only the newly selected power's missing switch
+dependencies through the existing worker; no CPU/FPS gain is claimed.
+`blocked: coherent runtime verification` — parent owns the next build and
+actual Blink hold-F/redraw sequence. This correction ran no build or test.

@@ -10,6 +10,27 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct DecalResources;
 
+/// Only headers actually selected by0661e0, not every catalog declaration or
+/// ContactSystemDB row. Resolving these references acquires no image payload.
+#[cfg(feature = "game")]
+pub(crate) fn preloaded_materials(catalog: &Catalog) -> Result<Vec<(String, bool)>, String> {
+    let paths = if let Some(owner) = catalog.decal_resources.get() {
+        owner.lock().map_err(|_| "decal resource registry is poisoned")?
+            .preload_paths().into_iter().map(str::to_owned).collect::<Vec<_>>()
+    } else { Vec::new() };
+    let mut materials = std::collections::BTreeSet::new();
+    for path in paths {
+        let name = path.strip_prefix("generated/decls/decal/").and_then(|path| path.strip_suffix(".decl"))
+            .ok_or("selected decal header has an invalid resource path")?;
+        let value = DecalResources.resolve(catalog, name)?.ok_or_else(|| format!("selected decal is absent: {name}"))?;
+        for (name, world) in [(&value.opaque, false), (&value.alpha, false),
+            (&value.opaque_instanced, true), (&value.alpha_instanced, true)] {
+            if let Some(name) = name { materials.insert((name.clone(), world)); }
+        }
+    }
+    Ok(materials.into_iter().collect())
+}
+
 #[derive(Clone)]
 pub(crate) enum ResourceError {
     Missing,

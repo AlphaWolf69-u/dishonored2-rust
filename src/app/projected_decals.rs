@@ -17,12 +17,16 @@ use std::{
 
 #[path = "model_projections.rs"]
 mod model_projections;
+#[path = "projected_decal_pipelines.rs"]
+mod pipelines;
+pub(super) use pipelines::{pipelines_pending, pipelines_error, retire_pipeline_inputs};
 pub(super) use model_projections::{ModelKey, ModelProjectionContexts, copy_parent_projection_contexts};
 pub(super) use model_projections::sync as sync_model_projections;
 
 type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>;
 #[derive(Resource, Default)]
 pub(super) struct GeometryLayouts {
+    depth_box: Option<Handle<Mesh>>,
     ids: HashMap<AssetId<Mesh>, u32>,
     samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
     keys: HashMap<Vec<(bevy::mesh::MeshVertexAttributeId, bevy::render::render_resource::VertexFormat)>, u32>,
@@ -78,6 +82,7 @@ impl Plugin for ProjectedDecalPlugin {
 pub(super) fn register(app: &mut App) {
     crate::rendering::bevy_backend::projected_decals::register(app);
     app.init_resource::<GeometryLayouts>().init_resource::<ModelProjectionContexts>();
+    pipelines::register(app);
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
             .init_resource::<DecalReceivers>()
@@ -167,21 +172,16 @@ pub(super) fn prepare(
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Images {
     let names = sources.decal_materials();
-    let layouts = receiver_layouts(instances, meshes);
+    let mut layouts = receiver_layouts(instances, meshes);
+    let inputs = pipelines::prepare(resolver, meshes, &mut layouts);
+    commands.insert_resource(inputs);
     if names.is_empty() {
         commands.insert_resource(DecalScene::default());
         commands.insert_resource(layouts);
         return Vec::new();
     }
     // Native projection local bounds [-1,-1,-1]..[1,1,0], converted to view axes.
-    let mut cube_mesh = Cuboid::new(2., 1., 2.)
-        .mesh()
-        .build()
-        .translated_by(Vec3::new(0., -0.5, 0.));
-    cube_mesh
-        .generate_tangents()
-        .expect("complete cube tangent inputs");
-    let cube = meshes.add(cube_mesh);
+    let cube = layouts.depth_box.get_or_insert_with(|| depth_box_mesh(meshes)).clone();
     let mut programs = HashMap::new();
     let mut failures = Vec::new();
     let mut bindings = Vec::new();
@@ -340,9 +340,7 @@ pub(super) fn publish_runtime(
         }
         let depth_box = item.program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox;
         if depth_box && state.cube.is_none() {
-            let mut cube = Cuboid::new(2., 1., 2.).mesh().build().translated_by(Vec3::new(0., -0.5, 0.));
-            cube.generate_tangents().expect("complete cube tangent inputs");
-            state.cube = Some(meshes.add(cube));
+            state.cube = layouts.depth_box.clone().or_else(|| Some(depth_box_mesh(&mut *meshes)));
         }
         let candidates: Vec<_> = if depth_box {
             vec![(u32::MAX, state.cube.as_ref().unwrap().clone(), false)]
@@ -389,6 +387,12 @@ pub(super) fn publish_runtime(
         request.gpu_completed.store(0, std::sync::atomic::Ordering::Release);
         request.completed.store(0, std::sync::atomic::Ordering::Release);
     }
+}
+
+fn depth_box_mesh(meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>) -> Handle<Mesh> {
+    let mut cube = Cuboid::new(2., 1., 2.).mesh().build().translated_by(Vec3::new(0., -0.5, 0.));
+    cube.generate_tangents().expect("complete cube tangent inputs");
+    meshes.add(cube)
 }
 
 fn extract_receivers(

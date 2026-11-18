@@ -14,6 +14,21 @@ use bevy::{
 };
 use std::sync::Arc;
 
+/// Discrete material/pipeline receipts, independent of the verbose FX trace.
+pub(crate) fn trace_pipelines() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DH2_DEBUG_DECAL_PIPELINES").is_some_and(|value| value == "1"))
+}
+
+/// Structural vertex-layout identity for same-binary A/B receipts. Hash the
+/// actual attributes/stride, never the interned Arc address or mesh asset ID.
+pub(crate) fn pipeline_layout_signature(layout: &bevy::mesh::MeshVertexBufferLayoutRef) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut signature = std::collections::hash_map::DefaultHasher::new();
+    layout.0.as_ref().hash(&mut signature);
+    signature.finish()
+}
+
 /// One material/layout proxy can submit many shared receiver meshes.
 #[derive(Component, Clone)]
 pub struct ProjectedDecalProxy {
@@ -274,7 +289,21 @@ fn acknowledge_dynamic_proxies(
             false
         });
         if failed { batch.failed.store(batch.generation, Ordering::Release); }
-        if ready { batch.completed.store(batch.generation, Ordering::Release); }
+        if ready {
+            if trace_pipelines() && std::ptr::eq(batch, &request.decals) {
+                for entity in batch.proxies.iter() {
+                    let main = bevy::render::sync_world::MainEntity::from(*entity);
+                    let mesh = observation.meshes.render_mesh_queue_data(main);
+                    let material = observation.materials.instances.get(&main);
+                    let layout = mesh.as_ref().and_then(|mesh| observation.gpu_meshes.get(mesh.mesh_asset_id()))
+                        .map(|mesh| pipeline_layout_signature(&mesh.layout));
+                    eprintln!("DECAL_PIPELINES_ACTUAL_READY generation={} proxy={entity:?} pipeline={:?} mesh={:?} material={:?} layout_key={layout:?} view={:?} view_key={:?}",
+                        batch.generation, view_pipelines.get(&main), mesh.as_ref().map(|mesh| mesh.mesh_asset_id()),
+                        material.map(|material| material.asset_id), view.retained_view_entity, observation.keys.get(&view.retained_view_entity));
+                }
+            }
+            batch.completed.store(batch.generation, Ordering::Release);
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-//! HUDGrenade45af50 uses the ordinary entity/tag binding, not another pose.
+//! HUDGrenade45bc10/45af50 binds to the held equipment's actual arm parent.
 use super::*;
 use crate::gameplay::{
     entity_events::EntityEvents,
@@ -112,29 +112,68 @@ impl PhysicsScene {
         parent: EntityId,
         player: &Player,
         tag: &str,
+        child_model: Option<&str>,
     ) -> Result<(), String> {
-        if tag.is_empty() {
+        let child_frame = self
+            .entity_frame(live, child)?
+            .ok_or("GrenadeCooking child frame pending")?;
+        let parent_frame = self
+            .entity_frame(live, parent)?
+            .ok_or("GrenadeCooking parent frame pending")?;
+        let arm = player
+            .body
+            .arms
+            .iter()
+            .find(|arm| arm.managed_entity == Some(parent));
+        let tree = player
+            .body
+            .equipment
+            .iter()
+            .flatten()
+            .find(|tree| tree.managed_entity == Some(parent));
+        let rig = if let Some(arm) = arm {
+            Some(
+                arm.rig
+                    .as_deref()
+                    .ok_or("GrenadeCooking arm rig readiness absent")?,
+            )
+        } else {
+            tree.map(|tree| tree.rig.as_ref())
+        };
+        //875e80→752900→879930 selects the bound CHILD model's property
+        //group (25bfe0 falls back to _info only when that group is absent).
+        //A missing/unbound tag next tries the actual skeleton joint name.
+        let tag_binding = match rig.filter(|_| !tag.is_empty()) {
+            Some(rig) => {
+                rig.optional_tag_quaternion_in_group(child_model.unwrap_or("_info"), tag)?
+            }
+            None => None,
+        };
+        let selected_joint = tag_binding
+            .as_ref()
+            .map(|(joint, _, _)| *joint)
+            .or_else(|| {
+                rig.filter(|_| !tag.is_empty())
+                    .and_then(|rig| rig.skeleton.joint_names.iter().position(|name| name == tag))
+            });
+        let Some(joint) = selected_joint else {
+            //752900's diagnostic166830 returns; joint remains -1 and753182
+            //preserves the actual world pose by computing parent-local rows.
+            //An empty tag/non-skeletal parent enters this same source branch.
+            let (offset, orientation) = relative_binding(parent_frame, child_frame);
             return self.bind_entity(
                 live,
                 child,
                 parent,
                 super::throwable::BindingPose {
                     joint: -1,
-                    offset: [0.; 3],
-                    orientation: [0., 0., 0., 1.],
+                    offset,
+                    orientation,
                     parent_placement: None,
                 },
                 events,
             );
-        }
-        let tree = player
-            .body
-            .equipment
-            .iter()
-            .flatten()
-            .find(|tree| tree.managed_entity == Some(parent))
-            .ok_or("GrenadeCooking parent has no actual equipment tree")?;
-        let (joint, offset, orientation) = tree.rig.tag(tag)?;
+        };
         let joint =
             i16::try_from(joint).map_err(|_| "GrenadeCooking tag index exceeds joint ABI")?;
         let (position, axis) = player
@@ -143,6 +182,17 @@ impl PhysicsScene {
                 usize::try_from(joint).map_err(|_| "invalid equipment tag joint")?,
             )
             .ok_or("GrenadeCooking parent joint has no published pose")?;
+        let joint_frame = ReferenceFrame {
+            position: position.to_array(),
+            basis: axis.to_cols_array_2d(),
+        };
+        //A real tag snaps to its authored transform; a bare joint preserves
+        //the pre-bind world transform when no explicit offsets were supplied.
+        let (offset, orientation) = if let Some((_, offset, rotation)) = tag_binding {
+            (offset.to_array(), rotation.to_array())
+        } else {
+            relative_binding(joint_frame, child_frame)
+        };
         let index = *self
             .shared_indices
             .get(&parent)
@@ -168,8 +218,8 @@ impl PhysicsScene {
             parent,
             super::throwable::BindingPose {
                 joint,
-                offset: offset.to_array(),
-                orientation: bevy_math::Quat::from_mat3(&orientation).to_array(),
+                offset,
+                orientation,
                 parent_placement: None,
             },
             events,

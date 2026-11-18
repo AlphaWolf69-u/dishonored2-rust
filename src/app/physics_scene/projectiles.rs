@@ -816,6 +816,24 @@ impl PhysicsScene {
         }
         Ok(())
     }
+    ///Opt-in action diagnostics must retain real stopped projectiles too.
+    ///The production update batch intentionally contains only Started actors.
+    ///No state is recorded and no component is started by this observation.
+    pub(in crate::app) fn diagnostic_projectile_batch(&self,out:&mut Vec<(ComponentHandle,EntityId)>)->Result<(),String>{
+        out.clear();
+        for component in self.projectiles.iter(){
+            let Some(runtime)=&component.runtime else{continue;};
+            let index=component.owner.entity.ok_or("observed projectile actor absent")?;
+            let entity=self.entities.get(index).ok_or("observed projectile slot absent")?;
+            if entity.retired{continue;}
+            let handle=entity.components.entries.values().iter()
+                .filter_map(|value|ComponentHandle::from_packed(*value).ok())
+                .find(|handle|handle.class_id==self.classes[13])
+                .ok_or("observed projectile component identity absent")?;
+            out.push((handle,runtime.identity));
+        }
+        Ok(())
+    }
     pub(in crate::app) fn projectile_runtime(
         &self,
         handle: ComponentHandle,

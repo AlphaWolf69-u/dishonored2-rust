@@ -304,6 +304,8 @@ pub struct Midnight {
     /// body scene).
     instances: Vec<Instance>,
     next_handle: u32,
+    /// Opt-in action observer, armed for one real scene replacement only.
+    debug_replacement: Option<SceneReplacementObservation>,
     sound_requests: Vec<SoundRequest>,
     animation_sound_receipts: Vec<AnimationSoundReceipt>,
     animation_effect_receipts:Vec<AnimationEffectReceipt>,
@@ -314,6 +316,18 @@ pub struct Midnight {
     pub weight: f32,
     /// The frame's root motion: has full body, translation, yaw (degrees).
     pub root: Option<(Vec3, f32)>,
+}
+
+/// One diagnostic witness at the real Start/interrupt boundary. No clock or
+/// gameplay state is modified; the inactive observer retains no history.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneReplacementObservation {
+    pub previous_handle: u32,
+    pub next_handle: u32,
+    pub previous_time_ms: i32,
+    pub previous_length_ms: i32,
+    pub previous_parts: u8,
+    pub next_parts: u8,
 }
 
 /// FUN_14018fe90 with KeyCurve_Float slot 13 (FUN_140182e00).
@@ -694,6 +708,22 @@ impl Midnight {
         Ok((schedules, events))
     }
 
+    /// Arm only for an action diagnostic's actual physical follow-up input.
+    pub fn debug_observe_replacement(&mut self, previous_handle: u32) -> Result<(), String> {
+        if !self.instances.iter().any(|instance| instance.handle == previous_handle) {
+            return Err("scene replacement observer requires a real playing instance".into());
+        }
+        self.debug_replacement = Some(SceneReplacementObservation {
+            previous_handle, next_handle: 0, previous_time_ms: 0,
+            previous_length_ms: 0, previous_parts: 0, next_parts: 0,
+        });
+        Ok(())
+    }
+    pub fn debug_scene_replacement(&self) -> Option<SceneReplacementObservation> {
+        self.debug_replacement.filter(|observation| observation.next_handle != 0)
+    }
+    pub fn debug_clear_replacement(&mut self) { self.debug_replacement = None; }
+
     /// FUN_1408549c0 → FUN_1407d6040 / FUN_1407d9270: start at t = 0 (the
     /// first data is written now). An interrupted previous scene snapshots.
     pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, random: &mut u32) -> Result<u32, String> {
@@ -732,6 +762,19 @@ impl Midnight {
         let time = (seconds * 1000.0) as i32;
         if time > prepared.decl.scenes[index].length_ms { return Err("Midnight StartTime is superior to first scene length".into()); }
         let (clips, events) = self.enter(prepared, index, cast, parts, md6)?;
+        // Observe before interrupt_parts retires the old instance. A left-arm
+        // response alone cannot acknowledge a new right-arm sword scene.
+        if let Some(observation) = self.debug_replacement.as_mut().filter(|observation|
+            observation.next_handle == 0 && parts & 4 != 0) {
+            if let Some(previous) = self.instances.iter().find(|instance|
+                instance.handle == observation.previous_handle && instance.parts & parts & 4 != 0) {
+                observation.next_handle = self.next_handle.wrapping_add(1).max(1);
+                observation.previous_time_ms = previous.time;
+                observation.previous_length_ms = previous.scene.decl.scenes[previous.current].length_ms;
+                observation.previous_parts = previous.parts;
+                observation.next_parts = parts;
+            }
+        }
         // A scene on a tree another instance plays interrupts it there.
         let handles: Vec<u32> = self.instances.iter().filter(|i| i.parts & parts != 0).map(|i| i.handle).collect();
         for handle in handles {

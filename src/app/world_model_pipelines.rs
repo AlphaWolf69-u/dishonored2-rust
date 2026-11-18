@@ -190,21 +190,36 @@ fn ready(world: &World, id: CachedRenderPipelineId) -> Result<bool, String> {
 }
 fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<bool, String> {
     if item.base.is_empty() {
-        let Some(mesh) = world
-            .resource::<RenderAssets<RenderMesh>>()
-            .get(item.surface.mesh)
-        else {
-            return Ok(false);
-        };
-        let layout = mesh.layout.clone();
-        let mesh_bits = MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+        let Some(ids) = queue_surface(world, &item.surface, view)? else { return Ok(false) };
+        item.base = ids;
+    }
+    for &id in &item.base {
+        if !ready(world, id)? { return Ok(false); }
+    }
+    Ok(true)
+}
+
+/// The canonical material specializer is also used by the decal owner's
+/// selected, image-free preload inputs. This owns no pipeline cache or assets.
+pub(in crate::app) fn queue_surface(world: &mut World, surface: &Surface, view: MeshPipelineKey)
+    -> Result<Option<Vec<CachedRenderPipelineId>>, String> {
         let Some(material) = world
             .resource::<ErasedRenderAssets<PreparedMaterial>>()
-            .get(item.surface.material)
+            .get(surface.material)
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let properties = material.properties.clone();
+        queue_properties(world, surface, view, &properties, true)
+}
+
+/// Immutable metadata survives its temporary material binding: layouts,
+/// callback and key are retained, never that material's GPU binding/uniform.
+pub(in crate::app) fn queue_properties(world: &mut World, surface: &Surface, view: MeshPipelineKey,
+    properties: &Arc<bevy::material::MaterialProperties>, model_diagnostics: bool) -> Result<Option<Vec<CachedRenderPipelineId>>, String> {
+        let Some(mesh) = world.resource::<RenderAssets<RenderMesh>>().get(surface.mesh) else { return Ok(None) };
+        let layout = mesh.layout.clone();
+        let mesh_bits = MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
         let specialize = properties
             .base_specialize
             .ok_or("world model material has no MAIN specializer")?;
@@ -218,7 +233,8 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<
         // previous-skin flag in set_mesh_motion_vector_flags. These are their
         // two actual lifecycle keys, not arbitrary shader permutations.
         let previous_skin =
-            item.surface.skinned && view.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS);
+            surface.skinned && view.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS);
+        let mut ids = Vec::with_capacity(1 + usize::from(previous_skin));
         for previous in 0..=usize::from(previous_skin) {
             let mesh_key = if previous == 0 {
                 key
@@ -228,7 +244,7 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<
             let id = specialize(
                 world,
                 ErasedMaterialPipelineKey {
-                    type_id: item.surface.material.type_id(),
+                    type_id: surface.material.type_id(),
                     mesh_key: ErasedMeshPipelineKey::new(mesh_key),
                     material_key: properties.material_key.clone(),
                 },
@@ -236,7 +252,7 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<
                 &properties,
             )
             .map_err(|error| format!("world model specialization: {error}"))?;
-            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            if model_diagnostics && crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 let state = match world
                     .resource::<PipelineCache>()
                     .get_render_pipeline_state(id)
@@ -247,16 +263,10 @@ fn prepare(world: &mut World, item: &mut Work, view: MeshPipelineKey) -> Result<
                 };
                 eprintln!(
                     "FX_MODEL_PIPELINE mesh={:?} material={:?} mesh_key={mesh_key:?} pipeline={id:?} state={state}",
-                    item.surface.mesh, item.surface.material,
+                    surface.mesh, surface.material,
                 );
             }
-            item.base.push(id);
+            ids.push(id);
         }
-    }
-    for &id in &item.base {
-        if !ready(world, id)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+        Ok(Some(ids))
 }

@@ -28,6 +28,9 @@ impl MaterialGeometry {
 
 #[derive(Default)]
 pub(in crate::app) struct MaterialCache {
+    // Transient canonical cooker mode; no image slots or ordinary cached
+    // binding entries are produced while compiling preload program inputs.
+    pipeline_only: bool,
     entries: HashMap<String, [Option<Option<CachedMaterial>>; 2]>,
     dependency_trace: Option<std::sync::Mutex<super::HashSet<(String, MaterialGeometry)>>>,
     image_priorities: Vec<u8>,
@@ -42,6 +45,10 @@ pub(in crate::app) struct MaterialCache {
 }
 
 impl MaterialCache {
+    pub(super) fn pipeline_only(&self) -> bool { self.pipeline_only }
+    pub(super) fn set_pipeline_only(&mut self, value: bool) -> bool {
+        std::mem::replace(&mut self.pipeline_only, value)
+    }
     /// Borrow the physics declaration captured by the actual render-material
     /// owner. A missing cache entry or rejected render material is an error;
     /// only an admitted material with no authored reference yields `None`.

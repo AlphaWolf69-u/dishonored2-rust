@@ -23,6 +23,7 @@ impl Player {
         self.machine.write_combat_diagnostics(report, "land");
         self.swimming_machine.write_combat_diagnostics(report, "swim");
         self.powers.write_diagnostics(report);
+        let _ = writeln!(report, "  latest_scene_start_error={:?}", self.body.midnight.last_start_error);
         self.body.midnight.write_combat_diagnostics(report);
     }
 }

@@ -3970,10 +3970,20 @@ pub fn model_visible_area(
     viewport: [u32; 2],
     model: ModelQueryInput,
 ) -> Result<Option<f32>, String> {
+    if !model_eligible(model.frame_flags,model.shape_flags){return Ok(None);}
+    //31ad30 multiplies integer view dimensions before converting to float.
+    let pixels=viewport[0].checked_mul(viewport[1]).ok_or("model viewport pixel count overflow")?;
+    model_visible_area_pixels(query,camera,pixels,model)
+}
+///31ad30/31c710 normalize by the render view's +7848/+784c product,
+///independent of the Tome descriptor's 64-unit depth-grid tile.
+pub fn model_visible_area_pixels(
+    query:&NoDepthAabbQuery,camera:[f32;3],viewport_pixels:u32,model:ModelQueryInput,
+)->Result<Option<f32>,String>{
     if !model_eligible(model.frame_flags, model.shape_flags) {
         return Ok(None);
     }
-    if viewport.contains(&0)
+    if viewport_pixels==0
         || camera
             .iter()
             .chain(model.region.iter())
@@ -3987,7 +3997,7 @@ pub fn model_visible_area(
     let (visible, area) = query.visibility_and_area(model.bounds)?;
     Ok((visible
         && (model.frame_flags & 0x40 != 0
-            || !(area < 25.0 / (viewport[0] as f32 * viewport[1] as f32))))
+            || !(area < 25.0 / viewport_pixels as f32)))
         .then_some(area))
 }
 

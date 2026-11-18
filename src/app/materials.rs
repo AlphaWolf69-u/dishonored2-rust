@@ -695,7 +695,7 @@ macro_rules! shadow_image_access {
 shadow_image_access!(ProbeExtension);
 shadow_image_access!(DecalExtension);
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) struct DecalKey {
     pub(super) surface: surface_gpu::SurfaceKey,
     projection: u8,

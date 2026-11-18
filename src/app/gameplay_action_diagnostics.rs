@@ -6,6 +6,7 @@ use crate::{gameplay::{entity_lifetime::EntityId, player::{Player, states::State
 use bevy::{input::{ButtonState, keyboard::{KeyboardInput, Key, NativeKey}, mouse::MouseButtonInput}, prelude::*};
 use std::{collections::HashSet, time::{Duration, Instant}};
 mod blink;
+mod bolt;
 pub(super) mod grenade;
 
 #[derive(Resource, Default)]
@@ -119,6 +120,8 @@ pub(super) struct Observation {
     world_power: bool,
     world_recovery_baseline:u64,
     world_chain_inputs:u8,
+    world_chain_activations:u8,
+    world_replacement_pending:Option<(u64,u32)>,
     world_recovery_pending:Option<(u64,u32)>,
     world_left_response_seen:bool,
     world_prior_effects:Vec<(u8,WorldEffectObservation)>,
@@ -127,13 +130,14 @@ pub(super) struct Observation {
     world_contacts:u8,
     world_effect:Option<WorldEffectObservation>,
     blink: Option<blink::Observation>,
+    bolt:Option<bolt::Observation>,
     grenade: Option<grenade::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("grenade")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink or grenade")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("bolt")|Ok("grenade")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, bolt or grenade")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -156,15 +160,16 @@ impl Observation {
         }
         world.insert_resource(Receipts::default());
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
+        let bolt=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt"){Some(bolt::Observation::begin(world)?)}else{None};
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
-        Ok(Self { stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
+        Ok(Self { bolt,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
-            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
+            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -404,7 +409,8 @@ impl Observation {
                 eprintln!("ACTION_SMOKE_PROJECTILE_PUBLICATION id={id:?} in_flight={in_flight} parent={parent:?} runtime_position={:?} published_position={:?} actual_draws={count} translations_match={matching} max_matrix_error={max_error} draws_visible={draws_visible} source_visibility={:?} visible={} bounds={:?} complete={published} witness=actual_CPU_draw_GlobalTransforms_not_GPU_draw",projectile.position,pose.position,owner.publication_visibility(id),owner.interaction_visible(id),owner.interaction_bounds(id));
                 let query_state=world.get_resource::<super::SceneRenderQueue>()
                     .and_then(|queue|queue.shadow_ordinary_query.as_ref()).and_then(|query|query.state.as_ref());
-                if let Some(explanation)=owner.query_diagnostic(id,query_state)? {
+                let pixels=world.get_resource::<super::SceneRenderQueue>().map_or(0,|queue|queue.texture_viewport_pixels);
+                if let Some(explanation)=owner.query_diagnostic(id,query_state,pixels)? {
                     eprintln!("ACTION_SMOKE_PROJECTILE_QUERY id={id:?} {explanation}");
                 }
                 if (projectile.impact_stopped||projectile.has_hit_and_stopped)
@@ -419,10 +425,8 @@ impl Observation {
                         //On-demand area normalization comparison only. Reuse
                         //the same actual rows, grid, bounds and flags; this
                         //does not claim a new camera or visible GPU output.
-                        let mut comparison=state.clone();
-                        comparison.viewport=[0,0,1366,768];
-                        if let Some(explanation)=owner.query_diagnostic(id,Some(&comparison))?{
-                            eprintln!("ACTION_SMOKE_STUCK_PROJECTILE_QUERY_1366X768 id={id:?} copied_descriptor=true rows_and_depth_grid_unchanged=true actual_render_viewport={:?} diagnostic_only_not_actual_user_output=true {explanation}",state.viewport);
+                        if let Some(explanation)=owner.query_diagnostic(id,Some(state),1366*768)?{
+                            eprintln!("ACTION_SMOKE_STUCK_PROJECTILE_QUERY_1366X768 id={id:?} copied_descriptor=true rows_and_depth_grid_unchanged=true actual_tome_tile={:?} diagnostic_only_not_actual_user_output=true {explanation}",state.viewport);
                         }
                     }
                 }
@@ -492,13 +496,37 @@ impl Observation {
             self.world_poke,self.world_target,definition.material,definition.focused_material,p.machine.melee_focus_charge(),super::melee::debug_startup_pending(world));
         Ok(())
     }
-    fn world_followup_input(&mut self,world:&World)->Result<(),String>{
+    fn world_followup_input(&mut self,world:&mut World)->Result<(),String>{
         if let Some((serial,handle))=self.world_recovery_pending {
             let p=player(world)?;
             if p.body.midnight.finished(handle){return Err("WORLD diagnostic steering missed the source recovery animation; early-input proof not achieved".into());}
             if p.machine.is_active(StateId::RECOIL){return Err("WORLD followup attempted before actual Recoil quit".into());}
             eprintln!("ACTION_SMOKE_WORLD_RECOIL_INPUT actual_marker_serial={serial} source_recovery_handle={handle} source_recovery_scene_still_playing=true actual_physical_attack_input=true");
+            if self.world_replacement_pending.is_some(){return Err("previous WORLD followup has no actual Slash activation witness".into());}
+            world.resource_mut::<PlayerState>().player.as_mut().ok_or("actual Player absent")?
+                .body.midnight.debug_observe_replacement(handle)?;
             self.world_chain_inputs+=1;self.world_recovery_pending=None;
+            self.world_replacement_pending=Some((serial,handle));
+        }
+        Ok(())
+    }
+    fn world_followup_activation(&mut self,world:&mut World)->Result<(),String>{
+        let Some((serial,previous))=self.world_replacement_pending else{return Ok(())};
+        let p=player(world)?;
+        if let Some(replacement)=p.body.midnight.debug_scene_replacement(){
+            let slash=p.machine.state(StateId::SLASH);
+            let actual_slash=slash.is_some_and(|state|state.active&&state.midnight==replacement.next_handle)
+                &&!p.body.midnight.finished(replacement.next_handle);
+            if replacement.previous_handle!=previous || replacement.previous_time_ms>=replacement.previous_length_ms
+                || replacement.previous_parts&replacement.next_parts&4==0 || !actual_slash {
+                return Err(format!("WORLD physical followup did not prove actual early Slash activation: marker={serial} replacement={replacement:?} active_Slash_handle={:?} active_Slash={}",slash.map(|state|state.midnight),p.machine.is_active(StateId::SLASH)));
+            }
+            eprintln!("ACTION_SMOKE_WORLD_RECOIL_ACTIVATION actual_marker_serial={serial} replacement={replacement:?} actual_new_Slash_playing=true previous_recovery_unfinished_at_Start=true no_time_or_state_override=true");
+            self.world_chain_activations+=1;self.world_replacement_pending=None;
+            world.resource_mut::<PlayerState>().player.as_mut().ok_or("actual Player absent")?
+                .body.midnight.debug_clear_replacement();
+        }else if p.body.midnight.finished(previous){
+            return Err(format!("WORLD physical followup waited past actual recovery completion without a new Slash replacement: marker={serial} previous={previous}"));
         }
         Ok(())
     }
@@ -595,6 +623,11 @@ impl Observation {
         Ok((fx.focus_requested(),count,count>0&&full))
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(bolt)=&mut self.bolt{
+            let complete=bolt.poll(world)?;
+            if complete{self.stage=Stage::Done;}
+            return Ok(complete)
+        }
         if let Some(grenade)=&mut self.grenade{
             let complete=grenade.poll(world)?;
             if complete{self.stage=Stage::Done;}
@@ -605,6 +638,7 @@ impl Observation {
             if complete{self.stage=Stage::Done;}
             return Ok(complete)
         }
+        self.world_followup_activation(world)?;
         for (contact,observation) in &mut self.world_prior_effects {
             Self::world_effect_progress(world,observation,*contact)?;
         }
@@ -763,11 +797,11 @@ impl Observation {
                     self.world_contacts+=1;self.world_recovery_pending=Some((receipt.0,receipt.1));
                     self.stage(if self.world_poke{Stage::WorldCharge}else{Stage::WorldAim},world)?;
                 }else if retired&&animation_ready&&self.world_prior_effects.iter().all(|(_,effect)|effect.retired){
-                    if self.world_power&&(!self.world_left_response_seen || !self.world_poke&&(self.world_contacts!=2||self.world_chain_inputs!=2)){
-                        return Err("WORLD power sequence lacks two real early-marker physical followups or actual left response".into());
+                    if self.world_power&&(!self.world_left_response_seen || !self.world_poke&&(self.world_contacts!=2||self.world_chain_inputs!=2||self.world_chain_activations!=2||self.world_replacement_pending.is_some())){
+                        return Err("WORLD power sequence lacks two real early-marker physical inputs AND actual early Slash activations, or actual left response".into());
                     }
                     self.world_contacts+=1;self.world_effect=None;
-                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_WORLD_owner_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true power_equipped={} early_marker_followups={} left_response_started={}",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target,self.world_power,self.world_chain_inputs,self.world_left_response_seen);
+                    eprintln!("ACTION_SMOKE_PASS check={} accepted_contact={} same_WORLD_owner_fixture={:?} actual_FX_started_and_retired=true actual_animation_ready=true power_equipped={} early_marker_followups={} actual_early_Slash_activations={} left_response_started={}",if self.world_poke{"actual_WORLD_focused_forward"}else{"actual_WORLD_ordinary"},self.world_contacts,self.world_target,self.world_power,self.world_chain_inputs,self.world_chain_activations,self.world_left_response_seen);
                     if self.world_contacts==3{
                         if let Some(input)=self.world_crouch.take(){send(world,input,false)?}
                         self.stage(Stage::Done,world)?;

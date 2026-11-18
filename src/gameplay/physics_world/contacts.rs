@@ -527,8 +527,13 @@ impl<G: ContactGeometry, E: PublicationEvents + BodyCreationCallbacks> Simulatio
             self.pairs.clear();
             self.body_links.clear();
             self.active_keys.clear();
-            self.manifolds.retain(|key, value| {
-                value.rows = None;
+            // cf33d0's destroyed callback retains the old cache/Jacobian;
+            // 81b420/cb9320 read it before its retirement is acknowledged.
+            // Sleeping or no-longer-overlapping pairs may not enter Prepare
+            // again, so keep their owned rows with the live stream pointer.
+            // Active Prepare replaces them; cf1fe0 clears nonordinary stream
+            // pointers before Finish drops those rows.
+            self.manifolds.retain(|key, _| {
                 key.bodies.iter().all(|&id| world.bodies.get(id).is_some())
             });
             // Only actual active body publications issue broadphase work. The

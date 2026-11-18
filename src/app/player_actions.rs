@@ -1601,6 +1601,10 @@ impl PlayerActions {
             .flatten()
             .cloned()
             .collect();
+            //836f60 ->8362c0 uses the power's actual equipment declaration
+            //for outgoing normal/fast/sneak scenes, just like other equipment.
+            //Acquire these through this same worker before publishing ReadyPower.
+            paths.extend(equipment.scenes.values().cloned());
             //86c6a0 casts the selected left equipment's authored response
             //alongside the sword scene, including equipment supplied by a
             //power component. Keep it in this same admission/clip lease.

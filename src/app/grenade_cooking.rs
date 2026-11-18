@@ -52,7 +52,7 @@ struct Hud {
     definition: Option<Definition>,
     requested: bool,
     entity: Option<EntityId>,
-    active: Option<EntityId>,
+    active: Option<(EntityId, EntityId)>,
     lead: Option<WeaponLead>,
     error: Option<String>,
 }
@@ -72,7 +72,9 @@ pub(super) fn startup_error(world: &World) -> Option<&str> {
 
 ///Read-only receipt for the opt-in production-input diagnostic. `captured`
 ///comes from the renderer's real world-movie acknowledgement.
-pub(super) fn debug_gauge(world: &mut World) -> Result<Option<(EntityId, bool, bool)>, String> {
+pub(super) fn debug_gauge(
+    world: &mut World,
+) -> Result<Option<(EntityId, bool, bool, Option<EntityId>)>, String> {
     let Some(entity) = world.get_resource::<Hud>().and_then(|hud| hud.entity) else {
         return Ok(None);
     };
@@ -83,8 +85,11 @@ pub(super) fn debug_gauge(world: &mut World) -> Result<Option<(EntityId, bool, b
     while let Some(key) = scene.flash_update_key(position)? {
         position += 1;
         if key.entity == entity {
+            let parent = world
+                .resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+                .parent(entity)?;
             return Ok(super::flash_surface_movie::status(world, key)?
-                .map(|status| (entity, status.configured, status.captured)));
+                .map(|status| (entity, status.configured, status.captured, parent)));
         }
     }
     Ok(None)
@@ -397,19 +402,39 @@ fn update_hud(world: &mut World, hud: &mut Hud) -> Result<(), String> {
             ))
         });
     let state = if let Some((weapon, ammo, kind, speed, extra)) = input {
-        let state = super::runtime_entities::with_scene(world, |_, scene, live, _| {
-            scene.grenade_cooking_state(live, weapon)
+        let state = super::runtime_entities::with_scene(world, |world, scene, live, _| {
+            //491080/45bc10 use877530(held equipment): the immediate ARM
+            //parent UID is the HUD record's binding target, not the grenade.
+            let Some(parent) = live.parent(weapon)? else {
+                return Ok(None);
+            };
+            let owned_arm = world
+                .get_resource::<super::player::PlayerState>()
+                .and_then(|state| state.player.as_ref())
+                .is_some_and(|player| {
+                    player
+                        .body
+                        .arms
+                        .iter()
+                        .any(|arm| arm.managed_entity == Some(parent))
+                });
+            if !owned_arm {
+                return Ok(None);
+            }
+            Ok(scene
+                .grenade_cooking_state(live, weapon)?
+                .map(|state| (parent, state)))
         })?;
         match state {
-            Some((total, progress, true, false)) => {
-                Some((weapon, ammo, kind, speed, extra, total, progress))
+            Some((parent, (total, progress, true, false))) => {
+                Some((weapon, parent, ammo, kind, speed, extra, total, progress))
             }
             _ => None,
         }
     } else {
         None
     };
-    let Some((weapon, ammo, kind, speed, extra, total, progress)) = state else {
+    let Some((weapon, parent, ammo, kind, speed, extra, total, progress)) = state else {
         if hud.active.is_some() {
             super::runtime_entities::with_scene(world, |world, scene, live, events| {
                 scene.set_entity_enabled(world, live, events, entity, false)?;
@@ -427,7 +452,7 @@ fn update_hud(world: &mut World, hud: &mut Hud) -> Result<(), String> {
     else {
         return Ok(());
     };
-    let initial = if hud.active == Some(weapon) {
+    let initial = if hud.active == Some((weapon, parent)) {
         None
     } else {
         Some(if lead.enabled {
@@ -453,7 +478,7 @@ fn update_hud(world: &mut World, hud: &mut Hud) -> Result<(), String> {
     super::runtime_entities::with_scene(world, |_, scene, live, _| {
         scene.set_grenade_cooking(live, entity, initial, kind, progress)
     })?;
-    if hud.active != Some(weapon) {
+    if hud.active != Some((weapon, parent)) {
         if hud.active.is_some() {
             super::runtime_entities::with_scene(world, |world, scene, live, events| {
                 scene.set_entity_enabled(world, live, events, entity, false)?;
@@ -481,17 +506,21 @@ fn update_hud(world: &mut World, hud: &mut Hud) -> Result<(), String> {
                     live,
                     events,
                     entity,
-                    weapon,
+                    parent,
                     player
                         .player
                         .as_ref()
                         .ok_or("GrenadeCooking Player absent")?,
                     tag,
+                    hud.definition
+                        .as_ref()
+                        .and_then(|definition| definition.entity.model.as_ref())
+                        .map(|model| model.model.as_str()),
                 )?;
                 scene.set_entity_enabled(world, live, events, entity, true)
             })
         })?;
-        hud.active = Some(weapon);
+        hud.active = Some((weapon, parent));
     }
     Ok(())
 }
