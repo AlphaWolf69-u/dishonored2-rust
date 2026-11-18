@@ -463,6 +463,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
               ).chain(),
               (
                 (
+                    gameplay_system(super::animation_effects::prepare),
                     gameplay_system(super::player::prepare_animation_frame),
                     gameplay_system(super::player_animation_events::update),
                     gameplay_system(super::power_execution::execute_animation_actions),
@@ -545,9 +546,6 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         )
         .add_systems(PreUpdate, (super::player_statistics::bind_prepared_chapter,
             super::interaction_focus::initialize_inventory).chain())
-        .add_systems(Update, gameplay_system(super::animation_effects::prepare)
-            .after(super::runtime_entities::advance_frame)
-            .before(super::player::prepare_animation_frame))
         .add_systems(PostUpdate, super::interactions::sync_boxes
             .after(super::model_motion::publish_model_poses))
         .add_systems(PostUpdate, super::interactions::focus_and_interact

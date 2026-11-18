@@ -24913,6 +24913,14 @@ rate, new resource budget or all-map claim follows from this scoped result.
 
 `ported` animation A7 construction metadata:64bc20/4903b0 use an actual bare idEntity and the installed CpntFX factory/default declaration (4b1650/4b16c0;1416f3df0/14170bdd0 parameters). The canonical runtime prototype owner warms actual FX references; one supplied registry constructs, binds, configures and explicitly requests Start before its normal drain. Failed construction retains its real generation/source journal for scoped rollback. SELF, source binding, target and culprit remain distinct. D4bit4 is not treated as an automatic-deletion policy; normal component/actor retirement retains the existing FX/GPU/audio acknowledgements.
 
+Accepted A7 receipts enter that same FIFO at the existing pre-state/final
+animation callback drains. Equipment retirement preserves the actual rig,
+palette and managed generation until delivery, including a delayed recipe.
+The level explicitly creates this acquisition owner before its resource
+snapshot; background preparation cannot recreate it after acknowledged shutdown.
+Real FX completion drains component tickets before GameLocal releases bare FX
+children and then their arm/equipment parents. Runtime verification is pending.
+
 `ported` first-person arm managed identities:770560/8ae9b0 create the two actual declared idEntity actors at the player's transform, retain Player owner/MAIN tag and source binding, and keep constructor time selector0 without equipment/ammo flag substitutions. The existing Arm rigs, palettes, controllers, sound objects and PlayerArms render resources remain sole owners. Tagged FX reads their same published joint palettes. The existing equipment identity/reference owner now distinguishes Arm from Equipment and Attachment roles; arm surface withdrawal uses its existing per-model GPU receipt before managed-generation release. No extra skeleton, render model or audio cache is created.
 
 Validation for this coordinated source batch is pending its single combined debug build and production-input/loading/exit runs. Source review and parser checks are not runtime, appearance or performance acceptance. The measured Voronoi query improvement from the preceding batch does not establish whole-frame performance or first-shot latency for this one.

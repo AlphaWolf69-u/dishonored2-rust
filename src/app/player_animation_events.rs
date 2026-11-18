@@ -29,6 +29,7 @@ impl Events {
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
+    super::animation_effects::capture_accepted(world);
     let mut owner = world.remove_resource::<Events>().unwrap_or_default();
     let mut source = None;
     let mut equipment = [None; 2];

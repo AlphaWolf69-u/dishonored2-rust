@@ -86,6 +86,14 @@ fn capture(world: &mut World, owner: &mut Effects) {
     }
 }
 
+/// Capture receipts before the existing pre-state and final callback drains.
+/// Source rigs and identities then remain pinned until the factory accepts them.
+pub(super) fn capture_accepted(world: &mut World) {
+    let Some(mut owner) = world.remove_resource::<Effects>() else { return; };
+    capture(world, &mut owner);
+    world.insert_resource(owner);
+}
+
 ///Only changed canonical animation-bank metadata is visited. Asset work runs
 ///on the IO worker; factory reservations own every decoded/GPU dependency.
 pub(super) fn prepare(world: &mut World) -> Result<(), String> {

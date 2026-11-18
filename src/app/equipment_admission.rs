@@ -696,6 +696,14 @@ pub(in crate::app) fn advance(world: &mut World) {
             if !removals.contains(identity) { removals.push(identity.clone()); }
         }
         for path in removals {
+            // Keep both the real rig and its managed ID until accepted
+            // animation FX have completed their actual factory handoff.
+            if let Some(id) = super::super::equipment_identity::id(world, &path) {
+                if super::super::animation_effects::blocks_retirement(world, id) {
+                    actions.removed_equipment.push(path);
+                    continue;
+                }
+            }
             //Collect already accepted runtime messages before removing the
             //runtime. Normalpublish drains them after PlayerState is restored.
             if let Err(error) = super::super::weapon_firing::begin_retirement(world, player, &path) {
