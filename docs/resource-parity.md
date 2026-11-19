@@ -2,6 +2,30 @@
 
 ## Passive constraint endpoint lookup and collision suppression (2026-11-19)
 
+The second actual integrated observation still skipped both fixtures. The
+earlier identity-index correction removed one barrier but did not establish
+admission: the pre-Initialize hostability check also called document_rigid's
+runtime policy1 lookup. Source877720/7e7390 policy1 requires Initialized
+through masks `{0x20,0}`. Actual registration writes low owner state1 and a
+queued Start sets flag0x4, producing flags5 before shared Initialize; its
+reference state0x14 cannot satisfy required0x20. This rejected constructed,
+linked membership before the lifecycle that could make it runtime eligible.
+
+Both installed fixtures are idDynamicEntity and explicitly add slotGhaN50
+with map_cpntrigidbody_decl_123: cpntRigidBody, HKT, metal, mass1 and no
+scheduling override. The placed rigid reader admits that concrete family
+independently of readable/interaction membership. Construction admission now
+borrows the same EntityComponents lookup with verified policy0 `{0,0}` and
+checks actual linkage, current pool owner state and registration membership;
+the existing pending-Start/publication fence remains. Runtime resolution,
+including Constraint Initialize's native policy1 lookup, retains its masks.
+Any remaining rejection records both full managed/component generations,
+actual actor class/header/phase, component handles/owner flags, declaration
+Start masks, registration/Start/Stop/release queues and missing-shape state.
+Only rejected loading admission formats this snapshot; no normal-frame
+history or duplicate component index is introduced. Source tracing and
+whitespace review only; the next real run must establish actual admission.
+
 The integrated EotW observation loaded but found neither actual lamp joint.
 Both authored owners were explicitly skipped by the RigidbodyBase provider
 gate: the constructed endpoint headers existed, but Scene.load populated its

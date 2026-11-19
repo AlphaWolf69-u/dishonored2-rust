@@ -18,6 +18,52 @@ pub(in crate::app) struct ConstraintObservation<'a> {
 }
 
 impl PhysicsScene {
+    ///Only a rejected loading-time admission formats this bounded snapshot.
+    ///Retain each real gate and generation, rather than another anonymous
+    ///provider warning that conflates membership with Initialized eligibility.
+    fn constraint_provider_status(&self, live: &LiveEntities, registry: &ComponentRegistry,
+        endpoints: [Option<&str>; 2], missing: [bool; 2],
+    ) -> Result<String, String> {
+        use std::fmt::Write as _;
+        let range = self.rigid_class_range()?;
+        let mut status = format!("rigid_class_range={range:?}");
+        for endpoint in 0..2 {
+            let id = endpoints[endpoint].and_then(|name| live.find(name));
+            let index = id.and_then(|id| self.shared_indices.get(&id).copied());
+            write!(status, " endpoint[{endpoint}]={{name:{:?},authored_absent:{},live:{id:?},live_class:{:?},stage:{:?},header_index:{index:?}",
+                endpoints[endpoint], missing[endpoint], id.and_then(|id| live.get(id).map(|(_, class)| class)),
+                id.and_then(|id| live.stage(id)))
+                .map_err(|error| error.to_string())?;
+            if let Some(index) = index {
+                let header = self.entities.get(index).ok_or("constraint rejection header index stale")?;
+                let metadata = self.types.classes().metadata(header.class)
+                    .ok_or("constraint rejection actor class metadata absent")?;
+                let class = self.types.classes().name_text(metadata.name)
+                    .ok_or("constraint rejection actor class name absent")?;
+                write!(status, ",construction_handle:{:?},header_id:{:?},header_name:{:?},class:{}({}),retired:{},external:{},entity_phase:{},start_deferred:{},components:[",
+                    self.document_rigid_for_construction(index)?,
+                    header.shared, header.name, String::from_utf8_lossy(class), header.class,
+                    header.retired, header.external, header.components.phase, header.components.start_deferred)
+                    .map_err(|error| error.to_string())?;
+                for &packed in header.components.entries.values() {
+                    let handle = ComponentHandle::from_packed(packed)?;
+                    let owner = self.owner(handle)?;
+                    let rigid = self.is_rigid_class(handle.class_id);
+                    let missing_shape = if rigid { Some(self.rigid_component(handle)?.missing_physics_shape()) } else { None };
+                    write!(status, "{{handle:{handle:?},generation:{},flags:{:#x},owner_entity:{:?},declaration:{:?},start_phases:{:?},rigid:{rigid},runtime_mode1:{},registered:{},queued_start:{},queued_stop:{},queued_release:{},missing_shape:{missing_shape:?}}},",
+                        owner.generation, owner.flags, owner.entity, owner.declaration,
+                        self.declarations.get(&packed).map(|declaration| declaration.scheduling.start_phases),
+                        crate::gameplay::component_state::matches_reference_state(owner.flags, [0x20, 0]),
+                        registry.registered.values().contains(&packed), registry.pending_start.values().contains(&packed),
+                        registry.pending_stop.values().contains(&packed), registry.pending_release.values().contains(&packed))
+                        .map_err(|error| error.to_string())?;
+                }
+                status.push(']');
+            }
+            status.push('}');
+        }
+        Ok(status)
+    }
     ///852040 resolves a NULL PhysicsBase to the real worldspawn component's
     ///CURRENT body batch. Its constructed empty list is valid; an absent
     ///component, arbitrary anchor body0, or a named NoShape is not that witness.
@@ -166,8 +212,17 @@ impl PhysicsScene {
                 let Some(name) = name else { continue; };
                 if missing[endpoint] { continue; }
                 let index = live.find(name).and_then(|id| self.shared_indices.get(&id).copied());
-                let handle = index.map(|index| self.document_rigid(index)).transpose()?.flatten();
+                //This hostability check is BEFORE the common Initialize
+                //drain. Policy1 requires Initialized and would reject every
+                //genuine Registered(+queued Start) endpoint at this boundary.
+                let handle = index.map(|index| self.document_rigid_for_construction(index)).transpose()?.flatten();
                 if let Some(handle) = handle {
+                    let owner = self.owner(handle)?;
+                    if owner.entity != index || !matches!(owner.flags & 3, 1 | 2)
+                        || (owner.flags & 3 == 1
+                            && !registry.registered.values().contains(&handle.packed())) {
+                        providers_ready = false;
+                    }
                     if binding.definition.disable_collision
                         && self.rigid_component(handle)?.missing_physics_shape() {
                         //Its real empty PhysicsBase batch is a distinct
@@ -187,8 +242,10 @@ impl PhysicsScene {
                 }
             }
             if !providers_ready {
-                warn!("constraint {} {} remains unhosted: actual named endpoint RigidbodyBase provider required",
-                    binding.entity, binding.slot);
+                let status = self.constraint_provider_status(live, registry,
+                    binding.definition.endpoints(), missing)?;
+                warn!("constraint {} {} remains unhosted: actual named endpoint RigidbodyBase provider required; constraint_starts_on_spawn={} disable_collision={} {status}",
+                    binding.entity, binding.slot, binding.scheduling.starts_on_spawn(), binding.definition.disable_collision);
                 continue;
             }
             let id = if let Some(entity) = self.entities.iter()

@@ -18,7 +18,17 @@ impl PhysicsScene {
     }
 
     pub(super) fn document_rigid(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
-        self.entities[index].components.find_component(self.rigid_class_range()?, [0x20,0], |handle| {
+        self.document_rigid_with_policy(index, [0x20, 0])
+    }
+
+    ///Construction admission precedes shared Initialize. Query actual linked
+    ///membership with877720 policy0; runtime callers retain policy1 above.
+    pub(super) fn document_rigid_for_construction(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
+        self.document_rigid_with_policy(index, [0, 0])
+    }
+
+    fn document_rigid_with_policy(&self, index: usize, masks: [u32; 2]) -> Result<Option<ComponentHandle>, String> {
+        self.entities[index].components.find_component(self.rigid_class_range()?, masks, |handle| {
             Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                 flags: self.owner(handle)?.flags,
                 start_phases: self.declarations.get(&handle.packed()).map(|declaration| declaration.scheduling.start_phases),
