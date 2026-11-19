@@ -9,6 +9,9 @@ pub(super) fn enabled(scene: &super::super::spatial::Scene) -> bool {
 }
 
 pub(super) struct Meter {
+    blink_epoch:Option<Arc<std::sync::atomic::AtomicU64>>,
+    blink_tick:u64,
+    blink:Option<BlinkMeter>,
     sink:Option<super::super::observation::SourceSamples>,
     identity: Option<(u32, u32, Emitter)>,
     node: u32,
@@ -27,9 +30,11 @@ pub(super) struct Meter {
     route_target_peak:Option<f32>,
     master_target_peak:Option<f32>,
 }
+struct BlinkMeter {epoch:u64,frames:u64,decoded:f32,dry:f32,aux:f32,gain:f32,reported:bool}
 impl Meter {
-    pub(super) fn new(node: u32,sink:Option<super::super::observation::SourceSamples>) -> Self {
+    pub(super) fn new(node: u32,sink:Option<super::super::observation::SourceSamples>,blink_epoch:Option<Arc<std::sync::atomic::AtomicU64>>) -> Self {
         Self {
+            blink_epoch,blink_tick:u64::MAX,blink:None,
             lifetime:sink.is_some(),
             sink,
             identity: None,
@@ -49,6 +54,18 @@ impl Meter {
             master_target_peak:None,
         }
     }
+    pub(super) fn begin_blink_interval(&mut self,tick:u64){
+        if self.blink_tick==tick{return;}
+        self.blink_tick=tick;
+        //Only actual world-component voices establish ambient survival;
+        //player/FX travel receipts cannot substitute for those emitters.
+        if !self.identity.is_some_and(|(_,_,object)|matches!(object,Emitter::Component{..}|Emitter::ComponentJoint{..})){return;}
+        let epoch=self.blink_epoch.as_ref().map_or(0,|epoch|epoch.load(Ordering::Relaxed));
+        if epoch==0 {self.blink=None;}
+        else if self.blink.as_ref().is_none_or(|value|value.epoch!=epoch){
+            self.blink=Some(BlinkMeter{epoch,frames:0,decoded:0.,dry:0.,aux:0.,gain:0.,reported:false});
+        }
+    }
     pub(super) fn identify(&mut self, audio: &ScheduledAudio) {
         if self.identity.is_none() {
             self.identity = audio.event.as_ref().map(|event| {
@@ -64,6 +81,7 @@ impl Meter {
         if !self.reported||self.lifetime {
             for sample in samples {
                 self.decoded_peak = self.decoded_peak.max(sample.abs());
+                if let Some(blink)=&mut self.blink {blink.decoded=blink.decoded.max(sample.abs());}
             }
         }
     }
@@ -85,12 +103,15 @@ impl Meter {
             return;
         }
         self.frames += 1;
+        if let Some(blink)=&mut self.blink {blink.frames+=1;blink.aux=blink.aux.max(aux);}
         for sample in dry {
             self.dry_peak = self.dry_peak.max(sample.abs());
+            if let Some(blink)=&mut self.blink {blink.dry=blink.dry.max(sample.abs());}
         }
         self.aux_peak = self.aux_peak.max(aux);
         for gain in gains {
             self.speaker_gain_peak = self.speaker_gain_peak.max(gain.abs());
+            if let Some(blink)=&mut self.blink {blink.gain=blink.gain.max(gain.abs());}
         }
         self.source_gain = source_gain;
         self.parent_gain = parent_gain;
@@ -104,6 +125,18 @@ impl Meter {
         if !self.reported&&self.decoded_peak > 0. && (self.dry_peak > 0. || self.aux_peak > 0.) {
             self.report("first_nonzero");
         }
+        if let (Some(blink),Some(sink),Some((event,playing,object)))=(&mut self.blink,&self.sink,self.identity){
+            if !blink.reported&&blink.decoded>0.&&(blink.dry>0.||blink.aux>0.) {
+                sink.lock().unwrap_or_else(|error|error.into_inner()).push(super::super::observation::SourceReceipt{
+                    interval:blink.epoch,event,playing_id:playing,object,selected_source:self.node,frames:blink.frames,terminal:false,
+                    route_bus:self.route_bus,route_target_peak:self.route_next_block_gain,master_target_peak:self.master_next_block_gain,
+                    decoded_peak:blink.decoded,dry_peak:blink.dry,aux_peak:blink.aux,gain_peak:blink.gain,
+                    route_next_block_gain:self.route_next_block_gain,master_next_block_gain:self.master_next_block_gain,
+                    reason:"blink_window_first_nonzero_world_source",
+                });
+                blink.reported=true;
+            }
+        }
     }
     fn report(&mut self, reason: &'static str) {
         let Some((event, playing, object)) = self.identity else {
@@ -113,7 +146,7 @@ impl Meter {
             self.node,self.frames,self.decoded_peak,self.dry_peak,self.aux_peak,self.speaker_gain_peak,
             self.source_gain,self.parent_gain,self.route_bus,self.route_next_block_gain,self.master_next_block_gain);
         if let Some(sink)=&self.sink {sink.lock().unwrap_or_else(|error|error.into_inner()).push(super::super::observation::SourceReceipt{
-            event,playing_id:playing,object,selected_source:self.node,frames:self.frames,
+            interval:0,event,playing_id:playing,object,selected_source:self.node,frames:self.frames,
             terminal:reason!="first_nonzero",route_bus:self.route_bus,
             route_target_peak:self.route_target_peak,master_target_peak:self.master_target_peak,
             decoded_peak:self.decoded_peak,

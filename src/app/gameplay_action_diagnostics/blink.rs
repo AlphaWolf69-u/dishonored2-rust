@@ -21,6 +21,31 @@ struct FirstEnvironment {
     duration_end: f32,
     native_zero: bool,
 }
+struct BlinkAudioWindow {
+    epoch:u64,closed:bool,world_source_seen:bool,
+    world_voices:usize,paused_world_voices:usize,master_gain_min:Option<f32>,
+    all_world_paused_seen:bool,unpaused_world_seen:bool,
+}
+impl BlinkAudioWindow {
+    fn observe(&mut self,audio:&app::audio::observation::Snapshot,active:bool){
+        if active {
+            self.world_voices=self.world_voices.max(audio.output.world_component_voices);
+            self.paused_world_voices=self.paused_world_voices.max(audio.output.paused_world_component_voices);
+            self.all_world_paused_seen|=audio.output.world_component_voices>0&&audio.output.world_component_voices==audio.output.paused_world_component_voices;
+            self.unpaused_world_seen|=audio.output.world_component_voices>audio.output.paused_world_component_voices;
+            if let Some(gain)=audio.output.master_target_gain {self.master_gain_min=Some(self.master_gain_min.map_or(gain,|old|old.min(gain)));}
+        }
+        if !self.world_source_seen {
+            if let Some(source)=audio.source_samples.iter().find(|source|source.interval==self.epoch
+                &&matches!(source.object,crate::gameplay::sound::Emitter::Component{..}|crate::gameplay::sound::Emitter::ComponentJoint{..})
+                &&source.decoded_peak>0.&&(source.dry_peak>0.||source.aux_peak>0.)) {
+                self.world_source_seen=true;
+                eprintln!("ACTION_SMOKE_BLINK_WORLD_SOURCE interval={} playing_id={} object={:?} source={:#010x} interval_frames={} decoded_peak={} dry_peak={} aux_peak={} lifetime_peaks_not_used=true stage=post_voice_pre_bus physical_audibility_not_claimed=true",
+                    self.epoch,source.playing_id,source.object,source.selected_source,source.frames,source.decoded_peak,source.dry_peak,source.aux_peak);
+            }
+        }
+    }
+}
 
 pub(super) struct Observation {
     stage: Stage,
@@ -54,6 +79,7 @@ pub(super) struct Observation {
     travel_environment_first: Option<FirstEnvironment>,
     travel_source_seen: bool,
     travel_environment_trace: Option<String>,
+    audio_window:Option<BlinkAudioWindow>,
 }
 
 impl Observation {
@@ -89,7 +115,7 @@ impl Observation {
             travel_owner: None, travel_environments: Vec::new(), travel_emitters: Vec::new(),
             travel_started: false, travel_environment_seen: false, travel_source_seen: false,
             travel_environment_zero_seen: false, travel_environment_first: None,
-            travel_environment_trace: None })
+            travel_environment_trace: None, audio_window:None })
     }
 
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
@@ -334,6 +360,7 @@ impl Observation {
 
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         let p = player(world)?;
+        let blink_active=p.machine.is_active(StateId::BLINKING);
         self.cancel_seen |= p.machine.is_active(StateId::CANCEL_ACTION);
         self.blink_seen |= p.machine.is_active(StateId::BLINKING);
         self.mantle_seen |= p.machine.is_active(StateId::MANTLE);
@@ -341,9 +368,19 @@ impl Observation {
             self.spent |= p.mana() < self.mana_before;
             self.mana_low = self.mana_low.min(p.mana());
         }
+        if blink_active && self.audio_window.is_none(){
+            let epoch=app::audio::observation::begin_blink_window(world)?;
+            self.audio_window=Some(BlinkAudioWindow{epoch,closed:false,world_source_seen:false,world_voices:0,paused_world_voices:0,master_gain_min:None,all_world_paused_seen:false,unpaused_world_seen:false});
+        }
+        if !blink_active {
+            if let Some(window)=self.audio_window.as_mut().filter(|window|!window.closed){
+                app::audio::observation::end_blink_window(world,window.epoch);window.closed=true;
+            }
+        }
         if matches!(self.stage, Stage::Cast | Stage::Recharge) {
             self.observe_travel(world)?;
             let audio = app::audio::observation::snapshot(world);
+            if let Some(window)=&mut self.audio_window {window.observe(&audio,blink_active);}
             self.observe_travel_audio(world, &audio)?;
             if let Some(event) = self.regen_event {
                 for admission in audio.admissions.iter().skip(self.audio_before).filter(|admission| admission.event == event) {
@@ -425,6 +462,12 @@ impl Observation {
                 self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
+                if let Some(window)=&self.audio_window {
+                    let output=app::audio::observation::blink_output(world,window.epoch);
+                    eprintln!("ACTION_SMOKE_BLINK_SCENE_AUDIO interval={} actual_state12_window_closed={} world_component_source_nonzero={} final_master_interval={output:?} observed_world_voices_max={} observed_paused_world_voices_max={} all_world_components_paused_at_an_observation={} unpaused_world_components_observed={} observed_master_target_min={:?} aggregate_includes_real_travel_and_ambient_not_individual_bus_attribution=true physical_audibility_not_claimed=true",
+                        window.epoch,window.closed,window.world_source_seen,window.world_voices,window.paused_world_voices,window.all_world_paused_seen,window.unpaused_world_seen,window.master_gain_min);
+                    if !window.world_source_seen {eprintln!("ACTION_SMOKE_NOT_COVERED check=blink_environmental_source_survival reason=no_nonzero_world_component_source_in_actual_state12_window actual_pause_counts_reported=true no_substitute_sound_injected=true");}
+                }
                 if !(self.travel_environment_seen || self.travel_environment_zero_seen) || !self.travel_source_seen {
                     return Err("Blink cannot complete without actual positive ENV display or source-proven native zero-weight publication, plus nonzero sound source receipts".into());
                 }

@@ -50,15 +50,17 @@ pub(super) struct Scene {
     ///component, including its camera-joint sound object, not equipment.
     breath_parameter: Option<(u32, f32)>,
     observe_sources: Option<super::observation::SourceSamples>,
+    blink_epoch:Option<Arc<std::sync::atomic::AtomicU64>>,
     closed: bool,
 }
 impl Default for Scene {
     fn default() -> Self { Self { listener: None, motion: Default::default(), minimum: environment::Levels::default(), reflection: false, collects_environment: false,
         rule: Rule::Speakers, panner: Stereo::default(),
-        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None, breath_parameter: None, observe_sources: None, closed: false } }
+        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None, breath_parameter: None, observe_sources: None, blink_epoch:None, closed: false } }
 }
 impl Scene {
-    pub(super) fn observe_sources(&mut self,sink:super::observation::SourceSamples) { self.observe_sources=Some(sink); }
+    pub(super) fn observe_sources(&mut self,sink:super::observation::SourceSamples,blink:Arc<std::sync::atomic::AtomicU64>) { self.observe_sources=Some(sink);self.blink_epoch=Some(blink); }
+    pub(super) fn blink_epoch(&self)->Option<Arc<std::sync::atomic::AtomicU64>>{self.blink_epoch.clone()}
     pub(super) fn observes_sources(&self)->bool {self.observe_sources.is_some()}
     pub(super) fn source_observer(&self)->Option<super::observation::SourceSamples>{self.observe_sources.clone()}
     pub(super) fn close(&mut self) { self.closed=true; }

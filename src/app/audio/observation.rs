@@ -6,7 +6,7 @@ use crate::gameplay::sound::playing::{Notification, NotificationKind};
 use bevy::audio::{Decodable, Source};
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     thread::JoinHandle,
@@ -20,10 +20,15 @@ pub(in crate::app) struct Observation {
     ended: Mutex<std::collections::HashSet<u32>>,
     ready: Mutex<std::collections::HashSet<u32>>,
     source_samples: SourceSamples,
+    blink_epoch:Arc<AtomicU64>,
+    next_blink_epoch:u64,
 }
 pub(in crate::app::audio) type SourceSamples=Arc<Mutex<Vec<SourceReceipt>>>;
 #[derive(Clone,Debug)]
 pub(in crate::app) struct SourceReceipt {
+    ///Zero denotes the existing lifetime receipt; nonzero is an explicitly
+    ///observed Blink interval, never a reset of its lifetime measurements.
+    pub interval:u64,
     pub event:u32,pub playing_id:u32,pub object:Emitter,pub selected_source:u32,
     pub frames:u64,pub terminal:bool,pub route_bus:Option<u32>,
     pub route_target_peak:Option<f32>,pub master_target_peak:Option<f32>,
@@ -42,6 +47,25 @@ struct Consumed {
 struct Consumer {
     stop: AtomicBool,
     consumed: Mutex<Consumed>,
+    blink:Mutex<BlinkOutput>,
+}
+#[derive(Clone,Copy,Default,Debug)]
+pub(in crate::app) struct BlinkOutput {pub epoch:u64,pub samples:u64,pub nonzero_samples:u64,pub peak:f32}
+
+pub(in crate::app) fn begin_blink_window(world:&mut World)->Result<u64,String>{
+    let mut observer=world.get_resource_mut::<Observation>().ok_or("Blink output observation absent")?;
+    observer.next_blink_epoch=observer.next_blink_epoch.checked_add(1).ok_or("Blink output epoch exhausted")?;
+    let epoch=observer.next_blink_epoch;
+    observer.blink_epoch.store(epoch,Ordering::Relaxed);
+    Ok(epoch)
+}
+pub(in crate::app) fn end_blink_window(world:&World,epoch:u64){
+    if let Some(observer)=world.get_resource::<Observation>(){let _=observer.blink_epoch.compare_exchange(epoch,0,Ordering::Relaxed,Ordering::Relaxed);}
+}
+pub(in crate::app) fn blink_output(world:&World,epoch:u64)->Option<BlinkOutput>{
+    let output=world.get_resource::<Output>()?;
+    let value=*output.consumer.blink.lock().unwrap_or_else(|error|error.into_inner());
+    (value.epoch==epoch).then_some(value)
 }
 /// App owns this resource, so its consumer joins before the Runtime's outer
 /// AudioSession/CatalogSession fences are released. Decoder/source Arcs keep
@@ -70,7 +94,8 @@ pub(super) fn attach(world: &mut World) {
         return;
     };
     let source_samples=world.resource::<Observation>().source_samples.clone();
-    if let Some(mut scene)=world.get_resource_mut::<spatial::Scene>(){scene.observe_sources(source_samples);}
+    let blink_epoch=world.resource::<Observation>().blink_epoch.clone();
+    if let Some(mut scene)=world.get_resource_mut::<spatial::Scene>(){scene.observe_sources(source_samples,blink_epoch);}
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         completions.playing.observe_notifications(observer.clone());
     }
@@ -126,12 +151,14 @@ pub(super) fn install_output(world: &mut World, output: bevy_backend::OutputAudi
     let rate = decoder.sample_rate().get();
     let consumer = Arc::new(Consumer::default());
     let thread_consumer = consumer.clone();
+    let blink_epoch=world.resource::<Observation>().blink_epoch.clone();
     let worker = std::thread::Builder::new()
         .name("audio output observation".into())
         .spawn(move || {
             let start = Instant::now();
             let mut blocks = 0u64;
             while !thread_consumer.stop.load(Ordering::Acquire) {
+                let interval=blink_epoch.load(Ordering::Relaxed);
                 // A device callback pulls a complete processing quantum. Use that
                 // same Iterator and sample format, then pace its next real block.
                 let mut consumed = Consumed::default();
@@ -147,6 +174,14 @@ pub(super) fn install_output(world: &mut World, output: bevy_backend::OutputAudi
                     consumed.peak = consumed.peak.max(sample.abs());
                 }
                 let failed = consumed.error.is_some();
+                if interval!=0 {
+                    //Reuse the existing final-output scan, after bus DSP.
+                    let mut blink=thread_consumer.blink.lock().unwrap_or_else(|error|error.into_inner());
+                    if blink.epoch!=interval {*blink=BlinkOutput{epoch:interval,..Default::default()};}
+                    blink.samples+=consumed.samples;
+                    blink.nonzero_samples+=consumed.nonzero_samples;
+                    blink.peak=blink.peak.max(consumed.peak);
+                }
                 {
                     let mut total = thread_consumer
                         .consumed
@@ -239,6 +274,10 @@ pub(in crate::app) struct OutputSnapshot {
     pub present: bool,
     pub blocks: u64,
     pub voices: usize,
+    pub paused_voices:usize,
+    pub world_component_voices:usize,
+    pub paused_world_component_voices:usize,
+    pub master_target_gain:Option<f32>,
     pub fallback_voices: usize,
     pub pending_actions: usize,
     pub pending_plays: usize,

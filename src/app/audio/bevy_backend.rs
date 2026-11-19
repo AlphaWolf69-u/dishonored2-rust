@@ -104,8 +104,14 @@ impl Engine {
     pub(super) fn observe_output(&self) -> super::observation::OutputSnapshot {
         let Some(shared) = &self.shared else { return Default::default() };
         let shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+        let world_voice=|voice:&&Voice|matches!(voice.audio.emitter(),crate::gameplay::sound::Emitter::Component{..}|crate::gameplay::sound::Emitter::ComponentJoint{..})
+            &&!voice.control.finished.load(Ordering::Relaxed);
         super::observation::OutputSnapshot {
             present: true, blocks: shared.tick, voices: shared.voices.len(),
+            paused_voices:shared.voices.iter().filter(|voice|voice.control.paused.load(Ordering::Relaxed)).count(),
+            world_component_voices:shared.voices.iter().filter(world_voice).count(),
+            paused_world_component_voices:shared.voices.iter().filter(world_voice).filter(|voice|voice.control.paused.load(Ordering::Relaxed)).count(),
+            master_target_gain:Some(shared.buses.master_next_block_gain()),
             fallback_voices: shared.fallbacks.len(), pending_actions: shared.pending_actions.len(),
             pending_plays: shared.pending_plays.len(), due: shared.due.len(),
             retiring_objects: shared.retiring_objects.len(), object_voices: shared.object_voices.values().sum(),

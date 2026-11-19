@@ -683,7 +683,7 @@ impl Definition {
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             source_ready: AtomicU32::new(0), threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
-            music_update: Mutex::new(None), observe_sources: observation::enabled(scene), source_observer:scene.source_observer(),
+            music_update: Mutex::new(None), observe_sources: observation::enabled(scene), source_observer:scene.source_observer(), blink_epoch:scene.blink_epoch(),
             music_cost: self.music.as_ref().and_then(|_| music::UpdateCosts::new(self.nodes[self.root].id, self.sounds.len())),
             routes: Mutex::new(Arc::new(Vec::new())), switch_count: AtomicU32::new(0), activity: mixer.activity.clone(),
             registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
@@ -704,6 +704,7 @@ struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, rays: V
     state_routes:Vec<crate::gameplay::sound::mix::StateRoute>,
     observe_sources:bool,
     source_observer:Option<super::observation::SourceSamples>,
+    blink_epoch:Option<Arc<std::sync::atomic::AtomicU64>>,
     music_update: Mutex<Option<MusicUpdate>>,
     music_cost: Option<music::UpdateCosts>,
     transitions: Vec<AtomicU32>,
@@ -962,7 +963,7 @@ impl Runtime {
                 resampler: None,
                 gain: GainRamp::default(), gain_tick: None, state_values:Default::default(),
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false, virtualized: false,
-                meter:control.observe_sources.then(||Box::new(observation::Meter::new(definition.nodes[node].id,control.source_observer.clone()))),
+                meter:control.observe_sources.then(||Box::new(observation::Meter::new(definition.nodes[node].id,control.source_observer.clone(),control.blink_epoch.clone()))),
                 _activity: control.registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
@@ -1146,7 +1147,7 @@ impl Runtime {
         match (&mut self.state, &node.kind) {
             (State::Sound { frame, random, looping, silence, stream, resampler, gain: ramp, gain_tick, filters, output_filters,
                 routes, auxiliary, auxiliary_initialized, virtualized, meter, state_values, _activity: _ }, Kind::Sound(index)) => {
-                if let Some(meter)=meter {meter.identify(audio);}
+                if let Some(meter)=meter {meter.identify(audio);meter.begin_blink_interval(now/1024);}
                 let sound = &definition.sounds[*index];
                 //State transitions run on the shared output quantum. Sample
                 //their actual subscriptions once per block, never per sample
