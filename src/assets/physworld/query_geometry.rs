@@ -65,6 +65,26 @@ impl std::fmt::Debug for QueryShapes {
 }
 
 impl QueryShapes {
+    ///Shape virtual+68 consumed by c92500 before signed-bfloat16 quantization.
+    ///Box c82480/capsule cb3390 and sphere ca5ed0 return fixed angles; polytope cb0e00
+    ///uses c82520's authored minHalfAngle byte expanded to an unsigned short.
+    pub(crate) fn rotation_limit_measure(&self,item:usize)->Result<f32,String>{
+        let shape=self.get(item)?;
+        match (&shape.geometry,shape.header.shape_type){
+            (QueryGeometry::Polytope(_),3|5)=>Ok(f32::from_bits(0x3fc9_0fdb)),
+            (QueryGeometry::Convex(_),2)=>Ok(f32::from_bits(0x4049_0fdb)),
+            (QueryGeometry::Polytope(polytope),_)=>{
+                //cb0e00's no-face result remains0xffff; do not substitute a
+                //geometric estimate or radius for the authored face angle.
+                let minimum=polytope.faces.iter().map(|face|u16::from(face.min_half_angle)<<8)
+                    .min().unwrap_or(u16::MAX);
+                Ok(f32::from(minimum)*f32::from_bits(0x37c9_10a4)*f32::from_bits(0x4000_0000))
+            }
+            //Base convex and actual compound vtables use c96770 (INT3).
+            //Their flag2 predicate must not reach this virtual in c92500.
+            _=>Err(format!("shape type {} does not implement rotation-limit measurement",shape.header.shape_type)),
+        }
+    }
     pub(crate) fn retain_source(&mut self, source: std::sync::Arc<super::source::ShapeSource>) {
         self.resources
             .get_or_insert_with(Default::default)

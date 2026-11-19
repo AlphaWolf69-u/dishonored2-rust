@@ -2784,3 +2784,14 @@ window-tag metadata is resolved with the same Observable declaration owner.
 No CPU/RAM/FPS improvement is claimed or measured. Future named material
 parameter publication must reuse the canonical renderer override owner; do
 not introduce a per-tank material cache to hide that documented gap.
+
+Crash repair prediction (2026-11-19): rotation-limit measurement adds the
+source's one face scan when a polytope attaches to a motion; box/sphere angles
+are constants and compound flag4 skips the operation. It borrows already
+resident face metadata, allocates nothing and adds no per-frame scan/cache.
+Released placed chunks register one canonical clock record on actual demand,
+preserving the existing record when present and retiring it with the actor.
+Expect the two former abort paths to complete; no frame-time improvement or
+RAM reduction is claimed. Verification should exercise real bolt pickup,
+nest-fragment activation and speaker-support release, followed by normal exit,
+without unrelated whole-CPU benchmarks.

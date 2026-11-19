@@ -252,7 +252,11 @@ fn child_instigator(
     if !scene.breakable_has_rigid(child)? {
         return Ok(());
     }
-    let clock = world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>();
+    let mut clock = world.resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>();
+    //Placed prebuilt chunks use the same lazy874c50 clock admission as other
+    //placed actors.80e9c0 synchronization intentionally does nothing outside
+    //bent time, so it cannot be the prerequisite for7278e0's timestamp read.
+    super::time_sync::register_entity_time(scene,live,&mut clock,child)?;
     scene.set_rigid_instigator(
         live,
         child,

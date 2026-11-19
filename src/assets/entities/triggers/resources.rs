@@ -71,9 +71,9 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
         Ok(self.shapes.get(shape).and_then(Option::as_ref).ok_or("trigger shape mutability resource is missing")?.is_mutable)
     }
     fn rotation_limit_measure(&self,shape:usize)->Result<f32,String>{
-        self.shapes.get(shape).and_then(Option::as_ref).ok_or("trigger rotation-limit shape is missing")?;
-        //Both actual compound vtables point +68 toc96770, an INT3 virtual.
-        Err("compound shape does not implement rotation-limit measurement".into())
+        let shape=self.shapes.get(shape).and_then(Option::as_ref).ok_or("trigger rotation-limit shape is missing")?;
+        shape.query_shapes.rotation_limit_measure(shape.query_shapes.root()).map_err(|error|
+            format!("{} root={} type={} flags={:#x}: {error}",shape.path,shape.query_shapes.root(),shape.header.shape_type,shape.header.flags))
     }
     fn cached_mass(&self,shape:usize)->Result<Option<physworld::mass::PrincipalMassProperties>,String>{
         let shape=self.shapes.get(shape).and_then(Option::as_ref).ok_or("trigger mass shape is missing")?;

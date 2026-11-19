@@ -26208,3 +26208,27 @@ Blink exit858010 tests controller+2d0 (PLAYER_MODE) before ground/falling recove
 Windowless Edge of the World gameplay completed an underwater Blink in debug revision 1f92ff34. A normal button release entered and exited state 12 without an abort, charged 20 mana exactly once, and moved the swimming feet 0.424 m to within 0.0009 m of the selected destination near the dock wall. Cooldown and re-aim completed. The player remained submerged. The same revision completed 120 physics steps with both hanging lamps linked to their real bodies and exited cleanly after withdrawing all joints. Both lamps were asleep during this observation. The opened window's physical handle matched its animated joint at Z 18.583967, and its blocking proxy had been removed.
 
 The open-water run entered swimming with Blink already equipped on land and used it without reselecting. From the same waterfront position, a physical turn and release moved the player 9.85 m while submerged. The endpoint was 1.05 cm from the requested swimming-feet position. One payment reduced mana from 100 to 80, cooldown and re-aim completed, and the level exited cleanly. The main release independently completed the shorter submerged cast beside the dock with a 0.73 mm endpoint difference.
+
+Dynamic attachment rotation limits (2026-11-19): `ported` shape virtual+68
+dispatch through the canonical retained QueryShapes owner. c92500 already
+checks body quality0x10000 and selected shape flag2 before requesting it.
+Box c82480/capsule cb3390 return bits3fc90fdb; sphere ca5ed0 returns40490fdb;
+polytope cb0e00 uses c82520's minimum authored face minHalfAngle byte shifted8,
+then multiplies by bits37c910a4 and2 in source order. Actual compound and base
+convex INT3 virtuals remain unsupported if their source predicate is violated.
+The previous adapter rejected every shape as a compound, aborting valid
+stuck-bolt pickup and nest-fragment motion attachment. Read-only installed
+metadata census covered226 bolt/nest/tank resources with zero unresolved
+formats: regular bolt HKT is type1/flags943,6 faces/min124; nest chunk02b is
+type1/flags943,67 faces/min0, and detachable01d has42 faces/min0. Actual nest
+compound roots and scaled alias wrappers are type12/flags4 and therefore
+correctly skip this virtual. Evidence: local crash-shape-census-20261119.json.
+
+Breakable released-chunk clocks (2026-11-19): `ported` canonical lazy874c50
+clock registration from the actual Scene selector before7278e0's instigator
+timestamp/delta read. Placed prebuilt chunks need not have requested a clock
+earlier, and80e9c0 synchronization intentionally does nothing outside bent
+time. Existing offsets/countdowns remain intact; normal entity retirement
+still releases the same clock record. This closes the speaker-support crash
+without swallowing a missing clock or inventing a timestamp. These changes
+have source/static validation only; root owns the combined action/exit run.
