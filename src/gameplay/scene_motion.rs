@@ -123,12 +123,6 @@ impl MotorControl {
             world.set(&self.entity, Some(false), None, None, None)?;
             return Ok(true);
         }
-        let enabled = if self.state_pending {
-            self.state_pending = false;
-            Some(self.enabled)
-        } else {
-            None
-        };
         let Some((_, p, v, a)) = world.get(&self.entity)? else {
             return Ok(true);
         };
@@ -137,7 +131,6 @@ impl MotorControl {
         } else {
             (seconds / self.remaining).min(1.)
         };
-        self.remaining -= seconds;
         //52f3c0: interpolate from CURRENT parameters using the remaining time.
         //Values below141ab2294 are zeroed before the two multiplications.
         let blend = |current: f32, target: f32| {
@@ -152,11 +145,13 @@ impl MotorControl {
         };
         world.set(
             &self.entity,
-            enabled,
+            self.state_pending.then_some(self.enabled),
             self.position.map(|t| blend(p, t)),
             self.velocity.map(|t| blend(v, t)),
             self.acceleration.map(|t| blend(a, t)),
         )?;
+        self.state_pending = false;
+        self.remaining -= seconds;
         Ok(fraction >= 1.)
     }
 }
@@ -546,14 +541,15 @@ impl SceneMotion {
     }
     pub(crate) fn advance_motor_controls(&mut self, seconds: f32, world: &mut impl MotorControls) -> Result<(), String> {
         for graph in &mut self.graphs {
-            let mut index = 0;
-            while index < graph.motor_controls.len() {
-                if graph.motor_controls[index].advance(seconds, world)? {
-                    graph.motor_controls.remove(index);
-                } else {
-                    index += 1;
+            let mut result = Ok(());
+            graph.motor_controls.retain_mut(|control| {
+                if result.is_err() { return true; }
+                match control.advance(seconds, world) {
+                    Ok(done) => !done,
+                    Err(error) => { result = Err(error); true }
                 }
-            }
+            });
+            result?;
         }
         Ok(())
     }
