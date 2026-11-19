@@ -24123,6 +24123,28 @@ Predicted cost: no per-projectile mesh/material reupload, no additional renderin
   Start's0x20 dependency lookup unchanged. Existing checked generation and
   actual pool ownership remain in force. No builds or tests were run.
 
+- **Rigid collision damage and thrown breakables (2026-11-19), ported.**
+  The carry throw (83de90) arms Breakable (7edfa0) after detachment. A drop
+  uses 4c7020. Ordinary solved impacts follow cf1a10 (positive normal impulse
+  begins on a type-zero Jacobian), 8527e0 (recipient body bit 0x80), 8098e0
+  and Throwable's 4c7b30 override. 807a20/807b10 measure speed lost along
+  the incoming direction and compute kinetic energy from the authored mass.
+  807f00, 8071e0 and 807480 apply the declared amount, instigator and
+  self-damage policy. Predictive breakthrough (4c7c50) still has its own
+  breakable-target gate. 4c7f20 clears the drop threshold on removal from
+  the physics update roster; 4c7f40 clears deferred contacts on readmission.
+  A rigid definition shares its damage declaration through the level catalog.
+  Per-body target history is allocated on first damage and released at Stop.
+  The solver reuses a list of started manifold keys through frame delivery.
+  The installed mulberry mead declaration has 2 health and collision damage
+  of 1 above energy 0.1; the small Throwable uses speed thresholds 2 for
+  throws and 15 for drops. The previous carry receipt showed collision at
+  solver frame 381 with body flags 0x8a and positive impulse 1.78866.
+  The carry diagnostic now requires post-release damage and an authored
+  breakable step on the same entity. Runtime acceptance belongs to the
+  combined gameplay build.
+
+
 Water Stop publication (2026-11-16): `physics_scene::lifetime::Host::stop` drains the actual `809880` model/event exit queue immediately after Water contact withdrawal, before component and managed identity destruction. This covers exits produced after the frame water-publication pass and during world shutdown; failed publications retain their queue rather than being discarded with the outgoing scene. No timing or appearance verification is claimed.
 
 

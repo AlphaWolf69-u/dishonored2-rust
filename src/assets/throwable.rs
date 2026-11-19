@@ -9,9 +9,7 @@ use std::sync::Arc;
 pub(crate) struct Definition {
     pub rigid: Arc<entities::rigid_body::Definition>,
     pub settings: Settings,
-    /// The base physics damage declaration is acquired with its owner, never
-    /// read or parsed from inside a live contact callback (807170/8071e0).
-    pub damage: Option<Arc<crate::assets::damage::Declaration>>,
+
 }
 impl Definition {
     pub(crate) fn from_resolved(
@@ -52,13 +50,9 @@ impl Definition {
             .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
             .map(|name| crate::assets::damage::Declaration::acquire(catalog, name))
             .transpose()?;
-        let contact_damage = entities::scene_motion::atom(fields, "m_damage")
-            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
-            .map(|name| crate::assets::damage::Declaration::acquire(catalog, name))
-            .transpose()?;
         Ok(Arc::new(Self {
-            damage: contact_damage,
             rigid: Arc::new(entities::rigid_body::Definition {
+                damage: entities::rigid_body::contact_damage(catalog, fields)?,
                 settings: entities::rigid_body::from_resolved(entity, declaration, fields)?,
                 declaration_flags: entities::rigid_body::declaration_flags(fields)?,
                 scheduling,

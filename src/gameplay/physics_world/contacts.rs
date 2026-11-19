@@ -159,6 +159,7 @@ pub(crate) struct Contacts {
     callback_admission: Option<(usize, bool)>,
     geometry: super::contact_geometry::GeometryWorkspace,
     triggers: TriggerEvents,
+    started_impulses: Vec<Key>,
     validation_commands: Vec<Key>,
     validation_cursor: usize,
     broadphase_triggers: HashMap<[u32; 2], u64>,
@@ -264,6 +265,7 @@ impl Contacts {
             callback_admission: None,
             geometry: Default::default(),
             triggers: Default::default(),
+            started_impulses: Vec::new(),
             validation_commands: Vec::new(),
             validation_cursor: 0,
             broadphase_triggers: Default::default(),
@@ -403,6 +405,26 @@ impl Contacts {
         self.retired.clear();
         self.retired_cursor = 0;
         Ok(())
+    }
+    /// A retained Jacobian stays valid until the accepted frame has delivered
+    /// its impulse notifications. Only transitions with a live recipient enter
+    /// the list; sustained resting contacts have no per-frame publication.
+    pub(crate) fn started_impulse(&self, index: usize) -> Option<SolvedContact> {
+        let key = *self.started_impulses.get(index)?;
+        let entry = self.manifolds.get(&key).expect("accepted impulse manifold");
+        Some(SolvedContact {
+            bodies: key.bodies,
+            shape_keys: key.shapes,
+            material_ids: entry.material_ids,
+            normal: entry.normal,
+            points: entry.points,
+            impulses: entry.state.normal_impulses,
+            count: entry.correspondence.count,
+            event_kind: 1,
+        })
+    }
+    pub(crate) fn finish_impulse_delivery(&mut self) {
+        self.started_impulses.clear();
     }
     pub(crate) fn dispatch_prepared(
         &mut self,
@@ -1037,6 +1059,24 @@ impl<G: ContactGeometry, E: PublicationEvents + BodyCreationCallbacks> Simulatio
                 .map(|slot| slot.map_or(zero, |i| velocities[i]));
             let (mut a, mut b) = (a, b);
             let result = rows.solve(&mut entry.state, &mut a, &mut b, phase.flags & 2 != 0);
+            // cf1a10: CONTACT_IMPULSE STARTED is an edge of the actual
+            // solved normal impulses on a type-zero stream. Its cache bit
+            // persists between steps. 8527e0 selects recipient body flag 0x80.
+            if phase.flags & 2 != 0
+                && rows.stream_type == 0
+                && entry.callback_state.modifier_flags & 0x80 != 0
+            {
+                let positive = entry.state.normal_impulses[..usize::from(rows.count)]
+                    .iter()
+                    .any(|&impulse| impulse > 0.);
+                let flags = &mut entry.callback_state.contact_flags;
+                if positive && *flags & 1 == 0 {
+                    *flags = (*flags | 1) & !6;
+                    self.started_impulses.push(*key);
+                } else if !positive {
+                    *flags &= !1;
+                }
+            }
             // c54fc9 invokes cf1fe0 once for each final phase, including the
             // optional post-pass. Preserve each validation packet in order.
             if phase.flags & 2 != 0

@@ -79,8 +79,6 @@ pub(crate) struct State {
     contacts: [Option<Contact>; 4],
     contact_count: usize,
     contact_delivery: u8,
-    damage_frame: i32,
-    damage_targets: Vec<EntityId>,
 }
 impl State {
     pub fn new(source: Arc<crate::assets::throwable::Definition>) -> Self {
@@ -98,8 +96,14 @@ impl State {
             contacts: [None; 4],
             contact_count: 0,
             contact_delivery: 0,
-            damage_frame: -1,
-            damage_targets: Vec::new(),
+        }
+    }
+    /// 4c7f20/4c7f40 extend the base update-roster removal and addition.
+    pub fn update_membership_changed(&mut self, scheduled: bool) {
+        if scheduled {
+            self.clear_contacts();
+        } else {
+            self.flags &= !4;
         }
     }
     pub fn flags(&self) -> u8 {
@@ -150,7 +154,6 @@ impl State {
         self.contacts.fill(None);
         self.contact_count = 0;
         self.contact_delivery = 0;
-        self.damage_targets.clear();
     }
     pub fn contact_delivery(&self) -> u8 {
         self.contact_delivery
@@ -169,26 +172,6 @@ impl State {
     }
     pub fn mark_npc_hit(&mut self) {
         self.flags |= 0x20;
-    }
-    ///8071e0 suppresses duplicate damage to the same target in one frame.
-    pub fn damaged_in_frame(&mut self, frame: i32, target: EntityId) -> bool {
-        if self.damage_frame != frame {
-            self.damage_frame = frame;
-            self.damage_targets.clear();
-        }
-        self.damage_targets.contains(&target)
-    }
-    pub fn mark_damaged_in_frame(&mut self, target: EntityId) -> Result<(), String> {
-        self.damage_targets
-            .try_reserve(1)
-            .map_err(|e| format!("Throwable damage target admission: {e}"))?;
-        self.damage_targets.push(target);
-        Ok(())
-    }
-    pub fn reserve_damage_target(&mut self) -> Result<(), String> {
-        self.damage_targets
-            .try_reserve(1)
-            .map_err(|e| format!("Throwable damage target admission: {e}"))
     }
     pub fn thrown(&self) -> bool {
         self.flags & 8 != 0

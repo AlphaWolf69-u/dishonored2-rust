@@ -200,6 +200,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                     let name = atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl"))
                         .ok_or("RigidBody declaration identity is absent")?;
                     let definition = Arc::new(super::rigid_body::Definition {
+                        damage: super::rigid_body::contact_damage(catalog, &fields)?,
                         settings: super::rigid_body::from_resolved("", name, &fields)?,
                         declaration_flags: super::rigid_body::declaration_flags(&fields)?,
                         scheduling: Arc::new(components::scheduling(&fields,

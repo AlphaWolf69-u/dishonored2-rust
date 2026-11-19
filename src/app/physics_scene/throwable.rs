@@ -15,6 +15,15 @@ pub(in crate::app) struct BindingPose {
     ///the caller's actual parent/joint owner. None preserves the world pose.
     pub initial_pose: Option<ReferenceFrame>,
 }
+/// Armed only by the normal-input carry diagnostic. The receipt survives a
+/// same-frame body removal and retains neither the object nor its resources.
+#[derive(Debug)]
+pub(in crate::app) struct ThrowObservation {
+    pub target: EntityId,
+    pub impact: Option<(EntityId, [f32; 3], f32)>,
+    pub shattered: bool,
+}
+
 impl PhysicsScene {
     ///4c9560 drains each actual Throwable's inline contact queue in LIFO
     ///order. A failed host publication retains both the contact and its stage.
@@ -26,7 +35,6 @@ impl PhysicsScene {
         player: Option<&crate::gameplay::player::Player>,
     ) -> Result<(), String> {
         use bevy_math::{Mat3, Vec3};
-        let marker = clock.clock().map_err(str::to_owned)?.frame_marker();
         //The scheduled source prefix owns its callbacks; this does not scan
         //render placements or construct actors for unadmitted declarations.
         let count = usize::try_from(self.throwables.roster.sorted_start)
@@ -110,66 +118,10 @@ impl PhysicsScene {
                             events,
                         )?;
                     } else if contact.damage > 0. {
-                        let declaration = state.source.damage.clone();
-                        if let Some(declaration) = declaration {
-                            let target = contact.bodies[1].entity;
-                            let already = self
-                                .rigid_component_mut(handle)?
-                                .throwable_mut()?
-                                .damaged_in_frame(marker, target);
-                            if !already {
-                                self.rigid_component_mut(handle)?
-                                    .throwable_mut()?
-                                    .reserve_damage_target()?;
-                                let component = self.rigid_component(handle)?;
-                                let origin_velocity =
-                                    Vec3::from_array(self.entities[index].frame.velocities[0]);
-                                let direction = origin_velocity
-                                    / origin_velocity
-                                        .length_squared()
-                                        .max(f32::MIN_POSITIVE)
-                                        .sqrt();
-                                let mut params =
-                                    crate::gameplay::damage::Parameters::from_declaration(
-                                        &declaration,
-                                    );
-                                params.hit_location = Some(Vec3::from_array(contact.position));
-                                params.hit_normal = Some(Vec3::from_array(contact.normal));
-                                params.hit_direction = direction;
-                                params.inflictor = Some(id);
-                                //Rigid collision-data vtable141c74578+30 is
-                                //06d040 (BODY_REGION_NONE);780ac0 also sets bit0.
-                                params.hit_region = 0;
-                                params.affected_regions = 1;
-                                let ignore_delay = crate::platform::console::shared()
-                                    .read()
-                                    .cvars
-                                    .float("ark_physics_impulser_ignore_delay")
-                                    .ok_or("physics instigator delay absent")?;
-                                params.attacker =
-                                    if ((clock.entity_time(id).map_err(str::to_owned)?
-                                        - component.instigator_time)
-                                        as f32)
-                                        < ignore_delay
-                                    {
-                                        component.instigator.filter(|id| live.get(*id).is_some())
-                                    } else {
-                                        None
-                                    };
-                                let greater = player
-                                    .filter(|player| player.managed_entity() == params.attacker)
-                                    .filter(|player| player.carrying_greater_throw());
-                                let amount = contact.damage
-                                    * greater.map_or(1., |player| {
-                                        player.carrying_throw_damage_multiplier()
-                                    });
-                                params.set_amount(&declaration, amount.floor(), greater.is_none());
-                                self.damage_entity(live, events, target, &params)?;
-                                self.rigid_component_mut(handle)?
-                                    .throwable_mut()?
-                                    .mark_damaged_in_frame(target)?;
-                            }
-                        }
+                        self.deliver_rigid_impact_damage(
+                            live, events, clock, player, handle, contact.bodies[1].entity,
+                            contact.position, contact.normal, contact.damage, false,
+                        )?;
                     }
                     self.rigid_component_mut(handle)?
                         .throwable_mut()?
@@ -181,67 +133,11 @@ impl PhysicsScene {
                     .contact_delivery()
                     == 1
                 {
-                    let state = self.rigid_component(handle)?.throwable()?;
-                    if contact.damage > 0. && state.source.rigid.declaration_flags & 0x40 != 0 {
-                        if let Some(declaration) = state.source.damage.clone() {
-                            let other = *self
-                                .shared_indices
-                                .get(&contact.bodies[1].entity)
-                                .ok_or("self-damage other actor absent")?;
-                            let component = self.rigid_component(handle)?;
-                            let velocity =
-                                Vec3::from_array(self.entities[other].frame.velocities[0]);
-                            let direction =
-                                velocity / velocity.length_squared().max(f32::MIN_POSITIVE).sqrt();
-                            let mut params =
-                                crate::gameplay::damage::Parameters::from_declaration(&declaration);
-                            params.hit_location = Some(Vec3::from_array(contact.position));
-                            params.hit_normal = Some(Vec3::from_array(contact.normal));
-                            params.hit_direction = direction;
-                            params.inflictor = Some(contact.bodies[1].entity);
-                            params.hit_region = 0;
-                            params.affected_regions = 1;
-                            let delay = crate::platform::console::shared()
-                                .read()
-                                .cvars
-                                .float("ark_physics_impulser_ignore_delay")
-                                .ok_or("physics instigator delay absent")?;
-                            params.attacker = if ((clock.entity_time(id).map_err(str::to_owned)?
-                                - component.instigator_time)
-                                as f32)
-                                < delay
-                            {
-                                component.instigator.filter(|id| live.get(*id).is_some())
-                            } else {
-                                None
-                            };
-                            let greater = player
-                                .filter(|p| p.managed_entity() == params.attacker)
-                                .filter(|p| p.carrying_greater_throw());
-                            let amount = contact.damage
-                                * greater.map_or(1., |p| p.carrying_throw_damage_multiplier());
-                            params.set_amount(&declaration, amount.floor(), greater.is_none());
-                            //807480's fallback follows808480: it changes only
-                            //attribution, not the already evaluated damage.
-                            if params.attacker.is_none() {
-                                let body = component.body().ok_or("self-damage body absent")?;
-                                let player_owned = self
-                                    .world
-                                    .read()
-                                    .map_err(|_| "self-damage world poisoned")?
-                                    .storage
-                                    .bodies
-                                    .get(body)
-                                    .ok_or("self-damage body stale")?
-                                    .flags
-                                    & 0x80000
-                                    != 0;
-                                if player_owned {
-                                    params.attacker = player.and_then(|p| p.managed_entity());
-                                }
-                            }
-                            self.damage_entity(live, events, id, &params)?;
-                        }
+                    if contact.damage > 0. {
+                        self.deliver_rigid_impact_damage(
+                            live, events, clock, player, handle, contact.bodies[1].entity,
+                            contact.position, contact.normal, contact.damage, true,
+                        )?;
                     }
                     self.rigid_component_mut(handle)?
                         .throwable_mut()?
@@ -253,42 +149,7 @@ impl PhysicsScene {
                     .contact_delivery()
                     == 2
                 {
-                    let state = self.rigid_component(handle)?.throwable()?;
-                    if !state.first_hit() {
-                        let profile = state.damping_profile;
-                        let body = self
-                            .rigid_component(handle)?
-                            .body()
-                            .ok_or("contact damping body absent")?;
-                        if let Some(profile) = profile {
-                            let dynamic = {
-                                let world = self
-                                    .world
-                                    .read()
-                                    .map_err(|_| "contact damping world poisoned")?;
-                                world
-                                    .storage
-                                    .bodies
-                                    .get(body)
-                                    .ok_or("contact damping body stale")?
-                                    .flags
-                                    & 5
-                                    == 0
-                            };
-                            if dynamic {
-                                self.body_commands
-                                    .enqueue_motion_properties(body, profile, false)?;
-                            }
-                        }
-                        events.post(Event {
-                            id: 0x131,
-                            target: Some(id),
-                            payload: Payload::None,
-                        });
-                        self.rigid_component_mut(handle)?
-                            .throwable_mut()?
-                            .mark_first_hit();
-                    }
+                    self.notify_throwable_first_hit(handle, id, events)?;
                     self.rigid_component_mut(handle)?
                         .throwable_mut()?
                         .delivered_contact_stage(3);
@@ -324,6 +185,309 @@ impl PhysicsScene {
         }
         Ok(())
     }
+    /// 8527e0 -> 4c7b30 -> 8098e0. A collision against an ordinary wall
+    /// can damage the moving prop even when the wall has no Breakable.
+    pub(super) fn deliver_solved_rigid_impact(
+        &mut self,
+        live: &mut LiveEntities,
+        events: &mut EntityEvents,
+        clock: &crate::gameplay::game_clock_runtime::ClockRuntime,
+        player: Option<&crate::gameplay::player::Player>,
+        contact: &crate::gameplay::physics_world::contacts::SolvedContact,
+        side: usize,
+        stage: &mut u8,
+    ) -> Result<(), String> {
+        use crate::gameplay::collision_user_data::CollisionUserData;
+        let guard = self
+            .world
+            .read()
+            .map_err(|_| "contact impulse world poisoned")?;
+        let storage = &guard.storage;
+        let own = storage
+            .bodies
+            .get(contact.bodies[side])
+            .ok_or("contact impulse body absent")?;
+        if own.flags & 0x80 == 0 {
+            return Ok(());
+        }
+        let handle = CollisionUserData::decode(own.user_data)?.component;
+        let throwable = handle.class_id == self.classes[12];
+        if !throwable && handle.class_id != self.classes[8] {
+            return Ok(());
+        }
+        let component = self.rigid_component(handle)?;
+        let source = component
+            .definition()
+            .ok_or("rigid impulse declaration absent")?;
+        if !throwable && source.damage.is_none() {
+            return Ok(());
+        }
+        let dropped = throwable && component.throwable()?.dropped();
+        let index = component
+            .owner
+            .entity
+            .ok_or("contact impulse owner absent")?;
+        let entity = &self.entities[index];
+        let id = entity.shared;
+        let origin = entity.frame.pose.position;
+        let amount = if source.damage.is_some() {
+            let motion = storage
+                .motions
+                .get(own.motion_id)
+                .ok_or("contact impulse motion absent")?;
+            rigid_impact_amount(
+                &source.settings,
+                dropped,
+                entity.frame.velocities[0],
+                motion.linear_velocity[..3].try_into().unwrap(),
+                motion,
+            )?
+        } else {
+            None
+        };
+        let packet = if let Some(amount) = amount {
+            let other = storage
+                .bodies
+                .get(contact.bodies[1 - side])
+                .ok_or("impact other body absent")?;
+            let other_handle = CollisionUserData::decode(other.user_data)?.component;
+            let other_index = self
+                .owner(other_handle)?
+                .entity
+                .ok_or("impact other actor absent")?;
+            let normal = contact.normal.map(|v| if side == 0 { v } else { -v });
+            // 81aae0 averages points on the recipient's surface within 0.005
+            // of the nearest contact. Geometry stores each point on body B.
+            let points = &contact.points[..usize::from(contact.count)];
+            let nearest = points
+                .iter()
+                .map(|p| p.distance)
+                .fold(f32::INFINITY, f32::min);
+            let mut position = [0.; 3];
+            let mut selected = 0.;
+            for p in points.iter().filter(|p| p.distance <= nearest + 0.005) {
+                for (i, total) in position.iter_mut().enumerate() {
+                    *total += if side == 0 {
+                        p.position[i] + contact.normal[i] * p.distance
+                    } else {
+                        p.position[i]
+                    };
+                }
+                selected += 1.;
+            }
+            if selected == 0. {
+                return Err("contact impulse has no finite contact point".into());
+            }
+            let inverse = crate::gameplay::constraint_solver::reciprocal(selected);
+            Some((
+                self.entities[other_index].shared,
+                position.map(|v| v * inverse),
+                normal,
+                amount,
+            ))
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some((other, position, normal, amount)) = packet {
+            if *stage == 0 {
+                self.deliver_rigid_impact_damage(
+                    live, events, clock, player, handle, other, position, normal, amount, false,
+                )?;
+                *stage = 1;
+            }
+            if *stage == 1 {
+                self.deliver_rigid_impact_damage(
+                    live, events, clock, player, handle, other, position, normal, amount, true,
+                )?;
+                *stage = 2;
+            }
+        }
+        if !throwable {
+            return Ok(());
+        }
+        if let Some(player) = player {
+            self.rigid_component_mut(handle)?
+                .throwable_mut()?
+                .reset_dropped_distance(origin, player.physics.position().to_array());
+        }
+        self.notify_throwable_first_hit(handle, id, events)
+    }
+
+    pub(super) fn throwable_update_membership(
+        &mut self, handle: ComponentHandle, scheduled: bool,
+    ) -> Result<(), String> {
+        if handle.class_id == self.classes[12] {
+            self.rigid_component_mut(handle)?.throwable_mut()?.update_membership_changed(scheduled);
+        }
+        Ok(())
+    }
+
+    fn notify_throwable_first_hit(
+        &mut self,
+        handle: ComponentHandle,
+        id: EntityId,
+        events: &mut EntityEvents,
+    ) -> Result<(), String> {
+        let state = self.rigid_component(handle)?.throwable()?;
+        if !state.first_hit() {
+            let profile = state.damping_profile;
+            let body = self
+                .rigid_component(handle)?
+                .body()
+                .ok_or("contact damping body absent")?;
+            if let Some(profile) = profile {
+                let dynamic = {
+                    let world = self
+                        .world
+                        .read()
+                        .map_err(|_| "contact damping world poisoned")?;
+                    world
+                        .storage
+                        .bodies
+                        .get(body)
+                        .ok_or("contact damping body stale")?
+                        .flags
+                        & 5
+                        == 0
+                };
+                if dynamic {
+                    self.body_commands
+                        .enqueue_motion_properties(body, profile, false)?;
+                }
+            }
+            events.post(Event {
+                id: 0x131,
+                target: Some(id),
+                payload: Payload::None,
+            });
+            self.rigid_component_mut(handle)?
+                .throwable_mut()?
+                .mark_first_hit();
+        }
+        Ok(())
+    }
+
+    /// 807170, shared by predictive breakthrough and ordinary solved impacts.
+    fn deliver_rigid_impact_damage(
+        &mut self,
+        live: &mut LiveEntities,
+        events: &mut EntityEvents,
+        clock: &crate::gameplay::game_clock_runtime::ClockRuntime,
+        player: Option<&crate::gameplay::player::Player>,
+        handle: ComponentHandle,
+        other: EntityId,
+        position: [f32; 3],
+        normal: [f32; 3],
+        amount: f32,
+        self_damage: bool,
+    ) -> Result<(), String> {
+        let component = self.rigid_component(handle)?;
+        let source = component
+            .definition()
+            .ok_or("rigid damage declaration absent")?;
+        if self_damage && source.declaration_flags & 0x40 == 0 {
+            return Ok(());
+        }
+        let Some(declaration) = source.damage.clone() else {
+            return Ok(());
+        };
+        let index = component
+            .owner
+            .entity
+            .ok_or("throwable damage owner absent")?;
+        let id = self.entities[index].shared;
+        let (target, inflictor) = if self_damage {
+            (id, other)
+        } else {
+            (other, id)
+        };
+        let other_index = *self
+            .shared_indices
+            .get(&inflictor)
+            .ok_or("impact inflictor absent")?;
+        let velocity = bevy_math::Vec3::from_array(self.entities[other_index].frame.velocities[0]);
+        let mut params = crate::gameplay::damage::Parameters::from_declaration(&declaration);
+        params.hit_location = Some(bevy_math::Vec3::from_array(position));
+        params.hit_normal = Some(bevy_math::Vec3::from_array(normal));
+        params.hit_direction = velocity / velocity.length_squared().max(f32::MIN_POSITIVE).sqrt();
+        params.hit_region = 0;
+        params.affected_regions = 1;
+        params.inflictor = Some(inflictor);
+        let delay = crate::platform::console::shared()
+            .read()
+            .cvars
+            .float("ark_physics_impulser_ignore_delay")
+            .ok_or("physics instigator delay absent")?;
+        let age =
+            (clock.entity_time(id).map_err(str::to_owned)? - component.instigator_time) as f32;
+        if age < delay {
+            params.attacker = component.instigator.filter(|id| live.get(*id).is_some());
+        }
+        let greater = player
+            .filter(|p| p.managed_entity() == params.attacker)
+            .filter(|p| p.carrying_greater_throw());
+        let amount = amount * greater.map_or(1., |p| p.carrying_throw_damage_multiplier());
+        params.set_amount(&declaration, amount.floor(), greater.is_none());
+        if self_damage {
+            //807480's fallback changes attribution after calculating the damage.
+            if params.attacker.is_none() {
+                let body = component.body().ok_or("self-damage body absent")?;
+                let world = self
+                    .world
+                    .read()
+                    .map_err(|_| "self-damage world poisoned")?;
+                if world
+                    .storage
+                    .bodies
+                    .get(body)
+                    .ok_or("self-damage body stale")?
+                    .flags
+                    & 0x80000
+                    != 0
+                {
+                    params.attacker = player.and_then(|p| p.managed_entity());
+                }
+            }
+        } else {
+            let marker = clock.clock().map_err(str::to_owned)?.frame_marker();
+            let history = self
+                .rigid_component_mut(handle)?
+                .damage_targets
+                .get_or_insert_with(|| Box::new((marker, Vec::new())));
+            if history.0 != marker {
+                history.0 = marker;
+                history.1.clear();
+            }
+            if history.1.contains(&target) {
+                return Ok(());
+            }
+            history
+                .1
+                .try_reserve(1)
+                .map_err(|e| format!("rigid damage targets: {e}"))?;
+        }
+        let result = self.damage_entity(live, events, target, &params)?;
+        if self_damage
+            && let Some(trace) = &mut self.throw_observation
+            && trace.target == id
+            && live.parent(id)?.is_none()
+            && let Some(result) = result
+            && result.health_damage > 0.
+        {
+            trace.impact = Some((other, position, result.health_damage));
+        }
+        if !self_damage {
+            self.rigid_component_mut(handle)?
+                .damage_targets
+                .as_mut()
+                .ok_or("impact target history absent")?
+                .1
+                .push(target);
+        }
+        Ok(())
+    }
+
     pub(super) fn throwable_class_is(&self, mut class: usize, name: &[u8]) -> Result<bool, String> {
         loop {
             let classes = self.types.classes();
@@ -510,49 +674,13 @@ impl PhysicsScene {
         {
             let settings = &state.source.rigid.settings;
             let speed = self.entities[index].frame.velocities[0];
-            let speed2 = (speed[1] * speed[1] + speed[0] * speed[0]) + speed[2] * speed[2];
-            let threshold = if state.dropped() {
-                settings.velocity_damage_threshold_when_dropped
-            } else {
-                settings.velocity_damage_threshold
-            }
-            .ok_or("Throwable velocity damage threshold absent")?;
-            if threshold * threshold < speed2 {
-                let inverse_mass = f32::from_bits(u32::from(motion.inverse_mass[3]) << 16);
-                let mass = settings
-                    .mass_override
-                    .filter(|value| *value != 0.)
-                    .unwrap_or_else(|| {
-                        if inverse_mass == 0. {
-                            0.
-                        } else {
-                            1. / inverse_mass
-                        }
-                    });
-                let energy = speed2 * mass * 0.5;
-                let minimum = settings
-                    .min_contact_impulse_for_damage
-                    .ok_or("Throwable minimum impulse absent")?;
-                if minimum < energy {
-                    let maximum = settings
-                        .max_contact_impulse_for_damage
-                        .ok_or("Throwable maximum impulse absent")?;
-                    let maximum_damage = settings
-                        .contact_impulse_max_damage
-                        .ok_or("Throwable maximum damage absent")?;
-                    let factor = if maximum - minimum > 0. {
-                        ((energy.abs() - minimum) / (maximum - minimum)).min(1.)
-                    } else {
-                        1.
-                    };
-                    let amount = (factor * maximum_damage).max(1.);
-                    if self.breakable_would_break_amount(live, other_id, amount, true)? {
-                        if cache.modifier_flags & 0x200000 == 0 {
-                            rows.stream_flags |= 8;
-                            rows.stream_type = 3;
-                        }
-                        damage = amount;
+            if let Some(amount) = rigid_impact_amount(settings, state.dropped(), speed, [0.; 3], motion)? {
+                if self.breakable_would_break_amount(live, other_id, amount, true)? {
+                    if cache.modifier_flags & 0x200000 == 0 {
+                        rows.stream_flags |= 8;
+                        rows.stream_type = 3;
                     }
+                    damage = amount;
                 }
             }
         }
@@ -1479,4 +1607,62 @@ impl PhysicsScene {
         }
         Ok(())
     }
+}
+
+/// 807a20 uses the signed change along the incoming velocity. Predictive
+/// breakthrough supplies zero outgoing velocity; 8098e0 reads the solved body.
+fn rigid_impact_amount(
+    settings: &crate::entities::RigidBodySettings,
+    dropped: bool,
+    incoming: [f32; 3],
+    outgoing: [f32; 3],
+    motion: &crate::gameplay::motion::Motion,
+) -> Result<Option<f32>, String> {
+    let dot = |a: [f32; 3], b: [f32; 3]| (a[1] * b[1] + a[0] * b[0]) + a[2] * b[2];
+    let speed2 = dot(incoming, incoming);
+    let threshold = if dropped {
+        settings.velocity_damage_threshold_when_dropped
+    } else {
+        settings.velocity_damage_threshold
+    }
+    .ok_or("Throwable velocity damage threshold absent")?;
+    if speed2 <= threshold * threshold {
+        return Ok(None);
+    }
+    let speed = speed2.sqrt();
+    let axis = incoming.map(|v| v / speed2.max(f32::MIN_POSITIVE).sqrt());
+    let delta = dot(axis, outgoing) - speed;
+    if delta >= 0. {
+        return Ok(None);
+    }
+    let inverse_mass = f32::from_bits(u32::from(motion.inverse_mass[3]) << 16);
+    let mass = settings
+        .mass_override
+        .filter(|&value| value != 0.)
+        .unwrap_or_else(|| {
+            if inverse_mass == 0. {
+                0.
+            } else {
+                1. / inverse_mass
+            }
+        });
+    let energy = delta * delta * mass * 0.5;
+    let minimum = settings
+        .min_contact_impulse_for_damage
+        .ok_or("Throwable minimum impulse absent")?;
+    if energy <= minimum {
+        return Ok(None);
+    }
+    let maximum = settings
+        .max_contact_impulse_for_damage
+        .ok_or("Throwable maximum impulse absent")?;
+    let maximum_damage = settings
+        .contact_impulse_max_damage
+        .ok_or("Throwable maximum damage absent")?;
+    let factor = if maximum > minimum {
+        ((energy - minimum) / (maximum - minimum)).min(1.)
+    } else {
+        1.
+    };
+    Ok(Some((factor * maximum_damage).max(1.)))
 }

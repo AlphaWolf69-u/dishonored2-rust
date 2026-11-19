@@ -8,9 +8,20 @@ use super::{RigidBodySettings, Value};
 #[derive(Debug)]
 pub(crate) struct Definition {
     pub settings: RigidBodySettings,
+    pub damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     pub declaration_flags: u8,
     pub scheduling:
         std::sync::Arc<crate::gameplay::component_state::declaration::DeclarationScheduling>,
+}
+
+pub(crate) fn contact_damage(
+    catalog: &crate::archive::Catalog,
+    fields: &[(String, Value)],
+) -> Result<Option<std::sync::Arc<crate::assets::damage::Declaration>>, String> {
+    super::scene_motion::atom(fields, "m_damage")
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+        .map(|name| crate::assets::damage::Declaration::acquire(catalog, name))
+        .transpose()
 }
 
 pub(crate) enum BodyDefinition {
@@ -122,6 +133,7 @@ pub(crate) fn bindings(
                     shared.clone()
                 } else {
                     let value = Arc::new(Definition {
+                        damage: contact_damage(catalog, &fields)?,
                         settings: from_resolved("", &name, &fields)?,
                         declaration_flags: declaration_flags(&fields)?,
                         scheduling,

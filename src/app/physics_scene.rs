@@ -177,6 +177,7 @@ pub(super) struct PhysicsScene {
     // Concrete subtype factories retain their own handles and generations.
     throwables: ComponentPool<super::rigid_body::RigidBodyComponent>,
     breakables: ComponentPool<breakable::BreakableComponent>,
+    pub(in crate::app) throw_observation: Option<throwable::ThrowObservation>,
     pending_breakable_journals: breakable::PendingJournals,
     prepared_breakables: Vec<super::runtime_entities::PreparedBreakable>,
     prepared_sound_volumes: Vec<super::runtime_entities::PreparedSoundVolume>,
@@ -713,6 +714,7 @@ impl PhysicsScene {
             loots: types.create_pool(factories[7], &cvars.cvars)?,
             rigid_bodies: types.create_pool(factories[8], &cvars.cvars)?,
             breakables: types.create_pool(factories[11], &cvars.cvars)?,
+            throw_observation: None,
             pending_breakable_journals: Default::default(),
             prepared_breakables: Vec::new(),
             prepared_sound_volumes: Vec::new(),

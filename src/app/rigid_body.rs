@@ -353,6 +353,8 @@ pub(super) struct RigidBodyComponent {
     ///index projects the same level WindManager payload, never a second Wind.
     pub(super) wind_triggers: Vec<(ComponentHandle, usize, i32)>,
     definition: Option<std::sync::Arc<RigidBodyDefinition>>,
+    //8071e0 allocates target history only on the first accepted damage.
+    pub(super) damage_targets: Option<Box<(i32, Vec<crate::gameplay::entity_lifetime::EntityId>)>>,
     /// The authored model's acquired physical shape/material lease, held by
     /// this component until Initialize consumes it or admission rolls back.
     /// Physical resources do not require a color-render placement. The inner
@@ -409,6 +411,7 @@ impl Default for RigidBodyComponent {
             initialize_listeners: None,
             start_listeners: None,
             activation_listener: None,
+            damage_targets: None,
             instigator: None,
             instigator_time: 0.,
             instigator_clock_delta: 0.,
@@ -1549,6 +1552,7 @@ impl RigidBodyComponent {
             StopPhase::AfterUnpublish => {
                 self.start = None;
                 self.start_behavior = None;
+                self.damage_targets = None;
                 StopPhase::Complete
             }
             StopPhase::Complete => return Ok(()),
@@ -1648,6 +1652,7 @@ impl RigidBodyComponent {
         }
         if *phase == StopPhase::AfterUnpublish {
             after_unpublish()?;
+            self.damage_targets = None;
             *phase = StopPhase::Complete;
             self.start = None;
         }

@@ -25,6 +25,7 @@ enum Phase {
     Scale,
     Solve,
     ContactCallbacks,
+    ContactImpulses,
     TriggerEvents,
     DeferredContacts,
     ContactCommands,
@@ -40,6 +41,7 @@ struct Frame {
     solver: Option<SolverParameters>,
     cursor: usize,
     side_cursor: usize,
+    impact_stage: u8,
     velocity: Option<VelocityChange>,
 }
 struct VelocityChange {
@@ -370,6 +372,7 @@ impl PhysicsScene {
                 solver: None,
                 cursor: 0,
                 side_cursor: 0,
+                impact_stage: 0,
                 velocity: None,
             });
         }
@@ -662,7 +665,9 @@ impl PhysicsScene {
                     if let Some(step) = frame.solver {
                         driver.last_solver = Some(step);
                     }
-                    frame.phase = Phase::TriggerEvents;
+                    frame.cursor = 0;
+                    frame.side_cursor = 0;
+                    frame.phase = Phase::ContactImpulses;
                 }
                 Phase::ContactCallbacks => {
                     let shared = self.world.clone();
@@ -691,6 +696,21 @@ impl PhysicsScene {
                         },
                     )?;
                     frame.phase = Phase::Solve;
+                }
+                Phase::ContactImpulses => {
+                    while let Some(contact) = driver.contacts.started_impulse(frame.cursor) {
+                        while frame.side_cursor < 2 {
+                            self.deliver_solved_rigid_impact(
+                                live, events, runtime, player, &contact, frame.side_cursor, &mut frame.impact_stage,
+                            )?;
+                            frame.impact_stage = 0;
+                            frame.side_cursor += 1;
+                        }
+                        frame.side_cursor = 0;
+                        frame.cursor += 1;
+                    }
+                    driver.contacts.finish_impulse_delivery();
+                    frame.phase = Phase::TriggerEvents;
                 }
                 Phase::TriggerEvents => {
                     //097bc0:094700 immediately follows completion of the

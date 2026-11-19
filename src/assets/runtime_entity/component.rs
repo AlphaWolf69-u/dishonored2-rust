@@ -59,6 +59,7 @@ pub(super) fn from_resolved(
         "cpntrigidbody" => (
             "arkCpntRigidBody",
             Kind::Rigid(Arc::new(entities::rigid_body::Definition {
+                damage: entities::rigid_body::contact_damage(catalog, &fields)?,
                 settings: entities::rigid_body::from_resolved(entity, &declaration, &fields)?,
                 declaration_flags: entities::rigid_body::declaration_flags(&fields)?,
                 scheduling: scheduling.clone(),

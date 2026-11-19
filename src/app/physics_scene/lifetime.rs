@@ -1063,6 +1063,7 @@ impl ComponentUpdateWorld for Host<'_> {
     ) -> Result<(), String> {
         if self.scene.is_crew_module_class(handle.class_id){self.scene.update_remove_crew_module(handle,registry,self.live,self.events)?;}
         registry.base_update_remove(handle, self)?;
+        self.scene.throwable_update_membership(handle, false)?;
         self.scene.crew_update_subscription(handle,self.events,false)
     }
     fn update_add(
@@ -1071,6 +1072,7 @@ impl ComponentUpdateWorld for Host<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         registry.base_update_add(handle, self)?;
+        self.scene.throwable_update_membership(handle, true)?;
         self.scene.crew_update_subscription(handle,self.events,true)
     }
     fn set_update_scheduled(

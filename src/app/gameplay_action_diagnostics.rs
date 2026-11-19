@@ -1305,13 +1305,20 @@ impl Observation {
                     .ok_or("held object's actual frame absent")?;
                 self.object_throw_frame=Some(world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>().clock().map_err(str::to_owned)?.frame_marker());
                 eprintln!("ACTION_CARRY_POSE stage=before_throw {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
+                world.resource_mut::<super::physics_scene::PhysicsScene>().throw_observation =
+                    Some(super::physics_scene::throwable::ThrowObservation { target: id, impact: None, shattered: false });
                 self.object=Some((id,frame.position));self.tap(world,19)?;self.stage(Stage::ObjectMotion,world)?;
             }
             Stage::ObjectMotion if !player(world)?.carrying.has_work() => {
                 let id=self.object.unwrap().0;
-                if self.object_motion_seen&&self.object_contact.is_some(){self.stage(Stage::Done,world)?;}
-                else if world.resource::<crate::gameplay::entity_lifetime::LiveEntities>().get(id).is_none(){
-                    return Err(format!("thrown object retired without a captured actual postrelease contact; motion_seen={}; disappearance alone is not accepted",self.object_motion_seen));
+                let observation = world.resource::<super::physics_scene::PhysicsScene>()
+                    .throw_observation.as_ref().ok_or("throw shatter observation was not armed")?;
+                if observation.target == id && observation.shattered && player(world)?.carrying.observed_throw_ack(id) {
+                    eprintln!("ACTION_SMOKE_PASS check=actual_thrown_bottle_shattered target={id:?} unparented_impact_and_health_damage={:?} authored_breakable_step=true", observation.impact);
+                    world.resource_mut::<super::physics_scene::PhysicsScene>().throw_observation = None;
+                    self.stage(Stage::Done,world)?;
+                } else if world.resource::<crate::gameplay::entity_lifetime::LiveEntities>().get(id).is_none(){
+                    return Err(format!("thrown object retired without a confirmed impact and authored breakable step: {observation:?}"));
                 }
             }
             Stage::Done => {self.weapon_evidence(world,"sequence-complete")?;eprintln!("ACTION_SMOKE_PASS check=sequence_complete exit=ordinary_ExitDrain");return Ok(true)}
