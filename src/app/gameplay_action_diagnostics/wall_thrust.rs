@@ -94,10 +94,6 @@ impl Observation {
             }
             Stage::Aim=>{
                 if Self::steer(world,FORWARD)?{
-                    let mut window = String::new();
-                    world.resource::<super::super::physics_scene::PhysicsScene>()
-                        .write_static_usable_diagnostics(world, player(world)?.feet().to_array(), &mut window);
-                    eprintln!("ACTION_CAPTURED_WINDOW after_first_load={window}");
                     let hit=Self::fixture(world)?;
                     eprintln!("ACTION_SMOKE_WALL_ACTUAL_RAY hit={hit:?} player_feet={:?} published_camera={:?}",player(world)?.feet(),player(world)?.published_camera_frame());
                     self.serial=super::super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);

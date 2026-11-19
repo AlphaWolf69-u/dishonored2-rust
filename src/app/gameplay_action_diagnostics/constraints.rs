@@ -74,6 +74,13 @@ impl Observation {
             ));
         }
         if complete {
+            // Independent of sword selection, steering and attack callbacks.
+            // The existing level has advanced 120 real physics steps; this
+            // only borrows published state around the submitted window.
+            let query_center = [16.222336, 90.63119, 17.512545];
+            let mut window = String::new();
+            scene.write_static_usable_diagnostics(world, query_center, &mut window);
+            eprintln!("ACTION_CAPTURED_WINDOW context=actual_passive_constraint_observation first_physics_step={first} last_physics_step={step} sampled_advanced_steps={} read_only_query_center={query_center:?} no_player_movement_or_state_override=true{window}", self.observed_steps);
             if !prepared.iter().all(|&value| value) {
                 return Err(format!("actual lamp constraints did not reach source enabled/frozen ownership: {prepared:?}"));
             }
