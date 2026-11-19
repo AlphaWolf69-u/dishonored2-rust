@@ -95,7 +95,6 @@ pub fn static_ground_truth(
     scratch: &mut CollideScratch,
 ) -> Result<(), String> {
     let filter = QueryFilter::World(world.filter);
-    let mut triangles = Vec::new();
     for &body in bodies {
         let index = body as usize;
         let [p, v] = linear[index];
@@ -115,16 +114,16 @@ pub fn static_ground_truth(
         let centre = bevy_math::Vec3::new(p[0], p[1], p[2]);
         let view_centre = bevy_math::Vec3::new(p[0], p[2], -p[1]);
         let reach = bevy_math::Vec3::splat(distance);
-        world.map.triangles_in(view_centre - reach, view_centre + reach, filter, world.owners, &mut scratch.found, &mut triangles);
+        let triangles = world.map.triangle_hits(view_centre - reach, view_centre + reach, filter, world.owners, &mut scratch.found);
         // hkfxClosestHitCollector: the nearest hit under the early-out.
         let mut best: Option<(f32, bevy_math::Vec3, Option<&crate::assets::entities::physics_material::PhysicsMaterial>)> = None;
-        for (_, vertices, material) in &triangles {
-            let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(*vertices, view_centre);
+        for (_, vertices, material) in triangles {
+            let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(vertices, view_centre);
             let point = bevy_math::Vec3::new(point.x, -point.z, point.y);
             let gap = (centre - point).length();
             let limit = best.map_or(early_out, |(gap, ..)| gap);
             if gap < limit {
-                best = Some((gap, point, *material));
+                best = Some((gap, point, material));
             }
         }
         // 3530: the entry is reset to the query sphere before the query.
@@ -331,7 +330,6 @@ pub fn static_cached(
     let filter = QueryFilter::World(world.filter);
     let epsilon = f32::from_bits(0x3400_0000);
     let far = f32::from_bits(0x7f7f_ffee);
-    let mut triangles = Vec::new();
     for &body in bodies {
         let index = body as usize;
         let state = states[index].state;
@@ -395,25 +393,28 @@ pub fn static_cached(
         let centre = bevy_math::Vec3::new(p[0], p[1], p[2]);
         let view_centre = bevy_math::Vec3::new(p[0], p[2], -p[1]);
         let span = bevy_math::Vec3::splat(distance);
-        world.map.triangles_in(view_centre - span, view_centre + span, filter, world.owners, &mut scratch.found, &mut triangles);
-        let mut primitives: Vec<(u32, f32, bevy_math::Vec3, u32)> = Vec::new();
-        for (key, vertices, _) in &triangles {
-            let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(*vertices, view_centre);
+        let mut triangles = world.map.triangle_hits(
+            view_centre - span, view_centre + span, filter, world.owners, &mut scratch.found,
+        ).peekable();
+        let closest = |vertices| {
+            let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(vertices, view_centre);
             let point = bevy_math::Vec3::new(point.x, -point.z, point.y);
-            let gap = (centre - point).length();
-            let (group, ..) = world.map.primitive(*key);
-            match primitives.iter_mut().find(|found| found.0 == group) {
-                Some(found) => {
-                    if gap < found.1 {
-                        *found = (group, gap, point, *key);
-                    }
-                }
-                None => primitives.push((group, gap, point, *key)),
-            }
-        }
+            ((centre - point).length(), point)
+        };
         let mut best = None::<(f32, bevy_math::Vec3, u32)>;
         let mut second = far;
-        for &(_, gap, point, key) in &primitives {
+        // The host map splits one Havok quad into two consecutive keys.
+        // The query yields keys in order, including when only one half overlaps.
+        while let Some((mut key, vertices, _)) = triangles.next() {
+            let (mut gap, mut point) = closest(vertices);
+            if let Some(partner) = world.map.quad_partner(key) {
+                if let Some((other, vertices, _)) = triangles.next_if(|(other, ..)| *other == partner) {
+                    let (other_gap, other_point) = closest(vertices);
+                    if other_gap < gap {
+                        (gap, point, key) = (other_gap, other_point, other);
+                    }
+                }
+            }
             if !(gap < minps(distance, second)) {
                 continue;
             }
@@ -436,8 +437,7 @@ pub fn static_cached(
             // The leaf's corners in game axes; a face contact limits the
             // radius to the edge lines (4446-4640).
             let (_, corners, quad) = world.map.primitive(key);
-            let corners: Vec<[f32; 3]> =
-                corners[..if quad { 4 } else { 3 }].iter().map(|c| [c.x, -c.z, c.y]).collect();
+            let corners = corners.map(|c| [c.x, -c.z, c.y]);
             let e0: [f32; 3] = std::array::from_fn(|i| subtract(corners[1][i], corners[0][i]));
             let e1: [f32; 3] = std::array::from_fn(|i| subtract(corners[2][i], corners[1][i]));
             let fz = subtract(multiply(e1[1], e0[0]), multiply(e0[1], e1[0]));
@@ -448,7 +448,7 @@ pub fn static_cached(
             let mut radius = gap;
             if subtract(face, multiply(along, along)) <= multiply(face, f32::from_bits(0x38d1_b717)) {
                 radius = second;
-                let edge = closest_edge_line(&corners, position);
+                let edge = closest_edge_line(&corners[..if quad { 4 } else { 3 }], position);
                 // ucomiss / jae: an unordered comparison takes the limit.
                 if !(edge >= multiply(second, second)) {
                     radius = maxps(gap, length(edge));

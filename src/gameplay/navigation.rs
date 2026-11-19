@@ -880,6 +880,12 @@ impl CollisionMap {
         self.triangles[key as usize].material
     }
 
+    /// The two triangles of a compressed quad are adjacent in insertion order.
+    pub(crate) fn quad_partner(&self, key: u32) -> Option<u32> {
+        let partner = self.triangles[key as usize].partner;
+        (partner != u32::MAX).then_some(partner)
+    }
+
     /// The hknp leaf primitive of map triangle `key`: the key of its first
     /// triangle and its corners in hknp order (a, b, c, d for a quad split
     /// into (a, b, c) and (a, c, d)); the flag says whether it is a quad.
@@ -907,19 +913,31 @@ impl CollisionMap {
         found: &mut Vec<usize>,
         output: &mut Vec<(u32, [Vec3; 3], Option<&'a PhysicsMaterial>)>,
     ) {
-        found.clear();
         output.clear();
+        output.extend(self.triangle_hits(min, max, filter, owner_active, found));
+    }
+
+    pub(crate) fn triangle_hits<'a, 'q>(
+        &'a self,
+        min: Vec3,
+        max: Vec3,
+        filter: QueryFilter,
+        owner_active: &'q [bool],
+        found: &'q mut Vec<usize>,
+    ) -> impl Iterator<Item = (u32, [Vec3; 3], Option<&'a PhysicsMaterial>)> + 'q
+    where
+        'a: 'q,
+    {
+        found.clear();
         self.cells_into(cell(min), cell(max), found);
         found.sort_unstable();
         found.dedup();
-        for &index in found.iter() {
-            let t = self.triangles[index];
-            if (t.owner == u32::MAX || owner_active.get(t.owner as usize).copied().unwrap_or(false))
+        found.iter().filter_map(move |&index| {
+            let t = &self.triangles[index];
+            ((t.owner == u32::MAX || owner_active.get(t.owner as usize).copied().unwrap_or(false))
                 && filter.accepts(t.filter)
-                && (0..3).all(|axis| t.min[axis] <= max[axis] && t.max[axis] >= min[axis])
-            {
-                output.push((index as u32, [t.a, t.b, t.c], self.materials.get(t.material as usize)));
-            }
-        }
+                && (0..3).all(|axis| t.min[axis] <= max[axis] && t.max[axis] >= min[axis]))
+                .then(|| (index as u32, [t.a, t.b, t.c], self.materials.get(t.material as usize)))
+        })
     }
 }

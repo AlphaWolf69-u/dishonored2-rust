@@ -746,7 +746,7 @@ impl HavokStageSimulation {
                 dynamic.collide(&step, partition, &bodies, &self.pipeline.linear, states, cache, world)?;
             }
             if mode == 4 {
-                let states = collisions.solver.bodies().to_vec();
+                let states = collisions.solver.bodies();
                 physics_collide::static_ground_truth(
                     dt,
                     collisions.tuning,
