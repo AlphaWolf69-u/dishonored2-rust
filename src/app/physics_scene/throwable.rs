@@ -468,14 +468,13 @@ impl PhysicsScene {
                 .map_err(|e| format!("rigid damage targets: {e}"))?;
         }
         let result = self.damage_entity(live, events, target, &params)?;
-        if self_damage
-            && let Some(trace) = &mut self.throw_observation
-            && trace.target == id
-            && live.parent(id)?.is_none()
-            && let Some(result) = result
-            && result.health_damage > 0.
-        {
-            trace.impact = Some((other, position, result.health_damage));
+        if let (Some(trace), Some(damage)) = (
+            self.throw_observation.as_mut().filter(|t| self_damage && t.target == id),
+            result.filter(|d| d.health_damage > 0.),
+        ) {
+            if live.parent(id)?.is_none() {
+                trace.impact = Some((other, position, damage.health_damage));
+            }
         }
         if !self_damage {
             self.rigid_component_mut(handle)?

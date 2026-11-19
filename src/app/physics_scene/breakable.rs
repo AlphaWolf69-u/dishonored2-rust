@@ -459,10 +459,10 @@ impl PhysicsScene {
         // Refresh even on failure: an accepted partial journal must remain
         // reachable. Never replace, clear or synthesize its actual commands.
         self.refresh_breakable_journal(handle)?;
-        if result? && let Some(trace) = &mut self.throw_observation
-            && trace.target == id && let Some((other, _, _)) = trace.impact
-            && params.inflictor == Some(other) {
-            trace.shattered = true;
+        if result? {
+            if let Some(trace) = self.throw_observation.as_mut().filter(|trace| trace.target == id) {
+                trace.shattered |= trace.impact.is_some_and(|(other, _, _)| params.inflictor == Some(other));
+            }
         }
         if request_update {
             self.entity_flags_d4[index] |= 4;
