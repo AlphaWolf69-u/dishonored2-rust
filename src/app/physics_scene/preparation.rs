@@ -71,6 +71,10 @@ pub(super) fn rollback(
             if scene.is_rigid_class(handle.class_id) {
                 rollback_rigid(scene, &mut registry, entity_events, handle)
                     .map_err(|error| format!("RigidBody {handle:?} preparation abort: {error}"))?;
+            } else if handle.class_id == scene.classes[14] && scene.owner(handle)?.flags & 3 < 2 {
+                // The lifecycle skips Deinitialize before mark_initialized. Release
+                // the prepared source and unwind any interrupted world-body creation.
+                scene.retire_level_bodies(handle, &mut registry, entity_events)?;
             }
         }
         Ok(())

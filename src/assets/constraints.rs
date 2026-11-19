@@ -47,9 +47,11 @@ impl Definition {
     pub(crate) fn rigid_rows_supported(&self) -> bool {
         self.linear_stabilized && !self.breakable
             && self.settings.linear_constraint == "LINEAR_CONSTRAINT_FIXED"
-            && matches!(self.settings.angular_constraint.as_str(),
-                "ANGULAR_CONSTRAINT_CONE" | "ANGULAR_CONSTRAINT_HINGE"
-                | "ANGULAR_CONSTRAINT_LIMITED_HINGE")
+            && match self.settings.angular_constraint.as_str() {
+                "ANGULAR_CONSTRAINT_CONE" => self.settings.motor.is_none(),
+                "ANGULAR_CONSTRAINT_HINGE" | "ANGULAR_CONSTRAINT_LIMITED_HINGE" => true,
+                _ => false,
+            }
     }
 }
 

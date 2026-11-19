@@ -20,6 +20,19 @@ pub(in crate::app) struct PreparedLevelBodies {
 }
 
 impl PhysicsScene {
+    pub(super) fn retire_level_bodies(&mut self, handle: ComponentHandle,
+        registry: &mut ComponentRegistry, events: &mut crate::gameplay::entity_events::EntityEvents,
+    ) -> Result<(), String> {
+        let shared = self.world.clone();
+        let mut guard = shared.write().map_err(|_| "physics world retirement lock poisoned")?;
+        let query = &mut *guard;
+        let scene = self;
+        scene_publication_events!(scene, registry, publication, events);
+        scene.level_bodies.get_mut(handle.slot)
+            .ok_or("PhysicsWorld retiring payload absent")?
+            .retire(&mut query.storage, &mut query.geometry, &mut publication)
+    }
+
     ///7bf3e0 selects the graph through gameLocal's actual worldspawn pointer.
     ///Publish its existing managed generation, never an assumed entity name.
     pub(in crate::app) fn worldspawn_identity(&self,document:&entities::Document,

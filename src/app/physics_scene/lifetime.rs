@@ -1421,18 +1421,7 @@ impl ComponentReleaseWorld for Host<'_> {
             self.scene.retire_animation(handle)?;
         }
         if handle.class_id == self.scene.classes[14] {
-            let shared = self.scene.world.clone();
-            let mut query = shared
-                .write()
-                .map_err(|_| "physics world retirement lock poisoned")?;
-            let scene = &mut self.scene;
-            let query = &mut *query;
-            scene_publication_events!(scene, registry, publication, &mut *self.events);
-            scene
-                .level_bodies
-                .get_mut(handle.slot)
-                .ok_or("PhysicsWorld retiring payload absent")?
-                .retire(&mut query.storage, &mut query.geometry, &mut publication)?;
+            self.scene.retire_level_bodies(handle, registry, self.events)?;
         }
         if handle.class_id == self.scene.classes[11] {
             let index = self

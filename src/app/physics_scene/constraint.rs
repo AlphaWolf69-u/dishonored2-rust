@@ -363,7 +363,7 @@ impl PhysicsScene {
         definition: Arc<Definition>, declaration: &ComponentDeclaration,
         registry: &mut ComponentRegistry, immediate: bool,
     ) -> Result<Option<ComponentHandle>, String> {
-        if !definition.passive_rows_supported() {
+        if !definition.rigid_rows_supported() {
             return Err("constraint requires its actual unsupported motor/atom-row provider".into());
         }
         if definition.joints().iter().any(Option::is_some) {
