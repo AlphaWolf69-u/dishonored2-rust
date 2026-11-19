@@ -930,6 +930,11 @@ impl PhysicsScene {
                 flags: 0,
             });
         }
+        self.request_pre_physics_actor(actor_index)?;
+        Ok(())
+    }
+
+    pub(super) fn request_pre_physics_actor(&mut self, actor_index: usize) -> Result<bool, String> {
         let task = &self.pre_updates;
         self.actors.request_phase_update(
             actor_index,
@@ -942,8 +947,7 @@ impl PhysicsScene {
                 ))))?;
                 Ok(())
             },
-        )?;
-        Ok(())
+        )
     }
     ///7551c0 uses the same canonical actor/body hierarchy as753c10.
     pub(in crate::app) fn advance_rigid_pre_physics(

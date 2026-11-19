@@ -268,8 +268,10 @@ impl PhysicsScene {
         }
         if changed{
             if let Some(handle)=self.entities[parent].components.reference_actor{
-                let generation=self.actors.actors.get(handle.slot).ok_or("AnimBase reference actor absent")?.owner.generation;
-                self.request_post_physics_actor(usize::from(handle.slot),generation)?;
+                // 540e20 schedules 752260 when animation updates bound joints.
+                // 7551c0 walks the children and moves their keyframed bodies
+                // before collision. The normal body publication follows physics.
+                self.request_pre_physics_actor(usize::from(handle.slot))?;
             }
         }
         Ok(())
