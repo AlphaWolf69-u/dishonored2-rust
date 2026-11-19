@@ -111,7 +111,7 @@ impl Runtime {
         if self.mantle.is_none() { self.mantle = player.take_blink_mantle(); }
         let Some(mantle) = self.mantle.as_mut() else { return Ok(false) };
         let shapes = shape_info(&player.physics);
-        let input = input(player, view, &shapes);
+        let input = input(player, (view.origin, view.axis), &shapes);
         let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits, query_shapes: &self.query_shapes,
             live, scene, error: std::cell::RefCell::new(None) };
         self.blink.aim(&mut world, &input);
@@ -122,7 +122,7 @@ impl Runtime {
     /// proxy restoration; the central dispatcher charges mana only when
     /// this accepts the prepared native state request.
     pub fn execute(&mut self, player: &mut Player, view: &View) -> bool {
-        let Some(request) = self.cast_request(player, view) else { return false };
+        let Some(request) = self.cast_request(player, (view.origin, view.axis)) else { return false };
         let motion = BlinkMotion::new(self.motion.clone(), request, player.physics.velocity);
         if !player.begin_blink(motion) { return false; }
         self.pending = true;
@@ -130,9 +130,9 @@ impl Runtime {
         true
     }
     ///Borrow the SAME61ec20 target-to-state payload before its real release.
-    pub fn cast_request(&self, player: &Player, view: &View) -> Option<crate::gameplay::powers::traversal::BlinkRequest> {
+    pub fn cast_request(&self, player: &Player, camera: (Vec3, Mat3)) -> Option<crate::gameplay::powers::traversal::BlinkRequest> {
         let shapes = shape_info(&player.physics);
-        let input = input(player, view, &shapes);
+        let input = input(player, camera, &shapes);
         self.blink.cast_request(&input)
     }
     pub fn cancel(&mut self, player: &mut Player) {
@@ -246,9 +246,9 @@ fn shape_info(physics: &PlayerPhysics) -> [ShapeInfo; 20] {
         ShapeInfo { radius: settings.radius, height: settings.height, margin: settings.z_offset }
     })
 }
-fn input<'a>(player: &Player, view: &View, shapes: &'a [ShapeInfo; 20]) -> BlinkInput<'a> {
+fn input<'a>(player: &Player, (eye, axis): (Vec3, Mat3), shapes: &'a [ShapeInfo; 20]) -> BlinkInput<'a> {
     BlinkInput { shapes, current_shape: player.physics.posture, physical_position: player.physics.position(),
-        camera_position: view.origin, camera_direction: view.axis.x_axis, player_axis: player.physics.axis(),
+        camera_position: eye, camera_direction: axis.x_axis, player_axis: player.physics.axis(),
         horizontal_distance: player.attributes.get("ARK_ATTRIBUTE_BLINK_HORIZONTAL_DISTANCE"),
         clearance: player.physics.proxy.settings.keep_distance + player.physics.proxy.settings.keep_contact_tolerance + 0.1,
         // The assassination target owner is not instantiated by the current

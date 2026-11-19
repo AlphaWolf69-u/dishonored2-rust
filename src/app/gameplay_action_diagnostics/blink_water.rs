@@ -631,7 +631,7 @@ impl Observation {
                     return Err("water Blink fixture left actual SWIM before release".into());
                 }
                 let request = owner
-                    .cast_request(p, &p.view())
+                    .cast_request(p, p.published_camera_frame())
                     .ok_or("actual Blink target has no61ec20 request")?;
                 let finish_feet = request.final_position
                     - Vec3::Z
