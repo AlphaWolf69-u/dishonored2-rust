@@ -26197,3 +26197,5 @@ F-drop and remained the same afterward, so the correction belongs to binding
 entry rather than dynamic restore or an invented drop damping rule.
 
 Blink component startup 61e3d0 builds the twenty convex query shapes used by 61e500 and 61e6c0. These are dedicated destination and sweep prisms with the installed 0efc60 vertex order and coefficients. The rewrite previously borrowed character movement hulls, whose apex and step geometry differ. Blink retains its prisms for the component lifetime, shares the vertex constructor with mantle and grapple queries, and allocates no shapes during aiming. The original permits posture 7 while swimming and applies no head-depth veto in 61ec20.
+
+Swimming navigation state update 846450 sets the physics water current and maximum Z. Its deactivation 846270 clears them. Applying those settings to the entire swimming mode restored the surface clamp during Blink travel after the swimming navigation state had already exited. Only the active swimming state now publishes those settings. Blink continues through its ordinary release, payment and movement path, with no extra physics step or asset owner.

@@ -1002,6 +1002,7 @@ impl Player {
         let velocity = self.physics.velocity;
         let underwater = self.is_underwater();
         let mut swim_mantle_exit = false;
+        let mut swimming_motion = None;
         if let Some(water) = self.swimming_contact {
             let (height, normal) = self.swimming_settings.wave_target(
                 water.plane, water.ocean_level.unwrap_or(water.plane),
@@ -1085,6 +1086,7 @@ impl Player {
                     fall_incapacitated: &mut fall_incapacitated,
                     underwater,
                     swimming: self.swimming_active,
+                    swimming_motion,
                     swim_mantle_exit: &mut swim_mantle_exit,
                     game_over_requested: &mut self.game_over_requested,
                     drowning_fx_requested: &mut self.drowning_fx_requested,
@@ -1170,8 +1172,8 @@ impl Player {
         } else if !self.health.is_dead() {
             if let Some(water) = self.swimming_contact {
                 let current = self.swimming_current.update(water.current, dt, &self.swimming_settings);
-                self.physics.set_water_motion(current,
-                    Some(water.plane + self.swimming_settings.distance_above_surface - self.swimming_eye_height));
+                swimming_motion = Some((current,
+                    water.plane + self.swimming_settings.distance_above_surface - self.swimming_eye_height));
             }
         }
         if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }

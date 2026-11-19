@@ -527,7 +527,12 @@ fn execute_pending(world: &mut World, player: &mut crate::gameplay::player::Play
             let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
                 .and_then(|mut actions| actions.blink.as_mut().map(|blink| blink.execute(player, &view)))
                 .unwrap_or(false);
-            if accepted { player.commit_power_cast(now, factor); }
+            if accepted {
+                let before = player.mana();
+                if player.commit_power_cast(now, factor) {
+                    super::gameplay_action_diagnostics::blink_committed(world, before, player.mana());
+                }
+            }
             accepted
         }
         Some(6) => {

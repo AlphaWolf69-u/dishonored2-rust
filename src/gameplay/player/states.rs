@@ -863,6 +863,9 @@ pub struct Frame<'a> {
     pub fall_incapacitated: &'a mut bool,
     pub underwater: bool,
     pub swimming: bool,
+    ///846450 publishes these only from the active Swimming state;
+    ///846270 clears them when another primary state takes over.
+    pub swimming_motion: Option<(Vec3, f32)>,
     pub swim_mantle_exit: &'a mut bool,
     pub game_over_requested: &'a mut bool,
     pub drowning_fx_requested: &'a mut Option<String>,
@@ -3479,6 +3482,9 @@ impl StateMachine {
             Kind::Swimming(decl) => {
                 self.navigation_update(index, frame);
                 self.swimming_arms(frame, false);
+                if let Some((velocity, max_z)) = frame.swimming_motion {
+                    frame.physics.set_water_motion(velocity, Some(max_z));
+                }
                 let dive = &mut self.states[index].swimming_dive;
                 if dive.1 > 0.0 {
                     frame.physics.instant_motion();

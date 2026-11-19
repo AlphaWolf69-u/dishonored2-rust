@@ -122,14 +122,18 @@ impl Runtime {
     /// proxy restoration; the central dispatcher charges mana only when
     /// this accepts the prepared native state request.
     pub fn execute(&mut self, player: &mut Player, view: &View) -> bool {
-        let shapes = shape_info(&player.physics);
-        let request = { let input = input(player, view, &shapes); self.blink.cast_request(&input) };
-        let Some(request) = request else { return false };
+        let Some(request) = self.cast_request(player, view) else { return false };
         let motion = BlinkMotion::new(self.motion.clone(), request, player.physics.velocity);
         if !player.begin_blink(motion) { return false; }
         self.pending = true;
         if let Some(mantle) = self.mantle.take() { player.set_blink_mantle(mantle); }
         true
+    }
+    ///Borrow the SAME61ec20 target-to-state payload before its real release.
+    pub fn cast_request(&self, player: &Player, view: &View) -> Option<crate::gameplay::powers::traversal::BlinkRequest> {
+        let shapes = shape_info(&player.physics);
+        let input = input(player, view, &shapes);
+        self.blink.cast_request(&input)
     }
     pub fn cancel(&mut self, player: &mut Player) {
         if !self.has_activity() { self.blink.cancel(); }

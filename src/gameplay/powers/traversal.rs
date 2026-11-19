@@ -132,6 +132,8 @@ impl Blink {
     /// charging; a direct transform write omits collision/proxy restoration.
     pub fn cast_request(&self, input: &BlinkInput<'_>) -> Option<BlinkRequest> {
         let target = self.target.as_ref()?;
+        //61ec20 rejects only the zero-vector destination, not water depth.
+        if target.position == Vec3::ZERO { return None; }
         Some(BlinkRequest {
             position: target.position + Vec3::Z * (input.shapes[target.shape].height
                 - input.shapes[target.shape].margin - input.shapes[4].height),

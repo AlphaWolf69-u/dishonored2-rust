@@ -16,6 +16,7 @@ mod wall_thrust;
 
 #[derive(Resource, Default)]
 struct Receipts { heart_uses: u64, heart: Option<EntityId>, heart_selected:Option<bool>,
+    blink_commits: u64,
     heart_events:HashSet<(u32,crate::gameplay::sound::Emitter)>, heart_audio_start:usize,
     heart_source:Option<(u32,u32,crate::gameplay::sound::Emitter,u32)> }
 /// Called only after the real Heart owner accepts its pending use request.
@@ -25,6 +26,14 @@ pub(super) fn heart_used(world: &mut World, entity: EntityId, selected:bool) {
         receipts.heart = Some(entity);
         receipts.heart_selected=Some(selected);
         eprintln!("ACTION_SMOKE_HEART_USE entity={entity:?} processed=true bark_selection_accepted={selected}");
+    }
+}
+
+///Only the real successful61bea0 payment callback records a committed cast.
+pub(super) fn blink_committed(world: &mut World, before: f32, after: f32) {
+    if let Some(mut receipts) = world.get_resource_mut::<Receipts>() {
+        receipts.blink_commits += 1;
+        eprintln!("ACTION_SMOKE_BLINK_COMMIT ordinal={} mana_before={before} mana_after={after} paid={} source=actual_successful_commit", receipts.blink_commits, before-after);
     }
 }
 

@@ -59,11 +59,14 @@ pub(super) struct Observation {
     cast_start: Vec3,
     mana_before: f32,
     mana_spent: bool,
+    commits_before: u64,
+    expected_positions: Option<(Vec3, Vec3)>,
+    closest_capsule: f32,
+    closest_feet: f32,
     underwater_seen: bool,
     blink_seen: bool,
     blink_in_water: bool,
     aim_observed: bool,
-    blocked_target: Option<String>,
     water_exit: Option<Stamp>,
     exit_during_blink: bool,
     released: Option<Stamp>,
@@ -149,11 +152,16 @@ impl Observation {
             cast_start: FEET,
             mana_before: 0.,
             mana_spent: false,
+            commits_before: world
+                .get_resource::<Receipts>()
+                .map_or(0, |receipts| receipts.blink_commits),
+            expected_positions: None,
+            closest_capsule: f32::INFINITY,
+            closest_feet: f32::INFINITY,
             underwater_seen: false,
             blink_seen: false,
             blink_in_water: false,
             aim_observed: false,
-            blocked_target: None,
             water_exit: None,
             exit_during_blink: false,
             released: None,
@@ -445,6 +453,10 @@ impl Observation {
         self.underwater_seen |= swimming && p.is_underwater();
         if self.released.is_some() {
             self.mana_spent |= p.mana() < self.mana_before;
+            if let Some((capsule, feet)) = self.expected_positions {
+                self.closest_capsule = self.closest_capsule.min(p.feet().distance(capsule));
+                self.closest_feet = self.closest_feet.min(p.feet().distance(feet));
+            }
             if blinking {
                 self.blink_seen = true;
                 self.blink_in_water |= swimming;
@@ -470,7 +482,13 @@ impl Observation {
                 self.finished = Some(stamp);
                 let mut report = String::new();
                 p.write_combat_diagnostics(&mut report);
-                eprintln!("ACTION_SMOKE_BLINK_WATER_MOTION_EXIT stamp={stamp:?}{report}");
+                eprintln!(
+                    "ACTION_SMOKE_BLINK_WATER_MOTION_EXIT stamp={stamp:?} actual_feet={:?} expected_capsule_and_feet={:?} closest_capsule_distance={} closest_feet_distance={}{report}",
+                    p.feet(),
+                    self.expected_positions,
+                    self.closest_capsule,
+                    self.closest_feet
+                );
             }
             if self.finished.is_some()
                 && self.cooldown_ready.is_none()
@@ -609,29 +627,20 @@ impl Observation {
                 }
                 //61ec20 has no head-depth veto. The handoff claim concerns
                 //actual SWIM mode; log actual head depth rather than forcing it.
-                let destination = target
-                    .mantle
-                    .map_or(target.position, |mantle| mantle.position);
-                if destination.z <= plane || !p.is_swimming() {
-                    let reason = format!(
-                        "saved water Blink bearing has no above-water handoff: target={target:?} destination={destination:?} obstruction={:?} plane={plane} swimming={} underwater={} feet={:?} camera={:?}",
-                        owner.blink.obstruction,
-                        p.is_swimming(),
-                        p.is_underwater(),
-                        p.feet(),
-                        p.published_camera_frame()
-                    );
-                    eprintln!(
-                        "ACTION_SMOKE_BLINK_WATER_TARGET_BLOCKED {reason} no_cast_performed=true cancel=physical_input"
-                    );
-                    self.blocked_target = Some(reason);
-                    send(world, self.cancel, true)?;
-                    self.release = Some(self.cancel);
-                    self.stage(Stage::Cancel, world)?;
-                    return Ok(false);
+                if !p.is_swimming() {
+                    return Err("water Blink fixture left actual SWIM before release".into());
                 }
+                let request = owner
+                    .cast_request(p, &p.view())
+                    .ok_or("actual Blink target has no61ec20 request")?;
+                let finish_feet = request.final_position
+                    - Vec3::Z
+                        * p.physics
+                            .posture_settings(crate::gameplay::player::shape::POSTURE_SWIMMING)
+                            .z_offset;
+                self.expected_positions = Some((request.position, finish_feet));
                 eprintln!(
-                    "ACTION_SMOKE_BLINK_WATER_ACTUAL_TARGET target={target:?} sampled_plane={plane} feet={:?} camera={:?} states={:?} no_target_override=true",
+                    "ACTION_SMOKE_BLINK_WATER_ACTUAL_TARGET target={target:?} source_request={request:?} source_finish_feet={finish_feet:?} sampled_plane={plane} feet={:?} camera={:?} states={:?} submerged_target_is_valid=true no_target_override=true",
                     p.feet(),
                     p.published_camera_frame(),
                     p.active_player_states()
@@ -644,17 +653,30 @@ impl Observation {
                 self.stage(Stage::Flight, world)?;
             }
             Stage::Flight if self.blink_seen && !blinking && self.mana_spent => {
+                let commits = world.resource::<Receipts>().blink_commits - self.commits_before;
+                if commits != 1 || !self.blink_in_water || p.feet() == self.cast_start {
+                    return Err(format!(
+                        "water Blink cast incomplete: commits={commits} entered12_in_swim={} moved={} expected_positions={:?}",
+                        self.blink_in_water,
+                        p.feet() != self.cast_start,
+                        self.expected_positions
+                    ));
+                }
+                eprintln!(
+                    "ACTION_SMOKE_PASS check=blink_water_actual_cast12_mana_once_motion start={:?} end={:?} expected_capsule_and_feet={:?} closest_capsule_distance={} closest_feet_distance={} successful_payment_callbacks={commits} mana_before={} mana_now={} swimming={swimming} underwater={} optional_surface_exit={:?}",
+                    self.cast_start,
+                    p.feet(),
+                    self.expected_positions,
+                    self.closest_capsule,
+                    self.closest_feet,
+                    self.mana_before,
+                    p.mana(),
+                    p.is_underwater(),
+                    self.water_exit
+                );
                 self.stage(Stage::Recovery, world)?;
             }
-            Stage::Recovery
-                if !swimming
-                    && p.physics.near_ground()
-                    && !p.power_cast_active(2)
-                    && self.cooldown_ready.is_some() =>
-            {
-                if !self.blink_in_water || !self.exit_during_blink || p.feet() == self.cast_start {
-                    return Err("water Blink did not demonstrate actual underwater12 to out-of-water mode handoff".into());
-                }
+            Stage::Recovery if !p.power_cast_active(2) && self.cooldown_ready.is_some() => {
                 self.rearm_input = Some(stamp);
                 send(world, self.use_input, true)?;
                 self.using = true;
@@ -666,7 +688,7 @@ impl Observation {
                         .is_some_and(|cast| cast.phase() == Phase::Aiming) =>
             {
                 eprintln!(
-                    "ACTION_SMOKE_PASS check=blink_water_actual_handoff_and_rearm release={:?} entered={:?} finished={:?} water_exit={:?} cooldown={:?} rearm_input={:?} rearm_active={stamp:?} feet={:?} release_to_finish_wall_clock_frames={:?} finish_to_cooldown_wall_clock_frames={:?} rearm_input_to_active_wall_clock_frames={:?} no_timing_threshold_or_clock_override=true",
+                    "ACTION_SMOKE_PASS check=blink_water_actual_cast_and_rearm release={:?} entered={:?} finished={:?} optional_water_exit={:?} cooldown={:?} rearm_input={:?} rearm_active={stamp:?} feet={:?} release_to_finish_wall_clock_frames={:?} finish_to_cooldown_wall_clock_frames={:?} rearm_input_to_active_wall_clock_frames={:?} no_timing_threshold_or_clock_override=true",
                     self.released,
                     self.entered,
                     self.finished,
@@ -691,16 +713,14 @@ impl Observation {
                     send(world, self.use_input, false)?;
                     self.using = false;
                 }
-                if let Some(reason) = self.blocked_target.take() {
-                    return Err(reason);
-                }
                 self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
                 let audio_result = self.audio(world);
                 self.optional_audio(audio_result);
                 eprintln!(
-                    "ACTION_SMOKE_PASS check=blink_water_sequence_complete actual_mode_and_motion=true exit=ordinary_ExitDrain no_pixels_or_heard_mix_claim=true"
+                    "ACTION_SMOKE_PASS check=blink_water_sequence_complete actual_cast_motion=true optional_water_handoff={} exit=ordinary_ExitDrain no_pixels_or_heard_mix_claim=true",
+                    self.exit_during_blink
                 );
                 eprintln!(
                     "ACTION_SMOKE_BLINK_WATER_OPTIONAL_AUDIO mix_baseline={:?} mix_underwater={:?} mix_surface={} authored_surfacing_fx_source={} actual_heavy_breath_play={} actual_heavy_breath_source={} observation_error={:?} unavailable_receipts_are_not_ACKs=true",
