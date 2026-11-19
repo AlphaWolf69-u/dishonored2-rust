@@ -102,14 +102,16 @@ impl GameCollision<'_> {
         }
         let margin = Vec3::splat(tolerance.max(0.0) + 0.01);
         let mut start = start;
+        let mut moved = Vec::new();
         for (key, triangle, owner) in self.0.triangles_in(min - margin, max + margin, filter) {
             if !accepts_owner(owner) { continue; }
             let body = if owner == u32::MAX { 0 } else { owner + 1 };
-            if let Some((fraction, contact)) = shape_cast::cast(&points, motion, &triangle, 0.001) {
+            let initial = shape_cast::closest(&points, &triangle);
+            if let Some((fraction, contact)) = shape_cast::cast_from_contact(&points, motion, &triangle, 0.001, initial, &mut moved) {
                 cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: self.0.interaction_box_material_id(key), position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
             }
             if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
-                let contact = shape_cast::closest(&points, &triangle);
+                let contact = initial;
                 if contact.distance <= tolerance {
                     start.push(WorldHit { user_data: 0, body_flags: 1, material_id: self.0.interaction_box_material_id(key), position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
                 }

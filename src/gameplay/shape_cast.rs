@@ -337,13 +337,15 @@ pub fn closest(points: &[Vec3], triangle: &[Vec3; 3]) -> Contact {
 /// First contact of `points` translated by `fraction * displacement`
 /// (fraction in [0, 1]) with the triangle, to within `accuracy`.
 pub fn cast(points: &[Vec3], displacement: Vec3, triangle: &[Vec3; 3], accuracy: f32) -> Option<(f32, Contact)> {
-    let mut moved = points.to_vec();
+    cast_from_contact(points, displacement, triangle, accuracy, closest(points, triangle), &mut Vec::new())
+}
+
+/// The proxy can request both starting contacts and sweep hits. The first
+/// distance query is shared, and the translated hull is scratch for the batch.
+pub fn cast_from_contact(points: &[Vec3], displacement: Vec3, triangle: &[Vec3; 3],
+    accuracy: f32, mut contact: Contact, moved: &mut Vec<Vec3>) -> Option<(f32, Contact)> {
     let mut fraction = 0.0f32;
-    for _ in 0..64 {
-        for (target, &point) in moved.iter_mut().zip(points) {
-            *target = point + displacement * fraction;
-        }
-        let contact = closest(&moved, triangle);
+    for iteration in 0..64 {
         if contact.distance <= accuracy {
             return Some((fraction, contact));
         }
@@ -352,9 +354,12 @@ pub fn cast(points: &[Vec3], displacement: Vec3, triangle: &[Vec3; 3], accuracy:
             return None;
         }
         fraction += contact.distance / approach;
-        if fraction > 1.0 {
+        if fraction > 1.0 || iteration == 63 {
             return None;
         }
+        moved.clear();
+        moved.extend(points.iter().map(|&point| point + displacement * fraction));
+        contact = closest(moved, triangle);
     }
     None
 }
