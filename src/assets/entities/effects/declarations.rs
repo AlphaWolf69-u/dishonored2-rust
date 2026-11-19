@@ -37,6 +37,25 @@ impl FxDeclarations {
         declarations.extend_roots(roots,catalog);
         declarations
     }
+    /// Return map actors whose programs own a Delay, including nested declaration instances.
+    pub fn delay_owners(&self, roots: &[Arc<FxGraph>]) -> HashSet<String> {
+        // 7bbf20 walks from a declaration instance to its owning map actor.
+        // Resolve nested declarations once per preparation rather than per timer tick.
+        let mut timed = HashSet::new();
+        loop {
+            let previous = timed.len();
+            for (name, &index) in &self.indices {
+                if self.declarations[index].as_ref().is_ok_and(|graph| graph.nodes.iter().any(|node|
+                    node.class == "arkKisculeNodeDelay" || instance_declaration(node).is_some_and(|name| timed.contains(name)))) {
+                    timed.insert(name.as_str());
+                }
+            }
+            if previous == timed.len() { break; }
+        }
+        roots.iter().filter(|root| root.nodes.iter().any(|node|
+            node.class == "arkKisculeNodeDelay" || instance_declaration(node).is_some_and(|name| timed.contains(name))))
+            .map(|root| root.owner.to_ascii_lowercase()).collect()
+    }
     /// Extend the same first-reference index when a real named actor program
     /// is admitted. Existing declarations/leases are never decoded twice.
     pub fn extend_roots(&mut self,roots:&[Arc<FxGraph>],catalog:&Catalog){

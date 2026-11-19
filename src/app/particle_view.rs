@@ -10,6 +10,7 @@ pub(super) fn advance_view_effects(
     fx: crate::rendering::bevy_backend::camera_scene::FxUpdateInputs,
     mut simulation: Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
     physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    clocks: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     player: Res<super::player::PlayerState>,
     actions: Option<Res<super::player_actions::PlayerActions>>,
     cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
@@ -31,7 +32,7 @@ pub(super) fn advance_view_effects(
         }
         let world = physics.point_queries()?;
         let world = world.read().map_err(|_| "level physics query owner is poisoned")?;
-        let managed=fx.live().map(|live|super::managed_frames::Resolver{live,scene:physics,player:player.player.as_ref()});
+        let managed=fx.live().map(|live|super::managed_frames::Resolver{live,scene:physics,player:player.player.as_ref(),clocks:clocks.as_deref()});
         simulation.advance_world(&fx, frame.0, camera,
             player.player.as_ref().is_some_and(|player| player.is_underwater()), &world,managed.as_ref().map(|resolver|resolver as &dyn crate::rendering::bevy_backend::world_effects::ManagedFrames))?;
         // 14022dac0 -> 14088c5e0: this update's camera shakes move the view

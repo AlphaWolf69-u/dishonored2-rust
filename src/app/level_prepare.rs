@@ -1095,6 +1095,7 @@ pub(super) fn prepare_level(
             app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
         .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
     let mut graph_declarations=crate::assets::entities::effects::declarations::FxDeclarations::default();
+    let mut clock_only_owners = std::collections::HashSet::new();
     if let (Some(document),Some(catalog))=(entity_document.as_ref(),catalog.as_ref()){
         let mut known:std::collections::HashSet<_>=graph_definitions.iter().map(|graph|graph.owner.to_ascii_lowercase()).collect();
         let mut visited=std::collections::HashSet::new();
@@ -1104,6 +1105,13 @@ pub(super) fn prepare_level(
             graph_declarations.extend_roots(&graph_definitions,catalog);
             let mut targets=crate::assets::entities::effects::named_actor_targets(
                 graph_definitions.iter().map(AsRef::as_ref).chain(graph_declarations.declarations.iter().filter_map(|graph|graph.as_ref().ok().map(AsRef::as_ref))));
+            let live = app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+            for name in &targets {
+                if let Some(id) = live.and_then(|entities| entities.find(name)) { clock_only_owners.remove(&id); }
+            }
+            let mut clock_demands = graph_declarations.delay_owners(&graph_definitions);
+            clock_demands.retain(|name| !targets.contains(name) && live.is_some_and(|entities| entities.find(name).is_none()));
+            targets.extend(clock_demands.iter().cloned());
             targets.retain(|name|visited.insert(name.clone()));
             if targets.is_empty(){break;}
             let mut physics=app.take_resource::<super::physics_scene::PhysicsScene>()
@@ -1114,6 +1122,7 @@ pub(super) fn prepare_level(
             };
             let before=live.spawned_entities().len();
             let admission=physics.admit_base_targets(document,&targets,&mut live).and_then(|()|{
+                clock_only_owners.extend(clock_demands.iter().filter_map(|name| live.find(name)));
                 if live.spawned_entities().len()!=before{physics.capture_removal_components(catalog,document)?;}
                 Ok(())
             });
@@ -1158,6 +1167,7 @@ pub(super) fn prepare_level(
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions {
                 graphs: std::sync::Arc::new(graph_definitions),
+                clock_only_owners: std::sync::Arc::new(clock_only_owners),
                 declarations:std::sync::Arc::new(graph_declarations),
                 actors: std::sync::Arc::new(
                     entity_document

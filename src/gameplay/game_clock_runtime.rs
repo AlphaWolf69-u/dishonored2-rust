@@ -726,6 +726,14 @@ impl ClockRuntime {
             .entity_delta(space)
             .ok_or("entity timespace invalid")
     }
+    /// 878030 reads the entity's selector and offset. An unmodified placed
+    /// entity has its constructed zero offset and needs no separate record.
+    pub fn entity_time_from_definition(&self, entity: EntityId, selector: u32) -> Result<f64, &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let (space, offset, _) = state.entity_values(entity).unwrap_or((selector, 0., None));
+        let group = *[3, 4, 2, 0].get(space as usize).ok_or("entity timespace invalid")?;
+        Ok((state.clock.time(group).ok_or("entity clock group absent")? - offset) as f32 as f64)
+    }
     pub fn entity_time(&self, entity: EntityId) -> Result<f64, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
         let (space, offset, _) = state

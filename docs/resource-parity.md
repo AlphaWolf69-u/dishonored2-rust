@@ -25874,3 +25874,14 @@ The window's first Stage changed (Start) consumes a one-notification budget and 
   initially overlapping the sphere (0x1407b3830, 0x140096ac0). The host still
   executes the explosion query synchronously. Diagnostic counters record time
   in overlap, ray, damage, impulse and component startup separately.
+
+`ported` for the level-start window sequence. In Edge of the World the global level script connects its first LoadingEnd to a shared 19-node declaration with a connected list of 20 window actors. Each iteration writes currentEntity, forwards through the shipping Log handler (1407a1750 / 140399620), calls Next Stage on the resolved actor, and starts a 10 ms Delay before incrementing the index. The installed declaration supplies the targets, order and timing. Per-instance Delay state samples the owning entity clock through 1407bbf20 / 140878030, following 1407c4470 / 1407c42c0. The same graph generation owns its scheduled callback and retirement. Only componentless base actors can gain a managed header solely to supply a clock, and those actors retain the graph actions already admitted for their programs. The authored loop advances with the game clock and receives no extra wall-clock updates while paused.
+
+The captured Edge of the World window starts at stage 0. On first load the
+level script sends its authored list of twenty window controllers through
+`foreach_auto` and requests their next stage. The 0→1 transition plays the
+outgoing stage’s opening clip. Its first stage-start event removes the separate
+collision proxy. The declaration instance owns its loop variables and 10 ms
+delay. Its clock comes from the script entity, advances with simulation, and
+retires with the graph instance. Clock-only script headers do not create
+physics bodies or render resources.

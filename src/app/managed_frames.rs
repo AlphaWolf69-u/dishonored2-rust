@@ -8,11 +8,18 @@ use crate::{
     rendering::bevy_backend::world_effects::ManagedFrames,
 };
 pub(super) struct Resolver<'a> {
+    pub clocks: Option<&'a crate::gameplay::game_clock_runtime::ClockRuntime>,
     pub live: &'a LiveEntities,
     pub scene: &'a super::physics_scene::PhysicsScene,
     pub player: Option<&'a crate::gameplay::player::Player>,
 }
 impl ManagedFrames for Resolver<'_> {
+    fn graph_clock(&self, owner: &str) -> Result<f64, String> {
+        let id = self.live.find(owner).ok_or_else(|| format!("script clock owner {owner} is absent"))?;
+        let clock = self.clocks.ok_or("game clock unavailable")?;
+        let (selector, _) = self.scene.entity_time_binding(self.live, id)?;
+        clock.entity_time_from_definition(id, selector).map_err(str::to_owned)
+    }
     fn entity(&self, reference: &EntityReference) -> Result<Option<EntityId>, String> {
         Ok(match reference {
             EntityReference::Managed(id) => self.live.get(*id).map(|_| *id),

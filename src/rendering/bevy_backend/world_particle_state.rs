@@ -760,7 +760,7 @@ impl WorldParticleState {
             for &entity in live.spawned_entities() {
                 let (name, _) = live.get(entity).ok_or("spawned graph entity is stale")?;
                 if let Some(graph) = by_name.get(&name.to_ascii_lowercase()) {
-                    self.admit_entity_graph(entity, Arc::clone(graph), declarations, live)?;
+                    self.admit_entity_graph(entity, Arc::clone(graph), declarations, live, definitions.clock_only_owners.contains(&entity))?;
                 }
             }
         }
@@ -821,6 +821,7 @@ impl WorldParticleState {
         graph: Arc<crate::assets::entities::effects::FxGraph>,
         declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
         live: &crate::gameplay::entity_lifetime::LiveEntities,
+        clock_only: bool,
     ) -> Result<u64, String> {
         use crate::gameplay::entity_lifetime::Stage;
         if self.closed {
@@ -833,7 +834,11 @@ impl WorldParticleState {
         if self.entity_graphs.contains_key(&entity) || self.graphs.has_root_owner(name) {
             return Err("entity already owns a graph in the shared manager".into());
         }
-        let root = self.graphs.admit_root(graph, declarations)?;
+        let root = if clock_only {
+            self.graphs.admit_render_root(graph, declarations)?
+        } else {
+            self.graphs.admit_root(graph, declarations)?
+        };
         self.entity_graphs.insert(entity, root);
         if let Err(error) = self.start_entity_graph(entity, live) {
             self.retire_entity_graph(entity)?;
@@ -2552,6 +2557,9 @@ struct GraphHost<'a> {
     graph: usize,
 }
 impl FxGraphWorld for GraphHost<'_> {
+    fn graph_clock(&self, owner: &str) -> Result<f64, String> {
+        self.frames.managed.ok_or("graph clock has no entity owner")?.graph_clock(owner)
+    }
     fn request_usable_action(&mut self, target: EntityId, action: UsableAction) -> Result<(), String> {
         if matches!(action, UsableAction::Remove { attached: true })
             && !self.live.ok_or("destroy action has no entity lifetime owner")?.children(target)?.is_empty() {

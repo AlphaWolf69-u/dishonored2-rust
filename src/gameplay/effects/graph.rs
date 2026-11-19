@@ -32,6 +32,9 @@ pub trait FxGraphWorld {
     fn request_usable_action(&mut self, _entity: crate::gameplay::entity_lifetime::EntityId, _action: UsableAction) -> Result<(), String> {
         Err("graph usable component owner is unavailable".into())
     }
+    fn graph_clock(&self, _owner: &str) -> Result<f64, String> {
+        Err("graph owner clock is unavailable".into())
+    }
     fn managed_entity(&self,_entity:&EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>{Err("managed entity resolver is not connected".into())}
     fn managed_frame(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<Option<crate::gameplay::reference_frame::ReferenceFrame>,String>{Err("managed frame resolver is not connected".into())}
     fn managed_spawn_tag(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>{Err("managed spawn tag resolver is not connected".into())}
@@ -88,6 +91,7 @@ pub struct FxGraphRuntime {
     pub(super) variables: SharedVariables,
     pub(super) story: Option<Box<super::story_flags::State>>,
     pub(super) children: HashMap<u32, SharedVariables>,
+    delays: Option<Box<HashMap<u32, Delay>>>,
     gates: HashMap<u32, GateState>,
     gate_open: HashMap<u32, bool>,
     effects: HashMap<u32, FxNode>,
@@ -101,6 +105,12 @@ pub struct FxGraphRuntime {
     instance_id:Option<u64>,
     spawn_attempt:u64,
     pending_spawns:HashMap<u32,u64>,
+}
+#[derive(Default)]
+struct Delay {
+    remaining_ms: i32,
+    last_time: Option<f64>,
+    running: bool,
 }
 #[derive(Default)]
 struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3], usable_stage: Option<i32> }
@@ -163,6 +173,10 @@ impl GraphInputs for FxGraphRuntime {
         }
         if node.class == "arkKisculeNodeEntitySpawnerControl" && point.name == "m_createdEntity" {
             return Ok(Some(GraphValue::Entity(self.spawned.get(&node.id).cloned().flatten())));
+        }
+        if node.class == "arkKisculeNodeDelay" && point.name == "m_currentDelay" {
+            let remaining = self.delays.as_ref().and_then(|delays| delays.get(&node.id)).map_or(0, |delay| delay.remaining_ms);
+            return Ok(Some(GraphValue::Time(remaining)));
         }
         if node.class == "arkKisculeNodeUsableNotification" && point.name == "m_stageIndex" {
             let current = self.notifications.as_ref().and_then(|states| states.get(&node.id)).and_then(|state| state.usable_stage);
@@ -244,6 +258,7 @@ impl FxGraphRuntime {
             story,
             children: HashMap::new(),
             pending: Vec::new(),
+            delays: None,
             gates: HashMap::new(),
             gate_open: HashMap::new(),
             effects: HashMap::new(),
@@ -734,6 +749,35 @@ impl FxGraphRuntime {
                 }
                 true
             }
+            // The shipping Log handler 7a1750 binds 399620 (return 0).
+            // Its regular Log output still forwards through 7c0e30.
+            "arkKisculeNodeLog" if port.name == "Log" => true,
+            "arkKisculeNodeDelay" => {
+                let duration = self.integer_input(node, "m_delay", 1000)?;
+                let reset_on_start = self.boolean_input(node, "m_resetOnStart", false)?;
+                let delay = self.delays.get_or_insert_with(Default::default).entry(id).or_default();
+                let was_running = delay.running;
+                match port.name.as_str() {
+                    "Start" => {
+                        if delay.remaining_ms == 0 || reset_on_start {
+                            delay.remaining_ms = duration;
+                            delay.last_time = None;
+                        }
+                        delay.running = true;
+                    }
+                    "Pause" => delay.running = false,
+                    "Resume" if !was_running => { delay.last_time = None; delay.running = true; }
+                    "Resume" => {}
+                    "Reset" | "Stop" => {
+                        delay.remaining_ms = duration;
+                        delay.last_time = None;
+                        if port.name == "Stop" { delay.running = false; }
+                    }
+                    input => return Err(format!("unsupported Delay input {input}")),
+                }
+                if delay.running && !was_running { schedule = Some(id); }
+                true
+            }
             "arkKisculeNodeGate" => {
                 let mut gate = self.gates.remove(&id).unwrap_or_default();
                 let mut context = GateInvocation { graph: self, id };
@@ -905,6 +949,24 @@ impl FxGraphRuntime {
         node: u32,
         world: &mut impl FxGraphWorld,
     ) -> Result<bool, String> {
+        if let Some(delay) = self.delays.as_mut().and_then(|delays| delays.get_mut(&node)) {
+            if !delay.running { return Ok(false); }
+            // 7c42c0 samples the owning entity clock and truncates the remaining
+            // signed milliseconds on every tick, including its first baseline.
+            let now = world.graph_clock(&self.owner)?;
+            if let Some(previous) = delay.last_time {
+                delay.remaining_ms = ((delay.remaining_ms as f32 / 1000. - (now - previous) as f32) * 1000.) as i32;
+            }
+            if delay.remaining_ms < 1 {
+                delay.remaining_ms = 0;
+                delay.running = false;
+                delay.last_time = None;
+                self.emit(node, "Finished")?;
+                return Ok(false);
+            }
+            delay.last_time = Some(now);
+            return Ok(true);
+        }
         self.invoke_fx(node, FxOperation::Update, world)
     }
     pub fn effect_completed(

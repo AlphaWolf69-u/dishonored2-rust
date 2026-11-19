@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub(crate) trait ManagedFrames {
     fn entity(&self,reference:&crate::gameplay::event_graph::EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>;
     fn name(&self,id:crate::gameplay::entity_lifetime::EntityId)->Option<&str>;
+    fn graph_clock(&self, owner: &str) -> Result<f64, String>;
     fn spawn_tag(&self,id:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>;
     fn frame(&self,id:crate::gameplay::entity_lifetime::EntityId,tag:&str)->Result<Option<ReferenceFrame>,String>;
     /// 140878470: whether the entity's render model is the animated kind.
@@ -38,6 +39,9 @@ pub(crate) fn trace_lifecycle() -> bool {
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectDefinitions {
+    // An admitted timer owner keeps its host program's execution scope. A clock
+    // demand alone must not start unrelated gameplay or component programs.
+    pub(crate) clock_only_owners: Arc<std::collections::HashSet<crate::gameplay::entity_lifetime::EntityId>>,
     pub graphs: Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>,
     pub declarations: Arc<crate::assets::entities::effects::declarations::FxDeclarations>,
     pub actors: Arc<Vec<crate::assets::entities::effects::actors::ActorDefinition>>,
