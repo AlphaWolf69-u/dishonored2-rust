@@ -230,6 +230,8 @@ struct Instance {
     playing_sounds: std::collections::HashMap<(u32, Emitter), bool>,
     equipment_emitters: [Option<Emitter>; 2],
     parts: u8,
+    /// 7ce7e0/7dc120: Director is an entity-free group, not a body tree.
+    director: bool,
     /// The cast trees' md6s (body, left arm, right arm) for CONDMD6.
     md6: [String; TARGETS],
     graph: GraphState,
@@ -480,7 +482,7 @@ impl Midnight {
             instance.clips[target].clear();
             instance.parts &= !part;
         }
-        self.instances.retain(|instance| instance.parts != 0);
+        self.instances.retain(|instance| instance.parts != 0 || instance.director);
     }
 
     pub fn take_point_events(&mut self) -> Vec<PointEvent> { std::mem::take(&mut self.point_events) }
@@ -761,7 +763,11 @@ impl Midnight {
             .filter(|&target| !md6[target].is_empty())
             .fold(0u8, |bound, target| bound | (1 << target));
         let parts = parts & bound_parts;
-        if parts == 0 {
+        // 7d5f40 admits the special Director group without a matching entity;
+        // 190c20/192d30 compare its actual name (initializer141360810).
+        // It keeps its graph lifetime but never interrupts a player tree.
+        let director = prepared.decl.groups.iter().any(|(_, name)| name == "Director");
+        if parts == 0 && !director {
             return Err("Midnight has no corresponding player cast group".into());
         }
         let mut graph = GraphState::new(prepared);
@@ -798,7 +804,7 @@ impl Midnight {
         let mut inst = Instance {
             handle: self.next_handle, scene: prepared.clone(), current: index, time, abs: 0, carry: 0.0, rate,
             clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
-            equipment_emitters: self.equipment_emitters,
+            equipment_emitters: self.equipment_emitters, director,
             graph,
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
@@ -849,7 +855,7 @@ impl Midnight {
         instance.sounds.retain(|sound| sound.sound.emitter.player_part() & removed == 0);
         instance.events.retain(|(_, target)| removed & (1 << target) == 0);
         instance.parts &= !removed;
-        if instance.parts == 0 { self.instances.remove(index); }
+        if instance.parts == 0 && !instance.director { self.instances.remove(index); }
     }
 
     /// The manager update before the component stages: the time step, the

@@ -26069,8 +26069,17 @@ nonempty supplied models before scheduling, interruption and retained instance
 ownership. PlayerBody/PlayerCamera still alias the same body target; both arm
 and equipment group aliases remain canonical. Bindings cover the whole graph,
 so a later graph node can use an already-bound group. A scene with no matching
-player group fails before changing any existing playback, matching7d51e0's
-missing-corresponding-entity admission boundary.
+player group fails before changing any existing playback, except the native
+entity-free Director group. Native7d5f40 explicitly admits Director OR a
+matched entity;190c20/192d30 compare NameId1432ce598, whose141360810 initializer
+reads the exact stringDirector at141aff240.7ce7e0 constructs that group with
+7dc120 and7d4da0 permits its owner without an actor roster. The backend keeps
+its existing graph/completion/explicit-Stop lifetime with zero player-tree
+ownership, including across unrelated target retirement; it does not invent
+a body or sound-emitter alias. Empty declarations remain rejected by the
+7d51e0/1975d0 admission boundary. Director-specific event/audio output was
+already outside this player's typed target projection and is not claimed
+implemented by this ownership correction.
 
 Previously a left-arm-only Blink loop retained every requested nonempty model
 as if it owned all five trees. Its startup, replacement or retirement could
