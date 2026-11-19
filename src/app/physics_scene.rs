@@ -476,7 +476,7 @@ impl PhysicsScene {
         models: &[entities::PlacedModel],
         joint_frames: &super::joint_frames::JointFrames,
         level_bodies: Option<&level_bodies::PreparedLevelBodies>,
-        legacy_constraint_owners: &std::collections::HashSet<String>,
+        constraint_admission: &super::machinery::ConstraintAdmission,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -1109,7 +1109,7 @@ impl PhysicsScene {
                 }
             }
             scene.admit_placed_constraints(catalog, document, models,
-                legacy_constraint_owners, live, &mut registry)?;
+                constraint_admission, live, &mut registry)?;
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.
             for entity in &scene.entities {

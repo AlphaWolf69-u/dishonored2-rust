@@ -980,7 +980,7 @@ pub(super) fn prepare_level(
     }
     let machinery_placements = (separate_placements && entity_document.is_some())
         .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
-    let mut legacy_constraint_owners = std::collections::HashSet::new();
+    let mut constraint_admission = super::machinery::ConstraintAdmission::default();
     let machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
         catalog_for_machinery,
         entity_document.as_ref(),
@@ -988,7 +988,7 @@ pub(super) fn prepare_level(
         &mut physics_texts,
         &mut shape_sources,
         Some(&|| cancelled(CancellationPoint::General)),
-        Some(&mut legacy_constraint_owners),
+        Some(&mut constraint_admission),
     )
     .map_err(std::io::Error::other)?;
     drop(machinery_placements);
@@ -1027,9 +1027,10 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref(), &legacy_constraint_owners)
+        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref(), &constraint_admission)
             .map_err(std::io::Error::other)?;
-        drop(legacy_constraint_owners);
+        constraint_admission.finish(&mut app.world_mut().resource_mut::<super::machinery::AmbientMachinery>(), &mut physics, &live)
+            .map_err(std::io::Error::other)?;
         physics.admit_ai_section_owners(catalog, document, &mut live)
             .map_err(std::io::Error::other)?;
         app.insert_resource(super::ai_world::creation::CreationPlan::prepare(catalog, document, &level)

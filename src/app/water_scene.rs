@@ -276,11 +276,11 @@ pub(super) fn publish_water_frame(
     screen_effects:Res<crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials>,
     mut queries: ResMut<crate::rendering::bevy_backend::physics_queries::PhysicsQueryFrame>,
     mut query_error: Local<Option<String>>,
-    (queue, tome, navigation, machinery): (
+    (queue, tome, navigation, mut machinery): (
         Res<super::SceneRenderQueue>,
         Option<Res<super::state::TomeWorld>>,
         Option<Res<super::NavigationWorld>>,
-        Option<Res<super::machinery::AmbientMachinery>>,
+        Option<ResMut<super::machinery::AmbientMachinery>>,
     ),
 ) {
     let Some(water) = water.as_mut() else {
@@ -393,14 +393,21 @@ pub(super) fn publish_water_frame(
     match result {
         Ok(frame) => {
             if let Some(physics) = physics.as_ref() {
-                match physics.point_queries() {
-                    Ok(world) => {
+                let inputs = physics.point_queries().and_then(|world| {
+                    let moving = match machinery.as_deref_mut() {
+                        Some(machinery) => machinery.moving_world(&world)?,
+                        None => None,
+                    };
+                    Ok((world, moving))
+                });
+                match inputs {
+                    Ok((world, moving)) => {
                         queries.0 = Some(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
                             camera: frame.camera,
                             frame: frame.matrices.frame,
                             world,
                             collision: navigation.as_ref().map(|navigation| navigation.0.map()),
-                            moving: machinery.as_ref().and_then(|machinery| machinery.moving_world()),
+                            moving,
                         });
                         *query_error = None;
                     }

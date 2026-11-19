@@ -42,8 +42,10 @@ impl Definition {
     /// Admission boundary of the existing factored atom rows, not a fallback
     /// conversion of a different declaration type into a hinge.
     pub(crate) fn passive_rows_supported(&self) -> bool {
-        self.settings.motor.is_none()
-            && self.linear_stabilized && !self.breakable
+        self.settings.motor.is_none() && self.rigid_rows_supported()
+    }
+    pub(crate) fn rigid_rows_supported(&self) -> bool {
+        self.linear_stabilized && !self.breakable
             && self.settings.linear_constraint == "LINEAR_CONSTRAINT_FIXED"
             && matches!(self.settings.angular_constraint.as_str(),
                 "ANGULAR_CONSTRAINT_CONE" | "ANGULAR_CONSTRAINT_HINGE"

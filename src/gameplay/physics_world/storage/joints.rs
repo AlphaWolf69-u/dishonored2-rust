@@ -93,6 +93,67 @@ impl JointOwner {
     }
 }
 impl WorldStorage {
+    pub(crate) fn driven_bodies(&self, id: JointId) -> Option<[u32; 2]> {
+        self.joint_owner.entries.get(id.slot)?.as_ref()
+            .filter(|entry| entry.generation == id.generation).map(|entry| entry.bodies)
+    }
+
+    /// 7149f0 suspends the motor and delegates endpoint freeze/thaw to 808220/808010.
+    pub(crate) fn set_motor_lod<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: JointId, far: bool, frozen: &mut [u8; 2],
+    ) -> Result<(), String> {
+        let Some(bodies) = self.driven_bodies(id) else { return Ok(()); };
+        self.joint_mutation_ready()?;
+        let entry = self.joint_owner.entry_mut(id)?;
+        let Kernel::Hinge(joint) = &mut entry.kernel else { return Ok(()); };
+        let changed = if far && joint.settings.started {
+            joint.motor_suspended = true;
+            joint.update_motor(Some(false), None, None, None)
+        } else if !far && joint.motor_suspended {
+            joint.motor_suspended = false;
+            joint.update_motor(Some(true), None, None, None)
+        } else { false };
+        if changed {
+            for body in bodies { self.activate_body(geometry, events, body)?; }
+        }
+        if !self.info.enable_deactivation { return Ok(()); }
+        for (body, saved) in bodies.into_iter().zip(frozen.iter_mut()) {
+            let record = self.bodies.get(body).ok_or("constraint LOD body retired")?;
+            if record.flags & 2 == 0 { continue; }
+            let active = record.flags & 8 != 0;
+            let motion = record.motion_id;
+            if far && *saved == 0 {
+                if active {
+                    self.edit_bodies(geometry, events, |creation| creation.world.set_activation(body, true, creation.callbacks))?;
+                }
+                self.deactivation.state_mut(motion).ok_or("constraint LOD motion absent")?
+                    .set_mode(crate::gameplay::deactivation::MODE_KEEP_DEACTIVATED);
+                *saved = if active { 1 } else { 2 };
+            } else if !far && *saved != 0 {
+                self.deactivation.state_mut(motion).ok_or("constraint LOD motion absent")?
+                    .set_mode(crate::gameplay::deactivation::MODE_DEACTIVATE);
+                if *saved == 1 { self.activate_body(geometry, events, body)?; }
+                *saved = 0;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn motor_parameters(&self, id: JointId) -> Result<Option<(bool, f32, f32, f32)>, String> {
+        match &self.joint_owner.entry(id)?.kernel {
+            Kernel::Hinge(joint) => Ok(joint.motor_parameters()),
+            Kernel::Atom(_) => Ok(None),
+        }
+    }
+
+    pub(crate) fn update_motor(&mut self, id: JointId, enabled: Option<bool>, position: Option<f32>,
+        velocity: Option<f32>, acceleration: Option<f32>) -> Result<Option<[u32; 2]>, String> {
+        self.joint_mutation_ready()?;
+        let entry = self.joint_owner.entry_mut(id)?;
+        let Kernel::Hinge(joint) = &mut entry.kernel else { return Ok(None); };
+        Ok(joint.update_motor(enabled, position, velocity, acceleration).then_some(entry.bodies))
+    }
+
     fn joint_mutation_ready(&self) -> Result<(), String> {
         if !self.publication_idle() || !self.simulation_idle() {
             return Err("constraint mutation awaits canonical publication/solver boundary".into());

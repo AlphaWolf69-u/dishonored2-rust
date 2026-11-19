@@ -1,4 +1,4 @@
-//! Opt-in observation of real passive EotW joints; no synthetic forces or state.
+//! Opt-in observation of the placed EotW lamp and turbine joints; no synthetic forces or state.
 use super::*;
 const ENDPOINTS: [&str; 2] = [
     "env_interiors_lamp_hanging_cable_01",
@@ -11,6 +11,10 @@ pub(super) struct Observation {
     maximum_pivot_separation_squared: f32,
     minimum_cone_axis_dot: Option<f32>,
     prepared_samples: [bool; 2],
+    rotor_active_samples: u32,
+    rotor_frozen_samples: u32,
+    rotor_spinning_samples: u32,
+    rotor_max_hub_distance: f32,
 }
 impl Observation {
     pub(super) fn begin(_world: &World) -> Result<Self, String> {
@@ -22,6 +26,10 @@ impl Observation {
             maximum_pivot_separation_squared: 0.,
             minimum_cone_axis_dot: None,
             prepared_samples: [false; 2],
+            rotor_active_samples: 0,
+            rotor_frozen_samples: 0,
+            rotor_spinning_samples: 0,
+            rotor_max_hub_distance: 0.,
         })
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
@@ -41,10 +49,57 @@ impl Observation {
         self.observed_steps += 1;
         let complete = step.wrapping_sub(first) >= 120;
         let report = self.observed_steps == 1 || complete;
+        const ROTOR: &str = "script_constraint_rotor_3_1_1";
+        const BLADES: &str = "script_wind_turbine_propeller_01_2_1_1";
+        const HEAD: &str = "script_wind_turbine_top_01_1_1_1";
+        let machinery = world.resource::<super::super::machinery::AmbientMachinery>();
+        let placements = world.resource::<super::super::RenderSourcePlacements>();
+        let mut rotor_found = false;
         let mut found = [false; 2];
         let mut prepared = [false; 2];
         scene.visit_constraints(live,|row|{
             let endpoints=row.definition.endpoints();
+            if row.name == ROTOR {
+                if rotor_found || endpoints != [Some(BLADES), Some(HEAD)] {
+                    return Err(format!("captured rotor joint is duplicated or has wrong endpoints: {endpoints:?}"));
+                }
+                let joint = row.joint.ok_or("captured rotor lost its actual joint")?;
+                let actual = storage.observe_joint(joint)?;
+                let (sources, levels, frozen, ambient) = machinery.observe_motor(joint).ok_or("captured rotor has no machinery consumer")?;
+                if actual.bodies != row.bodies || !actual.linked.iter().all(|&linked| linked)
+                    || !row.started || !actual.enabled || ambient != [0; 2] {
+                    return Err(format!("captured rotor has conflicting physics owners: {actual:?} ambient={ambient:?}"));
+                }
+                let blade = storage.bodies.get(row.bodies[0]).ok_or("captured blades body stale")?;
+                let authored = placements.0.get(sources[0]).filter(|p| p.id == BLADES)
+                    .ok_or("captured rotor render placement differs from constrained blades")?;
+                if placements.0.get(sources[1]).is_none_or(|p| p.id != HEAD) {
+                    return Err("captured rotor head render placement differs from constraint".into());
+                }
+                let name = live.find(BLADES).ok_or("captured blades managed generation absent")?;
+                let actor = scene.published_entity_frame(live, name)?.pose;
+                let hub = Vec3::from(row.owner_frame.position);
+                let center = Vec3::new(blade.transform[3][0], blade.transform[3][1], blade.transform[3][2]);
+                let spawn_radius = (Vec3::from(authored.position) - hub).length();
+                let radius = (center - hub).length();
+                if !radius.is_finite() || radius > spawn_radius + storage.info.collision_tolerance {
+                    return Err(format!("captured rotor drifted from its fixed hub: z={} hub={hub:?} radius={radius} authored_radius={spawn_radius} collision_tolerance={}",center.z,storage.info.collision_tolerance));
+                }
+                self.rotor_max_hub_distance = self.rotor_max_hub_distance.max(radius);
+                let motor = storage.motor_parameters(joint)?.ok_or("captured hinge has no motor")?;
+                let angular = actual.angular[0];
+                if frozen { self.rotor_frozen_samples += 1; }
+                else if motor.0 && motor.2 != 0. && actual.prepared {
+                    self.rotor_active_samples += 1;
+                    if angular[..3].iter().any(|&value| value != 0.) { self.rotor_spinning_samples += 1; }
+                }
+                if report {
+                    eprintln!("ACTION_CAPTURED_ROTOR step={step} name={ROTOR} ends={endpoints:?} bodies={:?} source_placements={sources:?} source_center={:?} actual_center={center:?} actor_center={:?} hub={hub:?} offset={:?} authored_radius={spawn_radius} joint_separation_squared={} angular={angular:?} motor={motor:?} levels={levels:?} frozen={frozen} ambient_dynamic_copies={ambient:?}",
+                        actual.bodies, authored.position, actor.position, center-hub,actual.pivot_separation_squared);
+                }
+                rotor_found = true;
+                return Ok(());
+            }
             let Some(fixture)=ENDPOINTS.iter().position(|expected|endpoints.iter().flatten().any(|actual|actual==expected))else{return Ok(())};
             if found[fixture]{return Err("passive lamp fixture has multiple admitted constraints; inspect actual source owners".into())}
             found[fixture]=true;
@@ -68,12 +123,17 @@ impl Observation {
             }
             Ok(())
         })?;
+        if !rotor_found { return Err("captured rotor constraint never reached the gameplay world".into()); }
         if !found.iter().all(|&value| value) {
             return Err(format!(
                 "actual EotW lamp constraint fixtures unavailable: {found:?}"
             ));
         }
         if complete {
+            if self.rotor_active_samples > 0 && self.rotor_spinning_samples == 0 {
+                return Err("running rotor produced no angular velocity in active solver samples".into());
+            }
+            eprintln!("ACTION_SMOKE_PASS check=captured_rotor_one_owner_and_hub maximum_center_to_hub={} active_samples={} spinning_samples={} frozen_samples={} steps={}", self.rotor_max_hub_distance, self.rotor_active_samples, self.rotor_spinning_samples, self.rotor_frozen_samples, self.observed_steps);
             // Independent of sword selection, steering and attack callbacks.
             // The existing level has advanced 120 real physics steps; this
             // only borrows published state around the submitted window.

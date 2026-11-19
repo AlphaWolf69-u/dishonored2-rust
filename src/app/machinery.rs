@@ -1,4 +1,5 @@
 //! Client wiring for archive-defined constrained ambient machinery.
+mod rigid_motors;
 use super::model_motion::{ModelPose, ModelPoseUpdates};
 use crate::{
     archive::Catalog,
@@ -23,9 +24,79 @@ struct SceneSkin {
     failed: bool,
 }
 
+/// Loading-only handoff. Articulated bodies and wind-driven rigs retain their existing provider.
+#[derive(Default)]
+pub(super) struct ConstraintAdmission {
+    pub legacy: std::collections::HashSet<String>,
+    pub motors: std::collections::HashSet<String>,
+    rigid: Vec<crate::entities::machinery::recipes::AssemblyRecipe>,
+    windmills: Vec<crate::entities::machinery::WindmillSettings>,
+}
+
+impl ConstraintAdmission {
+    fn stage(&mut self, recipes: &mut crate::entities::machinery::recipes::MachineryRecipes) {
+        let mut retained = Vec::new();
+        for assembly in recipes.assemblies.drain(..) {
+            let eligible = matches!(assembly.joints.as_slice(), [hinge] if hinge.motor.is_some()
+                && hinge.entity_a.is_some() && hinge.entity_b.is_some()
+                && hinge.joint_a.is_none() && hinge.joint_b.is_none())
+                && assembly.bodies.len() == 2
+                && assembly.bodies.iter().all(|b| b.wind.is_none() && b.attached_to.is_none())
+                && assembly.bodies.iter().any(|b| b.mass.is_some());
+            if eligible {
+                self.motors.insert(assembly.joints[0].constraint_id.clone());
+                self.rigid.push(assembly);
+            } else {
+                retained.push(assembly);
+            }
+        }
+        recipes.assemblies = retained;
+        for motor in std::mem::take(&mut recipes.windmills) {
+            if self.motors.contains(&motor.constraint) {
+                self.windmills.push(motor);
+            } else {
+                recipes.windmills.push(motor);
+            }
+        }
+    }
+    pub(super) fn finish(self, machinery: &mut AmbientMachinery,
+        scene: &mut super::physics_scene::PhysicsScene, live: &crate::gameplay::entity_lifetime::LiveEntities)
+        -> Result<(), String> {
+        let mut fallback = crate::entities::machinery::recipes::MachineryRecipes {
+            assemblies: Vec::new(), windmills: Vec::new(), systems: Vec::new(), unsupported: Vec::new(),
+        };
+        for assembly in self.rigid {
+            if let Some(joint) = scene.driven_joint(live, &assembly.joints[0].constraint_id)? {
+                machinery.rigid_motors.push(rigid_motors::Motor::new(assembly, joint)?);
+            } else {
+                fallback.assemblies.push(assembly);
+            }
+        }
+        for windmill in self.windmills {
+            if !scene.set_motor(live, &windmill.constraint, None, None,
+                Some(windmill.speed_degrees * f32::from_bits(0x3c8efa35)), None)? {
+                fallback.windmills.push(windmill);
+            }
+        }
+        if !fallback.assemblies.is_empty() {
+            let first = machinery.physics.bodies.len();
+            machinery.physics.append_recipes(&fallback, |_| {})?;
+            let warmup = crate::platform::console::shared().read().cvars.int("lod_dist_warmup_framecount").unwrap_or(3);
+            for body in &mut machinery.physics.bodies[first..] {
+                if body.entity_placement.is_some() {
+                    body.lod = crate::gameplay::entity_lod::EntityLod::spawned(warmup);
+                }
+            }
+            machinery.visible_previous.resize(machinery.physics.bodies.len(), false);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct AmbientMachinery {
     physics: MachineryWorld,
+    rigid_motors: Vec<rigid_motors::Motor>,
     scenes: crate::gameplay::scene_motion::SceneMotion,
     /// Per body: its owner's render source, resolved once sources exist.
     sources: Option<Vec<Option<usize>>>,
@@ -34,12 +105,33 @@ pub(super) struct AmbientMachinery {
     skins: Vec<super::physics_skinning::SystemSkin>,
     /// The dynamic bodies the Havok particles collide with, after the last
     /// step; None without any.
+    moving_dirty: bool,
     moving: Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>,
     scene_skins: HashMap<usize, SceneSkin>,
 }
 impl AmbientMachinery {
-    pub(super) fn moving_world(&self) -> Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>> {
-        self.moving.clone()
+    /// Read only when the opt-in gameplay constraint observer is running.
+    pub(super) fn observe_motor(&self, joint: crate::gameplay::physics_world::storage::JointId)
+        -> Option<([usize; 2], [i32; 2], bool, [usize; 2])> {
+        let (placements, levels, frozen) = self.rigid_motors.iter().find_map(|motor| motor.observe(joint))?;
+        let ambient_bodies = placements.map(|placement|
+            self.physics.bodies.iter().filter(|b| b.placement == Some(placement)).count());
+        Some((placements, levels, frozen, ambient_bodies))
+    }
+    pub(super) fn moving_world(&mut self, physics: &std::sync::RwLock<crate::gameplay::world_point_query::level::LevelPointQueries>)
+        -> Result<Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>, String> {
+        if self.moving_dirty {
+            let mut moving = self.physics.moving_world();
+            if !self.rigid_motors.is_empty() {
+                let guard = physics.read().map_err(|_| "particle motor world poisoned")?;
+                for motor in &mut self.rigid_motors {
+                    motor.publish_particle_bodies(&guard.storage, &mut moving)?;
+                }
+            }
+            self.moving = moving.bodies.iter().any(Option::is_some).then(|| Arc::new(moving));
+            self.moving_dirty = false;
+        }
+        Ok(self.moving.clone())
     }
     /// Placements whose MD6 vertices are re-posed from simulated bodies.
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
@@ -127,18 +219,19 @@ impl AmbientMachinery {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
         cancelled: Option<&dyn Fn() -> bool>,
-        mut admitted_constraints: Option<&mut std::collections::HashSet<String>>,
+        mut admitted_constraints: Option<&mut ConstraintAdmission>,
     ) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());
         };
-        let recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, placements, texts, shape_sources)?;
+        let mut recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, placements, texts, shape_sources)?;
         for diagnostic in &recipes.unsupported {
             warn!("Ambient machinery assembly unsupported: {diagnostic}");
         }
+        if let Some(admission) = admitted_constraints.as_deref_mut() { admission.stage(&mut recipes); }
         let mut world = MachineryWorld::from_recipes_with_constraint_admission(&recipes, |name| {
             if let Some(owners) = admitted_constraints.as_deref_mut() {
-                owners.insert(name.to_owned());
+                owners.legacy.insert(name.to_owned());
             }
         })?;
         // 14087caa0 -> 14064c820: owners queue for lod_dist_warmup_framecount.
@@ -201,10 +294,12 @@ impl AmbientMachinery {
         info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
+            rigid_motors: Vec::new(),
             scenes,
             sources: None,
             visible_previous,
             skins,
+            moving_dirty: false,
             moving: None,
             scene_skins,
         })
@@ -242,12 +337,12 @@ fn lod_distances() -> crate::gameplay::entity_lod::LodDistances {
 fn update_lod_levels(
     machinery: &mut AmbientMachinery,
     view: &crate::gameplay::entity_lod::LodView,
+    distances: &crate::gameplay::entity_lod::LodDistances,
     sources: &super::shadow_updates::ModelShadowSources,
     scene: &super::SceneRenderQueue,
     placements: &super::RenderSourcePlacements,
 ) {
     use crate::gameplay::entity_lod::{origin_level, render_level};
-    let distances = lod_distances();
     if machinery.sources.is_none() && !sources.0.is_empty() {
         machinery.sources = Some(
             machinery
@@ -282,10 +377,10 @@ fn update_lod_levels(
         }
         let level = match source {
             Some(source) => {
-                render_level(source.bounds, source.flags_1c30, visible, false, view, &distances)
+                render_level(source.bounds, source.flags_1c30, visible, false, view, distances)
             }
             None => match placements.0.get(placement) {
-                Some(placed) => origin_level(placed.position, view, &distances),
+                Some(placed) => origin_level(placed.position, view, distances),
                 None => continue,
             },
         };
@@ -308,9 +403,9 @@ fn update_lod_levels(
         skin.visible_previous = visible_now;
         if !skin.lod.listed() { continue; }
         let level = match source {
-            Some(source) => render_level(source.bounds, source.flags_1c30, visible, false, view, &distances),
+            Some(source) => render_level(source.bounds, source.flags_1c30, visible, false, view, distances),
             None => match placements.0.get(placement) {
-                Some(placed) => origin_level(placed.position, view, &distances),
+                Some(placed) => origin_level(placed.position, view, distances),
                 None => continue,
             },
         };
@@ -319,10 +414,36 @@ fn update_lod_levels(
 
 }
 
+struct SceneMotors<'a> {
+    ambient: &'a mut MachineryWorld,
+    scene: Option<&'a mut super::physics_scene::PhysicsScene>,
+    live: Option<&'a crate::gameplay::entity_lifetime::LiveEntities>,
+}
+impl crate::gameplay::scene_motion::MotorControls for SceneMotors<'_> {
+    fn get(&self, id: &str) -> Result<Option<(bool, f32, f32, f32)>, String> {
+        if let Some(parameters) = self.ambient.motor_parameters(id) { return Ok(Some(parameters)); }
+        match (self.scene.as_deref(), self.live) {
+            (Some(scene), Some(live)) => scene.motor_parameters(live, id),
+            _ => Ok(None),
+        }
+    }
+    fn set(&mut self, id: &str, enabled: Option<bool>, position: Option<f32>,
+        velocity: Option<f32>, acceleration: Option<f32>) -> Result<(), String> {
+        if !self.ambient.set_motor_parameters(id, enabled, position, velocity, acceleration) {
+            if let (Some(scene), Some(live)) = (self.scene.as_deref_mut(), self.live) {
+                scene.set_motor(live, id, enabled, position, velocity, acceleration)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn update_machinery(
     clock: Res<ClockRuntime>,
     mut machinery: ResMut<AmbientMachinery>,
     mut pending: ResMut<ModelPoseUpdates>,
+    mut physics_scene: Option<ResMut<super::physics_scene::PhysicsScene>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     world_wind: Res<super::fog_scene::WorldWind>,
     winds: Option<Res<super::vegetation_wind::VegetationWind>>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
@@ -338,12 +459,20 @@ pub(super) fn update_machinery(
     };
     let machinery = &mut *machinery;
     if let Some(view) = lod_view(&cameras) {
-        update_lod_levels(machinery, &view, &sources, &scene, &placements);
+        let distances = lod_distances();
+        update_lod_levels(machinery, &view, &distances, &sources, &scene, &placements);
+        if let Some(physics) = physics_scene.as_deref_mut() {
+            for motor in &mut machinery.rigid_motors {
+                if let Err(error) = motor.update_lod(physics, &view, &distances, &sources, &scene, &placements) {
+                    error!("Unable to apply constraint LOD: {error}");
+                }
+            }
+        }
     }
-    machinery.scenes.advance_motors(
-        clock.delta(3).expect("five clock groups"),
-        &mut machinery.physics,
-    );
+    if let Err(error) = machinery.scenes.advance_motor_controls(clock.delta(3).expect("five clock groups"),
+        &mut SceneMotors { ambient: &mut machinery.physics, scene: physics_scene.as_deref_mut(), live: live.as_deref() }) {
+        error!("Unable to apply machinery motor control: {error}");
+    }
     let manager = winds.as_deref().map(|winds| winds.manager());
     // 7b8340 -> 807680, before the physics step: a body inside trigger winds
     // uses the first (if started); otherwise the registered world wind.
@@ -391,8 +520,7 @@ pub(super) fn update_machinery(
         clock.delta(3).expect("five clock groups"),
         |placement, delta| pending.0.push(ModelPose { placement, delta }),
     );
-    let moving = machinery.physics.moving_world();
-    machinery.moving = moving.bodies.iter().any(Option::is_some).then(|| std::sync::Arc::new(moving));
+    machinery.moving_dirty = true;
 }
 
 /// After update_machinery: skin simulated physics-system placements.

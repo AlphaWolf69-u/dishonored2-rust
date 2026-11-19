@@ -174,17 +174,93 @@ impl PhysicsScene {
         }
         Ok(())
     }
+    fn placed_motor(&self, live: &LiveEntities, name: &str) -> Result<Option<(usize, crate::gameplay::physics_world::storage::JointId)>, String> {
+        let Some(index) = live.find(name).and_then(|id| self.shared_indices.get(&id).copied()) else {
+            return Ok(None);
+        };
+        for &packed in self.entities[index].components.entries.values() {
+            let handle = ComponentHandle::from_packed(packed)?;
+            if handle.class_id == self.classes[59] {
+                let component = self.constraints.get(handle.slot).ok_or("placed motor component slot absent")?;
+                if component.started && component.definition.settings().motor.is_some() {
+                    if let Some(joint) = component.joint { return Ok(Some((index, joint))); }
+                }
+            }
+        }
+        Ok(None)
+    }
+    pub(in crate::app) fn driven_joint(&self, live: &LiveEntities, name: &str)
+        -> Result<Option<crate::gameplay::physics_world::storage::JointId>, String> {
+        Ok(self.placed_motor(live, name)?.map(|(_, joint)| joint))
+    }
+    pub(in crate::app) fn motor_lod(&mut self, joint: crate::gameplay::physics_world::storage::JointId,
+        far: bool) -> Result<(), String> {
+        let mut registry = self.registry.take().ok_or("motor LOD registry absent")?;
+        let result = (|| -> Result<(), String> {
+            let shared = self.world.clone();
+            let mut guard = shared.write().map_err(|_| "motor LOD world poisoned")?;
+            let world = &mut *guard;
+            let Some(bodies) = world.storage.driven_bodies(joint) else { return Ok(()); };
+            let handles = bodies.map(|id| -> Result<ComponentHandle, String> {
+                let body = world.storage.bodies.get(id).ok_or("motor LOD endpoint retired")?;
+                Ok(crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?.component)
+            });
+            let [a, b] = handles;
+            let handles = [a?, b?];
+            let mut frozen = [self.rigid_component(handles[0])?.freeze_state, self.rigid_component(handles[1])?.freeze_state];
+            let result = {
+                scene_publication_events!(self, &mut registry, publication);
+                world.storage.set_motor_lod(&mut world.geometry, &mut publication, joint, far, &mut frozen)
+            };
+            for (handle, state) in handles.into_iter().zip(frozen) {
+                self.rigid_component_mut(handle)?.freeze_state = state;
+            }
+            result
+        })();
+        self.registry = Some(registry);
+        result
+    }
+    pub(in crate::app) fn motor_parameters(&self, live: &LiveEntities, name: &str)
+        -> Result<Option<(bool, f32, f32, f32)>, String> {
+        let Some((_, joint)) = self.placed_motor(live, name)? else { return Ok(None); };
+        self.world.read().map_err(|_| "motor world poisoned")?.storage.motor_parameters(joint)
+    }
+    pub(in crate::app) fn set_motor(&mut self, live: &LiveEntities, name: &str, enabled: Option<bool>,
+        position: Option<f32>, velocity: Option<f32>, acceleration: Option<f32>) -> Result<bool, String> {
+        let Some((index, joint)) = self.placed_motor(live, name)? else { return Ok(false); };
+        let shared = self.world.clone();
+        let mut guard = shared.write().map_err(|_| "motor world poisoned")?;
+        let world = &mut *guard;
+        if let Some(bodies) = world.storage.update_motor(joint, enabled, position, velocity, acceleration)? {
+            let mut registry = self.registry.take().ok_or("motor registry absent")?;
+            let result = (|| -> Result<(), String> {
+                // 712a90 wakes the two current endpoints after a real parameter change.
+                scene_publication_events!(self, &mut registry, publication);
+                for body in bodies {
+                    world.storage.activate_body(&mut world.geometry, &mut publication, body)?;
+                }
+                Ok(())
+            })();
+            self.registry = Some(registry);
+            result?;
+            self.entity_flags_d4[index] |= 4;
+        }
+        Ok(true)
+    }
     pub(super) fn admit_placed_constraints(&mut self, catalog: &archive::Catalog,
         document: &entities::Document, models: &[entities::PlacedModel],
-        legacy_owners: &std::collections::HashSet<String>, live: &mut LiveEntities,
+        admission: &super::super::machinery::ConstraintAdmission, live: &mut LiveEntities,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let authored_names: std::collections::HashSet<_> = document.definitions.iter()
             .filter(|entry| entry.kind == "entity").map(|entry| entry.id.as_str()).collect();
         let bound_owners: std::collections::HashSet<_> = entities::resolved_entity_binds(document)
             .into_iter().map(|binding| binding.entity_id).collect();
-        for binding in crate::assets::constraints::bindings(catalog, document, legacy_owners)? {
-            if !binding.definition.passive_rows_supported()
+        for binding in crate::assets::constraints::bindings(catalog, document, &admission.legacy)? {
+            let driven = admission.motors.contains(&binding.entity)
+                && binding.definition.settings().motor.is_some()
+                && binding.scheduling.starts_on_spawn() && binding.definition.rigid_rows_supported();
+            if !(binding.definition.passive_rows_supported() || driven)
                 || binding.definition.joints().iter().any(Option::is_some) {
                 //Preserve the previous explicit provider boundary; no fake
                 //started component or weld/tether/articulated reinterpretation.
@@ -497,9 +573,12 @@ impl PhysicsScene {
                 self.constraints.get_mut(slot).unwrap().enable_phase = 1;
             }
             if self.constraints.get(slot).unwrap().enable_phase == 1 {
+                // 714cd0 passes zero to c91140 when the motor starts enabled.
+                let settings = self.constraints.get(slot).unwrap().definition.settings();
+                let keep_asleep = !(settings.motor.is_some() && settings.started);
                 {
                     scene_publication_events!(self, registry, publication, &mut *entity_events);
-                    world.storage.set_joint_enabled(&mut world.geometry, &mut publication, joint, true, true)?;
+                    world.storage.set_joint_enabled(&mut world.geometry, &mut publication, joint, true, keep_asleep)?;
                 }
                 self.constraints.get_mut(slot).unwrap().enable_phase = 2;
             }

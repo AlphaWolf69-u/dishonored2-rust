@@ -1,5 +1,13 @@
 # Resource parity ledger
 
+## Motorized rigid hinges on the gameplay bodies (2026-11-19)
+
+Edge of the World capture `1795105504216` records the unbroken propeller's sleeping rigid body at Z 18.339. Its installed placement is Z 24.450. The installed rotor constraint 276 connects that dynamic 100 kg body to the static turbine head. Prediction before the change: admitting the motor on those actual bodies eliminates their separation and one simulated rotor. Its authored hub, speed, distance freeze and interaction targets should agree throughout play. This predicts no particular frame-time gain.
+
+Single motor hinges with two named rigid endpoints and no aerodynamic or attached-body dependency now transfer to the existing gameplay constraint and contact solver only after actual provider admission. The loading-only assembly recipe is dropped after selection. Unsupported motor assemblies retain their established machinery provider. The existing kernel owns motor history in either case. Source `140714cd0` wakes an enabled motor at Start. Setters `140715a60`–`140715bb0` and generator speed `140742970` update that live motor. Source `140727390` / `1407149f0` freeze it when both owners cross the far visibility threshold and restore it on return. Particle collisions borrow the current world shape transform, packed bounds and motion at view publication. The render and damage consumers use the same actor. Neither consumer creates a simulated body. An opt-in `constraints` action records the installed rotor, its two real endpoints, their live adjacency, hub displacement, motor activity, both distance levels and any duplicate ambient pose owner. The original capture establishes the prior failure. Integrated verification and timings are separate from this source change.
+
+The speaker support uses a different resource: an articulated cable's `joint6`. The attached 10 kg speaker has a physics-damage declaration. Its first break step releases a second breakable with a 2,000 kg rigid body and fall damage. That assembly's destruction effect requests eight fragments through the break step, the speaker explosion audio and `explosion_streetspeaker` through the effect. Its cable does not qualify as a two-rigid-endpoint hinge. Speaker evidence must exercise that chain separately.
+
 ## Passive constraint endpoint lookup and collision suppression (2026-11-19)
 
 Actual release-candidate observation now found both real fixtures Initialized,

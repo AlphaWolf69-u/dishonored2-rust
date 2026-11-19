@@ -144,6 +144,27 @@ impl Joint {
             previous_friction_value: 0.,
         }
     }
+    pub(crate) fn motor_parameters(&self) -> Option<(bool, f32, f32, f32)> {
+        let m = self.motor.as_ref()?;
+        Some((self.settings.started, self.settings.target_position, m.target_velocity, m.target_acceleration))
+    }
+
+    /// 715a60/715b60/715bb0/715b00 change the existing motor without resetting its history.
+    pub(crate) fn update_motor(&mut self, enabled: Option<bool>, position: Option<f32>,
+        velocity: Option<f32>, acceleration: Option<f32>) -> bool {
+        let before = self.motor_parameters();
+        let Some(m) = self.motor.as_mut() else { return false; };
+        if let Some(value) = enabled { self.settings.started = value; }
+        if let Some(value) = position.filter(|_| m.mode == crate::gameplay::machinery::MotorMode::Position) {
+            self.settings.target_position = value;
+        }
+        if let Some(value) = velocity {
+            m.target_velocity = if m.mode == crate::gameplay::machinery::MotorMode::Velocity { value } else { value.abs() };
+        }
+        if let Some(value) = acceleration { m.target_acceleration = value.abs(); }
+        before != self.motor_parameters()
+    }
+
     pub(crate) fn build(
         &mut self,
         a: BodyInput<'_>,

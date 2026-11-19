@@ -90,6 +90,23 @@ fn autonomous_scene_action(graph: &Graph, node: &Node) -> bool {
         && crate::entities::scene_motion::autonomous_scene_action(&graph.nodes, node)
 }
 
+pub(crate) trait MotorControls {
+    fn get(&self, id: &str) -> Result<Option<(bool, f32, f32, f32)>, String>;
+    fn set(&mut self, id: &str, enabled: Option<bool>, position: Option<f32>,
+        velocity: Option<f32>, acceleration: Option<f32>) -> Result<(), String>;
+}
+
+impl MotorControls for MachineryWorld {
+    fn get(&self, id: &str) -> Result<Option<(bool, f32, f32, f32)>, String> {
+        Ok(self.motor_parameters(id))
+    }
+    fn set(&mut self, id: &str, enabled: Option<bool>, position: Option<f32>,
+        velocity: Option<f32>, acceleration: Option<f32>) -> Result<(), String> {
+        self.set_motor_parameters(id, enabled, position, velocity, acceleration);
+        Ok(())
+    }
+}
+
 struct MotorControl {
     node: u32,
     entity: String,
@@ -101,10 +118,10 @@ struct MotorControl {
     acceleration: Option<f32>,
 }
 impl MotorControl {
-    fn advance(&mut self, seconds: f32, world: &mut MachineryWorld) -> bool {
+    fn advance(&mut self, seconds: f32, world: &mut impl MotorControls) -> Result<bool, String> {
         if !self.enabled {
-            world.set_motor_parameters(&self.entity, Some(false), None, None, None);
-            return true;
+            world.set(&self.entity, Some(false), None, None, None)?;
+            return Ok(true);
         }
         let enabled = if self.state_pending {
             self.state_pending = false;
@@ -112,8 +129,8 @@ impl MotorControl {
         } else {
             None
         };
-        let Some((_, p, v, a)) = world.motor_parameters(&self.entity) else {
-            return true;
+        let Some((_, p, v, a)) = world.get(&self.entity)? else {
+            return Ok(true);
         };
         let fraction = if self.remaining <= 0. {
             1.
@@ -133,14 +150,14 @@ impl MotorControl {
             };
             fraction * clean(target) + (1. - fraction) * clean(current)
         };
-        world.set_motor_parameters(
+        world.set(
             &self.entity,
             enabled,
             self.position.map(|t| blend(p, t)),
             self.velocity.map(|t| blend(v, t)),
             self.acceleration.map(|t| blend(a, t)),
-        );
-        fraction >= 1.
+        )?;
+        Ok(fraction >= 1.)
     }
 }
 impl GraphInputs for RunningGraph {
@@ -525,11 +542,20 @@ impl SceneMotion {
         self.graphs.iter().map(|g| g.playing.len() + g.animated.len()).sum()
     }
     pub fn advance_motors(&mut self, seconds: f32, world: &mut MachineryWorld) {
+        self.advance_motor_controls(seconds, world).expect("ambient motor operations are infallible");
+    }
+    pub(crate) fn advance_motor_controls(&mut self, seconds: f32, world: &mut impl MotorControls) -> Result<(), String> {
         for graph in &mut self.graphs {
-            graph
-                .motor_controls
-                .retain_mut(|c| !c.advance(seconds, world));
+            let mut index = 0;
+            while index < graph.motor_controls.len() {
+                if graph.motor_controls[index].advance(seconds, world)? {
+                    graph.motor_controls.remove(index);
+                } else {
+                    index += 1;
+                }
+            }
         }
+        Ok(())
     }
     pub fn animated_groups(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::assets::midnight_scene::AnimatedScene>, usize, i32)> {
         self.graphs.iter().flat_map(|graph| graph.animated.iter().filter_map(move |animated| {

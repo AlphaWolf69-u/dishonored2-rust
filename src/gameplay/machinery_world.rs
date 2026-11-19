@@ -477,10 +477,17 @@ impl MachineryWorld {
     /// construction; it retains no second owner-name map on simulated joints.
     pub(crate) fn from_recipes_with_constraint_admission(
         recipes:&crate::entities::machinery::recipes::MachineryRecipes,
-        mut admitted:impl FnMut(&str),
+        admitted:impl FnMut(&str),
     )->Result<Self,String>{
         let mut world = Self::default();
         world.bodies.push(MachineryBody::fixed());
+        world.append_recipes(recipes, admitted)?;
+        Ok(world)
+    }
+
+    pub(crate) fn append_recipes(&mut self, recipes: &crate::entities::machinery::recipes::MachineryRecipes,
+        mut admitted: impl FnMut(&str)) -> Result<(), String> {
+        let world = self;
         let mut indices = std::collections::HashMap::<&str, usize>::new();
         for assembly in &recipes.assemblies {
             for body in &assembly.bodies {
@@ -644,7 +651,7 @@ impl MachineryWorld {
                 },
             );
         }
-        Ok(world)
+        Ok(())
     }
     pub fn add_joint(
         &mut self,
@@ -779,17 +786,7 @@ impl MachineryWorld {
         true
     }
     pub fn motor_parameters(&self, id: &str) -> Option<(bool, f32, f32, f32)> {
-        let j = self
-            .joints
-            .iter()
-            .find(|j| j.settings.constraint_id == id)?;
-        let m = j.motor.as_ref()?;
-        Some((
-            j.settings.started,
-            j.settings.target_position,
-            m.target_velocity,
-            m.target_acceleration,
-        ))
+        self.joints.iter().find(|j| j.settings.constraint_id == id)?.motor_parameters()
     }
     /// Component setters715a60/715b60/715bb0/715b00. The same live motor owns
     /// its history across changes; changing a target must not recreate a body.
@@ -801,36 +798,10 @@ impl MachineryWorld {
         velocity: Option<f32>,
         acceleration: Option<f32>,
     ) -> bool {
-        let Some(j) = self
-            .joints
-            .iter_mut()
-            .find(|j| j.settings.constraint_id == id)
-        else {
+        let Some(index) = self.joints.iter().position(|j| j.settings.constraint_id == id && j.motor.is_some()) else {
             return false;
         };
-        let Some(m) = j.motor.as_mut() else {
-            return false;
-        };
-        let before = (j.settings.started, j.settings.target_position, m.target_velocity, m.target_acceleration);
-        if let Some(v) = enabled {
-            j.settings.started = v;
-        }
-        if let Some(v) = position.filter(|_| m.mode == super::machinery::MotorMode::Position) {
-            j.settings.target_position = v;
-        }
-        if let Some(v) = velocity {
-            m.target_velocity = if m.mode == super::machinery::MotorMode::Velocity {
-                v
-            } else {
-                v.abs()
-            };
-        }
-        if let Some(v) = acceleration {
-            m.target_acceleration = v.abs();
-        }
-        let after = (j.settings.started, j.settings.target_position, m.target_velocity, m.target_acceleration);
-        if before != after {
-            let index = self.joints.iter().position(|j| j.settings.constraint_id == id).unwrap();
+        if self.joints[index].update_motor(enabled, position, velocity, acceleration) {
             self.wake_joint(index);
         }
         true
