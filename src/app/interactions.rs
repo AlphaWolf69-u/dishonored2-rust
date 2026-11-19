@@ -424,6 +424,10 @@ pub(super) fn stop_level(world: &mut World) {
         interactions.pending_activation = None;
         interactions.retire.clear();
         interactions.selected = None;
+        interactions.grapple_prompt = None;
+        if let Some(mut focused) = world.get_resource_mut::<super::interaction_focus::FocusedInteraction>() {
+            focused.current = None;
+        }
         // Partially prepared levels may not have published these backends.
         for (index, actor) in interactions.actors.iter_mut().enumerate() {
             actor.started = false;
@@ -500,7 +504,7 @@ fn grapple_prompt(scene:&super::physics_scene::PhysicsScene,live:&crate::gamepla
         if live.get(id).is_none(){continue;}
         if !scene.grapple_pickup_available(live,player,id)?{continue;}
         let Some(frame)=scene.entity_frame(live,id)? else{continue;};
-        let bounds=super::world_models::entity_bounds_from_parts(live,id,models,Some(sources),placements)?.unwrap_or([frame.position;2]);
+        let bounds=scene.interaction_bounds(live,id,models,sources,placements)?.unwrap_or([frame.position;2]);
         if !crate::gameplay::player::grapple_catch::in_cone(bounds,eye,axis.x_axis,cosine){continue;}
         let Some((reference,_))=scene.grapple_pickable(live,id)? else{continue;};
         return Ok(Some((id,reference)));
@@ -590,6 +594,8 @@ pub(super) fn focus_and_interact(
     };
     let (Some(world), Ok(camera)) = (world, camera.single()) else {
         if trace_input {eprintln!("ACTION_INTERACT_EARLY reason=navigation_or_single_camera_absent");}
+        interactions.selected = None;
+        interactions.grapple_prompt = None;
         if focused.current.is_some() {
             focused.current = None;
         }
@@ -832,12 +838,19 @@ pub(super) fn focus_and_interact(
             &mut interactions.casts,
         ) {
             interactions.physics_queries = physics_queries;
+            interactions.selected = None;
+            interactions.grapple_prompt = None;
+            if focused.current.is_some() {
+                focused.current = None;
+            }
             warn!("Live Pickable sensor query: {error}");
             return;
         }
     }
     let mut selected = None;
-    'casts: for hits in &interactions.casts.hits {
+    // 3b8430's last two groups are for NPC targeting. An ordinary
+    // interaction descriptor can be selected from the first three groups.
+    'casts: for hits in &interactions.casts.hits[..3] {
         for hit in hits {
             let Some(entity) = hit
                 .entity
@@ -846,6 +859,16 @@ pub(super) fn focus_and_interact(
             else {
                 continue;
             };
+            let Some(target) = hit.entity.or_else(|| live.as_deref()?.find(entity)) else {
+                continue;
+            };
+            // 878c70 excludes committed context 4 before reading any ordinary
+            // interaction descriptor, including a placed document or usable.
+            if live.as_deref().and_then(|live| live.entity_context(target).ok())
+                .is_none_or(|context| context.current == 4)
+            {
+                continue;
+            }
             // 3b8430 skips a transparent breakable before requesting its
             // interaction, using the actual contacted physics material.
             if hit.entity.is_none()
@@ -870,8 +893,8 @@ pub(super) fn focus_and_interact(
                 use crate::gameplay::interaction_definition::{ALLOW_SWIMMING,CandidateContext,admits_candidate};
                 let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else{continue;};
                 let frame=match scene.entity_frame(live,id){Ok(Some(frame))=>frame,_=>continue};
-                let bounds=match super::world_models::entity_bounds_from_parts(live,id,models.as_deref(),Some(&sources),&placements){
-                    Ok(Some(bounds))=>bounds,Ok(None)=>continue,Err(error)=>{warn!("Openable bounds: {error}");continue;}};
+                let bounds=match scene.interaction_bounds(live,id,models.as_deref(),&sources,&placements){
+                    Ok(bounds)=>bounds.unwrap_or([frame.position;2]),Err(error)=>{warn!("Openable bounds: {error}");continue;}};
                 let context=CandidateContext{interactable:reference,player_mode:i32::from(swimming),is_possessing:false,
                     camera:super::view_to_game(eye),point:super::view_to_game(hit.position),target_forward:frame.basis[0],
                     target_min_z:bounds[0][2],target_max_z:bounds[1][2]};
@@ -954,7 +977,8 @@ pub(super) fn focus_and_interact(
                     let Some(id)=live.find(entity) else {continue;};
                     let Some((reference,definition))=scene.interaction_static(live,id).ok().flatten() else {continue;};
                     let Ok(Some(frame))=scene.entity_frame(live,id) else {continue;};
-                    let Some(bounds)=super::world_models::entity_bounds_from_parts(live,id,models.as_deref(),Some(&sources),&placements).ok().flatten() else {continue;};
+                    let Ok(bounds)=scene.interaction_bounds(live,id,models.as_deref(),&sources,&placements) else {continue;};
+                    let bounds=bounds.unwrap_or([frame.position;2]);
                     let context=crate::gameplay::interaction_definition::CandidateContext {interactable:reference,
                         player_mode:i32::from(swimming),is_possessing:false,camera:super::view_to_game(eye),
                         point:super::view_to_game(hit.position),target_forward:frame.basis[0],target_min_z:bounds[0][2],target_max_z:bounds[1][2]};
@@ -993,15 +1017,15 @@ pub(super) fn focus_and_interact(
                     },
                 )
                 }
-            } else if let Some(id) = hit.entity {
+            } else {
+                let id = target;
                 use crate::gameplay::interaction_definition::{
                     ALLOW_SWIMMING, CandidateContext, admits_candidate,
                 };
-                let (Some(scene), Some(live), Some(player), Some(models)) = (
+                let (Some(scene), Some(live), Some(player)) = (
                     physics.as_deref(),
                     live.as_deref(),
                     player.as_deref().and_then(|state| state.player.as_ref()),
-                    models.as_deref(),
                 ) else {
                     continue;
                 };
@@ -1009,22 +1033,24 @@ pub(super) fn focus_and_interact(
                     continue;
                 };
                 let carrying = pickable.definition.hold.is_some();
-                if trace_input {
-                    eprintln!("ACTION_INTERACT_PICKABLE id={id:?} reference={reference:?} carrying={carrying} item={:?} interaction_visible={} bounds={:?} frame={:?}",
-                        pickable.item.as_ref().map(|item|(&item.path,item.note_type,super::pickups::inventory_family_available(item,player))),
-                        models.interaction_visible(id),models.interaction_bounds(id),scene.entity_frame(live,id));
-                }
-                if (!carrying && pickable.item.as_ref().is_none_or(|item|item.note_type==-1&&!super::pickups::inventory_family_available(item,player)))
-                    || !models.interaction_visible(id)
-                {
+                if !carrying && pickable.item.as_ref().is_none_or(|item|
+                    item.note_type == -1 && !super::pickups::inventory_family_available(item, player)) {
                     continue;
                 }
-                let Some(bounds) = models.interaction_bounds(id) else {
-                    continue;
-                };
                 let Ok(Some(frame)) = scene.entity_frame(live, id) else {
                     continue;
                 };
+                let bounds = match scene.interaction_bounds(live, id, models.as_deref(), &sources, &placements) {
+                    Ok(bounds) => bounds.unwrap_or([frame.position; 2]),
+                    Err(error) => {
+                        warn!("Pickable model bounds: {error}");
+                        continue;
+                    }
+                };
+                if trace_input {
+                    eprintln!("ACTION_INTERACT_PICKABLE id={id:?} reference={reference:?} carrying={carrying} item={:?} bounds={bounds:?} frame={frame:?}",
+                        pickable.item.as_ref().map(|item|(&item.path,item.note_type,super::pickups::inventory_family_available(item,player))));
+                }
                 let definition = &pickable.definition.pickup_interaction;
                 let context = CandidateContext {
                     interactable: reference,
@@ -1065,8 +1091,6 @@ pub(super) fn focus_and_interact(
                     shape,
                     definition.has(ALLOW_SWIMMING),
                 )
-            } else {
-                continue;
             };
             if swimming && !allowed_swimming {
                 continue;
@@ -1082,46 +1106,34 @@ pub(super) fn focus_and_interact(
             if eye.distance_squared(hit.position) > max_distance * max_distance {
                 continue;
             }
-            if let Some(target) = hit.entity.or_else(||live.as_deref()?.find(entity)) {
-                let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
-                    continue;
-                };
-                let mut blocked = false;
-                for radius in std::iter::once(sensor.shape_radii[0]).chain(
-                    (shape > 0)
-                        .then(|| sensor.shape_radii.get(shape).copied())
-                        .flatten(),
+            let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
+                continue;
+            };
+            for radius in std::iter::once(sensor.shape_radii[0]).chain(
+                (shape > 0).then(|| sensor.shape_radii.get(shape).copied()).flatten(),
+            ) {
+                match scene.interaction_occluded(
+                    live, target,
+                    bevy_math::Vec3::from_array(super::view_to_game(eye)),
+                    bevy_math::Vec3::from_array(super::view_to_game(hit.position)),
+                    radius, &mut physics_queries,
                 ) {
-                    match scene.interaction_occluded(
-                        live,
-                        target,
-                        bevy_math::Vec3::from_array(super::view_to_game(eye)),
-                        bevy_math::Vec3::from_array(super::view_to_game(hit.position)),
-                        radius,
-                        &mut physics_queries,
-                    ) {
-                        Ok(true) => {
-                            if trace_input {eprintln!("ACTION_INTERACT_OCCLUSION id={target:?} radius={radius} blocked=true hit={:?}",hit.position);}
-                            blocked = true;
-                            break;
+                    Ok(blocked) => {
+                        if trace_input {
+                            eprintln!("ACTION_INTERACT_OCCLUSION id={target:?} radius={radius} blocked={blocked} hit={:?}",hit.position);
                         }
-                        Ok(false) => {
-                            if trace_input {eprintln!("ACTION_INTERACT_OCCLUSION id={target:?} radius={radius} blocked=false hit={:?}",hit.position);}
-                        }
-                        Err(error) => {
-                            warn!("Live pickup occlusion: {error}");
-                            blocked = true;
-                            break;
-                        }
+                        // 3b8430 ends this group's sorted hit scan after the
+                        // first eligible descriptor reaches occlusion.
+                        if blocked { continue 'casts; }
+                    }
+                    Err(error) => {
+                        warn!("Live pickup occlusion: {error}");
+                        continue 'casts;
                     }
                 }
-                if blocked {
-                    continue;
-                }
-                selected = Some((kind, index, step));
-                break 'casts;
             }
-
+            selected = Some((kind, index, step));
+            break 'casts;
         }
     }
     interactions.physics_queries = physics_queries;
@@ -1137,7 +1149,10 @@ pub(super) fn focus_and_interact(
         }
         interactions.grapple_prompt=Some((id,reference));
         selected=None;interactions.selected=None;
-    } else if interactions.grapple_prompt.take().is_some() || selected != interactions.selected {
+    } else if interactions.grapple_prompt.take().is_some()
+        || selected != interactions.selected
+        || selected.is_some() != focused.current.is_some()
+    {
         let prompt = selected
             .map(|(kind, index, step)| {
                 if let SelectionKind::Openable(id)=kind{

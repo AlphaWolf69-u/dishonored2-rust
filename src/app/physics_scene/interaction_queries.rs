@@ -9,7 +9,7 @@ use crate::{
         collision_hit::ShapeHitInfo,
         collision_user_data::CollisionUserData,
         entity_lifetime::{EntityId, LiveEntities, Stage},
-        interaction_sensor::{Hit, Scratch},
+        interaction_sensor::{Hit, OCCLUSION_FILTER, Scratch},
         shape_convex_query::{ConvexCast, ConvexContact, ConvexQueryGeometry},
         world_convex_query::{WorldConvexQuery, WorldConvexRequest},
     },
@@ -31,8 +31,7 @@ impl InteractionQueries {
         start: Vec3,
         displacement: Vec3,
         radius: f32,
-        layers: u32,
-        required_flags: u32,
+        filter: CollisionQueryFilter,
     ) -> Result<(), String> {
         //3b82c0 constructs radius-only spheres. The native query shape type
         //is2; W stores the support ID, not a fabricated polygonal sphere.
@@ -62,10 +61,7 @@ impl InteractionQueries {
                         filter_info: 0,
                         user_data: 0,
                     },
-                    filter: Some(CollisionQueryFilter {
-                        layers,
-                        required_flags,
-                    }),
+                    filter: Some(filter),
                 },
                 maximum_fraction: 1.,
             },
@@ -124,7 +120,8 @@ impl PhysicsScene {
             let radius=sensor.shape_radii[group];
             if radius<=0.||radius>sensor.max_distance {continue;}
             let start=eye+forward*radius;
-            scratch.cast(&world,start,(start+forward*(sensor.max_distance-radius))-start,radius,if group<3{0x20cc38}else{0x408},0)?;
+            scratch.cast(&world,start,(start+forward*(sensor.max_distance-radius))-start,radius,
+                CollisionQueryFilter { layers: if group < 3 { 0x20cc38 } else { 0x408 }, required_flags: 0 })?;
             writeln!(out,"raw_cast group={group} radius={radius} count={} initial_count={}",scratch.hits.len(),scratch.initial.len()).unwrap();
             let target_hit=scratch.hits.iter().find(|h|self.interaction_hit_entity(live,h).ok().flatten()==Some(target)).map(|h|h.position);
             for hit in scratch.hits.iter().take(64) {
@@ -132,7 +129,7 @@ impl PhysicsScene {
                 writeln!(out,"raw_hit fraction={} point={:?} normal={:?} target={:?} entity={actor:?} transparentMaterial={:?} breakable={:?}",hit.fraction,hit.position,hit.normal,hit.target,world.storage.materials.material_for_id(hit.target.material_id).map(|m|m.can_blink_through()),actor.as_ref().ok().and_then(|id|*id).map(|id|self.is_breakable(live,id))).unwrap();
             }
             if let Some(point)=target_hit {
-                scratch.cast(&world,eye,Vec3::from_array(point[..3].try_into().unwrap())-eye,radius,0xc43e,4)?;
+                scratch.cast(&world,eye,Vec3::from_array(point[..3].try_into().unwrap())-eye,radius,OCCLUSION_FILTER)?;
                 writeln!(out,"occlusion group={group} count={} initial_count={}",scratch.hits.len(),scratch.initial.len()).unwrap();
                 for hit in scratch.hits.iter().take(64) {
                     writeln!(out,"occlusion_hit fraction={} point={:?} target={:?} entity={:?}",hit.fraction,hit.position,hit.target,self.interaction_hit_entity(live,hit)).unwrap();
@@ -200,8 +197,7 @@ impl PhysicsScene {
                 start,
                 displacement,
                 radius,
-                if group < 3 { 0x20cc38 } else { 0x408 },
-                0,
+                CollisionQueryFilter { layers: if group < 3 { 0x20cc38 } else { 0x408 }, required_flags: 0 },
             )?;
             for contact in &scratch.hits {
                 let Some(entity) = self.interaction_hit_entity(live, contact)? else {
@@ -258,7 +254,7 @@ impl PhysicsScene {
             .read()
             .map_err(|_| "interaction occlusion world poisoned")?;
         world.ready().map_err(str::to_owned)?;
-        scratch.cast(&world, eye_game, hit_game - eye_game, radius, 0xc43e, 4)?;
+        scratch.cast(&world, eye_game, hit_game - eye_game, radius, OCCLUSION_FILTER)?;
         for contact in &scratch.hits {
             if let Some(entity) = self.interaction_hit_entity(live, contact)? {
                 if entity == target || live.parent(entity)? == Some(target) {

@@ -522,6 +522,29 @@ impl PhysicsScene {
         Ok(Some((id, component.definition.clone())))
     }
 
+    /// 8780d0 reads the current bounds of the contacted actor's render owner.
+    /// Level setup publishes one source per rendered placement, in placement
+    /// order. A rigid pickup already carries that placement's index.
+    pub(in crate::app) fn interaction_bounds(
+        &self,
+        live: &LiveEntities,
+        id: crate::gameplay::entity_lifetime::EntityId,
+        runtime: Option<&super::super::world_models::WorldModels>,
+        sources: &super::super::shadow_updates::ModelShadowSources,
+        placements: &super::super::RenderSourcePlacements,
+    ) -> Result<Option<[[f32; 3]; 2]>, String> {
+        if let Some(bounds) = runtime.and_then(|models| models.interaction_bounds(id)) {
+            return Ok(Some(bounds));
+        }
+        if let Some(placement) = self.shared_indices.get(&id).and_then(|i| self.rigid_placements.get(i)) {
+            let index = sources.0.binary_search_by_key(placement, |source| source.placement);
+            if let Ok(index) = index {
+                return Ok(Some(sources.0[index].bounds));
+            }
+        }
+        super::super::world_models::entity_bounds_from_parts(live, id, None, Some(sources), placements)
+    }
+
     /// 8780d0's current entity bounds and pose for 3b80a0. A null render
     /// owner returns the entity origin as both bounds, as in the source.
     pub(in crate::app) fn carry_context(

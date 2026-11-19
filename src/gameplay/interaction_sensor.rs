@@ -3,8 +3,15 @@
 //! camera and casts to m_maxDistance. Collision resolution here uses the
 //! host triangle index in place of Havok's broad phase.
 use crate::assets::entities::usable::Sensor;
-use crate::gameplay::{collision_filter::QueryFilter, navigation::CollisionWorld, shape_cast};
+use crate::gameplay::{collision_filter::{CollisionQueryFilter, QueryFilter}, navigation::CollisionWorld, shape_cast};
 use bevy_math::Vec3;
+
+/// 3b7b90 writes one 64-bit word at arkCollisionQueryFilter+0x20.
+/// 0996a0/0996d0 consume its low and high halves as separate masks.
+pub(crate) const OCCLUSION_FILTER: CollisionQueryFilter = CollisionQueryFilter {
+    layers: 0xc43e,
+    required_flags: 0,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
@@ -85,7 +92,7 @@ pub fn occluded(
 ) -> bool {
     let motion = hit - eye;
     let margin = Vec3::splat(radius);
-    let filter = QueryFilter::layers(0xc43e, 4);
+    let filter = QueryFilter::Layers(OCCLUSION_FILTER);
     let mut nearest: Option<(f32, OcclusionHit)> = None;
     world.triangles_in_reuse(
         eye.min(hit) - margin,
@@ -137,6 +144,11 @@ pub fn cast(
             &mut scratch.triangles,
         );
         for &(key, triangle, owner) in &scratch.triangles {
+            // The retained body's current pose supplies this hit. Fake boxes
+            // have separate owner slots and remain active in this adapter.
+            if world.physics_owns_placed_owner(owner) {
+                continue;
+            }
             if let Some((fraction, position)) =
                 sphere_triangle(start, displacement, radius, &triangle)
             {
