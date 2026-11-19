@@ -27,6 +27,7 @@ pub mod machinery_world;
 pub mod motion_curve;
 pub mod scene_motion;
 pub mod constraint_solver;
+pub(crate) mod constraint;
 pub mod rigid_body;
 pub mod aerodynamics;
 pub mod point_query;

@@ -17,7 +17,13 @@ pub(crate) enum BodyEventCallback {
     TriggerContact,
 }
 
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ConstraintChange { Enabled, Disabled, Removed }
+
 pub struct PublicationSignals<S, C> {
+    pub constraint_enabled: Signal<S,C>,
+    pub constraint_disabled: Signal<S,C>,
+    pub constraint_removed: Signal<S,C>,
     pub activation: ActivationSignals<S, C>,
     pub added: Signal<S, C>,
     pub motion_destroyed: Signal<S, C>,
@@ -34,6 +40,9 @@ pub struct PublicationSignals<S, C> {
 impl<S, C> Default for PublicationSignals<S, C> {
     fn default() -> Self {
         Self {
+            constraint_enabled: Signal::default(),
+            constraint_disabled: Signal::default(),
+            constraint_removed: Signal::default(),
             activation: ActivationSignals::default(),
             added: Signal::default(),
             motion_destroyed: Signal::default(),
@@ -52,6 +61,7 @@ impl<S, C> Default for PublicationSignals<S, C> {
 
 #[derive(Clone, Copy)]
 pub enum PublicationEvent<'a> {
+    Constraint { slot:usize,generation:u32,change:ConstraintChange },
     Activation { ids: &'a [u32], active: bool, timespaces: Option<&'a crate::gameplay::motion_timespaces::MotionTimespaces> },
     Added(&'a [u32]),
     Removed(&'a [u32]),
@@ -248,6 +258,15 @@ where
             owners,
             PublicationEvent::Added(ids),
         )
+    }
+    fn constraint_changed(&mut self,owners:ActivationOwners<'_>,slot:usize,generation:u32,change:ConstraintChange)->Result<(),String>{
+        let signal=match change{
+            ConstraintChange::Enabled=>&mut self.signals.constraint_enabled,
+            ConstraintChange::Disabled=>&mut self.signals.constraint_disabled,
+            ConstraintChange::Removed=>&mut self.signals.constraint_removed,
+        };
+        emit_retirement(signal,&mut self.components,&mut self.dispatch,owners,
+            PublicationEvent::Constraint{slot,generation,change})
     }
     fn removed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
         emit_retirement(&mut self.signals.removed, &mut self.components, &mut self.dispatch,

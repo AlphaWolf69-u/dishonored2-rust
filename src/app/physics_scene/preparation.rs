@@ -123,7 +123,7 @@ fn rollback_rigid(
             } else {
                 None
             };
-            scene_publication_events!(scene, registry, events);
+            scene_publication_events!(scene, registry, events, &mut *entity_events);
             match step {
                 0 => {
                     world.storage.set_body_transform(
@@ -251,7 +251,7 @@ fn rollback_rigid(
             0 => {} // Prepared immutable source leases have no world registration.
             1 => {
                 let generation = scene.owner(handle)?.generation;
-                scene_publication_events!(scene, registry, events);
+                scene_publication_events!(scene, registry, events, &mut *entity_events);
                 world.storage.abort_disabled_component_body(
                     &mut world.geometry,
                     &mut events,
@@ -268,7 +268,7 @@ fn rollback_rigid(
                     .rigid_component(handle)?
                     .body()
                     .ok_or("rigid body absent")?;
-                scene_publication_events!(scene, registry, events);
+                scene_publication_events!(scene, registry, events, &mut *entity_events);
                 world
                     .storage
                     .destroy_bodies(&mut world.geometry, &mut events, &[body], 0)?;

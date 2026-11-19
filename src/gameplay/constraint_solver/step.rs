@@ -153,6 +153,18 @@ pub struct ConstraintParameters {
     pub stabilized_damping: f32,
 }
 impl ConstraintParameters {
+    ///098ca0 arkMalleableConstraintData+B0. Static fields142284630..63c
+    /// interpolate the same stabilized query coefficients with actual timespace.
+    pub(crate) fn from_timespace(step:&SolverParameters,factor:f32)->Self{
+        use crate::float::{add,multiply,subtract};
+        let inverse=subtract(1.,factor);
+        let tau=add(multiply(inverse,-0.2),multiply(0.7,factor));
+        let stabilized_tau=if tau<0.01{0.01}else{tau};
+        let stabilized_damping=add(multiply(inverse,0.8),multiply(1.1,factor));
+        Self{impulse_seconds:step.substep_seconds,inverse_impulse_seconds:step.inverse_substep_seconds,
+            inverse_step_tau:step.inverse_substep_seconds*(stabilized_tau/stabilized_damping),
+            damping:1.,stabilized_tau,stabilized_damping}
+    }
     pub fn from_step(step: &SolverParameters) -> Self {
         let stabilized_tau = 0.7;
         let stabilized_damping = 1.1;

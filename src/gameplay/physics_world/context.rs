@@ -40,6 +40,11 @@ pub trait PublicationEvents {
     fn motion_type_changed(&mut self, _owners: ActivationOwners<'_>, _body: u32, _is_static: bool) -> Result<(), String> {
         Err("body motion-kind observer dispatch is unavailable".into())
     }
+    /// c91140/c910d0/c91030 world constraint signals, before slot reuse.
+    fn constraint_changed(&mut self,_owners:ActivationOwners<'_>,_slot:usize,_generation:u32,
+        _change:super::events::ConstraintChange)->Result<(),String>{
+        Err("constraint observer dispatch is unavailable".into())
+    }
     fn transform_changed(
         &mut self,
         owners: ActivationOwners<'_>,

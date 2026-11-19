@@ -32,6 +32,8 @@ mod body_policy;
 pub(crate) mod material_sources;
 pub(crate) mod collision_pairs;
 pub(crate) mod simulation;
+mod joints;
+pub(crate) use joints::{JointId,JointObservation};
 
 pub(crate) struct WorldStorage {
     pub info: WorldInfo,
@@ -72,6 +74,7 @@ pub(crate) struct WorldStorage {
     policy_progress: Option<body_policy::PolicyProgress>,
     activation_scratch: crate::gameplay::body_activation::BodyActivationController,
     simulation: simulation::SimulationScratch,
+    joint_owner: joints::JointOwner,
     simulation_busy: bool,
 }
 
@@ -543,6 +546,9 @@ impl WorldStorage {
         if self.body_mode_progress.is_some() || !self.activation_scratch.is_idle() {
             return Err("body mode or activation update must finish before unpublication".into());
         }
+        //7164c0 numeric joint destruction is consolidated here before the
+        //same source Removed signal and before any endpoint body mutation.
+        if self.removal_scratch.is_idle(){self.retire_body_joints(geometry,events,ids)?;}
         let mut scratch = std::mem::take(&mut self.removal_scratch);
         let result = self.edit_bodies(geometry, events, |creation|
             creation.world.remove(ids, mode, &mut scratch, creation.callbacks));
@@ -645,6 +651,7 @@ impl WorldStorage {
     pub(crate) fn release_body_resources<G: BodyCreationGeometry>(
         &mut self, geometry: &mut G, id: u32,
     ) -> Result<(), String> {
+        self.validate_body_no_joint(id)?;
         let shape = self.bodies.get(id).ok_or("retired body is missing")?.shape;
         let mutable = geometry.is_mutable(shape)?;
         if mutable { self.registry.validate_body_removal(shape, id, geometry)?; }
@@ -732,6 +739,7 @@ impl WorldStorage {
             constraint_heads: Vec::new(),
             constraints: Vec::new(),
             constraint_next: Vec::new(),
+            joint_owner: Default::default(),
             info,
         })
     }
@@ -1009,6 +1017,7 @@ impl WorldStorage {
 
     /// Detach mutable-shape observers while the level's resources still live.
     pub fn release(&mut self, geometry: &mut impl BodyCreationGeometry) -> Result<(), String> {
+        self.validate_no_joints()?;
         self.registry.release(geometry)
     }
 

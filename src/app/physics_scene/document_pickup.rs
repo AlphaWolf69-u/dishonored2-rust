@@ -83,7 +83,7 @@ impl PhysicsScene {
                             let shared = self.world.clone();
                             let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
                             let world = &mut *guard;
-                            scene_publication_events!(self, &mut registry, events);
+                            scene_publication_events!(self, &mut registry, events, &mut *events);
                             world.storage.dynamic_single_body(&mut world.geometry, &mut events, body)?;
                         }
                     }
@@ -96,19 +96,19 @@ impl PhysicsScene {
                 let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
                 let world = &mut *guard;
                 if *step == 0 {
-                    { scene_publication_events!(self, &mut registry, events);
+                    { scene_publication_events!(self, &mut registry, events, &mut *events);
                       world.storage.keyframe_single_body(&mut world.geometry,&mut events,body)?; }
                     *step = 1;
                 }
                 let filter = world.storage.bodies.get(body).ok_or("document body retired")?.filter_info & 0x0820_001f;
                 if *step == 1 {
-                    { scene_publication_events!(self, &mut registry, events);
+                    { scene_publication_events!(self, &mut registry, events, &mut *events);
                       world.storage.set_body_filter(&mut world.geometry,&mut events,body,filter)?; }
                     *step = 2;
                 }
                 self.entity_flags_d4[index] |= 4;
                 if *step == 2 {
-                    { scene_publication_events!(self, &mut registry, events);
+                    { scene_publication_events!(self, &mut registry, events, &mut *events);
                       world.storage.set_body_velocity(&mut world.geometry,&mut events,body,[0.;4],[0.;4],0)?; }
                     *step = 3;
                 }

@@ -1111,14 +1111,14 @@ impl PhysicsScene {
             .map_err(|_| "Throwable world owner is poisoned")?;
         let world = &mut *guard;
         if let Some(filter) = filter {
-            scene_publication_events!(self, registry, publication);
+            scene_publication_events!(self, registry, publication, &mut *entity_events);
             world
                 .storage
                 .set_body_filter(&mut world.geometry, &mut publication, body, filter)?;
         }
         {
             let quality = self.rigid_component(handle)?.throwable()?.quality(enabled);
-            scene_publication_events!(self, registry, publication);
+            scene_publication_events!(self, registry, publication, &mut *entity_events);
             if let Some(quality) = quality {
                 world.storage.set_body_quality(
                     &mut world.geometry,
@@ -1150,7 +1150,7 @@ impl PhysicsScene {
             .throwable()?
             .contact_events(mode);
         {
-            scene_publication_events!(self, registry, publication);
+            scene_publication_events!(self, registry, publication, &mut *entity_events);
             world.storage.set_body_user_flags(
                 &mut world.geometry,
                 &mut publication,

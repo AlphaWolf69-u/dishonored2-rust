@@ -2749,3 +2749,25 @@ uncached LocalStaticInputs (including runtime surface clones) before selecting
 an existing cached entry. That existing settled-frame construction could be
 deferred to the uncached branch after measuring it; this repair does not claim
 or introduce a resource/performance improvement there.
+
+### Canonical passive constraint admission — 2026-11-19
+
+Prediction before validation: previously unowned supported passive declarations
+add joint rows to existing bodies; controlled assembly admission and all body,
+shape, model and texture counts stay unchanged. No CPU/FPS improvement is
+claimed for adding missing physics behavior. Immutable per-declaration Arcs
+are shared during setup, while generic fields, endpoint-name sets and actual
+legacy-owner names are released after preparation. The settled admission path
+checks one pending flag; only unfinished real Start work scans the typed pool.
+Solver rows/history and partial callback cursors belong to the shared world
+until genuine removal acknowledgements complete. The observer borrows state
+only under the explicit action selector and retains no normal-frame history.
+
+Opened-owner opportunity: the legacy machinery recipe planner still initially
+projects all constraints before choosing its controlled graph, and typed
+passive acquisition must project the remaining actual declarations. Excluding
+confirmed legacy owners before typed resolution avoids decoding those twice,
+but the old temporary numeric projection of unowned entries could eventually
+be shared through the canonical declaration owner. This remains setup-only
+work and requires a measured source-parity refactor; no new permanent cache or
+performance claim is introduced to avoid it.

@@ -25983,3 +25983,57 @@ Player equipment requests at a swimming or mantle mode transition use the same q
 Local light shadow reuse now compares the cached per-face list against the current runtime caster publication. The CPU frame output is cleared at entry and only published after all lights succeed. Using that output during lookup previously treated current runtime casters as absent, so a newly added caster could be skipped and an unchanged caster could force repeated rebuilds. The comparison borrows the same input used by the light collector. GPU allocation, readiness and retirement still belong to the shadow cache.
 
 In the completed Edge of the World carry run, the held bottle's rendered and registered positions matched exactly before a settled throw, and the first post-throw update also matched exactly. The no-hit release rule moved the bottle laterally by its authored 0.27 m carry offset. On the first launch step the solver returned a contact against a world shape with positive impulse 1.8385346. Dropping immediately during the pickup turn showed a 0.0364 m render/body difference before detachment and zero on the first post-drop update. The same bottle could be picked up again. Actual contact, continued motion and level teardown were observed.
+
+### Passive constraints on canonical bodies — 2026-11-19
+
+`ported` within the admitted subset: `assets/constraints.rs` owns the typed
+712640 declaration projection; `gameplay/constraint.rs` and
+`app/physics_scene/constraint.rs` own actual7125d0 component generations,
+714560/712da0 endpoint lookup,714cd0 Start, base7811f0 Stop and7149b0 Deinit.
+One shared numerical kernel serves the existing machinery wrappers and the
+canonical World's actual solver velocities; no duplicate simulated body,
+shape, skeleton, render model, physics world or authored oscillation is created.
+The component factory uses the installed class/factory metadata, not a literal
+native type number. Logical Scene slot59 is only a host table ordinal.
+
+Existing controlled assemblies remain with their existing owner. Its same
+from_recipes constructor reports actual successful unequal-endpoint joint
+admissions into a caller-owned temporary name set; Scene setup excludes those
+owners and immediately drops the set. The actual EotW source has96 declarations
+matching the initial no-suppression nonmotor hinge/cone settings, all on plain
+idEntity actors with exactly one Constraint and no authored bindInfo.31 of
+these reference hanging-lamp endpoints, including declarations141/150. These
+counts describe installed metadata; runtime admission/solver activity is not
+inferred from them.
+
+`host`: source c92dd0 enables after both endpoint publications are visible.
+The deferred host bridge waits for the successful shared Initialize/Start batch
+boundary and checks real endpoint generations/publication/pending-add state.
+It retains separate enable/time-sync cursors on failure, never fabricates an
+Added callback or advances simulation. Native098890/7163b0/7163f0 use the
+canonical MotionTimespaces factors and actual AD/AC listener edits.7164c0's
+numeric mutation is consolidated into the existing body-unpublish boundary;
+the real Removed signal still invokes716560 withdrawal and canonical7e72c0
+component release. Its resumable acknowledgement precedes joint/body reuse.
+Prepared cancellation, runtime failed admission and normal level teardown use
+the same registry and callback owner, including initialization-time release.
+
+Explicit boundaries: motors, angular welds, distance/none tethers,
+linearStabilized=false, breakable constraints, suppression requests, bound
+constraint owners, articulated joint-to-body providers and named endpoint
+providers absent from canonical admission are not represented by a substitute
+component or body0. Source-proven deleted map references retain the actual
+world0 meaning, using two compact endpoint certificates. Supported named
+endpoints must already be Started or have a real body Start in the shared
+batch. Runtime requests outside this supported provider set fail explicitly.
+The broader canonical actor LOD provider currently does not publish the
+endpoint-level transitions consumed by727390/7149f0; no private distance-based
+freeze policy is invented here. Existing controlled machinery retains its LOD
+owner and behavior.
+
+Source-only status: no build or runtime observation performed by this owner.
+The opt-in real EotW observer records actual component/joint/body generations,
+frames, solver preparation, velocities, adjacency, clocks and ordinary exit.
+It adds no forces, fixture bodies or tolerance-based visual assertion; dormant
+solver coverage is explicitly reported rather than forcing a wake. Root owns
+the coherent build and actual action/retirement validation.

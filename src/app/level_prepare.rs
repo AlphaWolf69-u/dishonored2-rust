@@ -980,6 +980,7 @@ pub(super) fn prepare_level(
     }
     let machinery_placements = (separate_placements && entity_document.is_some())
         .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
+    let mut legacy_constraint_owners = std::collections::HashSet::new();
     let machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
         catalog_for_machinery,
         entity_document.as_ref(),
@@ -987,6 +988,7 @@ pub(super) fn prepare_level(
         &mut physics_texts,
         &mut shape_sources,
         Some(&|| cancelled(CancellationPoint::General)),
+        Some(&mut legacy_constraint_owners),
     )
     .map_err(std::io::Error::other)?;
     drop(machinery_placements);
@@ -1025,8 +1027,9 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref())
+        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref(), &legacy_constraint_owners)
             .map_err(std::io::Error::other)?;
+        drop(legacy_constraint_owners);
         physics.admit_ai_section_owners(catalog, document, &mut live)
             .map_err(std::io::Error::other)?;
         app.insert_resource(super::ai_world::creation::CreationPlan::prepare(catalog, document, &level)

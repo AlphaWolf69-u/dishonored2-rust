@@ -597,6 +597,7 @@ impl PhysicsScene {
                     }
                     Kind::Retargeting=>self.create_retargeting(index,&declaration,&mut registry,immediate)?,
                     Kind::Fx(source)=>self.create_fx_component(index,source.clone(),&declaration,&mut registry,immediate)?,
+                    Kind::Constraint(source)=>self.create_constraint_component(index,source.clone(),&declaration,&mut registry,immediate)?,
                     Kind::AISmartSpot(definition)=>self.create_smart_object(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::FlashSurface(definition)=>self.create_flash_surface(index,definition.clone(),&declaration,&mut registry,immediate)?,
                     Kind::GrenadeCooking(definition)=>self.create_cooking_surface(index,definition.clone(),&declaration,&mut registry,immediate)?,

@@ -48,6 +48,7 @@ pub(crate) enum Kind {
     Openable(Arc<super::openable::Definition>),
     Retargeting,
     Fx(Arc<super::fx_component::Definition>),
+    Constraint(Arc<super::constraints::Definition>),
     InteractiveMap(Arc<super::flash_surface::MapDefinition>),
     Observable(Arc<super::ai_cues::ObservableDefinition>),
     AttentionSource(Arc<super::ai_cues::AttentionDefinition>),

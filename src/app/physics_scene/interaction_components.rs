@@ -636,6 +636,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
         let result = (|| {
+            if handle.class_id == self.scene.classes[59] {
+                return self.scene.initialize_constraint(self.live, self.events, registry, handle);
+            }
             if handle.class_id == self.scene.classes[57] {
                 return self.scene.initialize_fx_component(self.live, handle);
             }
@@ -789,6 +792,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
             } else if handle.class_id == self.scene.classes[19] {
                 self.scene.start(handle,registry)?;
                 self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle)
+            } else if handle.class_id==self.scene.classes[59] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_constraint(handle)
             } else if handle.class_id==self.scene.classes[58] {
                 self.scene.start(handle,registry)?;
                 self.scene.start_static_usable(self.live,self.events,handle)?;
@@ -944,6 +950,8 @@ impl PhysicsScene {
             membership!(self.actors.actors)
         } else if handle.class_id == self.classes[4] {
             membership!(self.audios)
+        } else if handle.class_id == self.classes[59] {
+            membership!(self.constraints)
         } else if handle.class_id == self.classes[58] {
             membership!(self.static_usables)
         } else if handle.class_id == self.classes[5] {
@@ -1068,7 +1076,11 @@ impl PhysicsScene {
     ) -> Result<(), String> {
         let mut host = Startup { world: Some(world), scene: self, live, events };
         registry.initialize_and_start(&mut host)?;
-        registry.drain_update_changes(&mut host)
+        registry.drain_update_changes(&mut host)?;
+        if !host.scene.finish_constraint_admission(registry, host.events)? {
+            return Err("constraint startup awaits actual endpoint body publication".into());
+        }
+        Ok(())
     }
     pub(in crate::app) fn run_runtime_startup_with_registry(
         &mut self,
@@ -1083,7 +1095,11 @@ impl PhysicsScene {
             events,
         };
         registry.initialize_and_start(&mut host)?;
-        registry.drain_update_changes(&mut host)
+        registry.drain_update_changes(&mut host)?;
+        if !host.scene.finish_constraint_admission(registry, host.events)? {
+            return Err("constraint startup awaits actual endpoint body publication".into());
+        }
+        Ok(())
     }
     fn initialize_level_bodies(
         &mut self,

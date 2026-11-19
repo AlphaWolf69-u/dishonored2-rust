@@ -117,7 +117,7 @@ impl AmbientMachinery {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
     ) -> Result<Self, String> {
-        Self::load_with_texts_cancellable(catalog, document, placements, texts, shape_sources, None)
+        Self::load_with_texts_cancellable(catalog, document, placements, texts, shape_sources, None, None)
     }
 
     pub(super) fn load_with_texts_cancellable(
@@ -127,6 +127,7 @@ impl AmbientMachinery {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
         cancelled: Option<&dyn Fn() -> bool>,
+        mut admitted_constraints: Option<&mut std::collections::HashSet<String>>,
     ) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());
@@ -135,7 +136,11 @@ impl AmbientMachinery {
         for diagnostic in &recipes.unsupported {
             warn!("Ambient machinery assembly unsupported: {diagnostic}");
         }
-        let mut world = MachineryWorld::from_recipes(&recipes)?;
+        let mut world = MachineryWorld::from_recipes_with_constraint_admission(&recipes, |name| {
+            if let Some(owners) = admitted_constraints.as_deref_mut() {
+                owners.insert(name.to_owned());
+            }
+        })?;
         // 14087caa0 -> 14064c820: owners queue for lod_dist_warmup_framecount.
         let warmup = crate::platform::console::shared()
             .read()

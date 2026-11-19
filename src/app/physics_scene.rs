@@ -75,6 +75,8 @@ pub(super) mod explosions;
 pub(super) mod explosion_effects;
 mod interaction_components;
 mod usable_static;
+mod constraint;
+mod constraint_removal;
 mod flash_surfaces;
 mod grenade_cooking;
 pub(super) mod openable;
@@ -147,8 +149,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 59],
-    classes: [i32; 59],
+    factories: [u32; 60],
+    classes: [i32; 60],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -163,6 +165,8 @@ pub(super) struct PhysicsScene {
     audios: ComponentPool<crate::gameplay::sound::component::AudioComponent>,
     usables: ComponentPool<UsableComponent>,
     static_usables: ComponentPool<UsableComponent>,
+    constraints: ComponentPool<crate::gameplay::constraint::Component>,
+    constraints_pending_enable: bool,
     static_usable_updates_pending: bool,
     usable_uses:std::collections::VecDeque<usable_static::AcceptedUse>,
     pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
@@ -468,6 +472,7 @@ impl PhysicsScene {
         models: &[entities::PlacedModel],
         joint_frames: &super::joint_frames::JointFrames,
         level_bodies: Option<&level_bodies::PreparedLevelBodies>,
+        legacy_constraint_owners: &std::collections::HashSet<String>,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -552,6 +557,7 @@ impl PhysicsScene {
             factory(b"arkCpntRetargeting")?,
             factory(b"arkCpntFX")?,
             factory(b"arkCpntUsableStatic")?,
+            factory(b"arkCpntConstraint")?,
         ];
         let names = types
             .classes()
@@ -581,7 +587,7 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 59];
+        let mut classes = [0; 60];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
@@ -693,6 +699,8 @@ impl PhysicsScene {
             audios: types.create_pool(factories[4], &cvars.cvars)?,
             usables: types.create_pool(factories[5], &cvars.cvars)?,
             static_usables: types.create_pool(factories[58], &cvars.cvars)?,
+            constraints: types.create_pool(factories[59], &cvars.cvars)?,
+            constraints_pending_enable: false,
             static_usable_updates_pending:false,
             usable_uses:Default::default(),
             pickables: types.create_pool(factories[6], &cvars.cvars)?,
@@ -1081,6 +1089,8 @@ impl PhysicsScene {
                     constructor_tag,
                 )?;
             }
+            scene.admit_placed_constraints(catalog, document, models,
+                legacy_constraint_owners, live, &mut registry)?;
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.
             for (index, entity) in scene.entities.iter().enumerate() {
@@ -1097,7 +1107,11 @@ impl PhysicsScene {
                 scene: &mut scene,
                 live,
                 events: entity_events,
-            })
+            })?;
+            if !scene.finish_constraint_admission(&mut registry, entity_events)? {
+                return Err("placed constraint awaits actual endpoint body publication".into());
+            }
+            Ok(())
         })();
         // The registry owns the in-flight callback cursor even when startup
         // fails. Restore it before invoking the canonical release owner.
@@ -1463,6 +1477,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.actors.actors.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[59] {
+            self.constraints.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[58] {
             self.static_usables.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[5] {
@@ -1546,6 +1562,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[59] {
+            self.constraints.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[58] {
             self.static_usables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[5] {
@@ -1850,6 +1868,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.winds.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[3] {
                     self.actors.actors.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[59] {
+                    self.constraints.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[58] {
                     self.static_usables.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[5] {

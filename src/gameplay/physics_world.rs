@@ -8,7 +8,7 @@ mod context;
 pub use context::{PublicationContext, PublicationEvents, PublicationGeometry};
 mod events;
 pub(crate) use events::BodyEventCallback;
-pub use events::{ComponentPublicationEvents, PublicationEvent, PublicationSignals};
+pub use events::{ComponentPublicationEvents, ConstraintChange, PublicationEvent, PublicationSignals};
 mod motion_creation;
 pub use motion_creation::MotionCreationCallbacks;
 pub(crate) mod body_activation_events;

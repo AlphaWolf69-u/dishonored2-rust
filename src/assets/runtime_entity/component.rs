@@ -50,6 +50,7 @@ pub(super) fn from_resolved(
     let scheduling = Arc::new(entities::components::scheduling(&fields, defaults)?);
     let (native, payload) = match kind {
         "cpntfx" => ("arkCpntFX", Kind::Fx(Arc::new(assets::fx_component::Definition::read(fields)?))),
+        "cpntconstraint" => ("arkCpntConstraint", Kind::Constraint(Arc::new(assets::constraints::Definition::read(fields)?))),
         "cpntopenable" => ("arkCpntOpenable",Kind::Openable(Arc::new(assets::openable::Definition::read(catalog,fields)?))),
         "cpntretargeting" => ("arkCpntRetargeting",Kind::Retargeting),
         "cpntflashsurface" => ("arkCpntFlashSurface",Kind::FlashSurface(Arc::new(assets::flash_surface::Definition::read(fields)?))),

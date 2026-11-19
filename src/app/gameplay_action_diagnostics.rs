@@ -10,6 +10,7 @@ mod blink_water;
 mod bolt;
 pub(super) mod grenade;
 mod contact_fx;
+mod constraints;
 mod contact_fixture;
 mod wall_thrust;
 
@@ -153,12 +154,13 @@ pub(super) struct Observation {
     bolt:Option<bolt::Observation>,
     grenade: Option<grenade::Observation>,
     wall: Option<wall_thrust::Observation>,
+    constraints:Option<constraints::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Err(_)=>false,
-            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, blink-water, bolt, bolt-bottle or grenade")),
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Ok("constraints")|Err(_)=>false,
+            Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, blink-water, bolt, bolt-bottle, grenade or constraints")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
             return Err("action smoke requires actual Corvo loadout (DH2_DEBUG_CHARACTER=corvo)".into());
@@ -174,7 +176,8 @@ impl Observation {
         let contact_only=melee_only || poke_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("contact");
         let carry_only=contact_only || std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("carry");
         let grenade_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("grenade");
-        if !heart_only && !carry_only && !world_only && !grenade_only {
+        let constraint_only=std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("constraints");
+        if !heart_only && !carry_only && !world_only && !grenade_only && !constraint_only {
             for (key, expected) in [(KeyCode::Digit1,25),(KeyCode::Digit3,27)] {
                 if binding(Input::Key(key)) != Some(expected) { return Err(format!("installed shortcut input contract differs: {key:?} expected action{expected}")); }
             }
@@ -184,6 +187,7 @@ impl Observation {
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
         let blink_water=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink-water"){Some(blink_water::Observation::begin(world)?)}else{None};
         let bolt=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){Ok("bolt")=>Some(bolt::Observation::begin(world)?),Ok("bolt-bottle")=>Some(bolt::Observation::begin_bottle(world)?),_=>None};
+        let constraints=if constraint_only{Some(constraints::Observation::begin(world)?)}else{None};
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let wall=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-wall-poke"){Some(wall_thrust::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
@@ -194,7 +198,7 @@ impl Observation {
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,contact_health_reported:false,contact_effects:None,named_contact,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
-            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,blink_water,grenade,wall })
+            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,blink_water,grenade,wall,constraints })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -679,6 +683,12 @@ impl Observation {
         Ok(())
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(constraints)=&mut self.constraints{
+            let complete=constraints.poll(world)?;
+            if complete{self.stage=Stage::Done;}
+            return Ok(complete)
+        }
+
         if let Some(named)=&mut self.named_contact{named.frame(self.stage);}
 
         if let Some(wall)=&mut self.wall {return wall.poll(world)}

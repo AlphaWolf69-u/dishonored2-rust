@@ -2,6 +2,30 @@
 //! live component pools without reconstructing a query world or flag shadow.
 macro_rules! scene_publication_events {
     ($scene:ident, $registry:expr, $events:ident) => {
+        //Pure impulse/filter/transform callers cannot remove a joint. Actual
+        //unpublish/destroy callers MUST provide the real listener-edit owner.
+        scene_publication_events!(@dispatch, $scene, $registry, $events,
+            |_: &mut crate::gameplay::signal::Signal<usize, usize>, _: usize, _: usize,
+                _: crate::gameplay::physics_world::PublicationEvent<'_>,
+                _: &mut ComponentRegistry| -> Result<(), String> {
+                Err("constraint removal requires actual EntityEvents callback edits".into())
+            });
+    };
+    ($scene:ident, $registry:expr, $events:ident, $entity_events:expr) => {
+        let mut constraint_removal = constraint_removal::RemovalHost {
+            owner_id: $scene.owner_id, class: $scene.classes[59],
+            factory: $scene.factories[59], types: &$scene.types,
+            pool: &mut $scene.constraints, entities: &mut $scene.entities,
+            events: $entity_events,
+        };
+        scene_publication_events!(@dispatch, $scene, $registry, $events,
+            |signal: &mut crate::gameplay::signal::Signal<usize, usize>, subscriber: usize, callback: usize,
+                event: crate::gameplay::physics_world::PublicationEvent<'_>, registry: &mut ComponentRegistry| {
+                constraint_removal.removed(signal, subscriber, callback, event, registry)
+            });
+    };
+    (@dispatch, $scene:ident, $registry:expr, $events:ident, $removed:expr) => {
+        let mut on_constraint_removed = $removed;
         let d4 = &mut $scene.entity_flags_d4;
         let post_task = &$scene.post_updates;
         let post_frame = $scene.post_frame;
@@ -33,12 +57,18 @@ macro_rules! scene_publication_events {
             triggers: &mut $scene.triggers, waters: &mut $scene.waters,
             actors: &mut $scene.actors, deferred: &mut $scene.deferred },
             signals: &mut $scene.signals,
-            dispatch: |_: &mut crate::gameplay::signal::Signal<usize, usize>,
+            dispatch: |signal: &mut crate::gameplay::signal::Signal<usize, usize>,
                 subscriber: usize, callback: usize,
                 owners: crate::gameplay::body_activation::ActivationOwners<'_>,
                 event: crate::gameplay::physics_world::PublicationEvent<'_>,
                 components: &mut crate::gameplay::trigger_body::TriggerComponentStore<'_>| -> Result<(), String> {
-                observer.dispatch(subscriber, callback, owners, event, components)
+                if matches!(event, crate::gameplay::physics_world::PublicationEvent::Constraint {
+                    change: crate::gameplay::physics_world::ConstraintChange::Removed, ..
+                }) {
+                    on_constraint_removed(signal, subscriber, callback, event, &mut *observer.registry)
+                } else {
+                    observer.dispatch(subscriber, callback, owners, event, components)
+                }
             } };
     };
 }

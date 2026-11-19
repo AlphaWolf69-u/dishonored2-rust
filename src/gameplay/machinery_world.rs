@@ -2,27 +2,24 @@
 //! motor history and solver state. No renderer, archive I/O or wall clock.
 use super::{
     constraint_solver::{
-        self as solver,
-        angular::{hinge_limit_row, AngularFrictionRow, AngularLimitRow},
-        ball_socket::{
-            rotate_direction, AnchorFrame, BallSocketBody, BallSocketBuild, BallSocketRow,
-            SolverVelocities,
-        },
+        ball_socket::{rotate_direction,SolverVelocities},
         motion::{MotionHistory, MotionProperties},
         step::{ConstraintParameters, SolverParameters},
-        AngularLockRow, AngularMotorRow, AngularVelocityAccumulator, Basis, ConstraintBody,
-        HingeHistory, HingeRowInput,
+        Basis,
     },
     deactivation::{
         DeactivationProfile, MotionDeactivation, MODE_ALWAYS_ACTIVE, MODE_DEACTIVATE,
         MODE_KEEP_DEACTIVATED,
     },
     entity_lod::EntityLod,
-    machinery::{AngularMotorHistory, ConstraintMotor, MotorStep},
     rigid_body::{BodyMotion, BodyPose},
 };
 use crate::{entities::machinery::ConstraintSettings, physworld};
 mod atoms;
+use crate::gameplay::constraint_solver::joint::{BodyInput,Joint,JointRows,solve_hinge};
+fn joint_input<'a>(body:&'a MachineryBody,transform:&'a [[f32;4];4])->BodyInput<'a>{
+    BodyInput{pose:&body.motion.pose,inverse_mass:&body.motion.inverse_mass,body_transform:transform}
+}
 
 fn vector(v: [f32; 3]) -> [f32; 4] {
     [v[0], v[1], v[2], 0.]
@@ -44,9 +41,6 @@ fn transform(q: [f32; 4], basis: Basis) -> Basis {
             }
         })
     })
-}
-fn transpose(b: Basis) -> Basis {
-    std::array::from_fn(|c| std::array::from_fn(|r| if r < 3 { b[r][c] } else { 0. }))
 }
 
 pub struct MachineryBody {
@@ -171,24 +165,6 @@ impl MachineryBody {
             }
             v
         })
-    }
-    fn constraint_body(&self) -> ConstraintBody {
-        let mass = self.motion.inverse_mass_values();
-        ConstraintBody {
-            principal: transpose(physworld::quaternion_basis(self.motion.pose.orientation)),
-            center: xyz(self.motion.pose.center),
-            inverse_inertia: xyz(mass),
-            inverse_mass: mass[3],
-        }
-    }
-    fn anchor(&self) -> BallSocketBody {
-        BallSocketBody {
-            frame: AnchorFrame {
-                center: self.motion.pose.center,
-                world_to_mass: inverse(self.motion.pose.orientation),
-            },
-            inverse_mass: self.motion.inverse_mass_values(),
-        }
     }
     /// hknpBody transform columns: the motion frame composed with the
     /// inverse shape mass frame, carrying the body-space mass center in w.
@@ -330,38 +306,13 @@ impl MachineryBody {
     }
 }
 
-struct Joint {
-    settings: ConstraintSettings,
-    /// arkCpntConstraint +0x8c bit 1: the motor 1407149f0 disabled on freeze.
-    motor_suspended: bool,
-    a: usize,
-    b: usize,
-    local_a: Basis,
-    local_b: Basis,
-    lever_a: [f32; 3],
-    lever_b: [f32; 3],
-    motor: Option<ConstraintMotor>,
-    measurement: AngularMotorHistory,
-    hinge: HingeHistory,
-    previous_motor_value: f32,
-    previous_limit_angle: f32,
-    previous_friction_value: f32,
-}
+
 #[derive(Clone, Copy)]
 enum SolveSlot {
     Atom(usize),
     Hinge(usize),
 }
-struct JointRows {
-    angular: [AngularLockRow; 2],
-    motor: Option<AngularMotorRow>,
-    limit: Option<AngularLimitRow>,
-    friction: Option<AngularFrictionRow>,
-    pivot: BallSocketRow,
-    motor_scale: f32,
-    friction_scale: f32,
-    limit_impulse: f32,
-}
+
 /// A simulated physics system and its body-to-joint map for skinning.
 pub struct SystemState {
     pub placement: usize,
@@ -431,6 +382,7 @@ struct WindmillMotor {
     enabled: bool,
 }
 impl MachineryWorld {
+
     /// 14080ac90: a bound dynamic rigid body joins its parent's motion
     /// (14080af20 -> 140c8fc00 attachBodies), then c90a90 rebuilds that
     /// motion from every attached body's mass (c2bd80 combine). The parent
@@ -519,6 +471,14 @@ impl MachineryWorld {
     pub fn from_recipes(
         recipes: &crate::entities::machinery::recipes::MachineryRecipes,
     ) -> Result<Self, String> {
+        Self::from_recipes_with_constraint_admission(recipes, |_|{})
+    }
+    /// Host admission metadata is borrowed only during the existing recipe
+    /// construction; it retains no second owner-name map on simulated joints.
+    pub(crate) fn from_recipes_with_constraint_admission(
+        recipes:&crate::entities::machinery::recipes::MachineryRecipes,
+        mut admitted:impl FnMut(&str),
+    )->Result<Self,String>{
         let mut world = Self::default();
         world.bodies.push(MachineryBody::fixed());
         let mut indices = std::collections::HashMap::<&str, usize>::new();
@@ -654,8 +614,10 @@ impl MachineryWorld {
                     let stack = atoms::cone_stack(joint, &world.bodies[a], &world.bodies[b]);
                     world.solve_order.push(SolveSlot::Atom(world.atom_joints.len()));
                     world.atom_joints.push(atoms::AtomJoint::new(a, b, stack, true));
+                    admitted(&joint.constraint_id);
                 } else if a != b {
                     world.add_joint(joint.clone(), a, b)?;
+                    admitted(&joint.constraint_id);
                     // 140714cd0 -> 140c91140 -> 140c92dd0: an enabled motor
                     // adds the constraint with activation; others keep sleep.
                     if joint.motor.is_some() && joint.started {
@@ -704,41 +666,10 @@ impl MachineryWorld {
                 settings.constraint_id, settings.linear_constraint, settings.angular_constraint
             ));
         }
-        let frame = settings.basis.map(vector);
-        let local = |body: &MachineryBody| transform(inverse(body.motion.pose.orientation), frame);
-        let lever = |body: &MachineryBody| {
-            rotate_direction(
-                inverse(body.motion.pose.orientation),
-                std::array::from_fn(|i| settings.pivot[i] - body.motion.pose.center[i]),
-            )
-        };
-        let local_a = local(&self.bodies[a]);
-        let local_b = local(&self.bodies[b]);
-        let lever_a = lever(&self.bodies[a]);
-        let lever_b = lever(&self.bodies[b]);
-        let motor = settings.motor.map(ConstraintMotor::from_settings);
-        // The measurement history is relative BODY rotation, not the mass
-        // principal axes. The constant mass frames cancel in relative changes;
-        // initialize to the actual relative constraint frame before first step.
-        let mut measurement = AngularMotorHistory::default();
-        measurement.measure(frame, frame, xyz(local_a[settings.angular_axis]), 1., 1.);
         self.solve_order.push(SolveSlot::Hinge(self.joints.len()));
-        self.joints.push(Joint {
-            settings,
-            motor_suspended: false,
-            a,
-            b,
-            local_a,
-            local_b,
-            lever_a,
-            lever_b,
-            motor,
-            measurement,
-            hinge: HingeHistory::default(),
-            previous_motor_value: 0.,
-            previous_limit_angle: 0.,
-            previous_friction_value: 0.,
-        });
+        self.joints.push(Joint::new(settings,a,b,
+            joint_input(&self.bodies[a], &self.bodies[a].body_transform()),
+            joint_input(&self.bodies[b], &self.bodies[b].body_transform())));
         Ok(())
     }
     /// Largest separation between the two sides of an authored fixed pivot.
@@ -1173,12 +1104,10 @@ impl MachineryWorld {
             if inactive {
                 joint.skip();
             } else {
-                joint.build(&self.bodies, &atom_step);
+                joint.build(joint_input(&self.bodies[joint.a],&self.bodies[joint.a].body_transform()),
+                    joint_input(&self.bodies[joint.b],&self.bodies[joint.b].body_transform()),&atom_step);
             }
         }
-        let constraint_tau = query.stabilized_tau;
-        let constraint_damping = query.stabilized_damping;
-        let inverse_step_tau = query.inverse_step_tau;
         for joint in &mut self.joints {
             let a = &self.bodies[joint.a];
             let b = &self.bodies[joint.b];
@@ -1188,136 +1117,8 @@ impl MachineryWorld {
                 self.rows.push(None);
                 continue;
             }
-            let fa = transform(a.motion.pose.orientation, joint.local_a);
-            let fb = transform(b.motion.pose.orientation, joint.local_b);
-            let ca = a.constraint_body();
-            let cb = b.constraint_body();
-            let axis = joint.settings.angular_axis;
-            let perpendicular = (axis + 1) % 3;
-            let other = (axis + 2) % 3;
-            let angular = [
-                solver::angular_lock_row(
-                    ca,
-                    cb,
-                    xyz(fa[axis]),
-                    xyz(fb[other]),
-                    xyz(fb[perpendicular]),
-                    inverse_step_tau,
-                    step.damping,
-                ),
-                solver::angular_lock_row(
-                    ca,
-                    cb,
-                    xyz(fa[axis]),
-                    xyz(fb[perpendicular]).map(|v| -v),
-                    xyz(fb[other]),
-                    inverse_step_tau,
-                    step.damping,
-                ),
-            ];
-            let entity_seconds = deltas[0]; // Timespace0's entry already maps to clock group3 (877eb0/8af460).
-            let scale = entity_seconds / step.seconds;
-            let measured = if entity_seconds > 0. {
-                joint.measurement.measure(
-                    fa,
-                    fb,
-                    std::array::from_fn(|i| if i == axis { 1. } else { 0. }),
-                    entity_seconds,
-                    scale,
-                )
-            } else {
-                0.
-            };
-            let motor = joint
-                .motor
-                .as_mut()
-                .filter(|_| joint.settings.started)
-                .map(|motor| {
-                    solver::hinge_motor_row(
-                        motor,
-                        &mut joint.hinge,
-                        HingeRowInput {
-                            axis,
-                            frame_a: fa,
-                            frame_b: fb,
-                            principal_a: ca.principal,
-                            principal_b: cb.principal,
-                            inverse_inertia_a: ca.inverse_inertia,
-                            inverse_inertia_b: cb.inverse_inertia,
-                            target_angle: joint.settings.target_position,
-                            step: MotorStep {
-                                seconds: step.seconds,
-                                inverse_seconds: step.inverse_seconds,
-                                time_scale: scale,
-                                measured_velocity: measured,
-                                position_error: 0.,
-                                previous_position_error: 0.,
-                                previous_solver_value: joint.previous_motor_value,
-                            },
-                            warm_start_scale: step.inverse_substep_seconds,
-                            impulse_seconds: step.substep_seconds,
-                        },
-                    )
-                });
-            let limit = (joint.settings.angular_constraint == "ANGULAR_CONSTRAINT_LIMITED_HINGE")
-                .then(|| {
-                    hinge_limit_row(
-                        ca,
-                        cb,
-                        fa,
-                        fb,
-                        axis,
-                        joint.settings.angular_minimum,
-                        joint.settings.angular_maximum,
-                        &mut joint.previous_limit_angle,
-                        step.inverse_substep_seconds,
-                        constraint_tau,
-                        constraint_damping,
-                    )
-                });
-            let friction = if joint.settings.angular_friction >= 0. && motor.is_none() {
-                let mut ja = solver::project(ca.principal, xyz(fa[axis]));
-                let jb = solver::project(cb.principal, xyz(fa[axis]).map(|v| -v));
-                let inv: [f32; 3] = std::array::from_fn(|i| {
-                    ja[i] * ja[i] * ca.inverse_inertia[i] + jb[i] * jb[i] * cb.inverse_inertia[i]
-                });
-                let effective_mass =
-                    solver::reciprocal((inv[1] + inv[0]) + inv[2] + f32::from_bits(0x34000000));
-                ja[0] = solver::schema_axis(ja[0], 14);
-                Some(AngularFrictionRow {
-                    axis_a: ja,
-                    axis_b: jb,
-                    effective_mass,
-                    correction: inverse_step_tau * joint.previous_friction_value,
-                    maximum_impulse: joint.settings.angular_friction * step.substep_seconds,
-                })
-            } else {
-                None
-            };
-            let huge = f32::from_bits(0x7f7fffee);
-            let pivot = BallSocketRow::build(BallSocketBuild {
-                a: a.anchor(),
-                b: b.anchor(),
-                lever_a: joint.lever_a,
-                lever_b: joint.lever_b,
-                inverse_step: step.inverse_substep_seconds,
-                tau: constraint_tau,
-                damping: step.damping,
-                mass_stabilization: 0.,
-                maximum_force: huge,
-                maximum_impulse: huge,
-                angular_impulse_limit: huge,
-            });
-            self.rows.push(Some(JointRows {
-                angular,
-                motor,
-                limit,
-                friction,
-                pivot,
-                motor_scale: 1.,
-                friction_scale: 1.,
-                limit_impulse: 0.,
-            }));
+            self.rows.push(Some(joint.build(joint_input(a,&a.body_transform()),
+                joint_input(b,&b.body_transform()),&step,&query,deltas[0])));
         }
         for substep in 0..step.substeps {
             let phase = step.phase(substep, 0);
@@ -1393,111 +1194,13 @@ impl MachineryWorld {
             let Some(rows) = rows else {
                 continue;
             };
-            let accumulator = |index: usize| {
-                let v = self.velocities[index];
-                AngularVelocityAccumulator {
-                    current: xyz(v.angular),
-                    initial: xyz(v.initial_angular),
-                    inverse_inertia: xyz(v.inverse_mass),
-                }
-            };
-            let (a, b) = (joint.a, joint.b);
-            let projection = |ja, jb| {
-                solver::angular::integration_projection(
-                    ja,
-                    jb,
-                    accumulator(a),
-                    accumulator(b),
-                    step.substeps,
-                    step.inverse_velocity_scale,
-                    step.velocity_scale,
-                )
-            };
-            if let Some(row) = rows.friction {
-                joint.previous_friction_value =
-                    (step.velocity_scale * step.substep_seconds * row.correction
-                        - projection(row.axis_a, row.axis_b) * step.seconds)
-                        * rows.friction_scale;
-            }
-            if let Some(row) = rows.limit {
-                joint.previous_limit_angle = -(row.correction * step.substep_seconds
-                    - projection(row.axis_a, row.axis_b) * step.seconds);
-            }
-            if let Some(row) = rows.motor {
-                let accumulator = |index: usize| {
-                    let v = self.velocities[index];
-                    AngularVelocityAccumulator {
-                        current: xyz(v.angular),
-                        initial: xyz(v.initial_angular),
-                        inverse_inertia: xyz(v.inverse_mass),
-                    }
-                };
-                joint.previous_motor_value = solver::angular::motor_history_value(
-                    row,
-                    accumulator(joint.a),
-                    accumulator(joint.b),
-                    step.substeps,
-                    step.seconds,
-                    step.substep_seconds,
-                    step.inverse_velocity_scale,
-                    step.velocity_scale,
-                    rows.motor_scale,
-                );
-            }
+            joint.export(rows,&self.velocities,&step);
         }
     }
 }
 /// One substep of a hinge joint's rows (motor, friction, limit, angular
 /// locks, then the ball socket).
-fn solve_hinge(
-    joint: &Joint,
-    rows: &mut JointRows,
-    velocities: &mut [SolverVelocities],
-    step: &SolverParameters,
-    velocity_fraction: f32,
-) {
-    let mut a = velocities[joint.a];
-    let mut b = velocities[joint.b];
-    let mut angular_a = AngularVelocityAccumulator {
-        current: xyz(a.angular),
-        initial: xyz(a.initial_angular),
-        inverse_inertia: xyz(a.inverse_mass),
-    };
-    let mut angular_b = AngularVelocityAccumulator {
-        current: xyz(b.angular),
-        initial: xyz(b.initial_angular),
-        inverse_inertia: xyz(b.inverse_mass),
-    };
-    if let Some(row) = rows.motor {
-        rows.motor_scale = row.solve(
-            &mut angular_a,
-            &mut angular_b,
-            step.velocity_scale,
-            velocity_fraction,
-        )[1];
-    }
-    if let Some(row) = rows.friction {
-        rows.friction_scale = row.solve(&mut angular_a, &mut angular_b)[1];
-    }
-    if let Some(row) = rows.limit {
-        row.solve(
-            &mut angular_a,
-            &mut angular_b,
-            step.velocity_scale,
-            step.substep_seconds,
-            &mut rows.limit_impulse,
-        );
-    }
-    for row in rows.angular {
-        row.solve(&mut angular_a, &mut angular_b);
-    }
-    a.angular = vector(angular_a.current);
-    b.angular = vector(angular_b.current);
-    rows.pivot
-        .solve(&mut a, &mut b, step.substep_seconds, step.velocity_scale);
-    velocities[joint.a] = a;
-    velocities[joint.b] = b;
-}
+
 
 #[cfg(test)]
 mod tests {

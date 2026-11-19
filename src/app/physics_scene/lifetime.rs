@@ -899,6 +899,9 @@ impl ComponentLifecycleWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[59] {
+            return self.scene.initialize_constraint(self.live, self.events, registry, handle);
+        }
         if handle.class_id == self.scene.classes[57] {
             return self.scene.initialize_fx_component(self.live, handle);
         }
@@ -993,6 +996,10 @@ impl ComponentLifecycleWorld for Host<'_> {
         if handle.class_id==self.scene.classes[19]{
             self.scene.start(handle,registry)?;
             return self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle);
+        }
+        if handle.class_id==self.scene.classes[59]{
+            self.scene.start(handle,registry)?;
+            return self.scene.start_constraint(handle);
         }
         if handle.class_id==self.scene.classes[58]{
             self.scene.start(handle,registry)?;
@@ -1099,6 +1106,10 @@ impl ComponentReleaseWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[59] {
+            self.scene.stop_constraint(handle)?;
+            return registry.stop_update_ownership(handle, self);
+        }
         self.retire_contacts(handle, false)?;
         if handle.class_id==self.scene.classes[6] {
             if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_stopped(world,handle)?;}
@@ -1134,7 +1145,7 @@ impl ComponentReleaseWorld for Host<'_> {
                 .binding
                 .collision
                 .keyframed;
-            scene_publication_events!(scene, registry, events);
+            scene_publication_events!(scene, registry, events, &mut *self.events);
             crate::gameplay::trigger_body::startup::stop_trigger(
                 &mut world.storage,
                 &mut world.geometry,
@@ -1337,6 +1348,9 @@ impl ComponentReleaseWorld for Host<'_> {
         handle: ComponentHandle,
         registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[59] {
+            return self.scene.deinitialize_constraint(handle, registry, self.events);
+        }
         self.retire_contacts(handle, true)?;
         if handle.class_id == self.scene.classes[57] {
             self.scene.deinitialize_fx_component(handle)?;
@@ -1396,7 +1410,7 @@ impl ComponentReleaseWorld for Host<'_> {
                 .map_err(|_| "physics world retirement lock poisoned")?;
             let scene = &mut self.scene;
             let query = &mut *query;
-            scene_publication_events!(scene, registry, publication);
+            scene_publication_events!(scene, registry, publication, &mut *self.events);
             scene
                 .level_bodies
                 .get_mut(handle.slot)
@@ -1438,7 +1452,7 @@ impl ComponentReleaseWorld for Host<'_> {
                 .write()
                 .map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
-            scene_publication_events!(scene, registry, events);
+            scene_publication_events!(scene, registry, events, &mut *self.events);
             crate::gameplay::trigger_body::startup::deinitialize_trigger(
                 &mut world.storage,
                 &mut world.geometry,
@@ -1501,8 +1515,11 @@ impl ComponentReleaseWorld for Host<'_> {
     fn shutdown(
         &mut self,
         handle: ComponentHandle,
-        _: &mut ComponentRegistry,
+        registry: &mut ComponentRegistry,
     ) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[59] {
+            return self.scene.deinitialize_constraint(handle, registry, self.events);
+        }
         let index = self
             .owner(handle)?
             .entity
@@ -1779,6 +1796,12 @@ impl ComponentReleaseWorld for Host<'_> {
             }
         } else if handle.class_id == scene.classes[4] {
             scene.audios.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[59] {
+            let component = scene.constraints.get(handle.slot).ok_or("constraint release payload absent")?;
+            if component.joint.is_some() || component.retiring_joint.is_some() {
+                return Err("constraint pool release precedes real Removed acknowledgement".into());
+            }
+            scene.constraints.release(handle.slot)?;
         } else if handle.class_id == scene.classes[58] {
             scene.static_usables.release(handle.slot)?;
         } else if handle.class_id == scene.classes[5] {

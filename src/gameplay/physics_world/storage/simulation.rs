@@ -156,6 +156,9 @@ impl WorldStorage {
         if self.simulation_busy {
             return Err("physics simulation reentered its live world".into());
         }
+        //097bc0 commits the canonical MotionTimespaces factors before this
+        //solve boundary;098890 updates existing constraints before new rows.
+        if self.simulation.is_idle()&&step.seconds>0.{self.synchronize_joint_timespaces(geometry,events)?;}
         if !self.publication_idle() {
             return Err("physics publication must finish before simulation".into());
         }
@@ -312,6 +315,7 @@ impl WorldStorage {
         }
         if scratch.pending.as_ref().unwrap().phase == Phase::Prepare {
             contacts.prepare(self, geometry, &step, &scratch.motions, &scratch.velocities)?;
+            self.prepare_joints(&step, &scratch.motion_to_solver, &mut scratch.velocities)?;
             scratch.pending.as_mut().unwrap().phase = Phase::ContactCallbacks;
         }
         if scratch.pending.as_ref().unwrap().phase == Phase::ContactCallbacks {
@@ -326,6 +330,7 @@ impl WorldStorage {
             // intermediate velocity integration, then final publication.
             for substep in 0..step.substeps {
                 for iteration in 0..step.iterations {
+                    self.solve_joints(&step, step.phase(substep, iteration), &mut scratch.velocities);
                     contacts.solve(
                         &step,
                         step.phase(substep, iteration),
@@ -335,6 +340,7 @@ impl WorldStorage {
                 if self.info.solver_enable_post_step {
                     let mut phase = step.phase(substep, step.iterations - 1);
                     phase.flags |= 4;
+                    self.solve_joints(&step, phase, &mut scratch.velocities);
                     contacts.solve(&step, phase, &mut scratch.velocities);
                 }
                 if substep + 1 < step.substeps {
@@ -356,6 +362,7 @@ impl WorldStorage {
                     }
                 }
             }
+            self.export_joints(&step, &scratch.velocities);
             scratch.publications.extend(
                 scratch
                     .velocities
@@ -442,7 +449,7 @@ impl WorldStorage {
                 scratch.pending.as_mut().unwrap().cursor += 1;
             }
             scratch.parents.extend(0..scratch.motions.len());
-            for &[a, b] in contacts.body_links() {
+            for [a, b] in contacts.body_links().iter().copied().chain(self.enabled_joint_pairs()) {
                 let a = self
                     .bodies
                     .get(a)
@@ -505,9 +512,11 @@ impl WorldStorage {
             scratch.pending.as_mut().unwrap().phase = Phase::LinkSleep;
         }
         if scratch.pending.as_ref().unwrap().phase == Phase::LinkSleep {
-            while scratch.pending.as_ref().unwrap().cursor < contacts.body_links().len() {
-                let [first, second] =
-                    contacts.body_links()[scratch.pending.as_ref().unwrap().cursor];
+            while scratch.pending.as_ref().unwrap().cursor < contacts.body_links().len()+self.joint_slot_count() {
+                let cursor=scratch.pending.as_ref().unwrap().cursor;
+                let pair=if cursor<contacts.body_links().len(){Some(contacts.body_links()[cursor])}
+                    else{self.enabled_joint_pair_at(cursor-contacts.body_links().len())};
+                let Some([first,second])=pair else{scratch.pending.as_mut().unwrap().cursor+=1;continue};
                 // cd8310 creates/merges the real sleeping islands after solver
                 // deactivation, retaining the actual body pair and step stamp.
                 self.deactivation.link_bodies(

@@ -11,6 +11,7 @@ pub mod edge_animation;
 pub mod edge_skeleton;
 pub mod entities;
 pub(crate) mod openable;
+pub(crate) mod constraints;
 pub(crate) mod fx_component;
 pub mod environment;
 pub mod fx;

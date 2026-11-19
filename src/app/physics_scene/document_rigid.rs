@@ -136,7 +136,7 @@ impl PhysicsScene {
                     .creation_entered();
             }
             let body = {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 world.storage.resume_disabled_component_body(
                     &mut world.geometry,
                     &mut events,
@@ -507,7 +507,7 @@ impl PhysicsScene {
         let world = &mut *guard;
         if step == 0 {
             {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 world.storage.set_body_transform(
                     &mut world.geometry,
                     &mut events,
@@ -523,7 +523,7 @@ impl PhysicsScene {
         }
         if step <= 1 {
             if let Some(quality) = self.rigid_component(handle)?.start_quality() {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 //809d80: c87700(body,7,0) follows c85860 and must finish
                 //before c8e930 publishes this same body.
                 world.storage.set_body_quality(
@@ -537,7 +537,7 @@ impl PhysicsScene {
         }
         if step <= 2 {
             {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 world.storage.add_body_resumable(
                     &mut world.geometry,
                     &mut events,
@@ -551,7 +551,7 @@ impl PhysicsScene {
                 .advance_start_publication()?;
         }
         {
-            scene_publication_events!(self, registry, events);
+            scene_publication_events!(self, registry, events, &mut *entity_events);
             match behavior {
                 0 => world
                     .storage
@@ -637,7 +637,7 @@ impl PhysicsScene {
         }
         if step <= 1 {
             {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 world
                     .storage
                     .unpublish_bodies(&mut world.geometry, &mut events, &[body], 0)?;
@@ -690,7 +690,7 @@ impl PhysicsScene {
                 .body()
                 .ok_or("rigid body absent")?;
             {
-                scene_publication_events!(self, registry, events);
+                scene_publication_events!(self, registry, events, &mut *entity_events);
                 world
                     .storage
                     .destroy_bodies(&mut world.geometry, &mut events, &[body], 0)?;
