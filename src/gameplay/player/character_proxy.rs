@@ -3,8 +3,8 @@
 //! integrate FUN_140085a40 and the support test FUN_140c82a50.
 //!
 //! Queries combine verified level navigation with canonical rigid-body hits.
-//! Dynamic-body push response (FUN_140c847a0) remains separate from query
-//! admission; the proxy currently treats those hits as fixed constraints.
+//! Dynamic-body impulse response (FUN_140c847a0) remains separate from the
+//! moving-surface velocities consumed by the character's simplex solver.
 use super::simplex_solver::{self, SolverInput, SurfaceConstraint};
 use crate::gameplay::collision_filter::QueryFilter;
 use bevy_math::{Mat3, Vec3};
@@ -46,6 +46,12 @@ pub struct RayHit {
 /// The two hknp world queries the player uses (world+0x478), in game
 /// coordinates (Z up, metres).
 pub trait PlayerWorld {
+    /// c8aae0/ca7240: world velocity at the actual contact. Dynamic bodies use
+    /// their previous integration velocities; keyframed bodies use current
+    /// motion velocities. Missing/retired bodies do not supply a moving plane.
+    fn surface_velocity(&self, _hit: &WorldHit, _previous_for_dynamic: bool) -> Option<Vec3> {
+        None
+    }
     /// Canonical body generation and broadphase admission, for 1b5940. A missing
     /// generation is not retained by the release-pair manager.
     fn body_published(&self, _body: u32) -> Option<bool> {
@@ -228,6 +234,11 @@ struct ManifoldPoint {
 }
 
 impl ManifoldPoint {
+    fn hit(&self) -> WorldHit {
+        WorldHit { body_flags: self.body_flags, user_data: self.user_data,
+            material_id: self.material_id, position: self.position, normal: self.normal,
+            value: self.distance, body: self.body, key: self.key }
+    }
     fn start(hit: &WorldHit) -> Self {
         Self {
             position: hit.position,
@@ -314,13 +325,7 @@ impl CharacterProxy {
     /// Borrow actual proxy contacts for native component consumers. Body and
     /// shape identities remain those produced by the shared query owner.
     pub fn contact_hits(&self) -> impl Iterator<Item = WorldHit> + '_ {
-        self.manifold.iter().map(|point| WorldHit { user_data: point.user_data, body_flags: point.body_flags, material_id: point.material_id,
-            position: point.position,
-            normal: point.normal,
-            value: point.distance,
-            body: point.body,
-            key: point.key,
-        })
+        self.manifold.iter().map(ManifoldPoint::hit)
     }
 
     /// Diagnostic: (position, normal, distance, triangle key) per contact.
@@ -332,16 +337,23 @@ impl CharacterProxy {
     }
 
     /// FUN_140c8ae90.
-    fn metric(&self, a: &ManifoldPoint, b: &ManifoldPoint) -> f32 {
+    fn metric(&self, world: &dyn PlayerWorld, a: &ManifoldPoint, b: &ManifoldPoint) -> f32 {
         let sensitivity = self.settings.contact_angle_sensitivity;
-        // 10.0 (DAT_141abf158); static bodies have no surface velocity.
+        let velocity = |point: &ManifoldPoint| {
+            if point.body_flags & 1 != 0 { Vec3::ZERO }
+            else { world.surface_velocity(&point.hit(), false).unwrap_or(Vec3::ZERO) }
+        };
+        // c8ae90 compares current point velocities as well as normals and
+        // separation: DAT_141abf158=10, DAT_141ab3b0c=0.1.
         (1.0 - a.normal.dot(b.normal)) * sensitivity * sensitivity * 10.0
+            + (velocity(a) - velocity(b)).length_squared() * 0.1
             + (a.distance - b.distance).powi(2)
     }
 
     /// FUN_140c8b110.
     fn find_surface(
         &self,
+        world: &dyn PlayerWorld,
         point: &ManifoldPoint,
         among: &[ManifoldPoint],
         tolerance: f32,
@@ -351,7 +363,7 @@ impl CharacterProxy {
         }
         let mut best: Option<(usize, f32)> = None;
         for (index, other) in among.iter().enumerate() {
-            let metric = self.metric(point, other);
+            let metric = self.metric(world, point, other);
             if metric < tolerance && best.is_none_or(|(_, m)| metric < m) {
                 best = Some((index, metric));
             }
@@ -360,7 +372,7 @@ impl CharacterProxy {
     }
 
     /// FUN_140c8a250.
-    fn update_manifold(&mut self, start: &[WorldHit], cast: &[WorldHit], displacement: Vec3) {
+    fn update_manifold(&mut self, world: &dyn PlayerWorld, start: &[WorldHit], cast: &[WorldHit], displacement: Vec3) {
         if start.is_empty() {
             self.manifold.clear();
         } else {
@@ -370,7 +382,7 @@ impl CharacterProxy {
             while index > 0 {
                 index -= 1;
                 // 1.1 (DAT_141b01ad4).
-                match self.find_surface(&self.manifold[index], &fresh, 1.1) {
+                match self.find_surface(world, &self.manifold[index], &fresh, 1.1) {
                     None => {
                         self.manifold.swap_remove(index);
                     }
@@ -381,7 +393,7 @@ impl CharacterProxy {
             }
             if let Some(j) = fresh.iter().position(|p| p.distance == min_distance) {
                 let point = fresh[j];
-                match self.find_surface(&point, &self.manifold, 0.1) {
+                match self.find_surface(world, &point, &self.manifold, 0.1) {
                     None => self.manifold.push(point),
                     Some(k) => self.manifold[k] = point,
                 }
@@ -389,7 +401,7 @@ impl CharacterProxy {
         }
         if let Some(hit) = cast.first() {
             let point = ManifoldPoint::cast(hit, displacement);
-            if self.find_surface(&point, &self.manifold, 0.1).is_none() {
+            if self.find_surface(world, &point, &self.manifold, 0.1).is_none() {
                 self.manifold.push(point);
             }
         }
@@ -398,7 +410,7 @@ impl CharacterProxy {
             i -= 1;
             if (0..i)
                 .rev()
-                .any(|j| self.metric(&self.manifold[i], &self.manifold[j]) < 0.1)
+                .any(|j| self.metric(world, &self.manifold[i], &self.manifold[j]) < 0.1)
             {
                 self.manifold.swap_remove(i);
             }
@@ -406,7 +418,7 @@ impl CharacterProxy {
     }
 
     /// FUN_140c8a9e0 → FUN_140c8aae0 + FUN_140c8ad10.
-    fn surface_constraints(&self) -> Vec<SurfaceConstraint> {
+    fn surface_constraints(&self, world: Option<&dyn PlayerWorld>, elapsed: f32) -> Vec<SurfaceConstraint> {
         let settings = &self.settings;
         let mut constraints =
             Vec::with_capacity(self.manifold.len() + 10 + settings.user_planes.max(0) as usize);
@@ -422,8 +434,15 @@ impl CharacterProxy {
                 priority: 0,
             };
             if point.body != INVALID_BODY {
-                // Static bodies (flags bit 0): no motion, priority 2.
-                constraint.priority = 2;
+                // c8aae0: static=2, keyframed=1, dynamic=0. A legacy
+                // navigation hit is explicitly static, never a body-ID lookup.
+                if point.body_flags & 1 != 0 {
+                    constraint.priority = 2;
+                } else if let Some(velocity) = world.and_then(|world| world.surface_velocity(&point.hit(), true)) {
+                    constraint.velocity = velocity;
+                    constraint.distance -= point.normal.dot(velocity) * elapsed;
+                    constraint.priority = i32::from(point.body_flags & 4 != 0);
+                }
             }
             if constraint.distance < -EPSILON {
                 constraint.velocity -=
@@ -499,8 +518,8 @@ impl CharacterProxy {
             );
             cast.sort_by(|a, b| a.value.total_cmp(&b.value));
             start.sort_by(|a, b| a.value.total_cmp(&b.value));
-            self.update_manifold(&start, &cast, self.displacement);
-            let constraints = self.surface_constraints();
+            self.update_manifold(world, &start, &cast, self.displacement);
+            let constraints = self.surface_constraints(Some(world), delta_time - remaining);
             let speed2 = self.velocity.length_squared();
             // 0.5 (DAT_141ab3764).
             let min_delta_time = if speed2 == 0.0 {
@@ -541,7 +560,7 @@ impl CharacterProxy {
                 cast.sort_by(|a, b| a.value.total_cmp(&b.value));
                 for hit in &cast {
                     let point = ManifoldPoint::cast(hit, displacement);
-                    if self.find_surface(&point, &self.manifold, 0.1).is_some() {
+                    if self.find_surface(world, &point, &self.manifold, 0.1).is_some() {
                         continue;
                     }
                     self.manifold.push(point);
@@ -569,6 +588,16 @@ impl CharacterProxy {
 
     /// FUN_140c82a50 (refreshManifoldInCheckSupport is false for the player).
     pub fn check_support(&self, direction: Vec3) -> SurfaceInfo {
+        self.check_support_with_world(direction, None)
+    }
+
+    /// The production support path reads the same live moving planes as
+    /// integrate, including their velocities in the returned ground support.
+    pub fn check_support_in_world(&self, direction: Vec3, world: &dyn PlayerWorld) -> SurfaceInfo {
+        self.check_support_with_world(direction, Some(world))
+    }
+
+    fn check_support_with_world(&self, direction: Vec3, world: Option<&dyn PlayerWorld>) -> SurfaceInfo {
         // The caller's surface info starts as {SUPPORTED, (0,0,1)}; only the
         // solver path clears its normal.
         let unsupported = SurfaceInfo {
@@ -582,7 +611,7 @@ impl CharacterProxy {
                 ..unsupported
             };
         }
-        let mut constraints = self.surface_constraints();
+        let mut constraints = self.surface_constraints(world, 0.);
         let saved: Vec<Vec3> = constraints.iter().map(|c| c.velocity).collect();
         for constraint in &mut constraints {
             constraint.velocity = Vec3::ZERO;

@@ -872,7 +872,7 @@ impl PlayerPhysics {
             self.impulse_velocity = Vec3::ZERO;
         }
         // 6. Ground support.
-        let surface = self.proxy.check_support(-Vec3::Z);
+        let surface = self.proxy.check_support_in_world(-Vec3::Z, world);
         self.ground = Ground {
             state: surface.state,
             normal: surface.normal,

@@ -129,6 +129,28 @@ impl<'a> Collision<'a> {
     }
 }
 impl PlayerWorld for Collision<'_> {
+    fn surface_velocity(&self, hit: &WorldHit, previous_for_dynamic: bool) -> Option<Vec3> {
+        // Native c8aae0 validates the full body generation, flags&3 and
+        // broadphase membership before reading its actual motion. Static
+        // navigation hits never reach this lookup (their IDs are not Havok IDs).
+        let body = self.world.storage.bodies.get(hit.body)?;
+        if body.flags & 3 == 0 || body.broadphase_id == u32::MAX { return None; }
+        let Some(motion) = self.world.storage.motions.get(body.motion_id) else {
+            self.error("Player moving contact motion is absent".into());
+            return None;
+        };
+        let xyz = |value: [f32; 4]| Vec3::new(value[0], value[1], value[2]);
+        let (linear, angular) = if previous_for_dynamic && body.flags & 5 == 0 {
+            // c8aae0 directly reads the completed integration's world-space
+            // velocities. These angular lanes are already in world space.
+            (motion.previous_step_linear_velocity, motion.previous_step_angular_velocity)
+        } else {
+            // ca7240 rotates principal-axis angular velocity through the
+            // actual motion orientation before taking omega cross radius.
+            (motion.linear_velocity, motion.world_angular_velocity())
+        };
+        Some(xyz(linear) + xyz(angular).cross(hit.position - xyz(motion.pose.center)))
+    }
     /// 1b5940 validates the full ID and flags&3, then reads body+78. This
     /// means broadphase publication, not the sleeping/active-list bit8.
     fn body_published(&self, body: u32) -> Option<bool> {

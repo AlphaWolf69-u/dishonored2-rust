@@ -546,6 +546,9 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             PostUpdate,
             (gameplay_system(super::damage_zones::gather),
              gameplay_system(super::damage_zones::update),
+             // GameLocal (8ad260) samples phase-4 joints before 8af460
+             // drives the bound rigid bodies and steps the physics world.
+             super::physics_scene::runtime_animation::update,
              super::physics_scene::simulation::update,
              gameplay_system(super::physics_scene::water_publication::update),
              gameplay_system(super::water_impacts::update),
@@ -556,7 +559,6 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
              super::entity_messages::update,
              gameplay_system(super::entity_functions::update),
              gameplay_system(super::entity_removal::update),
-             super::physics_scene::runtime_animation::update,
              super::physics_scene::openable::update).chain()
                 .before(super::model_motion::publish_model_poses)
                 .run_if(super::pause_menu::game_not_paused)

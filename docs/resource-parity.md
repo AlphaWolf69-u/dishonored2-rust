@@ -25690,3 +25690,23 @@ The initial performance run stopped before sampling because another process had 
 ### Animated joint collision, November 19
 
 The Black Market door capture (collision-1795063493159) records Opened with the opening clip settled and its keyframed rigid body 0x10001c7 still at the closed transform. AnimBase published the hinge to the renderer but requested only post-physics traversal. Original 540e20 requests 752260 after updating the bound joints; 7551c0 visits the attached actors before physics and supplies their bound velocities. Changed AnimBase joint frames now request that existing pre-physics traversal. The per-frame ancestor/generation gates, rigid-body velocity publication, broadphase and body retirement stay with their existing owners. The change adds no geometry, persistent allocation, per-frame scene scan or door-specific rule. Prediction: the same body follows its hinge when the clip opens and closes, and a settled joint issues no new motion requests.
+
+### Character proxy moving surfaces, November 19
+
+The player proxy reads contact-point velocity from the physics world's existing
+body and motion records. Original c8aae0 gives fixed, keyframed and dynamic
+contacts priorities 2, 1 and 0. Keyframed contacts use current point velocity
+(ca7240). Dynamic constraints use the previous integration velocities. The
+solver accounts for elapsed time before applying penetration recovery. Manifold
+matching (c8ae90) uses current point velocities with weight 0.1 (141ab3b0c).
+Static navigation hits need no motion lookup. The camera uses the resulting
+player position. The change adds no resources or world queries.
+
+GameLocal 8ad260 updates AnimBase in phase 4 (factory 141d046f8, callback
+950f50 to 540e20) before 8af460 begins rigid updates and simulation. The host
+now schedules its existing animation update in that order. A joint is sampled
+once per game frame, so the keyframed body and the bound renderer consume the
+same hinge sample. Animation sound messages retain their existing delivery
+phase. The expected change is matching collision and visual motion when a
+door pushes the player. Dynamic-body impulse feedback (c847a0) and movement
+inherited from a supporting body (1b4760) are separate operations.
