@@ -57,6 +57,7 @@ pub(super) struct Observation {
     use_input: Input,
     cancel: Input,
     bearing: Vec3,
+    select_on_land: bool,
     cast_start: Vec3,
     mana_before: f32,
     mana_spent: bool,
@@ -96,9 +97,9 @@ impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         //Diagnostic bearing only: retain the captured starting pose, then
         //use ordinary mouse input. The actual Blink query must find a target.
-        let bearing = match std::env::var("DH2_DEBUG_ACTION_WATER_BEARING").as_deref() {
-            Err(_) | Ok("captured") => FORWARD,
-            Ok("open-water") => Vec3::new(-FORWARD.x, -FORWARD.y, 0.0),
+        let (bearing, select_on_land) = match std::env::var("DH2_DEBUG_ACTION_WATER_BEARING").as_deref() {
+            Err(_) | Ok("captured") => (FORWARD, false),
+            Ok("open-water") => (Vec3::new(-FORWARD.x, -FORWARD.y, 0.0), true),
             Ok(other) => return Err(format!("unknown water Blink bearing {other}; expected captured or open-water")),
         };
         let inventory = world
@@ -135,20 +136,17 @@ impl Observation {
             joint: player(world)?.body.skeleton.camera as u16,
         };
         let breath_object = format!("{breath_emitter:?}");
-        world
-            .resource_mut::<PlayerState>()
-            .player
-            .as_mut()
-            .ok_or("water Blink Player absent")?
-            .teleport(FEET, FORWARD.y.atan2(FORWARD.x));
-        eprintln!(
-            "ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} aim_forward={bearing:?} aim=physical_mouse_replay setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}"
-        );
+        if select_on_land {
+            if player(world)?.is_swimming() { return Err("open-water Blink must select at the ordinary dry spawn".into()); }
+            send(world, selection, true)?;
+        } else {
+            Self::restore_setup(world, bearing, breath_start)?;
+        }
         Ok(Self {
-            stage: Stage::Water,
+            stage: if select_on_land { Stage::Select } else { Stage::Water },
             start: Instant::now(),
             since: Instant::now(),
-            release: None,
+            release: select_on_land.then_some(selection),
             diving: false,
             rising: false,
             using: false,
@@ -158,6 +156,7 @@ impl Observation {
             use_input,
             cancel,
             bearing,
+            select_on_land,
             cast_start: FEET,
             mana_before: 0.,
             mana_spent: false,
@@ -194,6 +193,13 @@ impl Observation {
             surface_emitters: Vec::new(),
             surface_fx_source: false,
         })
+    }
+
+    fn restore_setup(world: &mut World, bearing: Vec3, breath_start: Option<u32>) -> Result<(), String> {
+        world.resource_mut::<PlayerState>().player.as_mut()
+            .ok_or("water Blink Player absent")?.teleport(FEET, FORWARD.y.atan2(FORWARD.x));
+        eprintln!("ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} aim_forward={bearing:?} aim=physical_mouse_replay setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}");
+        Ok(())
     }
 
     fn stamp(&self, world: &World) -> Result<Stamp, String> {
@@ -554,14 +560,29 @@ impl Observation {
             Stage::Water if swimming => {
                 //The fixture restore must finish its real mode transition
                 //before the ordinary selection request is issued.
-                send(world, self.selection, true)?;
-                self.release = Some(self.selection);
+                if self.select_on_land {
+                    if p.selected_power_hud_status() != Some((2, true)) {
+                        return Err("dry-selected Blink was not preserved on actual SWIM entry".into());
+                    }
+                    eprintln!("ACTION_SMOKE_PASS check=blink_water_dry_selection_persists actual_swim=true selected_admitted=true no_reselection=true");
+                } else {
+                    send(world, self.selection, true)?;
+                    self.release = Some(self.selection);
+                }
                 send(world, self.up, true)?;
                 self.rising = true;
-                self.stage(Stage::Select, world)?;
+                self.stage(if self.select_on_land { Stage::Surface } else { Stage::Select }, world)?;
             }
-            Stage::Select if p.selected_power_hud_status() == Some((2, true)) => {
-                self.stage(Stage::Surface, world)?;
+            Stage::Select if p.selected_power_hud_status() == Some((2, true))
+                && (!self.select_on_land || p.equipment_action_status(0).is_some_and(|(_, equipped, changing)| equipped && !changing)) => {
+                if self.select_on_land {
+                    if swimming { return Err("Blink dry equipment admission occurred in SWIM".into()); }
+                    eprintln!("ACTION_SMOKE_BLINK_WATER_DRY_EQUIPPED feet={:?} actual_equipment={:?} selected_admitted=true", p.feet(), p.equipment_action_status(0));
+                    Self::restore_setup(world, self.bearing, self.breath_start)?;
+                    self.stage(Stage::Water, world)?;
+                } else {
+                    self.stage(Stage::Surface, world)?;
+                }
             }
             Stage::Surface if !p.is_underwater() => {
                 send(world, self.up, false)?;
