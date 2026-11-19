@@ -474,6 +474,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         None => false,
     };
     Ok(PlayerSetup {
+        pickup_components: declarations.pickup_components,
         ai_tampering_declared: declarations.ai_tampering_declared,
         chaos: crate::gameplay::player::chaos::Definition::acquire(catalog,&declarations.chaos)?,
         combat_fx: crate::gameplay::player::combat_fx::Definition::acquire(catalog, &declarations.fx)?,

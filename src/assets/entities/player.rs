@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Default)]
 pub struct PlayerDeclarations {
     pub ai_tampering_declared: bool,
+    pub pickup_components: PickupComponents,
     pub physics: Vec<(String, Value)>,
     pub audio: Vec<(String, Value)>,
     /// Optional listener resolved in the same ordered entity/source pass.
@@ -50,6 +51,14 @@ pub struct PlayerDeclarations {
     /// The body model's `animBasicDecl` (the additives node's list).
     pub additives: Vec<(String, Value)>,
     pub body_model: String,
+}
+
+/// Only these values survive player declaration preparation. The crafting
+/// component's presence enables 4362a0. NewGamePlus supplies 6156e0's price.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PickupComponents {
+    pub crafting: bool,
+    pub duplicate_blueprint_coins: i32,
 }
 
 /// Temporary setup owner for the same immutable player declaration tree.
@@ -183,7 +192,8 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 23] = [
+const PLAYER_COMPONENTS: [&str; 24] = [
+    "cpntnewgameplus",
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -271,6 +281,8 @@ fn player_declarations_with_listener(
     let mut body_model = String::new();
     let ai_tampering_declared = entries.iter().any(|(_, entry)|
         atom(entry, "inheritedDecl").is_some_and(|name| kind_of(name) == Some("cpntaitampering")));
+    let crafting = entries.iter().any(|(_, entry)|
+        atom(entry, "inheritedDecl").is_some_and(|name| kind_of(name) == Some("cpntbonecharmcrafting")));
     for fields in &chain {
         let Some(edit) = scope(field(fields, "edit")) else { continue };
         if let Some(model) = scope(field(edit, "renderModelInfo")).and_then(|info| atom(info, "model")) {
@@ -301,6 +313,13 @@ fn player_declarations_with_listener(
     }
     let audio_listener = listener_fields.map(|fields| fields.and_then(|fields|
         crate::gameplay::sound::listener::Settings::read(&fields)));
+    let pickup_components = PickupComponents {
+        crafting,
+        // 4b9550 initializes the declaration price to zero.
+        duplicate_blueprint_coins: resolved.remove("cpntnewgameplus")
+            .as_ref().and_then(|fields| atom(fields, "m_blueprintCoins"))
+            .unwrap_or("0").parse().map_err(|_| "invalid m_blueprintCoins")?,
+    };
     let mut take = |kind: &str| resolved.remove(kind).ok_or_else(|| format!("{entity} has no {kind} component"));
     let physics = take("cpntplayerphysics")?;
     let audio = take("cpntaudio")?;
@@ -365,7 +384,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { ai_tampering_declared, physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { ai_tampering_declared, pickup_components, physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, ranged_target_sensor, rune_charms_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, chaos, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

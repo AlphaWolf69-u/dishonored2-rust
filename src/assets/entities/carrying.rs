@@ -96,8 +96,16 @@ pub(crate) fn bindings(
                 continue;
             };
             let props = child(&fields, "m_holdAndThrowProps");
+            let interaction = child(&fields, "m_pickupInteraction");
             if !flag(props, "m_isHoldAndThrowObject", false)? {
-                continue;
+                let item = atom(&fields, "m_inventoryItem")
+                    .filter(|item| !item.is_empty() && !item.eq_ignore_ascii_case("NULL"));
+                // The read frontend already prepares its Pickable component.
+                // All other inventory pickups need the same component as a
+                // holdable to enter LootObject and acknowledge the collection.
+                if item.is_none() || atom(interaction, "m_playerState") == Some("PLAYER_STATE_READ_NOTE") {
+                    continue;
+                }
             }
             let identity = atom(entry, "mapComponentDecl")
                 .map(|path| format!("map:{path}"))
@@ -126,7 +134,6 @@ pub(crate) fn bindings(
                     }
                     definition
                 };
-            let interaction = child(&fields, "m_pickupInteraction");
             result.push(Binding { entity:entity.id.clone(), definition,
                 interaction_name: atom(interaction, "m_name").unwrap_or("").to_owned(),
                 interaction_text: atom(interaction, "m_usageText").unwrap_or("").to_owned(),

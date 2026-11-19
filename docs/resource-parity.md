@@ -26240,6 +26240,21 @@ time. Existing offsets/countdowns remain intact; normal entity retirement
 still releases the same clock record. This closes the speaker-support crash
 without swallowing a missing clock or inventing a timestamp. These changes
 have source/static validation only; root owns the combined action/exit run.
+### Placed inventory admissions and special pickup balances
+
+Level admission shares the existing Pickable declaration, item source, component
+pool and teardown for ordinary inventory pickups. The read and hold owners still
+select their own authored interactions. Four installed map documents contain
+328, 242, 8 and 0 ordinary non-readable, non-hold item references respectively
+(Edge of the World low chaos, Dust District, Tutorial, End). These counts include
+inactive placements. The previous preparation filter omitted all four groups.
+
+At pickup, `140841030` and `1404c1f20` select the authored rune increase or
+unmarked currency. `1406156e0` pays duplicate blueprints at the player
+NewGamePlus declaration's price. `1404362a0` adds raw bone to the optional
+crafting stock. Only scalar declaration fields and balances are retained in
+addition to the existing item leases. These callbacks use no archive reads.
+
 
 ### Shortcut dock, grenade magazine and first world-movie frame (2026-11-19)
 

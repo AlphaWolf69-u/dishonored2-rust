@@ -149,6 +149,7 @@ pub struct Player {
     pub attributes: Attributes,
     pub ranged_target: weapons::shooting::RangedTargetDecl,
     pub rune_charms: std::sync::Arc<weapons::heart::sensor::Definition>,
+    pub pickup_components: crate::assets::entities::player::PickupComponents,
     heart_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     ranged_target_hit: Option<Vec3>,
     ranged_target_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
@@ -229,6 +230,7 @@ pub struct Player {
 
 /// Everything `Player::new` reads from the installed declarations.
 pub struct PlayerSetup {
+    pub pickup_components: crate::assets::entities::player::PickupComponents,
     pub ai_tampering_declared: bool,
     pub chaos: chaos::Definition,
     pub combat_fx: Option<std::sync::Arc<combat_fx::Definition>>,
@@ -803,6 +805,7 @@ impl Player {
             attributes: setup.attributes,
             ranged_target: setup.ranged_target,
             rune_charms: setup.rune_charms,
+            pickup_components: setup.pickup_components,
             heart_entity: None,
             ranged_target_hit: None,
             ranged_target_entity: None,

@@ -109,8 +109,6 @@ impl PickupAttributes {
 /// particular, health, mana, crafting and RNG are never stored by inventory.
 pub(crate) struct PlayerPickupEffects<'a> {
     pub player: &'a mut crate::gameplay::player::Player,
-    pub duplicate_blueprint_value: i32,
-    pub raw_whale_bone: &'a mut dyn FnMut(u32),
     /// Must dispatch built-in damage DAT_14231f390, not directly edit HP.
     pub negative_health: &'a mut dyn FnMut(&mut crate::gameplay::player::Player, f32),
 }
@@ -123,8 +121,8 @@ impl InventoryPickupEffects for PlayerPickupEffects<'_> {
     fn mana(&self) -> Option<(f32, f32)> { Some((self.player.mana(), self.player.max_mana())) }
     fn apply_mana(&mut self, amount: f32) { self.player.inventory_mana_gain(amount); }
     fn random(&mut self) -> f32 { self.player.inventory_random() }
-    fn duplicate_blueprint_value(&self) -> i32 { self.duplicate_blueprint_value }
-    fn add_raw_whale_bone(&mut self, count: u32) { (self.raw_whale_bone)(count); }
+    fn duplicate_blueprint_value(&self) -> i32 { self.player.pickup_components.duplicate_blueprint_coins }
+    fn has_crafting(&self) -> bool { self.player.pickup_components.crafting }
 }
 
 pub(crate) trait InventoryPickupEffects {
@@ -136,11 +134,10 @@ pub(crate) trait InventoryPickupEffects {
     fn apply_mana(&mut self, amount: f32);
     /// One draw from the game-local 8ac040 random stream.
     fn random(&mut self) -> f32;
-    /// Duplicate blueprint value from the owner's black-market component
+    /// Duplicate blueprint value from the owner's NewGamePlus component
     /// declaration +68 (6156e0), not a price inferred from the item name.
     fn duplicate_blueprint_value(&self) -> i32;
-    /// 4362a0 on the optional crafting component; absent component is a no-op.
-    fn add_raw_whale_bone(&mut self, count: u32);
+    fn has_crafting(&self) -> bool;
 }
 
 impl DiscoveredDocuments {
@@ -205,7 +202,11 @@ impl DiscoveredDocuments {
             return value as u32;
         }
         if item.type_number == 26 {
-            effects.add_raw_whale_bone(count);
+            if effects.has_crafting() {
+                // 4362a0 stores the nonnegative stock as a float in the
+                // crafting component, independently of ordinary item counts.
+                self.raw_whale_bone = (self.raw_whale_bone + count as f32).max(0.);
+            }
             return count;
         }
         if item.type_number == 6 && attributes.player {
@@ -306,6 +307,9 @@ impl DiscoveredDocuments {
     /// 614670 records consumed currency; 614d40 returns the difference.
     pub fn consume_coins(&mut self, count: i32) { self.consumed_coins = self.consumed_coins.wrapping_add(count); }
     pub fn available_coins(&self) -> i32 { self.coins.wrapping_sub(self.consumed_coins) }
+    pub fn record_converted_blueprint(&mut self, coins: i32) {
+        self.converted_blueprint_coins = self.converted_blueprint_coins.wrapping_add(coins);
+    }
 
     /// 63cbe0 clamps both the authored maximum and any remaining quantity;
     /// 614680 and 6182f0 deliver the resulting quantity modifier change.

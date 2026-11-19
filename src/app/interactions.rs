@@ -130,13 +130,6 @@ impl Interactions {
         let bindings = entities::usable::bindings(document, |path| read(path))?;
         let readable = entities::usable::readable_bindings(&catalog, document)?;
         let mut carrying = entities::carrying::bindings(&catalog, document)?;
-        // A component that offers both paths has one retained definition and
-        // one pool slot; the use callback selects holding before inventory.
-        for binding in &mut carrying {
-            if let Some(readable) = readable.iter().find(|value| value.entity == binding.entity) {
-                binding.definition = readable.component.clone();
-            }
-        }
         super::pause_menu::trace_readable_ui(|| {
             format!(
                 "READ_NOTE declarations admitted={} character={character}",
@@ -198,14 +191,22 @@ impl Interactions {
             .enumerate()
             .map(|(i, a)| (a.entity.clone(), i))
             .collect();
-        let readable_by_entity = readable
+        let readable_by_entity: HashMap<_, _> = readable
             .iter()
             .enumerate()
             .map(|(i, a)| (a.entity.clone(), i))
             .collect();
+        // A component that offers both paths has one retained definition and
+        // one pool slot. Lookup uses the same index retained for live input.
+        for binding in &mut carrying {
+            if let Some(&index) = readable_by_entity.get(&binding.entity) {
+                binding.definition = readable[index].component.clone();
+            }
+        }
         let carrying_by_entity = carrying
             .iter()
             .enumerate()
+            .filter(|(_, binding)| binding.definition.hold.is_some())
             .map(|(i, a)| (a.entity.clone(), i))
             .collect();
         let pending = actors

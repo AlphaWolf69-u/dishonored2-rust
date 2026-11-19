@@ -64,6 +64,7 @@ pub(in crate::app) fn request_borrowed(
         maximum,
         phase: 0,
         admitted: 0,
+        currency_notice: None,
         hud_notified: false,
         from_grapple,
         notice: Default::default(),
@@ -83,6 +84,7 @@ pub(super) struct Pending {
     pub maximum: u32,
     pub phase: u8,
     pub admitted: u32,
+    currency_notice: Option<i32>,
     pub hud_notified: bool,
     pub from_grapple: bool,
     pub notice: crate::gameplay::effects::instances::PickupReceipt,
@@ -113,7 +115,7 @@ impl Pending {
 ///Read52 has its separate source841500 branch; unhosted special families must not
 ///be admitted merely because a declaration has a generic inventory record.
 pub(super) fn inventory_family_supported(item: &crate::assets::inventory_item::PickableItem) -> bool {
-    matches!(item.type_number, 0 | 1 | 2 | 3 | 4 | 6 | 10 | 11 | 14 | 15 | 17..=23 | 27)
+    matches!(item.type_number, 0..=11 | 14..=23 | 26 | 27)
 }
 pub(super) fn inventory_family_available(
     item: &crate::assets::inventory_item::PickableItem,
@@ -241,6 +243,26 @@ fn advance(world: &mut World, pending: &mut Pending, closing: bool) -> Result<bo
         } else { 0 };
         pending.admitted = world.resource_scope(
             |world, mut inventory: Mut<interaction_focus::DiscoveredDocuments>| {
+                let mut path = item.path.clone();
+                let mut count = pending.definition.quantity as u32;
+                let new_game_plus = world.get_resource::<super::powers::Powers>()
+                    .is_some_and(|powers| powers.new_game_plus);
+                if matches!(item.type_number, 7 | 8) {
+                    let powers = world.get_resource::<super::powers::Powers>();
+                    if powers.is_none_or(|powers| !powers.has_mark(&inventory)) {
+                        inventory.add_coins(pending.definition.quantity);
+                        pending.currency_notice = Some(pending.definition.quantity);
+                        return Ok(count);
+                    }
+                    count = item.rune_increase as u32;
+                    if let Some(powers) = powers {
+                        let Some(rune) = inventory.declaration(&powers.definitions.1) else {
+                            // 614f30 found no record in the player's collection.
+                            return Ok(0);
+                        };
+                        path = rune.path.clone();
+                    }
+                }
                 let mut state = world.resource_mut::<player::PlayerState>();
                 let player = state
                     .player
@@ -253,19 +275,21 @@ fn advance(world: &mut World, pending: &mut Pending, closing: bool) -> Result<bo
                     return Err("negative food health callback has no actual player identity".into());
                 }
                 inventory.register_item(item.clone(), pending.maximum);
-                //These optional families are excluded at admission above;
-                //the borrowed common frontend supplies real health/mana/RNG.
-                let mut raw_whale_bone = |_: u32| -> () { unreachable!("unadmitted crafting family") };
                 let mut negative_health = |player: &mut crate::gameplay::player::Player, amount: f32| {
                     player.inventory_health_damage(amount);
                 };
-                Ok::<_, String>(inventory.pickup(
-                    &item.path,
-                    pending.definition.quantity as u32,
+                let admitted = inventory.pickup(
+                    &path, count,
                     &attributes,
-                    &mut interaction_focus::PlayerPickupEffects { player, duplicate_blueprint_value: 0,
-                        raw_whale_bone: &mut raw_whale_bone, negative_health: &mut negative_health },
-                ))
+                    &mut interaction_focus::PlayerPickupEffects { player, negative_health: &mut negative_health },
+                );
+                if item.type_number == 16 && admitted > 1 {
+                    pending.currency_notice = Some(admitted as i32);
+                    if new_game_plus {
+                        inventory.record_converted_blueprint(admitted as i32);
+                    }
+                }
+                Ok::<_, String>(admitted)
             },
         )?;
         pending.phase = 1;
@@ -350,10 +374,12 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
         //is independent of9B; silent loadout/script additions do not log.
         if !pending.hud_notified {
             if let Some(item) = &pending.item {
-                if matches!(item.type_number, 1 | 15) || (pending.admitted > 0 && item.type_number != 6) {
+                if pending.currency_notice.is_some() || matches!(item.type_number, 1 | 15) || (pending.admitted > 0 && item.type_number != 6) {
                     let hud = world.get_non_send_resource::<super::pause_menu::PauseMenu>()
                         .ok_or("pickup HUD delivery owner absent")?;
-                    if matches!(item.type_number, 1 | 15) {
+                    if let Some(value) = pending.currency_notice {
+                        hud.queue_currency(value)?;
+                    } else if matches!(item.type_number, 1 | 15) {
                         hud.queue_currency(pending.definition.quantity)?;
                     } else if pending.admitted > 0 && item.type_number != 6 {
                         hud.queue_pickup(item.clone(), pending.admitted)?;

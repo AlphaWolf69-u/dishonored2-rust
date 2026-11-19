@@ -21,6 +21,7 @@ pub struct PickableItem {
     /// component metadata, including slot, belongs to the spawned entity.
     pub equipment: Option<String>,
     pub type_number: u32,
+    pub rune_increase: i32,
     pub consumable: Consumable,
     pub hud_index: i32,
     item_type: Option<String>,
@@ -171,6 +172,8 @@ impl PickableSources {
             note_type:atom(&fields,"m_noteType").map(note_type).transpose()?.unwrap_or(-1),
             equipment: atom(&fields, "m_equipment").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")).map(str::to_owned),
             type_number: item_type_number(atom(&fields, "m_type").unwrap_or("TYPE_MISC"))?,
+            rune_increase: atom(&fields, "m_runeIncrease").unwrap_or("0").parse()
+                .map_err(|_| format!("invalid m_runeIncrease for {key}"))?,
             consumable: consumable_fields(&fields)?,
             hud_index: crate::assets::power_journal::hud_index(atom(&fields, "m_uiIndex").unwrap_or("0"))
                 .ok_or_else(|| format!("unknown inventory HUD item index for {key}"))?,
