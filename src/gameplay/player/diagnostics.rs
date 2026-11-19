@@ -46,7 +46,7 @@ pub(super) struct TraversalHistory {
 pub(super) enum TraversalEvent {
     BlinkBegin { request: BlinkRequest, previous_velocity: Vec3 },
     BlinkPlace { interrupted_by: Option<BlinkFailure>, position: Vec3 },
-    BlinkNavigate { state: StateId },
+    BlinkNavigate { fitted_state: StateId, falling_requested: bool },
     BlinkInterrupted,
     VaultBegin { obstacle: Vec3, height: f32, forward: Vec3, speed: f32, start_animation: Vec3, exit: Vec3 },
     VaultRestoreStanding,
@@ -61,6 +61,7 @@ struct TraversalSample {
     velocity: Vec3,
     posture: usize,
     ground_distance: f32,
+    ground_query_length: f32,
     ceiling_distance: f32,
     contact_count: usize,
     contacts: [Option<WorldHit>; 3],
@@ -74,7 +75,7 @@ impl TraversalHistory {
         let mut contacts = physics.proxy.contact_hits();
         self.events[self.next] = Some(TraversalSample {
             time, event, position: physics.position(), velocity: physics.velocity,
-            posture: physics.posture, ground_distance: physics.ground_distance,
+            posture: physics.posture, ground_distance: physics.ground_distance, ground_query_length: physics.ground_query_length,
             ceiling_distance: physics.ceil_distance, contact_count: physics.proxy.contact_count(),
             contacts: std::array::from_fn(|_| contacts.next()),
         });
@@ -93,8 +94,8 @@ impl TraversalHistory {
     pub(super) fn write(&self, report: &mut String) {
         use std::fmt::Write;
         for s in self.events[self.next..].iter().chain(&self.events[..self.next]).flatten() {
-            let _ = writeln!(report, "    traversal t={} {:?} feet={:?} velocity={:?} posture={} ground={} ceiling={} contacts={} witnesses={:?}",
-                s.time, s.event, s.position, s.velocity, s.posture, s.ground_distance, s.ceiling_distance, s.contact_count, s.contacts);
+            let _ = writeln!(report, "    traversal t={} {:?} feet={:?} velocity={:?} posture={} ground={} ground_query_length={} ceiling={} contacts={} witnesses={:?}",
+                s.time, s.event, s.position, s.velocity, s.posture, s.ground_distance, s.ground_query_length, s.ceiling_distance, s.contact_count, s.contacts);
         }
     }
 }

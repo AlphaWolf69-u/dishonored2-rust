@@ -2772,6 +2772,15 @@ impl StateMachine {
         }
         if matches!(decl.kind, Kind::Blinking) {
             super::power_states::activate_blink(frame);
+            if let Some(target) = frame.powers.blink.as_ref()
+                .and_then(|motion| self.state(StateId(motion.request.exit_state)))
+                .filter(|state| state.decl.id != StateId::MANTLE) {
+                // 857300 measures the ground from the top of the fitted hull
+                // while physics is running with Blink's shorter travel hull.
+                let fitted = frame.physics.posture_settings(target.decl.navigation.posture).height;
+                frame.physics.ground_query_length = fitted - frame.physics.current_settings().height
+                    + target.decl.navigation.max_ground_distance;
+            }
             //857300 quits ordinary Slash through854190; the focused-hold
             //branch has a separate Blink-assault policy and stays owned.
             if self.is_active(StateId::SLASH) && !self.melee_focus_active() {
@@ -3300,8 +3309,10 @@ impl StateMachine {
             // support state was already unsupported.
             frame.controller.support_state = SupportState::Unsupported;
             frame.requests.push_linear(0, velocity);
-            selected = StateId::FALLING;
-            self.request(selected);
+            // 7fbb20 requests Falling for locomotion. 858010 still looks up
+            // the fitted target state for posture restoration (858413).
+            self.request(StateId::FALLING);
+            if target == StateId::VAULT { self.request(target); }
         } else if target == StateId::VAULT {
             frame.requests.push_linear(0, velocity); self.request(selected);
         } else if target == StateId::MANTLE {
@@ -3314,7 +3325,6 @@ impl StateMachine {
         } else if target != StateId::AUTOCROUCH && frame.controller.toggled(frame.controller.sneak_action) && self.available(StateId::SNEAKING, frame) {
             frame.requests.push_linear(0, Vec3::ZERO); selected = StateId::SNEAKING; self.request(selected);
         } else { frame.requests.push_linear(0, Vec3::ZERO); self.request(selected); }
-        frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkNavigate { state: selected });
         if let Some(state) = self.state(selected) {
             if matches!(state.decl.kind, Kind::Running | Kind::Sneaking | Kind::Sprinting(_) | Kind::Sliding(_) | Kind::Slipping(_)
                 | Kind::AutoCrouch | Kind::Jumping(_) | Kind::Falling(_) | Kind::Swimming(_)) {
@@ -3322,8 +3332,12 @@ impl StateMachine {
                 // allowSelf=false must not leave the temporary Blink shape.
                 frame.physics.set_posture(state.decl.navigation.posture, 0.0);
                 frame.body.enter(&state.decl.navigation.loco_stance_name);
+                frame.physics.ground_query_length = state.decl.navigation.max_ground_distance;
             }
         }
+        frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkNavigate {
+            fitted_state: selected, falling_requested: falling_support,
+        });
     }
 
     /// 1408451e0 releases the real held actor, then quits both states.

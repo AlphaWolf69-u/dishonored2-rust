@@ -264,6 +264,9 @@ pub fn activate_blink(frame: &mut Frame<'_>) {
     frame.physics.disable_gravity(true);
     frame.physics.set_gravity_velocity(Vec3::ZERO);
     frame.physics.set_posture(4, 0.0);
+    // 857300 suspends the regular ledge search during transit. Sensor 2
+    // continues sampling the destination until the state hands it to mantle.
+    frame.mantle_sensor.enabled = false;
     if let Some(motion) = &runtime.blink {
         if motion.request.camera_source != Vec3::ZERO { frame.physics.set_position(motion.request.camera_source); }
         frame.vault_sensor.enable(true, frame.physics.ground_ray_normal_average);
@@ -308,6 +311,7 @@ pub fn deactivate_blink(frame: &mut Frame<'_>) {
     let runtime = &mut *frame.powers;
     // 857a30 clears the override and releases the destination sensor.
     frame.vault_sensor.enable(false, frame.physics.ground_ray_normal_average);
+    frame.mantle_sensor.enabled = true;
     if !runtime.blink_finished {
         runtime.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkInterrupted);
     }
