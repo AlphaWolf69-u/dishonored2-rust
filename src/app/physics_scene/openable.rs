@@ -336,7 +336,13 @@ impl PhysicsScene {
             (-1,offset,orientation)
         };
         let aliases=definition.animations.iter().map(|alias|self.animation_alias(child,alias)).collect::<Result<Vec<_>,_>>()?;
-        self.bind_entity_in_registry(live,parent,child,super::throwable::BindingPose{joint,offset,orientation,parent_placement:None},events,registry)?;
+        let initial_pose=if joint>=0{
+            let hinge=self.entities[*self.shared_indices.get(&child).ok_or("Openable child header absent")?].frame.pose;
+            let joint_frame=self.initialized_joint_frame(child,joint as usize)?;
+            let joint_world=crate::gameplay::reference_frame::compose(hinge,joint_frame);
+            Some(crate::gameplay::reference_frame::bind(joint_world,offset,orientation))
+        }else{None};
+        self.bind_entity_in_registry(live,parent,child,super::throwable::BindingPose{joint,offset,orientation,parent_placement:None,initial_pose},events,registry)?;
         //74cd90 retains each successfully resolved managed blocker; the
         //presence of that roster, not a guessed entity context, blocks use.
         let linked_definition=self.openables.get(handle.slot).unwrap().linked.map(|linked|

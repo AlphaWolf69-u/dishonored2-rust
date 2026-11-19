@@ -194,7 +194,9 @@ impl Observation {
                 filter:Some(crate::gameplay::collision_filter::CollisionQueryFilter{layers,required_flags:0x20000}),
             },0,&mut hits)?;
             hits.sort_by(|a,b|a.fraction.total_cmp(&b.fraction));
-            let actual=hits.first().map(|hit|(scene.collision_entity(live,&hit.target),hit.target,hit.position));
+            let actual=if let Some(hit)=hits.first(){
+                Some((scene.collision_entity(live,&hit.target)?,hit.target,hit.position))
+            }else{None};
             eprintln!("ACTION_SMOKE_TANK_SETUP_LOS source=installed_EotW_arkWaypoint waypoint={waypoint} feet={feet:?} eye={eye:?} target={target:?} closest={actual:?} actual_ranged_layers={layers:#x}");
             if actual.is_some_and(|hit|hit.0==Some(target)){
                 selected=Some((waypoint,feet,eye));break;

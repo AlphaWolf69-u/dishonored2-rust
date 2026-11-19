@@ -232,6 +232,18 @@ impl PhysicsScene {
         let Some(handle)=self.animation_handle_with_flags(id,[0x20,0])? else{return Ok(None);};
         Ok(self.animations.get(handle.slot).ok_or("AnimBase payload absent")?.rig.as_ref())
     }
+    pub(super) fn initialized_joint_frame(&self,id:EntityId,joint:usize)->Result<crate::gameplay::reference_frame::ReferenceFrame,String>{
+        let handle=self.animation_handle_with_flags(id,[0x20,0])?.ok_or("AnimBase not initialized for binding")?;
+        let matrix=self.animations.get(handle.slot).and_then(|animation|animation.matrices.get(joint))
+            .ok_or("initialized AnimBase binding joint absent")?;
+        Ok(Self::joint_frame(matrix))
+    }
+    fn joint_frame(matrix:&[[f32;4];3])->crate::gameplay::reference_frame::ReferenceFrame{
+        crate::gameplay::reference_frame::ReferenceFrame{
+            position:[matrix[0][3],matrix[1][3],matrix[2][3]],
+            basis:std::array::from_fn(|column|std::array::from_fn(|row|matrix[row][column])),
+        }
+    }
     ///53c5b0 preserves the invalid-alias result; absent names never mean clip0.
     pub(in crate::app) fn animation_alias(&self,id:EntityId,alias:&str)->Result<Option<usize>,String>{
         let Some(handle)=self.animation_handle_with_flags(id,[0x20,0])? else{return Ok(None);};
@@ -262,10 +274,7 @@ impl PhysicsScene {
             // rotating physical body can still be converging on that pose.
             schedule |= advancing;
             let matrix=animation.matrices.get(binding.joint as usize).ok_or("AnimBase bound joint matrix absent")?;
-            let frame=crate::gameplay::reference_frame::ReferenceFrame{
-                position:[matrix[0][3],matrix[1][3],matrix[2][3]],
-                basis:std::array::from_fn(|column|std::array::from_fn(|row|matrix[row][column])),
-            };
+            let frame=Self::joint_frame(matrix);
             let current=self.document_hierarchy.external_joints.entry((parent,binding.joint));
             match current{
                 std::collections::hash_map::Entry::Occupied(mut current)=>{
