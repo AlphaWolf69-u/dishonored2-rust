@@ -6,12 +6,10 @@ impl PhysicsScene {
         world: &mut bevy::prelude::World,
         handle: ComponentHandle,
     ) -> Result<(), String> {
-        if handle.class_id != self.classes[6] {
+        if !self.is_pickable_class(handle.class_id) {
             return Err("RuneCharms Start requires actual Pickable class".into());
         }
-        let component = self
-            .pickables
-            .get(handle.slot)
+        let component = self.pickable(handle)
             .ok_or("RuneCharms Start Pickable absent")?;
         let Some(item) = &component.item else {
             return Ok(());
@@ -38,12 +36,10 @@ impl PhysicsScene {
         world: &mut bevy::prelude::World,
         handle: ComponentHandle,
     ) -> Result<(), String> {
-        if handle.class_id != self.classes[6] {
+        if !self.is_pickable_class(handle.class_id) {
             return Err("RuneCharms Stop requires actual Pickable class".into());
         }
-        let component = self
-            .pickables
-            .get(handle.slot)
+        let component = self.pickable(handle)
             .ok_or("RuneCharms Stop Pickable absent")?;
         let Some(item) = &component.item else {
             return Ok(());
@@ -69,7 +65,7 @@ impl PhysicsScene {
         &self,
         world: &mut bevy::prelude::World,
     ) -> Result<(), String> {
-        for component in self.pickables.iter() {
+        for component in self.pickables.iter().chain(self.charm_pickables.iter()) {
             if component.owner.flags & 12 != 8 {
                 continue;
             }

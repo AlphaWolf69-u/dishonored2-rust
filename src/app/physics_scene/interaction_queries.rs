@@ -91,8 +91,8 @@ impl PhysicsScene {
                 let h=ComponentHandle::from_packed(packed)?;
                 let owner=self.owner(h)?;
                 writeln!(out,"component={h:?} generation={} flags={:#x} scheduling={:?}",owner.generation,owner.flags,self.declarations.get(&h.packed()).map(|d|&d.scheduling)).unwrap();
-                if h.class_id==self.classes[6] {
-                    let p=self.pickables.get(h.slot).ok_or("diagnostic Pickable absent")?;
+                if self.is_pickable_class(h.class_id) {
+                    let p=self.pickable(h).ok_or("diagnostic Pickable absent")?;
                     writeln!(out,"pickable_loot checked={:?} actual_owner={:?}",p.loot_owner,p.loot_owner.and_then(|reference|self.loots.get(reference.handle.slot).filter(|loot|loot.owner.generation==reference.generation)).map(|loot|(loot.owner.entity,loot.owner.flags,loot.members.iter().take(64).map(|member|(member.entity,member.requires_incapacitated_owner,member.collected)).collect::<Vec<_>>()))).unwrap();
                     writeln!(out,"pickable enabled={} rawD0={:#x} interaction={:?} definition={:?} item={:?} player={:?} references=audio:{:?}/physics:{:?}/system:{:?}/mark:{:?}",p.interaction_enabled,p.interaction_flags,p.interaction,p.definition,p.item.as_ref().map(|i|(&i.path,i.type_number,i.note_type)),p.player,p.references.as_ref().and_then(|r|r.player_audio),p.references.as_ref().and_then(|r|r.physics_base),p.references.as_ref().and_then(|r|r.physics_system),p.references.as_ref().and_then(|r|r.outsider_mark)).unwrap();
                 }

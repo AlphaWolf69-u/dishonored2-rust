@@ -8,6 +8,7 @@ pub struct PickableDefinition {
     /// Same Pickable_Simple component; holding never creates inventory data.
     pub(crate) hold: Option<HoldProperties>,
     pub item: String,
+    pub(crate) charm: Option<crate::assets::bone_charms::Placement>,
     pub quantity: i32,
     pub(crate) begin_pickup_sound: Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>,
     pub shadow_grapple: bool,
@@ -50,6 +51,8 @@ pub struct PickableReferences {
 
 /// Inventory item data is acquired by the shared source at admission.
 pub struct PickableComponent {
+    /// The actual reserved entry for this generation of a derived Pickable.
+    pub(crate) charm: Option<usize>,
     pub owner: ComponentOwner,
     pub definition: std::sync::Arc<PickableDefinition>,
     pub interaction_enabled: bool,
@@ -79,7 +82,7 @@ impl PickableComponent {
         // 76e030 constructs this payload independently; 76e750 later copies
         // the declaration UID along with its other fields.
         let interaction = super::interaction_definition::InteractionDef::new();
-        Self { owner, definition, interaction_enabled: true, interaction, interaction_flags: 0,
+        Self { owner, definition, charm: None, interaction_enabled: true, interaction, interaction_flags: 0,
             item: None, references: None, pickup_parent:None, player: None, loot_owner: None }
     }
 

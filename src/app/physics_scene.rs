@@ -150,8 +150,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 61],
-    classes: [i32; 61],
+    factories: [u32; 62],
+    classes: [i32; 62],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -171,6 +171,9 @@ pub(super) struct PhysicsScene {
     static_usable_updates_pending: bool,
     usable_uses:std::collections::VecDeque<usable_static::AcceptedUse>,
     pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
+    charm_pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
+    charm_assignments: Vec<crate::gameplay::pickable_component::CheckedComponent>,
+    pickable_class_range: [i32; 2],
     readable_components: HashMap<String, crate::gameplay::pickable_component::CheckedComponent>,
     loots: ComponentPool<crate::gameplay::loot_component::LootComponent>,
     rigid_bodies: ComponentPool<super::rigid_body::RigidBodyComponent>,
@@ -564,6 +567,7 @@ impl PhysicsScene {
             factory(b"arkCpntUsableStatic")?,
             factory(b"arkCpntConstraint")?,
             factory(b"arkCpntWhaleOilTank")?,
+            factory(b"arkCpntPickable_BoneCharm")?,
         ];
         let names = types
             .classes()
@@ -593,10 +597,11 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 61];
+        let mut classes = [0; 62];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
+        let pickable_class_range = hierarchy.type_range(types.factory(factories[6])?.class)?;
         let dependency_ranges = [
             hierarchy.type_range(types.factory(factories[1])?.class)?,
             hierarchy.type_range(types.factory(factories[2])?.class)?,
@@ -710,6 +715,9 @@ impl PhysicsScene {
             static_usable_updates_pending:false,
             usable_uses:Default::default(),
             pickables: types.create_pool(factories[6], &cvars.cvars)?,
+            charm_pickables: types.create_pool(factories[61], &cvars.cvars)?,
+            charm_assignments: Vec::new(),
+            pickable_class_range,
             readable_components: HashMap::new(),
             loots: types.create_pool(factories[7], &cvars.cvars)?,
             rigid_bodies: types.create_pool(factories[8], &cvars.cvars)?,
@@ -1503,8 +1511,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.static_usables.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get(handle.slot).map(|v| &v.owner)
-        } else if handle.class_id == self.classes[6] {
-            self.pickables.get(handle.slot).map(|v| &v.owner)
+        } else if self.is_pickable_class(handle.class_id) {
+            self.pickable(handle).map(|v| &v.owner)
         } else if handle.class_id == self.classes[7] {
             self.loots.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[8] {
@@ -1590,8 +1598,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.static_usables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get_mut(handle.slot).map(|v| &mut v.owner)
-        } else if handle.class_id == self.classes[6] {
-            self.pickables.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if self.is_pickable_class(handle.class_id) {
+            self.pickable_mut(handle).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[7] {
             self.loots.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[8] {
@@ -1707,12 +1715,16 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 level: &mut level,
             }
             .initialize(handle)
-        } else if handle.class_id == self.classes[6] {
+        } else if self.is_pickable_class(handle.class_id) {
+            let pool = if handle.class_id == self.classes[61] { &mut self.charm_pickables } else { &mut self.pickables };
             let target = &mut self.entities[entity];
-            self.pickables
-                .get_mut(handle.slot)
-                .ok_or("Pickable component absent")?
-                .initialize(&mut target.entity_flags, &mut target.entity_flags_d7);
+            let pickable = pool.get_mut(handle.slot).ok_or("Pickable component absent")?;
+            pickable.initialize(&mut target.entity_flags, &mut target.entity_flags_d7);
+            if pickable.definition.charm.as_ref().is_some_and(|charm| charm.fixed()) {
+                self.charm_assignments.push(crate::gameplay::pickable_component::CheckedComponent {
+                    handle, generation: pickable.owner.generation,
+                });
+            }
             Ok(())
         } else if handle.class_id == self.classes[3] {
             let pose = self.entities[entity].frame.pose;
@@ -1881,6 +1893,14 @@ impl ComponentLifecycleWorld for PhysicsScene {
             Ok(())
         } else {
             let priority = self.entities[entity_index].priority;
+            if handle.class_id == self.classes[61] {
+                let pickable = self.charm_pickables.get(handle.slot).ok_or("Bone charm Start payload absent")?;
+                if pickable.charm.is_none() && pickable.definition.charm.as_ref().is_some_and(|charm| !charm.fixed()) {
+                    self.charm_assignments.push(crate::gameplay::pickable_component::CheckedComponent {
+                        handle, generation: pickable.owner.generation,
+                    });
+                }
+            }
             let scheduled = crate::gameplay::component_state::prepare_admission(
                 &mut self.owner_mut(handle)?.flags,
                 u8::from(scheduling.priority < 8),
@@ -1898,8 +1918,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.static_usables.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[5] {
                     self.usables.schedule(handle.slot)?;
-                } else if handle.class_id == self.classes[6] {
-                    self.pickables.schedule(handle.slot)?;
+                } else if self.is_pickable_class(handle.class_id) {
+                    self.pickable_pool_mut(handle.class_id).schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[7] {
                     self.loots.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[8] {

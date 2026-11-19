@@ -1125,11 +1125,11 @@ impl ComponentReleaseWorld for Host<'_> {
             return registry.stop_update_ownership(handle, self);
         }
         self.retire_contacts(handle, false)?;
-        if handle.class_id==self.scene.classes[6] {
+        if self.scene.is_pickable_class(handle.class_id) {
             if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_stopped(world,handle)?;}
             //76eaf0 withdraws the checked references at Stop, before owners
             //can retire or reuse their component generations.
-            self.scene.pickables.get_mut(handle.slot).ok_or("Pickable Stop payload absent")?.references=None;
+            self.scene.pickable_mut(handle).ok_or("Pickable Stop payload absent")?.references=None;
         }
         let published = self.world.is_some();
         let scene = &mut self.scene;
@@ -1404,7 +1404,7 @@ impl ComponentReleaseWorld for Host<'_> {
             component.state.deinitialize();
             component.definition = None;
         }
-        if handle.class_id == self.scene.classes[6] {
+        if self.scene.is_pickable_class(handle.class_id) {
             if let Some(world) = self.world.as_deref_mut() {
                 super::super::carrying_resources::release_pickable(
                     world, handle, self.scene.owner(handle)?.generation,
@@ -1607,11 +1607,9 @@ impl ComponentReleaseWorld for Host<'_> {
                 handle,
                 scene.usables.get_mut(handle.slot).ok_or("usable absent")?,
             )
-        } else if handle.class_id == scene.classes[6] {
-            let component = scene
-                .pickables
-                .get_mut(handle.slot)
-                .ok_or("Pickable absent")?;
+        } else if handle.class_id == scene.classes[6] || handle.class_id == scene.classes[61] {
+            let pool = if handle.class_id == scene.classes[61] { &mut scene.charm_pickables } else { &mut scene.pickables };
+            let component = pool.get_mut(handle.slot).ok_or("Pickable absent")?;
             component.references = None;
             component.player = None;
             component.item = None;
@@ -1825,8 +1823,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.static_usables.release(handle.slot)?;
         } else if handle.class_id == scene.classes[5] {
             scene.usables.release(handle.slot)?;
-        } else if handle.class_id == scene.classes[6] {
-            scene.pickables.release(handle.slot)?;
+        } else if scene.is_pickable_class(handle.class_id) {
+            scene.pickable_pool_mut(handle.class_id).release(handle.slot)?;
         } else if handle.class_id == scene.classes[7] {
             scene.loots.release(handle.slot)?;
         } else if handle.class_id == scene.classes[8] || handle.class_id == scene.classes[12] {

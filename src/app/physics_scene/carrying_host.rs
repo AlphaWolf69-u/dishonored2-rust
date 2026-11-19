@@ -205,10 +205,7 @@ impl CarryHost<'_> {
     ) -> Result<bool, String> {
         let (_, reference) =
             self.pickable_reference(target.entity, target.definition, Some(target.reference))?;
-        let pickable = self
-            .scene
-            .pickables
-            .get(reference.handle.slot)
+        let pickable = self.scene.pickable(reference.handle)
             .ok_or("Loot pull Pickable absent")?;
         //841500 tests raw+28 against all-ones, not the PhysicsBase pointer.
         //Our admitted constructors use native managed-null0x3fff0010 or a
@@ -298,10 +295,7 @@ impl CarryHost<'_> {
                     )?;
                 }
             }
-            let component = self
-                .scene
-                .pickables
-                .get_mut(reference.handle.slot)
+            let component = self.scene.pickable_mut(reference.handle)
                 .ok_or("released Pickable absent")?;
             component.interaction_flags &= !3;
             self.scene.entity_flags_d4[index] |= 4;
@@ -334,7 +328,7 @@ impl CarryHost<'_> {
         }
         let handle = record
             .components
-            .find_component([self.scene.classes[6]; 2], [0x28, 0], |handle| {
+            .find_component(self.scene.pickable_range(), [0x28, 0], |handle| {
                 Ok(
                     crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                         flags: self.scene.owner(handle)?.flags,
@@ -347,10 +341,7 @@ impl CarryHost<'_> {
                 )
             })?
             .ok_or("carry Pickable component is unavailable")?;
-        let component = self
-            .scene
-            .pickables
-            .get(handle.slot)
+        let component = self.scene.pickable(handle)
             .ok_or("carry Pickable slot is absent")?;
         if !std::ptr::eq(&*component.definition, definition) {
             return Err("carry declaration owner changed".into());
@@ -728,9 +719,7 @@ impl super::super::carrying::Host for CarryHost<'_> {
             Quat::from_mat3(&rotation).to_array(),
             self.events,
         )?;
-        self.scene
-            .pickables
-            .get_mut(reference.handle.slot)
+        self.scene.pickable_mut(reference.handle)
             .ok_or("attached Pickable absent")?
             .interaction_flags &= !2;
         self.scene.entity_flags_d4[index] |= 4;
@@ -1159,9 +1148,7 @@ fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), 
             .ok_or("accepted Loot47 lease absent")?;
         let valid = live.get(id).is_some()
             && scene.shared_indices.contains_key(&id)
-            && scene
-                .pickables
-                .get(pending.reference.handle.slot)
+            && scene.pickable(pending.reference.handle)
                 .is_some_and(|component| {
                     component.owner.generation == pending.reference.generation
                         && crate::gameplay::component_state::matches_reference_state(

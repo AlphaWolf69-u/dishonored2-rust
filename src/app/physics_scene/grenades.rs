@@ -268,7 +268,7 @@ impl PhysicsScene {
         //491180 caches Pickable_Simple (DAT1439c5a30), not Throwable.
         let pickable = self.entities[index]
             .components
-            .find_component([self.classes[6]; 2], [0, 0], |h| {
+            .find_component(self.pickable_range(), [0, 0], |h| {
                 Ok(ComponentLookupState {
                     flags: self.owner(h)?.flags,
                     start_phases: self
@@ -1084,7 +1084,7 @@ impl PhysicsScene {
                 0 => self.stop_grenade_fx(world, handle)?,
                 1 => {
                     if let Some(pickable) = self.entities[index].components.find_component(
-                        [self.classes[6]; 2],
+                        self.pickable_range(),
                         [0x28, 0],
                         |h| {
                             Ok(ComponentLookupState {
@@ -1435,9 +1435,7 @@ impl PhysicsScene {
         else {
             return Ok(());
         };
-        let component = self
-            .pickables
-            .get(checked.handle.slot)
+        let component = self.pickable(checked.handle)
             .ok_or("Grenade Pickable cache is stale")?;
         if component.owner.generation != checked.generation {
             return Err("Grenade Pickable generation differs".into());

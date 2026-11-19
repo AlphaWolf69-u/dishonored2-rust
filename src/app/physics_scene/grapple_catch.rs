@@ -57,7 +57,7 @@ impl PhysicsScene {
             return Ok(None);
         };
         let handle = self.entities[index].components.find_component(
-            [self.classes[6]; 2],
+            self.pickable_range(),
             [0x28, 0],
             |h| {
                 Ok(
@@ -74,9 +74,7 @@ impl PhysicsScene {
         let Some(handle) = handle else {
             return Ok(None);
         };
-        let component = self
-            .pickables
-            .get(handle.slot)
+        let component = self.pickable(handle)
             .ok_or("Grapple Pickable payload absent")?;
         Ok(Some((
             CheckedComponent {
@@ -216,10 +214,8 @@ impl PhysicsScene {
         reference: CheckedComponent,
     ) -> Result<(), String> {
         let (index, _) = self.document_pickable(live, reference)?;
-        let component = self
-            .pickables
-            .get_mut(reference.handle.slot)
-            .ok_or("held Loot Pickable absent")?;
+        let pool = if reference.handle.class_id == self.classes[61] { &mut self.charm_pickables } else { &mut self.pickables };
+        let component = pool.get_mut(reference.handle.slot).ok_or("held Loot Pickable absent")?;
         if component.interaction_flags & 4 != 0 {
             self.registry
                 .as_mut()
@@ -236,9 +232,7 @@ impl PhysicsScene {
         reference: CheckedComponent,
     ) -> Result<(), String> {
         let (index, _) = self.document_pickable(live, reference)?;
-        let shadow = self
-            .pickables
-            .get(reference.handle.slot)
+        let shadow = self.pickable(reference.handle)
             .ok_or("held Pickable absent")?
             .definition
             .shadow_grapple;
@@ -287,9 +281,7 @@ impl PhysicsScene {
         if cloth.is_some() {
             return Err("Loot47 cancel needs actualCloth70b320 callback".into());
         }
-        let component = self
-            .pickables
-            .get(reference.handle.slot)
+        let component = self.pickable(reference.handle)
             .ok_or("cancelled Pickable absent")?;
         if component.interaction_flags & 1 != 0 {
             if let Some(physics) = component.references.as_ref().and_then(|r| r.physics_base) {
@@ -301,8 +293,7 @@ impl PhysicsScene {
                         )
                 }) {
                     self.publish_catch_filter(index, physics.handle, true)?;
-                    self.pickables
-                        .get_mut(reference.handle.slot)
+                    self.pickable_mut(reference.handle)
                         .unwrap()
                         .interaction_flags &= !1;
                 }

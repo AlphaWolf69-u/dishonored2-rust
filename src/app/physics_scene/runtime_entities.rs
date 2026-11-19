@@ -777,7 +777,7 @@ impl PhysicsScene {
                     }
                     Kind::Pickable(value) => ComponentFactory {
                         declaration: &declaration,
-                        pool: &mut self.pickables,
+                        pool: if value.charm.is_some() { &mut self.charm_pickables } else { &mut self.pickables },
                         registry: &mut registry,
                         grow_one_at_a_time: false,
                     }
@@ -861,12 +861,11 @@ impl PhysicsScene {
                     )?;
                     created_rigid = true;
                 }
-                if handle.class_id == self.classes[6] {
-                    self.pickables
-                        .get_mut(handle.slot)
+                if self.is_pickable_class(handle.class_id) {
+                    self.pickable_mut(handle)
                         .ok_or("runtime Pickable payload disappeared")?
                         .item = items.get(&component_index).cloned();
-                    let generation = self.pickables.get(handle.slot).unwrap().owner.generation;
+                    let generation = self.pickable(handle).unwrap().owner.generation;
                     self.readable_components.insert(
                         self.entities[index].name.clone(),
                         crate::gameplay::pickable_component::CheckedComponent {

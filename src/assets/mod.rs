@@ -19,6 +19,7 @@ pub mod fx;
 pub mod iggy;
 pub mod installation;
 pub mod inventory_item;
+pub(crate) mod bone_charms;
 pub mod power_journal;
 pub mod interactive_map;
 pub mod flash_surface;

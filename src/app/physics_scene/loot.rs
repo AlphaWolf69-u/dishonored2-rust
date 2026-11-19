@@ -62,7 +62,7 @@ impl PhysicsScene {
         let pickable = self
             .loot_component_lookup(projectile_index, 6, [0, 0])?
             .ok_or("Trying to add a Loot item that has no Pickable component")?;
-        if loot.class_id != self.classes[7] || pickable.class_id != self.classes[6] {
+        if loot.class_id != self.classes[7] || !self.is_pickable_class(pickable.class_id) {
             return Err("Loot handoff has an unadmitted derived payload".into());
         }
         let component = self
@@ -82,9 +82,8 @@ impl PhysicsScene {
         };
         //76ee70 checked-pointer publication; its e8 virtual is76f020 for
         //Pickable_Simple. A nonnull Loot always disables the interaction.
-        let pickup = self
-            .pickables
-            .get_mut(pickable.slot)
+        let pool = if pickable.class_id == self.classes[61] { &mut self.charm_pickables } else { &mut self.pickables };
+        let pickup = pool.get_mut(pickable.slot)
             .ok_or("Loot Pickable payload absent")?;
         pickup.loot_owner = Some(reference);
         if pickup.owner.flags & 0xc >= 8 {
@@ -102,7 +101,7 @@ impl PhysicsScene {
     ///ordinary item path uses76ee70(NULL)/76f020 to restore interaction.
     pub(super) fn detach_stuck_loot_member(&mut self,index:usize)->Result<(),String>{
         let Some(pickable)=self.loot_component_lookup(index,6,[0x28,0])? else{return Ok(());};
-        let pickup=self.pickables.get(pickable.slot).ok_or("detached Loot Pickable absent")?;
+        let pickup=self.pickable(pickable).ok_or("detached Loot Pickable absent")?;
         let Some(reference)=pickup.loot_owner else{return Ok(());};
         if reference.handle.class_id!=self.classes[7]{return Err("detached checked Loot class differs".into());}
         let Some(loot)=self.loots.get(reference.handle.slot)
@@ -120,7 +119,7 @@ impl PhysicsScene {
             return Err("Loot detachment for item26 requires actual4c1f20 bound power eligibility".into());
         }
         self.entity_flags_d4[index]|=4;
-        let pickup=self.pickables.get_mut(pickable.slot).unwrap();
+        let pickup=self.pickable_mut(pickable).unwrap();
         pickup.loot_owner=None;
         if pickup.owner.flags&0xc>=8{pickup.interaction_enabled=true;}
         self.loots.get_mut(reference.handle.slot).unwrap().members.remove(member);

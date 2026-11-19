@@ -2102,9 +2102,9 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 
 | `blueprint` | `assets::entities::blueprint` | host: batch-owned typed child paths/transforms coalesce immutable acquisition/failure, mutable overlays bypass sharing, and definitions retire after static expansion instead of retaining unused assembly descriptors. Native1413517a0/1401c10d0/1401c1270/1401bc1f0; no installed init/common references or conditional marker-1 promotion. Verified06ec97ab: EotW/Dust/EotW placements, reads and transient descriptors unchanged; final consumer retirement clears13/10/13 successful history records. Independent Catalog scopes pass, session consumers return to0. Evidence: DH2-fx-level-lifetime/artifacts/blueprint-history-20261114-comparison.json. Source-reviewed rigid material handoff140807c80/1401bd910/1401bdd60 now borrows child model materials through the same preparation owner, forms the unique material identities in143650 case-insensitive name order (1401be980), and lets the actual parent RenderModel apply custom slots. Child/custom material paths are temporary and retire after physics-material acquisition; there is no independent assembly cache or GPU upload. The installed65blueprints contain446LWOchildren and no authored custom-material fields; existing child override handling is preserved. Combined compilation/loading verification of this new handoff is pending. No gameplay CPU/GPU gain claimed |
 
-| `boneCharmCollection` | none | none: no owner yet |
+| `boneCharmCollection` | `assets::bone_charms::Collection` | Player declaration acquires typed identities, traits and spawn requirements (610700). Level holds one shared lease. The last lease releases the rows. Session inventory retains only reserved and owned identity strings. No GPU payload. |
 
-| `boneCharmLoadout` | none | none: no owner yet |
+| `boneCharmLoadout` | `assets::bone_charms::Collection` | 60e8b0 applies the authored initial availability and ownership while preparing the player collection. The temporary declaration tree drops after preparation. |
 
 | `climb` | none | none: no owner yet |
 
@@ -26268,16 +26268,28 @@ have source/static validation only; root owns the combined action/exit run.
 
 Level admission shares the existing Pickable declaration, item source, component
 pool and teardown for ordinary inventory pickups. The read and hold owners still
-select their own authored interactions. Four installed map documents contain
-328, 242, 8 and 0 ordinary non-readable, non-hold item references respectively
-(Edge of the World low chaos, Dust District, Tutorial, End). These counts include
-inactive placements. The previous preparation filter omitted all four groups.
+select their own authored interactions. An installed archive census found 6,087
+ordinary pickup references, 876 reading placements, 9,270 holding placements,
+and 90 derived bone charm placements across 36 map variants. Counts include
+inactive placements and both campaign chaos variants. Edge of the World low
+chaos has 328 ordinary references and six derived charms. Dust District low
+chaos has 242 and five.
 
 At pickup, `140841030` and `1404c1f20` select the authored rune increase or
 unmarked currency. `1406156e0` pays duplicate blueprints at the player
 NewGamePlus declaration's price. `1404362a0` adds raw bone to the optional
 crafting stock. Only scalar declaration fields and balances are retained in
 addition to the existing item leases. These callbacks use no archive reads.
+
+The derived bone charm uses its registered component factory and checked slot
+through Start, the Heart sensor, interaction and retirement. 725c10 reserves
+fixed IDs and 725d30 assigns random charms through 60fad0. The player's
+default collection has 93 identities and 93 trait definitions. Filtering uses
+the authored type and spawn conditions. 60e4c0 grants the selected identity
+to the session inventory and the HUD receives its localized title. A physical
+actor holds a collection index. Reserved and owned identities survive map
+changes with the player. Charm disassembly and import of saved crafting history
+are outside this pickup path.
 
 
 ### Shortcut dock, grenade magazine and first world-movie frame (2026-11-19)

@@ -81,9 +81,14 @@ pub(crate) fn bindings(
             let Some(entry) = scope(Some(value)) else {
                 continue;
             };
+            let derived = match components::entry_class(entry, &declarations)?.as_deref() {
+                Some("cpntpickable_bonecharm" | "cpntpickablebonecharm") => true,
+                Some("cpntpickable_simple" | "cpntpickablesimple") => false,
+                _ => continue,
+            };
             let Some(fields) = components::entry_fields(
                 entry,
-                "cpntpickable_simple",
+                if derived { "cpntpickable_bonecharm" } else { "cpntpickable_simple" },
                 &declarations,
                 &mut sources,
                 &mut read,
@@ -122,7 +127,7 @@ pub(crate) fn bindings(
                 if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
                     shared.clone()
                 } else {
-                    let definition = definition(catalog, &fields)?;
+                    let definition = if derived { charm_definition(catalog, &fields)? } else { definition(catalog, &fields)? };
                     if !catalog.has_overlays() {
                         if let Some(key) = identity {
                             definitions.insert(key, definition.clone());
@@ -176,6 +181,15 @@ pub(crate) fn definition(
     catalog: &crate::archive::Catalog,
     fields: &Fields,
 ) -> Result<Arc<PickableDefinition>, String> {
+    pickup_definition(catalog, fields, None)
+}
+
+pub(crate) fn charm_definition(catalog: &crate::archive::Catalog, fields: &Fields) -> Result<Arc<PickableDefinition>, String> {
+    pickup_definition(catalog, fields, Some(crate::assets::bone_charms::Placement::read(fields)?))
+}
+
+fn pickup_definition(catalog: &crate::archive::Catalog, fields: &Fields,
+    charm: Option<crate::assets::bone_charms::Placement>) -> Result<Arc<PickableDefinition>, String> {
     let mut interaction = InteractionDef::from_fields(child(fields, "m_pickupInteraction"))?;
     if field(child(fields, "m_pickupInteraction"), "m_playerState").is_none() {
         interaction.player_state = 47;
@@ -191,6 +205,7 @@ pub(crate) fn definition(
         .map(|path| crate::assets::wwise::event_resources::acquire_with(catalog, path, &mut read))
         .transpose()?;
     Ok(Arc::new(PickableDefinition {
+        charm,
         hold: hold_properties(fields)?,
         item: atom(fields, "m_inventoryItem")
             .filter(|path| !path.eq_ignore_ascii_case("NULL"))

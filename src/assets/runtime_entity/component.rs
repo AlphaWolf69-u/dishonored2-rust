@@ -180,6 +180,10 @@ pub(super) fn from_resolved(
             });
             ("arkCpntAudio", Kind::Audio(value))
         }
+        "cpntpickable_bonecharm" | "cpntpickablebonecharm" => (
+            "arkCpntPickable_BoneCharm",
+            Kind::Pickable(entities::carrying::charm_definition(catalog, &fields)?),
+        ),
         "cpntpickable_simple" | "cpntpickablesimple" => (
             "arkCpntPickable_Simple",
             Kind::Pickable(entities::carrying::definition(catalog, &fields)?),

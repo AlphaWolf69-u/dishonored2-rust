@@ -28,35 +28,37 @@ impl PhysicsScene {
     fn carrying_sound_demand(&self) -> Vec<SoundScope> {
         let mut sounds: Vec<SoundScope> = Vec::new();
         let mut indices = HashMap::new();
-        for slot in 0..self.pickables.roster.indices.len() {
-            let Some(component) = self.pickables.get_at(slot) else {
-                continue;
-            };
-            if component.owner.entity.is_none() {
-                continue;
-            }
-            let Some(sound) = component.definition.begin_pickup_sound.as_ref() else {
-                continue;
-            };
-            let identity = Arc::as_ptr(sound) as usize;
-            let index = *indices.entry(identity).or_insert_with(|| {
-                let index = sounds.len();
-                sounds.push(SoundScope {
-                    player_owned: false,
-                    key: Arc::from(format!("carry_pickup:{identity:x}")),
-                    declaration: Some(sound.clone()),
-                    members: Vec::new(),
-                    reserved: false,
+        for (class_id, pool) in [(self.classes[6], &self.pickables), (self.classes[61], &self.charm_pickables)] {
+            for slot in 0..pool.roster.indices.len() {
+                let Some(component) = pool.get_at(slot) else {
+                    continue;
+                };
+                if component.owner.entity.is_none() {
+                    continue;
+                }
+                let Some(sound) = component.definition.begin_pickup_sound.as_ref() else {
+                    continue;
+                };
+                let identity = Arc::as_ptr(sound) as usize;
+                let index = *indices.entry(identity).or_insert_with(|| {
+                    let index = sounds.len();
+                    sounds.push(SoundScope {
+                        player_owned: false,
+                        key: Arc::from(format!("carry_pickup:{identity:x}")),
+                        declaration: Some(sound.clone()),
+                        members: Vec::new(),
+                        reserved: false,
+                    });
+                    index
                 });
-                index
-            });
-            sounds[index].members.push(CheckedComponent {
-                handle: ComponentHandle {
-                    class_id: self.classes[6],
-                    slot: slot as u16,
-                },
-                generation: component.owner.generation,
-            });
+                sounds[index].members.push(CheckedComponent {
+                    handle: ComponentHandle {
+                        class_id,
+                        slot: slot as u16,
+                    },
+                    generation: component.owner.generation,
+                });
+            }
         }
         sounds
     }

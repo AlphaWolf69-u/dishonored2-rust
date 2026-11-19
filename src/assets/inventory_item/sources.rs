@@ -86,12 +86,28 @@ pub struct PickableSources {
     catalog_identity: Option<u64>,
     items: HashMap<Arc<str>, ItemRecord>,
     reads: Vec<ReadGeneration>,
+    charm_collections: HashMap<String, Weak<crate::assets::bone_charms::Collection>>,
     pub(super) configurations: super::configuration::Registry,
 }
 #[derive(Clone)]
 #[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
 pub struct PickableSourceLease(pub Arc<Mutex<PickableSources>>);
 impl PickableSourceLease {
+    /// 610700 prepares the active player's collection, including future runtime spawns.
+    pub(crate) fn charm_collection(&self, catalog: &Catalog, character: &str)
+        -> Result<Option<Arc<crate::assets::bone_charms::Collection>>, String> {
+        let lock = || self.0.lock().map_err(|_| "inventory item owner is poisoned");
+        if let Some(collection) = lock()?.charm_collections.get(character).and_then(Weak::upgrade) {
+            return Ok(Some(collection));
+        }
+        let Some(collection) = crate::assets::bone_charms::Collection::load(catalog, character)? else { return Ok(None) };
+        let mut owner = lock()?;
+        if let Some(current) = owner.charm_collections.get(character).and_then(Weak::upgrade) { return Ok(Some(current)); }
+        let collection = Arc::new(collection);
+        owner.charm_collections.insert(character.to_owned(), Arc::downgrade(&collection));
+        Ok(Some(collection))
+    }
+
     pub(crate) fn for_catalog(catalog: &Catalog) -> Result<Self, String> {
         let _allocation = allocation_scope();
         let owner = catalog.pickable_sources.get_or_init(|| Arc::new(Mutex::new(
@@ -234,6 +250,7 @@ impl PickableSources {
         }
     }
     pub fn retire_unused(&mut self) {
+        self.charm_collections.retain(|_, owner| owner.strong_count() != 0);
         let mut live = HashSet::new();
         let mut retired = HashSet::new();
         self.reads.retain(|generation| {

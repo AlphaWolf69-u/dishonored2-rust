@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 #[derive(Clone)]
 pub(in crate::app) enum Pickup {
-    Item { item: Arc<crate::assets::inventory_item::PickableItem>, count: u32 },
+    Item { item: Arc<crate::assets::inventory_item::PickableItem>, count: u32, label: Option<Arc<str>> },
     Currency { count: i32 },
 }
 ///6733c0 reads these three members of the actual HUD-equipment declaration.
@@ -40,20 +40,22 @@ impl HudMovie {
                 let labels=self.currency_labels.as_ref().ok_or("currency pickup HUD declaration absent")?;
                 (if *count<2 {labels.single.as_str()}else{labels.plural.as_str()},labels.image.as_str(),*count)
             },
-            Pickup::Item {item,count}=>{
-                let label = if *count < 2 {
-                    &item.name
+            Pickup::Item {item,count,label}=>{
+                let label = if let Some(label) = label {
+                    label.as_ref()
+                } else if *count < 2 {
+                    item.name.as_str()
                 } else {
                     //6734b0 diagnoses an absent plural and then continues with
                     //the simple name.166830 returns in the installed binary.
-                    item.plural_name.as_ref().unwrap_or(&item.name)
+                    item.plural_name.as_ref().unwrap_or(&item.name).as_str()
                 };
                 //The same source path skips this item when no pickup image
                 //exists; it does not fail or retire the entire HUD movie.
                 let Some(image) = item.pickup_log_image() else {
                     return Ok(());
                 };
-                (label.as_str(),image,*count as i32)
+                (label,image,*count as i32)
             },
         };
         self.player

@@ -148,6 +148,8 @@ pub(super) struct DiscoveredDocuments {
     consumed_coins: i32,
     /// Crafting stock at 435e20 +60 and NewGamePlus' tracked conversion total.
     raw_whale_bone: f32,
+    pub(super) reserved_charms: std::collections::HashSet<std::sync::Arc<str>>,
+    pub(super) owned_charms: std::collections::HashSet<std::sync::Arc<str>>,
     converted_blueprint_coins: i32,
     allow_auto_equip: bool,
     instant_equip_first_frame: bool,
@@ -165,7 +167,7 @@ impl Default for DiscoveredDocuments {
         Self { items: Vec::new(), maps: Vec::new(), audiographs: Vec::new(), quantities: Default::default(),
             initialized: false, modifier_changes: Default::default(), enhancements: Vec::new(), records: Default::default(),
             record_order: Vec::new(), equipped: Default::default(), changes: Default::default(), ammo_consumption_locks: 0,
-            coins: 0, consumed_coins: 0, raw_whale_bone: 0., converted_blueprint_coins: 0, allow_auto_equip: false,
+            coins: 0, consumed_coins: 0, raw_whale_bone: 0., converted_blueprint_coins: 0, reserved_charms: Default::default(), owned_charms: Default::default(), allow_auto_equip: false,
             // 613440 sets inventory +190 |=6: bit1 is true until the
             // first allowed 619760 arbitration clears bits0/1 with &fc.
             instant_equip_first_frame: true,

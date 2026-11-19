@@ -29,6 +29,7 @@ pub(super) struct Actor {
 #[derive(Resource)]
 pub(super) struct Interactions {
     pub catalog: Arc<Catalog>,
+    pub(super) charms: Option<Arc<crate::assets::bone_charms::Collection>>,
     pub(super) limits: Arc<crate::assets::inventory_item::ReadableLimits>,
     pub sensor: entities::usable::Sensor,
     pub actors: Vec<Actor>,
@@ -229,13 +230,14 @@ impl Interactions {
             .collect();
         let item_sources =
             crate::assets::inventory_item::PickableSourceLease::for_catalog(&catalog)?;
+        let charms = item_sources.charm_collection(&catalog, character)?;
         Ok(Self {
             catalog,
             limits,
             sensor,
             actors,
             readable,
-            carrying,
+            carrying, charms,
             actor_by_entity,
             readable_by_entity,
             carrying_by_entity,

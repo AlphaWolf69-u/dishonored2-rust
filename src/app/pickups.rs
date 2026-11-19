@@ -70,6 +70,7 @@ pub(super) struct Pending {
     pub phase: u8,
     pub admitted: u32,
     currency_notice: Option<i32>,
+    charm_label: Option<Arc<str>>,
     pub hud_notified: bool,
     pub from_grapple: bool,
     pub notice: crate::gameplay::effects::instances::PickupReceipt,
@@ -81,7 +82,7 @@ impl Pending {
         item: Option<Arc<crate::assets::inventory_item::PickableItem>>,
         hold: Option<crate::gameplay::player::carrying::Target>, maximum: u32, from_grapple: bool) -> Self {
         Self { entity, reference, definition, item, hold, maximum, from_grapple, phase: 0, admitted: 0,
-            currency_notice: None, hud_notified: false, notice: Default::default(), rejected_notice: false, rejected_sound: None }
+            currency_notice: None, charm_label: None, hud_notified: false, notice: Default::default(), rejected_notice: false, rejected_sound: None }
     }
     ///615d40/615d90: admitted ammo uses the current inventory record maximum;
     ///the collection's prepared value supplies a not-yet-hosted record.
@@ -118,6 +119,15 @@ pub(super) fn inventory_family_available(
 }
 
 pub(super) fn update(world: &mut World) -> Result<(), String> {
+    if world.get_resource::<physics_scene::PhysicsScene>().is_some_and(|scene| scene.has_charm_assignments())
+        && world.get_resource::<interaction_focus::DiscoveredDocuments>().is_some_and(|inventory| inventory.is_initialized()) {
+        world.resource_scope(|world, mut scene: Mut<physics_scene::PhysicsScene>| {
+            world.resource_scope(|world, mut inventory: Mut<interaction_focus::DiscoveredDocuments>| {
+                scene.assign_charms(world.get_resource::<interactions::Interactions>().and_then(|owner| owner.charms.as_deref()),
+                    &mut inventory);
+            });
+        });
+    }
     update_pending(world, false)
 }
 
@@ -211,6 +221,18 @@ fn advance(world: &mut World, pending: &mut Pending, closing: bool) -> Result<bo
         return Ok(true);
     }
     let item=pending.item.as_ref().ok_or("Loot47 item lease disappeared")?;
+    if pending.phase == 0 && pending.definition.charm.is_some() {
+        // 841030 tests the component's derived class before type/capacity.
+        // The physical actor already reserved its precise trait at Start.
+        let name = world.resource::<physics_scene::PhysicsScene>().assigned_charm(pending.reference)
+            .and_then(|index| world.resource::<interactions::Interactions>().charms.as_ref()?.name(index)).cloned();
+        if let Some(name) = name {
+            world.resource_mut::<interaction_focus::DiscoveredDocuments>().owned_charms.insert(name.clone());
+            pending.charm_label = Some(name);
+            pending.admitted = 1;
+        }
+        pending.phase = 1;
+    }
     if !inventory_family_supported(item) {
         return Err(
             "Loot47 item family has no admitted gameplay callback owner".into(),
@@ -373,7 +395,7 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
                     } else if matches!(item.type_number, 1 | 15) {
                         hud.queue_currency(pending.definition.quantity)?;
                     } else if pending.admitted > 0 && item.type_number != 6 {
-                        hud.queue_pickup(item.clone(), pending.admitted)?;
+                        hud.queue_named_pickup(item.clone(), pending.admitted, pending.charm_label.clone())?;
                     }
                 }
             }

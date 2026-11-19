@@ -183,7 +183,7 @@ impl PhysicsScene {
         let handle =
             entity
                 .components
-                .find_component([self.classes[6]; 2], [0x28, 0], |handle| {
+                .find_component(self.pickable_range(), [0x28, 0], |handle| {
                     Ok(
                         crate::gameplay::component_state::entity_lookup::ComponentLookupState {
                             flags: self.owner(handle)?.flags,
@@ -197,9 +197,7 @@ impl PhysicsScene {
         let Some(handle) = handle else {
             return Ok(None);
         };
-        let component = self
-            .pickables
-            .get(handle.slot)
+        let component = self.pickable(handle)
             .ok_or("interaction Pickable slot absent")?;
         if !component.interaction_enabled
             || component.interaction_flags & 0xa != 0
@@ -378,10 +376,8 @@ impl PhysicsScene {
         let handle =
             entity
                 .components
-                .find_component([self.classes[6]; 2], [0x28, 0], |handle| {
-                    let component = self
-                        .pickables
-                        .get(handle.slot)
+                .find_component(self.pickable_range(), [0x28, 0], |handle| {
+                    let component = self.pickable(handle)
                         .ok_or("projectile Pickable header absent")?;
                     Ok(
                         crate::gameplay::component_state::entity_lookup::ComponentLookupState {
@@ -394,7 +390,7 @@ impl PhysicsScene {
                     )
                 })?;
         Ok(handle
-            .and_then(|handle| self.pickables.get(handle.slot))
+            .and_then(|handle| self.pickable(handle))
             .is_some_and(|component| component.owner.flags & 0xc != 0xc))
     }
     fn projectile_contact_parameters(
@@ -454,7 +450,7 @@ impl PhysicsScene {
             .values()
             .iter()
             .filter_map(|value| ComponentHandle::from_packed(*value).ok())
-            .find(|handle| handle.class_id == self.classes[6]);
+            .find(|handle| self.is_pickable_class(handle.class_id));
         let Some(handle) = handle else { return Ok(()) };
         let mut registry = self
             .registry

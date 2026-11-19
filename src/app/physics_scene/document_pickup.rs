@@ -4,7 +4,7 @@ use crate::gameplay::{entity_lifetime::{EntityId, LiveEntities}, pickable_compon
 
 impl PhysicsScene {
     pub(super) fn document_pickable(&self, live: &LiveEntities, reference: CheckedComponent) -> Result<(usize, EntityId), String> {
-        if reference.handle.class_id != self.classes[6] { return Err("pickup is not PickableSimple".into()); }
+        if !self.is_pickable_class(reference.handle.class_id) { return Err("pickup is not PickableSimple".into()); }
         let owner = self.owner(reference.handle)?;
         if owner.generation != reference.generation || owner.flags & 0xf != 0xa {
             return Err("document Pickable is stale or stopped".into());
@@ -40,7 +40,7 @@ impl PhysicsScene {
         sources: &super::super::shadow_updates::ModelShadowSources,
         placements: &super::super::RenderSourcePlacements) -> Result<(),String> {
         let (index,id) = self.document_pickable(live,reference)?;
-        let item = self.pickables.get(reference.handle.slot).and_then(|component| component.item.as_ref())
+        let item = self.pickable(reference.handle).and_then(|component| component.item.as_ref())
             .ok_or("document item declaration absent")?;
         if !matches!(item.item_type(), "TYPE_NOTE_DOCUMENT" | "12" | "TYPE_BOOK" | "25" | "TYPE_INTERACTIVE_MAP" | "24") {
             return Err("styled portable item requires actual item-specific targeting callbacks".into());
@@ -82,7 +82,7 @@ impl PhysicsScene {
             // the body type/filter. Repeated pending callbacks see null parent.
             if *step == 0 {
                 if live.parent(self.entities[index].shared)?.is_some() {
-                    self.pickables.get_mut(reference.handle.slot).ok_or("bound Pickable absent")?.pickup_parent=live.parent(self.entities[index].shared)?;
+                    self.pickable_mut(reference.handle).ok_or("bound Pickable absent")?.pickup_parent=live.parent(self.entities[index].shared)?;
                     // 8762d0 clears d0 bit7, then727450(null)/727880 restores
                     // the live movement interface to type2 before parent links
                     // disappear. The same mode cursor resumes a failed change.
@@ -126,13 +126,13 @@ impl PhysicsScene {
             }
             if *step >= 5 { return Ok(None); }
             if *step == 3 {
-                let component = self.pickables.get_mut(reference.handle.slot).ok_or("document Pickable retired")?;
+                let component = self.pickable_mut(reference.handle).ok_or("document Pickable retired")?;
                 component.interaction_flags = (component.interaction_flags & !4) | 2;
                 registry.resume_update_flags(reference.handle,&mut component.owner.flags)?;
                 *step = 4;
             }
             registry.drain_update_changes(&mut super::interaction_components::Startup{world:None,scene:self,live,events})?;
-            let sound = self.pickables.get(reference.handle.slot).ok_or("document Pickable retired")?.definition.begin_pickup_sound.clone();
+            let sound = self.pickable(reference.handle).ok_or("document Pickable retired")?.definition.begin_pickup_sound.clone();
             *step = 5;
             Ok(sound)
         })();
@@ -155,7 +155,7 @@ impl PhysicsScene {
             }
         }
         self.entities[index].entity_flags |= 2;
-        let component = self.pickables.get_mut(reference.handle.slot).ok_or("document Pickable retired")?;
+        let component = self.pickable_mut(reference.handle).ok_or("document Pickable retired")?;
         component.interaction_flags = (component.interaction_flags & !2) | 8;
         self.entity_flags_d4[index] |= 4;
         Ok(())

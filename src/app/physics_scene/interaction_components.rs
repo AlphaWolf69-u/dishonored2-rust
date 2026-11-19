@@ -20,6 +20,57 @@ impl ComponentInstance for UsableComponent {
 }
 
 impl PhysicsScene {
+    pub(in crate::app) fn has_charm_assignments(&self) -> bool { !self.charm_assignments.is_empty() }
+
+    /// A prepared level can start its components on a loader thread, before
+    /// the player's session inventory is attached. Complete 725c10/725d30
+    /// against the real inventory before any collection can be delivered.
+    pub(in crate::app) fn assign_charms(&mut self, collection: Option<&crate::assets::bone_charms::Collection>,
+        inventory: &mut super::super::interaction_focus::DiscoveredDocuments) {
+        if let Some(collection) = collection {
+            for fixed in [true, false] {
+                for checked in &self.charm_assignments {
+                    let Some(component) = self.charm_pickables.get_mut(checked.handle.slot) else { continue };
+                    let Some(place) = &component.definition.charm else { continue };
+                    if component.owner.generation != checked.generation || component.charm.is_some() || fixed != place.fixed() {
+                        continue;
+                    }
+                    // Dismantling sets separate inventory flag 8. Fresh game sessions
+                    // have no dismantled charms; pickup itself only sets ownership.
+                    component.charm = collection.assign(place, |id| inventory.reserved_charms.contains(id),
+                        |id| inventory.owned_charms.contains(id), |_| false, |path| inventory.quantity(path));
+                    if let Some(name) = component.charm.and_then(|index| collection.name(index)) {
+                        inventory.reserved_charms.insert(name.clone());
+                        if std::env::var_os("DH2_DEBUG_ACTION_SCENARIO").is_some() {
+                            eprintln!("BONE_CHARM reserved={name} entity={:?} slot={}", component.owner.entity, checked.handle.slot);
+                        }
+                    }
+                }
+            }
+        }
+        self.charm_assignments.clear();
+    }
+    pub(in crate::app) fn assigned_charm(&self, checked: crate::gameplay::pickable_component::CheckedComponent) -> Option<usize> {
+        let component = self.pickable(checked.handle)?;
+        (component.owner.generation == checked.generation).then_some(component.charm).flatten()
+    }
+    pub(super) fn is_pickable_class(&self, class: i32) -> bool {
+        class == self.classes[6] || class == self.classes[61]
+    }
+    pub(super) fn pickable_range(&self) -> [i32; 2] { self.pickable_class_range }
+    pub(super) fn pickable(&self, handle: ComponentHandle) -> Option<&crate::gameplay::pickable_component::PickableComponent> {
+        if handle.class_id == self.classes[6] { self.pickables.get(handle.slot) }
+        else if handle.class_id == self.classes[61] { self.charm_pickables.get(handle.slot) }
+        else { None }
+    }
+    pub(super) fn pickable_pool_mut(&mut self, class: i32) -> &mut ComponentPool<crate::gameplay::pickable_component::PickableComponent> {
+        debug_assert!(self.is_pickable_class(class));
+        if class == self.classes[61] { &mut self.charm_pickables } else { &mut self.pickables }
+    }
+    pub(super) fn pickable_mut(&mut self, handle: ComponentHandle) -> Option<&mut crate::gameplay::pickable_component::PickableComponent> {
+        if !self.is_pickable_class(handle.class_id) { return None; }
+        self.pickable_pool_mut(handle.class_id).get_mut(handle.slot)
+    }
     ///76e8b0 captures mode1 PhysicsBase/PhysicsSystemEvolved references at
     ///Start. These are weak checked component generations, not resource leases.
     pub(super) fn start_pickable_physics_references(&mut self,handle:ComponentHandle)->Result<(),String> {
@@ -30,7 +81,7 @@ impl PhysicsScene {
         };
         let physics_base=checked(self.document_rigid(index)?)?;
         let physics_system=checked(self.grapple_dependency(index,4,[0x20,0])?)?;
-        let refs=self.pickables.get_mut(handle.slot).ok_or("Pickable Start payload absent")?
+        let refs=self.pickable_mut(handle).ok_or("Pickable Start payload absent")?
             .references.get_or_insert_with(PickableReferences::default);
         refs.physics_base=physics_base;
         refs.physics_system=physics_system;
@@ -234,9 +285,7 @@ impl PhysicsScene {
                 |_, _, _| Ok(()),
             )?
             .ok_or("Pickable component creation disabled")?;
-            let generation = self
-                .pickables
-                .get(handle.slot)
+            let generation = self.pickable(handle)
                 .ok_or("new Pickable component absent")?
                 .owner
                 .generation;
@@ -356,14 +405,15 @@ impl PhysicsScene {
             } else {
                 Some(interactions.acquire_readable_item(&binding.definition.item)?)
             };
+            let factory = if binding.definition.charm.is_some() { 61 } else { 6 };
             let declaration = self.types.declaration(
-                self.factories[6],
+                self.factories[factory],
                 Arc::as_ptr(&binding.definition) as usize,
                 binding.definition.scheduling.clone(),
             )?;
             let handle = ComponentFactory {
                 declaration: &declaration,
-                pool: &mut self.pickables,
+                pool: if factory == 61 { &mut self.charm_pickables } else { &mut self.pickables },
                 registry,
                 grow_one_at_a_time: false,
             }
@@ -380,9 +430,7 @@ impl PhysicsScene {
                 |_, _, _| Ok(()),
             )?
             .ok_or("carried Pickable component creation disabled")?;
-            let generation = self
-                .pickables
-                .get(handle.slot)
+            let generation = self.pickable(handle)
                 .ok_or("new carried Pickable absent")?
                 .owner
                 .generation;
@@ -458,9 +506,7 @@ impl PhysicsScene {
         if live.stage(entity.shared) != Some(crate::gameplay::entity_lifetime::Stage::Spawned)
             || owner.flags & 0xf != 0xa
             || entity.entity_flags & 3 != 0
-            || self
-                .pickables
-                .get(reference.handle.slot)
+            || self.pickable(reference.handle)
                 .is_some_and(|component| component.interaction_flags & 0xa != 0)
         {
             return Ok(None);
@@ -485,9 +531,7 @@ impl PhysicsScene {
         let Some(identity) = self.readable_identity(entity, live)? else {
             return Ok(None);
         };
-        let item = self
-            .pickables
-            .get(identity.1.handle.slot)
+        let item = self.pickable(identity.1.handle)
             .and_then(|component| component.item.as_ref())
             .ok_or("readable Pickable item lease is absent")?;
         Ok(Some((identity, item.clone())))
@@ -509,9 +553,7 @@ impl PhysicsScene {
         let Some((id, reference)) = self.readable_identity(entity, live)? else {
             return Ok(None);
         };
-        let component = self
-            .pickables
-            .get(reference.handle.slot)
+        let component = self.pickable(reference.handle)
             .ok_or("carried Pickable disappeared")?;
         if !component.interaction_enabled
             || !component.definition.usable_by_player
@@ -563,9 +605,7 @@ impl PhysicsScene {
         let Some((id, reference)) = self.readable_identity(entity, live)? else {
             return Ok(None);
         };
-        let component = self
-            .pickables
-            .get(reference.handle.slot)
+        let component = self.pickable(reference.handle)
             .ok_or("carry context Pickable absent")?;
         if !component.interaction_enabled
             || !component.definition.usable_by_player
@@ -841,7 +881,7 @@ impl ComponentLifecycleWorld for Startup<'_> {
                     self.scene.start_usable_backend(world, handle)?;
                 }
                 Ok(())
-            } else if handle.class_id==self.scene.classes[6] {
+            } else if self.scene.is_pickable_class(handle.class_id) {
                 self.scene.start_pickable_physics_references(handle)?;
                 self.scene.start(handle,registry)?;
                 if let Some(world)=self.world.as_deref_mut(){self.scene.heart_pickable_started(world,handle)?;}
@@ -990,8 +1030,8 @@ impl PhysicsScene {
             membership!(self.static_usables)
         } else if handle.class_id == self.classes[5] {
             membership!(self.usables)
-        } else if handle.class_id == self.classes[6] {
-            membership!(self.pickables)
+        } else if self.is_pickable_class(handle.class_id) {
+            if handle.class_id == self.classes[61] { membership!(self.charm_pickables) } else { membership!(self.pickables) }
         } else if handle.class_id == self.classes[7] {
             membership!(self.loots)
         } else if self.is_rigid_class(handle.class_id) {

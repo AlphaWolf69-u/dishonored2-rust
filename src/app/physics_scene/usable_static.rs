@@ -110,8 +110,8 @@ impl PhysicsScene {
         if checked.handle.class_id==self.classes[58]{
             let component=self.static_usables.get_mut(checked.handle.slot).ok_or("static Usable Set absent")?;
             component.static_state.as_mut().ok_or("static Usable Set state absent")?.enabled=enabled;
-        }else if checked.handle.class_id==self.classes[6]{
-            self.pickables.get_mut(checked.handle.slot).ok_or("Pickable Set Usability absent")?.interaction_enabled=enabled;
+        }else if self.is_pickable_class(checked.handle.class_id){
+            self.pickable_mut(checked.handle).ok_or("Pickable Set Usability absent")?.interaction_enabled=enabled;
         }else if checked.handle.class_id!=self.classes[5]&&checked.handle.class_id!=self.classes[55]{
             return Err("Set Usability requires its actual hosted Interactable subtype".into());
         }
