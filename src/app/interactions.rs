@@ -1186,8 +1186,8 @@ pub(super) fn focus_and_interact(
                     let binding = &interactions.carrying[index];
                     return Some(super::interaction_focus::InteractionPrompt {
                         entity: binding.entity.clone(),
-                        name: binding.interaction_name.clone(),
-                        usage_text: binding.interaction_text.clone(),
+                        name: binding.definition.interaction_labels[0].clone(),
+                        usage_text: binding.definition.interaction_labels[1].clone(),
                         interaction_type: binding.definition.pickup_interaction.icon,
                         binding: "<GBA_INTERACT>".to_owned(),
                         name_postfix: String::new(),
@@ -1196,7 +1196,11 @@ pub(super) fn focus_and_interact(
                             .definition
                             .pickup_interaction
                             .has(crate::gameplay::interaction_definition::LOCKED),
-                        player_state: binding.player_state.clone(),
+                        player_state: if binding.definition.interaction_state.is_empty() {
+                            "PLAYER_STATE_LOOT_OBJECT".to_owned()
+                        } else {
+                            binding.definition.interaction_state.clone()
+                        },
                     });
                 }
                 let (entity, name, text, icon, state, locked) = if kind == SelectionKind::Readable {

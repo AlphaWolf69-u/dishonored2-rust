@@ -359,7 +359,7 @@ impl PhysicsScene {
             let declaration = self.types.declaration(
                 self.factories[6],
                 Arc::as_ptr(&binding.definition) as usize,
-                binding.scheduling.clone(),
+                binding.definition.scheduling.clone(),
             )?;
             let handle = ComponentFactory {
                 declaration: &declaration,

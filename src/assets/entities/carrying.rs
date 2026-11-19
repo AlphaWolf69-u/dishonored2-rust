@@ -13,10 +13,6 @@ use crate::gameplay::pickable_component::{HoldProperties, PickableDefinition};
 pub(crate) struct Binding {
     pub entity: String,
     pub definition: Arc<PickableDefinition>,
-    pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
-    pub interaction_name: String,
-    pub interaction_text: String,
-    pub player_state: String,
 }
 
 fn child<'a>(fields: &'a Fields, name: &str) -> &'a Fields {
@@ -134,11 +130,7 @@ pub(crate) fn bindings(
                     }
                     definition
                 };
-            result.push(Binding { entity:entity.id.clone(), definition,
-                interaction_name: atom(interaction, "m_name").unwrap_or("").to_owned(),
-                interaction_text: atom(interaction, "m_usageText").unwrap_or("").to_owned(),
-                player_state: atom(interaction, "m_playerState").unwrap_or("PLAYER_STATE_LOOT_OBJECT").to_owned(),
-                scheduling:components::scheduling(&fields,crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))? });
+            result.push(Binding { entity: entity.id.clone(), definition });
         }
     }
     Ok(result)

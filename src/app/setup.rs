@@ -1538,10 +1538,25 @@ pub(super) fn prepare(
         // collection lists them (Corvo's collection lists no power items).
         let loadout = crate::assets::inventory_item::default_loadout_definition(catalog,
             super::player::character_name(character))?;
+        let mut power_candidates: Vec<_> = limits.assignments().map(|(path, _)| path)
+            .chain(loadout.iter().flat_map(|loadout| loadout.assignments()).map(|(path, _)| path))
+            .collect();
+        if let Some(interactions) = interactions {
+            // An all-registered collection can admit a world power absent
+            // from its explicit loadout. Include the same item in Journal's
+            // definitions, without owning its equipment before collection.
+            let mut seen: std::collections::HashSet<_> = power_candidates.iter().copied().collect();
+            for binding in &interactions.carrying {
+                let path = binding.definition.item.as_str();
+                if !path.is_empty() && seen.insert(path) && limits.maximum(path) > 0
+                    && interactions.acquire_readable_item(path)?.type_number == 9 {
+                    power_candidates.push(path);
+                }
+            }
+        }
         let powers = super::powers::Powers::prepare(catalog,
             &declarations.powers, &declarations.outsider_mark, character,
-            limits.assignments().map(|(path, _)| path)
-                .chain(loadout.iter().flat_map(|loadout| loadout.assignments()).map(|(path, _)| path)))?;
+            power_candidates)?;
         // Actual owned power entities prepare their family dependencies in
         // the owned-target worker; Journal metadata alone does not load them.
         commands.insert_resource(super::power_world::PowerWorld::prepare(catalog, &[])?);
