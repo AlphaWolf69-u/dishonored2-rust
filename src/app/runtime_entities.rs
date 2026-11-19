@@ -21,6 +21,7 @@ use std::{
 
 mod placed;
 mod openables;
+mod whale_oil_tanks;
 pub(super) mod actor_class;
 pub(in crate::app) use placed::SoundVolume as PreparedSoundVolume;
 pub(in crate::app) use placed::{Child as PreparedBreakableChild, Prepared as PreparedBreakable};
@@ -147,6 +148,7 @@ pub(super) struct RuntimeEntities {
     placed_pending: VecDeque<PreparedBreakable>,
     placed_sound_volumes: VecDeque<PreparedSoundVolume>,
     placed_openables: Vec<super::physics_scene::openable::Prepared>,
+    placed_whale_oil_tanks:Vec<super::physics_scene::whale_oil_tank::Prepared>,
     placed_leases: HashMap<EntityId, Vec<placed::Lease>>,
     source_error: Option<String>,
 }
@@ -308,6 +310,7 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         .resource_mut::<super::physics_scene::PhysicsScene>()
         .take_prepared_sound_volumes();
     let openables=world.resource_mut::<super::physics_scene::PhysicsScene>().take_prepared_openables();
+    let tanks=world.resource_mut::<super::physics_scene::PhysicsScene>().take_prepared_whale_oil_tanks();
     world.insert_resource(RuntimeEntities {
         catalog,
         source,
@@ -322,6 +325,7 @@ pub(super) fn initialize(world: &mut World) -> Result<(), String> {
         placed_pending: placed.into(),
         placed_sound_volumes: volumes.into(),
         placed_openables:openables,
+        placed_whale_oil_tanks:tanks,
         placed_leases: HashMap::new(),
         source_error: None,
     });
@@ -593,7 +597,7 @@ fn startup_readiness(world: &World) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    Ok(owner.placed_pending.is_empty() && owner.placed_sound_volumes.is_empty() && owner.placed_openables.is_empty())
+    Ok(owner.placed_pending.is_empty() && owner.placed_sound_volumes.is_empty() && owner.placed_openables.is_empty() && owner.placed_whale_oil_tanks.is_empty())
 }
 pub(super) fn startup_pending(world: &World) -> bool {
     !matches!(startup_readiness(world), Ok(true))

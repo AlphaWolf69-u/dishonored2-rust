@@ -103,6 +103,7 @@ pub mod midnight_timing;
 pub mod scene_animation;
 
 pub mod damage;
+pub(crate) mod whale_oil_tank;
 
 pub mod interaction_enums;
 

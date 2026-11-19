@@ -38,6 +38,7 @@ impl PhysicsScene {
         mut statistics:Option<&mut crate::app::player_statistics::PlayerStatistics>,
     ) -> Result<(), String> {
         let errors = events.pump(|listener, event, _commands| {
+            if matches!(listener,Listener::Component{handle,..} if handle.class_id==self.classes[60]) {return self.dispatch_whale_oil_tank(live,listener,event);}
             if matches!(listener,Listener::Component{handle,..} if handle.class_id==self.classes[59]) {
                 return self.constraint_message(live,registry,listener,event,_commands);
             }

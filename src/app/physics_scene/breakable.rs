@@ -562,12 +562,8 @@ impl PhysicsScene {
         let Some(handle) = self.breakable_component(live, id)? else {
             return Ok(false);
         };
-        //7edfa0 also writes an actual started WhaleOilTank's BD byte.
-        //Current admitted props have no such payload; do not silently take
-        //its null branch if that component is admitted in a later family.
-        if thrown && self.far_reach_component_present(id, b"arkCpntWhaleOilTank")? {
-            return Err("Breakable thrown state requires the actual WhaleOilTank BD owner".into());
-        }
+        //7edfa0 writes BD only for a nonzero thrown value.
+        if thrown { self.set_whale_oil_tank_thrown(live,id,true)?; }
         self.breakables
             .get_mut(handle.slot)
             .ok_or("breakable thrown slot absent")?

@@ -5,6 +5,8 @@ use crate::gameplay::options::decl::{atom, boolean, float};
 
 #[derive(Debug)]
 pub struct ObservableDefinition {
+    ///5ff4e0 returns declaration+388; reflection143bbfea8.
+    pub object_tag:std::sync::Arc<str>,
     pub category: u8,
     pub visibility: u8,
     pub visible_distance: f32,
@@ -68,6 +70,7 @@ impl ObservableDefinition {
             return Err("Observable enum outside actual range".into());
         }
         Ok(Self {
+            object_tag:std::sync::Arc::from(atom(fields,"m_objectTag").unwrap_or("")),
             category: category as u8,
             visibility: visibility as u8,
             visible_distance: float(fields, "m_visibleDistance", -1.),

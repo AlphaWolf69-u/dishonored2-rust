@@ -26037,3 +26037,24 @@ frames, solver preparation, velocities, adjacency, clocks and ordinary exit.
 It adds no forces, fixture bodies or tolerance-based visual assertion; dormant
 solver coverage is explicitly reported rather than forcing a wake. Root owns
 the coherent build and actual action/retirement validation.
+
+WhaleOilTank firearm lifecycle (2026-11-19): `ported` source741910/741980,
+741d50 Initialize,7422a0 Start,741ed0 A2,7425e0 timer and742010 Deinitialize
+through `assets/whale_oil_tank.rs`, `gameplay/whale_oil_tank.rs` and
+`app/physics_scene/whale_oil_tank.rs`. Actual tank energy, incoming damage,
+IMMOLATE/delayed-type policy, source Observable object tag and thrown BD state
+determine admission. Expiry clears the real Health infinite flag and invokes
+the existing damage/Breakable/FX owners; no new explosion or damage manager.
+The optional pusher uses canonical prepared child prototypes, managed binding,
+ordinary removal and the parent's existing prototype leases. A2/127/132
+subscriptions retain their actual component generation from Initialize through
+Deinitialize; accepted ejections drain through the same physical impulse owner
+before release. `host:` the update pump skips settled tanks while preserving
+actual entity-clock deltas and accepted callback journals. `blocked:` named
+236900 tank/pusher clip and explosion-progress render parameters have no
+generic renderer consumer yet; the fields are retained, with no fabricated
+material output or loading/shot rejection. The three installed EotW tanks have
+infinite Health and authored Breakable explosion FX, establishing why the
+component's damage receiver is required. This does not identify the user's
+unrecorded oil-bottle impact. Combined build/playback/exit validation remains
+with the root; no independent build or game launch was run for this change.

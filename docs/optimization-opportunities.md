@@ -2771,3 +2771,16 @@ but the old temporary numeric projection of unowned entries could eventually
 be shared through the canonical declaration owner. This remains setup-only
 work and requires a measured source-parity refactor; no new permanent cache or
 performance claim is introduced to avoid it.
+
+WhaleOilTank admission prediction (2026-11-19). Newly admitted tank components
+retain one compact runtime plus shared typed declarations and canonical pusher
+prototype leases; they add the authored pusher draws. Expect startup/model
+residency cost for those genuinely required resources and bounded work while a
+real damage timer or ejection callback is pending. The normal update checks one
+scene dirty flag and performs no tank roster walk once settled. The pending
+walk is restricted to this component pool, never the level's entity list; it
+does not decode resources, sample RNG, or allocate a frame history. Shared
+window-tag metadata is resolved with the same Observable declaration owner.
+No CPU/RAM/FPS improvement is claimed or measured. Future named material
+parameter publication must reuse the canonical renderer override owner; do
+not introduce a per-tank material cache to hide that documented gap.

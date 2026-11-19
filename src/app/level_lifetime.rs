@@ -79,6 +79,7 @@ impl LevelLifetime {
             super::player_animation_events::finish_accepted(world)?;
         }
         super::physics_scene::grenades::finish_accepted(world)?;
+        super::physics_scene::whale_oil_tank::finish_accepted(world)?;
         // Stop/Deinit callbacks still use the real reflected-function owner.
         // Closing it with ordinary input would reject grenade/Cues teardown.
         super::entity_functions::update(world)?;

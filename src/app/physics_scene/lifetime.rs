@@ -810,6 +810,9 @@ impl Host<'_> {
         if handle.class_id == self.scene.classes[57] {
             return self.scene.fx_component_retired(handle);
         }
+        if handle.class_id==self.scene.classes[60] {
+            return Ok(self.scene.whale_oil_tanks.get(handle.slot).ok_or("WhaleOilTank callback gate payload absent")?.ejections.is_empty());
+        }
         if handle.class_id != self.scene.classes[4] { return Ok(true); }
         let Some(world) = self.world.as_deref_mut() else { return Ok(true); };
         let component = self.scene.audios.get_mut(handle.slot)
@@ -905,7 +908,10 @@ impl ComponentLifecycleWorld for Host<'_> {
         if handle.class_id == self.scene.classes[57] {
             return self.scene.initialize_fx_component(self.live, handle);
         }
-        if handle.class_id == self.scene.classes[55] {
+        if handle.class_id == self.scene.classes[60] {
+                return self.scene.initialize_whale_oil_tank(self.world.as_deref_mut().ok_or("WhaleOilTank Initialize requires world")?,self.live,self.events,registry,handle);
+            }
+            if handle.class_id == self.scene.classes[55] {
             return self.scene.initialize_openable(
                 self.world.as_deref_mut().ok_or("Openable Initialize requires published world")?,
                 self.live, self.events, registry, handle,
@@ -950,7 +956,11 @@ impl ComponentLifecycleWorld for Host<'_> {
             self.scene.start(handle, registry)?;
             return self.scene.start_fx_component(self.live, self.events, handle);
         }
-        if handle.class_id == self.scene.classes[55] {
+        if handle.class_id == self.scene.classes[60] {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_whale_oil_tank(handle);
+            }
+            if handle.class_id == self.scene.classes[55] {
             self.scene.start(handle, registry)?;
             return self.scene.start_openable(
                 self.world.as_deref_mut().ok_or("Openable Start requires published world")?,
@@ -1095,6 +1105,7 @@ impl ComponentReleaseWorld for Host<'_> {
             if let Some(owner)=hearts {world.insert_resource(owner);}
             if let Some(owner)=statistics {world.insert_resource(owner);}
             result?;
+            scene.finish_whale_oil_tank_ejections(world,live,registry)?;
             scene.process_openable_uses(world,live,events)?;
             return Ok(());
         }
@@ -1245,6 +1256,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.stop_flash_component(self.world.as_deref_mut(),self.events,handle)?;
         } else if handle.class_id == scene.classes[55] {
             scene.stop_openable(self.events,handle)?;
+        } else if handle.class_id==scene.classes[60] {
+            scene.stop_whale_oil_tank(handle)?;
         } else if handle.class_id == scene.classes[57] {
             scene.stop_fx_component(self.events,handle)?;
         } else if handle.class_id==scene.classes[48]||handle.class_id==scene.classes[49] {
@@ -1370,6 +1383,7 @@ impl ComponentReleaseWorld for Host<'_> {
         if self.scene.is_smart_object_class(handle.class_id) {
             self.scene.deinitialize_smart_object(self.events,handle)?;
         }
+        if handle.class_id==self.scene.classes[60] {self.scene.deinitialize_whale_oil_tank(self.live,self.events,handle)?;}
         if handle.class_id==self.scene.classes[48]||handle.class_id==self.scene.classes[49] {
             self.scene.deinitialize_cue_component(handle)?;
         }
@@ -1699,6 +1713,8 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle,scene.retargeters.get_mut(handle.slot).ok_or("Retargeting absent")?)
         } else if handle.class_id==scene.classes[57] {
             entity.components.release(handle,scene.fx_components.get_mut(handle.slot).ok_or("CpntFX absent")?)
+        } else if handle.class_id==scene.classes[60] {
+            entity.components.release(handle,scene.whale_oil_tanks.get_mut(handle.slot).ok_or("WhaleOilTank absent")?)
         } else if handle.class_id == scene.classes[18] {
             entity.components.release(handle,scene.damage_zones.get_mut(handle.slot).ok_or("DamageZone absent")?)
         } else {
@@ -1887,6 +1903,8 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.retargeters.release(handle.slot)?;
         } else if handle.class_id==scene.classes[57] {
             scene.fx_components.release(handle.slot)?;
+        } else if handle.class_id==scene.classes[60] {
+            scene.whale_oil_tanks.release(handle.slot)?;
         } else if handle.class_id == scene.classes[18] {
             scene.damage_zones.release(handle.slot)?;
         } else {

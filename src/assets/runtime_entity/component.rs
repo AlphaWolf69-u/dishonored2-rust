@@ -196,6 +196,7 @@ pub(super) fn from_resolved(
             "arkCpntAIAttentionSource",
             Kind::AttentionSource(Arc::new(assets::ai_cues::AttentionDefinition::read(fields)?)),
         ),
+        "cpntwhaleoiltank" => ("arkCpntWhaleOilTank",Kind::WhaleOilTank(Arc::new(assets::whale_oil_tank::Definition::read(fields)?))),
         "cpntaimassist" => (
             "arkCpntAimAssist",
             Kind::Unhosted {

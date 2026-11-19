@@ -590,6 +590,12 @@ impl PhysicsScene {
                 )?;
                 let immediate = declaration.scheduling.starts_on_spawn();
                 let handle = match &component.kind {
+                    Kind::WhaleOilTank(source)=>{
+                        let pusher=source.pusher.as_deref().map(|path|definition.startup_children.iter()
+                            .find(|child|child.entity.eq_ignore_ascii_case(path)).cloned()
+                            .ok_or("WhaleOilTank pusher source was not prepared")).transpose()?;
+                        self.create_whale_oil_tank(index,source.clone(),pusher,&declaration,&mut registry,immediate)?
+                    }
                     Kind::Openable(source)=>{
                         let child=definition.startup_children.iter().find(|child|child.entity.eq_ignore_ascii_case(&source.animated_part))
                             .cloned().ok_or("Openable animated child source was not prepared")?;

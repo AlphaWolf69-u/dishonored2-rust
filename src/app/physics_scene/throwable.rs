@@ -1050,16 +1050,19 @@ impl PhysicsScene {
             .entity
             .ok_or("Throwable component is unlinked")?;
         let timespace = self.entities[index].timespace as usize;
-        //4c7930 checks actual Breakable and WhaleOilTank components. Only
-        //the first currently has a factory; no tank is inferred by model name.
+        //4c7930 checks actual Breakable or WhaleOilTank component identity.
         let receiver = self.entities[index]
             .components
             .entries
             .values()
             .iter()
             .any(|&packed| {
-                ComponentHandle::from_packed(packed).is_ok_and(|h| h.class_id == self.classes[11])
-            });
+                ComponentHandle::from_packed(packed).is_ok_and(|h| h.class_id == self.classes[11]||h.class_id==self.classes[60])
+            })
+            //Host loading stages the real tank/pusher Init behind shared
+            //prototype readiness. Its typed declaration is already admitted
+            //here; preserve4c7930's predicate before that later Init drain.
+            ||self.prepared_whale_oil_tanks.iter().any(|plan|plan.actor==self.entities[index].shared);
         let shared = self.world.clone();
         let mut guard = shared
             .write()

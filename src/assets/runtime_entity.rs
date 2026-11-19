@@ -46,6 +46,7 @@ pub(crate) enum Kind {
     FlashSurface(Arc<super::flash_surface::Definition>),
     GrenadeCooking(Arc<super::flash_surface::Definition>),
     Openable(Arc<super::openable::Definition>),
+    WhaleOilTank(Arc<super::whale_oil_tank::Definition>),
     Retargeting,
     Fx(Arc<super::fx_component::Definition>),
     Constraint(Arc<super::constraints::Definition>),
@@ -350,6 +351,14 @@ impl Definition {
             let mut chunks = Vec::new();
             let mut startup_children: Vec<Arc<Definition>> = Vec::new();
             for (component, descriptor) in components.iter().enumerate() {
+                if let Kind::WhaleOilTank(tank)=&descriptor.kind {
+                    if let Some(pusher)=tank.pusher.as_deref(){
+                        let source=name(pusher);
+                        if !startup_children.iter().any(|child|child.entity==source){
+                            startup_children.push(Self::acquire_inner(catalog,&source,cancelled,stack)?);
+                        }
+                    }
+                }
                 if let Kind::Openable(openable)=&descriptor.kind {
                     let source=name(&openable.animated_part);
                     if !startup_children.iter().any(|child|child.entity==source){

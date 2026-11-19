@@ -105,6 +105,7 @@ pub(super) mod water_publication;
 pub(super) mod windblast;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;
+pub(super) mod whale_oil_tank;
 
 struct PhysicsEntity {
     /// Host slot reuse starts only after all native consumer acknowledgements.
@@ -149,8 +150,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 60],
-    classes: [i32; 60],
+    factories: [u32; 61],
+    classes: [i32; 61],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -223,6 +224,9 @@ pub(super) struct PhysicsScene {
     openables: ComponentPool<openable::Component>,
     retargeters: ComponentPool<retargeting::Component>,
     fx_components: ComponentPool<fx_component::Component>,
+    whale_oil_tanks: ComponentPool<whale_oil_tank::Component>,
+    prepared_whale_oil_tanks: Vec<whale_oil_tank::Prepared>,
+    whale_oil_tank_updates_pending: bool,
     fx_publications: Vec<crate::gameplay::pickable_component::CheckedComponent>,
     cue_actions:std::collections::VecDeque<ai_cue_events::Action>,
     cue_update_marker:Option<i32>,
@@ -558,6 +562,7 @@ impl PhysicsScene {
             factory(b"arkCpntFX")?,
             factory(b"arkCpntUsableStatic")?,
             factory(b"arkCpntConstraint")?,
+            factory(b"arkCpntWhaleOilTank")?,
         ];
         let names = types
             .classes()
@@ -587,7 +592,7 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 60];
+        let mut classes = [0; 61];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
@@ -755,6 +760,9 @@ impl PhysicsScene {
             openables: types.create_pool(factories[55], &cvars.cvars)?,
             retargeters: types.create_pool(factories[56], &cvars.cvars)?,
             fx_components: types.create_pool(factories[57], &cvars.cvars)?,
+            whale_oil_tanks: types.create_pool(factories[60], &cvars.cvars)?,
+            prepared_whale_oil_tanks: Vec::new(),
+            whale_oil_tank_updates_pending:false,
             fx_publications: Vec::new(),
             cue_actions:Default::default(),
             cue_update_marker:None,
@@ -1080,6 +1088,7 @@ impl PhysicsScene {
             scene.prepare_placed_sound_volumes(catalog, document, models)?;
             scene.prepare_placed_breakables(catalog, document, models)?;
             scene.prepare_placed_openables(catalog, document, models, live, &mut registry)?;
+            scene.prepare_placed_whale_oil_tanks(catalog,document,models,live)?;
             if let Some(prepared) = level_bodies {
                 scene.admit_level_bodies(
                     document,
@@ -1533,6 +1542,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.retargeters.get(handle.slot).map(|v|&v.owner)
         } else if handle.class_id==self.classes[57] {
             self.fx_components.get(handle.slot).map(|v|&v.owner)
+        } else if handle.class_id==self.classes[60] {
+            self.whale_oil_tanks.get(handle.slot).map(|v|&v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1618,6 +1629,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.retargeters.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if handle.class_id==self.classes[57] {
             self.fx_components.get_mut(handle.slot).map(|v|&mut v.owner)
+        } else if handle.class_id==self.classes[60] {
+            self.whale_oil_tanks.get_mut(handle.slot).map(|v|&mut v.owner)
         } else if self.is_ai_startup_class(handle.class_id) {
             self.ai_startup_owner_mut(handle)
         } else if self.is_crew_class(handle.class_id) {
@@ -1932,6 +1945,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.retargeters.schedule(handle.slot)?;
                 } else if handle.class_id==self.classes[57] {
                     self.fx_components.schedule(handle.slot)?;
+                } else if handle.class_id==self.classes[60] {
+                    self.whale_oil_tanks.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[18] {
                     self.damage_zones.schedule(handle.slot)?;
                 } else {

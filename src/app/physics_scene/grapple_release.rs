@@ -199,11 +199,6 @@ impl PhysicsScene {
                     );
                 }
             }
-            if kind == ObjectKind::Movable
-                && self.far_reach_component_present(target, b"arkCpntWhaleOilTank")?
-            {
-                return Err("Far Reach requires the actual WhaleOilTank thrown-state owner".into());
-            }
             let handle = self.entities[index].components.find_component(
                 self.rigid_class_range()?,
                 [0x28, 0],

@@ -642,6 +642,9 @@ impl ComponentLifecycleWorld for Startup<'_> {
             if handle.class_id == self.scene.classes[57] {
                 return self.scene.initialize_fx_component(self.live, handle);
             }
+            if handle.class_id == self.scene.classes[60] {
+                return self.scene.initialize_whale_oil_tank(self.world.as_deref_mut().ok_or("WhaleOilTank Initialize requires world")?,self.live,self.events,registry,handle);
+            }
             if handle.class_id == self.scene.classes[55] {
                 return self.scene.initialize_openable(
                     self.world.as_deref_mut().ok_or("Openable Initialize requires published world")?,
@@ -730,6 +733,10 @@ impl ComponentLifecycleWorld for Startup<'_> {
             if handle.class_id == self.scene.classes[57] {
                 self.scene.start(handle, registry)?;
                 return self.scene.start_fx_component(self.live, self.events, handle);
+            }
+            if handle.class_id == self.scene.classes[60] {
+                self.scene.start(handle,registry)?;
+                return self.scene.start_whale_oil_tank(handle);
             }
             if handle.class_id == self.scene.classes[55] {
                 self.scene.start(handle, registry)?;
@@ -1056,6 +1063,8 @@ impl PhysicsScene {
             membership!(self.retargeters)
         } else if handle.class_id==self.classes[57] {
             membership!(self.fx_components)
+        } else if handle.class_id==self.classes[60] {
+            membership!(self.whale_oil_tanks)
         } else if handle.class_id == self.classes[18] {
             membership!(self.damage_zones)
         } else {
