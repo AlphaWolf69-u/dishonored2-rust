@@ -3274,8 +3274,10 @@ impl StateMachine {
         let Some(motion) = frame.powers.blink.as_ref() else { return };
         let velocity = motion.prior_velocity;
         let mut selected = target;
-        let possession = frame.controller.possession_state();
-        let falling_support = target != StateId::MANTLE && !(1..=3).contains(&possession) && !frame.physics.near_ground();
+        //858010 tests controller+2d0 PLAYER_MODE, not possession+5d0.
+        //The admitted modes here are Default0 and Swim1; Swimming resumes
+        //its target navigation without the ground/falling recovery branch.
+        let falling_support = target != StateId::MANTLE && !frame.swimming && !frame.physics.near_ground();
         if target != StateId::MANTLE && frame.physics.near_ground() { frame.controller.support_state = SupportState::Supported; }
         if falling_support {
             // Force=true in 1407fbb20 returns FALLING even when the prior
