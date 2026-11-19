@@ -26058,3 +26058,37 @@ infinite Health and authored Breakable explosion FX, establishing why the
 component's damage receiver is required. This does not identify the user's
 unrecorded oil-bottle impact. Combined build/playback/exit validation remains
 with the root; no independent build or game launch was run for this change.
+
+### Player Midnight cast ownership during Blink aim and sword input, November 19
+
+`ported`: native7d6040→7ce370→7ce7e0 resolves supplied casting by iterating
+the scene's actual group-info names, then7d4da0/7d50b0 admits those bound
+entities and7e2ad0 writes their own animation trees. The player backend now
+intersects its requested part mask with those actual declaration groups and
+nonempty supplied models before scheduling, interruption and retained instance
+ownership. PlayerBody/PlayerCamera still alias the same body target; both arm
+and equipment group aliases remain canonical. Bindings cover the whole graph,
+so a later graph node can use an already-bound group. A scene with no matching
+player group fails before changing any existing playback, matching7d51e0's
+missing-corresponding-entity admission boundary.
+
+Previously a left-arm-only Blink loop retained every requested nonempty model
+as if it owned all five trees. Its startup, replacement or retirement could
+therefore interrupt/clear a sword tree absent from that declaration. The
+installed Blink loop has onlyPlayerLeftArm; it now owns only that target.
+This corrects the shared class of sparse-cast scenes, rather than adding a
+Blink/Slash state exception. The original controller7f8270 maps sword input19
+toSlash39, while UsePower63 owns/excludes left mask2 and Slash owns/locks right
+mask4 (constructors856350/86a710). Installed base/Corvo DEFAULT mode has no
+63→39 override, so their state-rule admission allows simultaneous aiming and
+swinging before a Blink release; state12's separate ordinary-Slash quit policy
+is unchanged.
+
+Prediction: sparse-scene start/stop will only visit and clear its actual bound
+trees; Blink aiming-loop publication will no longer claim an unrelated right
+arm. One small allocation-free group-mask fold runs at scene start, with no
+new lookup/cache/resource lease or per-frame scan. Existing instance Stop,
+partial interruption, sound/event acknowledgements and final resource drops
+use the corrected ownership mask. No CPU gain, actual in-game action result
+or visual acceptance is claimed; root owns the coherent build and playback
+validation. No independent build, game launch or test suite was run.

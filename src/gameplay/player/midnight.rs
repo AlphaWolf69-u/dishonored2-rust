@@ -751,6 +751,19 @@ impl Midnight {
     /// just as Windblast initializes its bool before conditional resolution.
     pub fn start_with_variables(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast,
         parts: u8, seconds: f32, booleans: &[(&str, bool)], loop_counts: &[(&str, i32)], random: &mut u32) -> Result<u32, String> {
+        // 7ce7e0 resolves the supplied casting against the declaration's
+        // actual group-info list. Supplying an entity for another group does
+        // not give this scene ownership of that entity's animation tree.
+        // Keep PlayerBody/PlayerCamera's shared target and the equipment aliases
+        // from cast_target; retain bindings across the whole scene graph.
+        let bound_parts = prepared.decl.groups.iter()
+            .filter_map(|(_, name)| cast_target(name))
+            .filter(|&target| !md6[target].is_empty())
+            .fold(0u8, |bound, target| bound | (1 << target));
+        let parts = parts & bound_parts;
+        if parts == 0 {
+            return Err("Midnight has no corresponding player cast group".into());
+        }
         let mut graph = GraphState::new(prepared);
         for (index, node) in prepared.decl.bool_nodes.iter().enumerate() {
             if let Some((_, value)) = booleans.iter().rev().find(|(name, _)| *name == node.name) { graph.booleans[index] = *value; }
