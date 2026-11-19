@@ -24,7 +24,7 @@ impl Observation {
         let input=input_for(19)?;send(world,input,true)?;send(world,input,false)?;
         Ok(Self{stage:Stage::Equip,since:Instant::now(),held:None,serial:0,windows:0})
     }
-    fn steer(world:&mut World,forward:Vec3)->Result<bool,String>{
+    pub(super) fn steer(world:&mut World,forward:Vec3)->Result<bool,String>{
         let (_,axis)=player(world)?.published_camera_frame();
         let current=axis.x_axis;
         let yaw=forward.y.atan2(forward.x)-current.y.atan2(current.x);
