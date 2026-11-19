@@ -1,4 +1,4 @@
-//! Read-only current-state formatting, called only by the F8 report.
+//! Player state and recent traversal results for F8 captures.
 use super::Player;
 use std::fmt::Write;
 
@@ -26,5 +26,75 @@ impl Player {
         self.powers.write_diagnostics(report);
         let _ = writeln!(report, "  latest_scene_start_error={:?}", self.body.midnight.last_start_error);
         self.body.midnight.write_combat_diagnostics(report);
+    }
+}
+use super::{character_proxy::WorldHit, physics::PlayerPhysics, states::StateId};
+use crate::gameplay::powers::traversal::{BlinkFailure, BlinkRequest};
+use bevy_math::Vec3;
+
+/// The F8 report can be taken several seconds after the movement has ended.
+/// Keep scalar values from recent transitions. No gameplay resources are retained.
+#[derive(Default)]
+pub(super) struct TraversalHistory {
+    events: [Option<TraversalSample>; 16],
+    next: usize,
+    followup: u8,
+}
+
+#[derive(Debug)]
+#[allow(dead_code, reason = "Field names and values are included in the F8 report via Debug")]
+pub(super) enum TraversalEvent {
+    BlinkBegin { request: BlinkRequest, previous_velocity: Vec3 },
+    BlinkPlace { interrupted_by: Option<BlinkFailure>, position: Vec3 },
+    BlinkNavigate { state: StateId },
+    BlinkInterrupted,
+    VaultBegin { obstacle: Vec3, height: f32, forward: Vec3, speed: f32, start_animation: Vec3, exit: Vec3 },
+    VaultRestoreStanding,
+    VaultEnd { phase: u8, corrected_position: Vec3 },
+    AfterPhysics { ticks: u8, state: Option<StateId>, requested_velocity: Option<Vec3>, dt: f32 },
+}
+
+struct TraversalSample {
+    event: TraversalEvent,
+    time: f64,
+    position: Vec3,
+    velocity: Vec3,
+    posture: usize,
+    ground_distance: f32,
+    ceiling_distance: f32,
+    contact_count: usize,
+    contacts: [Option<WorldHit>; 3],
+}
+
+impl TraversalHistory {
+    pub(super) fn record(&mut self, physics: &PlayerPhysics, time: f64, event: TraversalEvent) {
+        if matches!(event, TraversalEvent::BlinkPlace { .. } | TraversalEvent::VaultEnd { .. } | TraversalEvent::BlinkInterrupted) {
+            self.followup = 1;
+        }
+        let mut contacts = physics.proxy.contact_hits();
+        self.events[self.next] = Some(TraversalSample {
+            time, event, position: physics.position(), velocity: physics.velocity,
+            posture: physics.posture, ground_distance: physics.ground_distance,
+            ceiling_distance: physics.ceil_distance, contact_count: physics.proxy.contact_count(),
+            contacts: std::array::from_fn(|_| contacts.next()),
+        });
+        self.next = (self.next + 1) % self.events.len();
+    }
+
+    pub(super) fn after_physics(&mut self, physics: &PlayerPhysics, time: f64, state: Option<StateId>, requested_velocity: Option<Vec3>, dt: f32) {
+        let ticks = self.followup;
+        if ticks == 0 { return; }
+        if matches!(ticks, 1 | 4 | 16 | 64) {
+            self.record(physics, time, TraversalEvent::AfterPhysics { ticks, state, requested_velocity, dt });
+        }
+        self.followup = if ticks < 64 { ticks + 1 } else { 0 };
+    }
+
+    pub(super) fn write(&self, report: &mut String) {
+        use std::fmt::Write;
+        for s in self.events[self.next..].iter().chain(&self.events[..self.next]).flatten() {
+            let _ = writeln!(report, "    traversal t={} {:?} feet={:?} velocity={:?} posture={} ground={} ceiling={} contacts={} witnesses={:?}",
+                s.time, s.event, s.position, s.velocity, s.posture, s.ground_distance, s.ceiling_distance, s.contact_count, s.contacts);
+        }
     }
 }

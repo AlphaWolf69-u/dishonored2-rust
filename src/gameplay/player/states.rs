@@ -17,6 +17,7 @@ use super::shape::{POSTURE_LEAN_FORWARD, POSTURE_VAULTING};
 use crate::edge_animation::EdgeAnimation;
 use std::sync::Arc;
 use super::character_proxy::{PlayerWorld, SupportState};
+use super::diagnostics::TraversalEvent;
 use crate::gameplay::collision_filter::{layer, QueryFilter};
 use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
@@ -2809,6 +2810,10 @@ impl StateMachine {
                 exit: sensor.vault_exit + forward * vault.exit_offset.max(radius),
                 height,
             };
+            let run = self.states[index].vault;
+            frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::VaultBegin {
+                obstacle: sensor.vault_position, height, forward, speed, start_animation: run.interpolate, exit: run.exit,
+            });
             frame.camera.constraints = camera::constraints(vault.constraint_params);
             frame.camera.set_target_mode(MODE_CONSTRAINED, -1.0);
             frame.physics.disable_gravity(true);
@@ -3199,9 +3204,14 @@ impl StateMachine {
                     frame.midnight.stop(self.states[index].midnight);
                     self.states[index].midnight = 0;
                 }
+                let mut corrected_position = frame.origin;
                 if frame.physics.ground_distance < 0.0 {
-                    frame.physics.proxy.position.z -= frame.physics.ground_distance;
+                    corrected_position.z -= frame.physics.ground_distance;
+                    frame.physics.set_position(corrected_position);
                 }
+                frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::VaultEnd {
+                    phase: self.states[index].vault.phase, corrected_position: frame.physics.position(),
+                });
                 return;
             }
             _ => {}
@@ -3275,6 +3285,10 @@ impl StateMachine {
     fn finish_blink_navigation(&mut self, target: StateId, frame: &mut Frame) {
         let Some(motion) = frame.powers.blink.as_ref() else { return };
         let velocity = motion.prior_velocity;
+        // 858010 reads sensor 6 at the destination before support or sprint recovery.
+        let target = if frame.powers.blink_from_sprinting && frame.vault_sensor.enabled && frame.vault_sensor.can_vault {
+            StateId::VAULT
+        } else { target };
         let mut selected = target;
         //858010 tests controller+2d0 PLAYER_MODE, not possession+5d0.
         //The admitted modes here are Default0 and Swim1; Swimming resumes
@@ -3300,6 +3314,7 @@ impl StateMachine {
         } else if target != StateId::AUTOCROUCH && frame.controller.toggled(frame.controller.sneak_action) && self.available(StateId::SNEAKING, frame) {
             frame.requests.push_linear(0, Vec3::ZERO); selected = StateId::SNEAKING; self.request(selected);
         } else { frame.requests.push_linear(0, Vec3::ZERO); self.request(selected); }
+        frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkNavigate { state: selected });
         if let Some(state) = self.state(selected) {
             if matches!(state.decl.kind, Kind::Running | Kind::Sneaking | Kind::Sprinting(_) | Kind::Sliding(_) | Kind::Slipping(_)
                 | Kind::AutoCrouch | Kind::Jumping(_) | Kind::Falling(_) | Kind::Swimming(_)) {
@@ -3668,6 +3683,7 @@ impl StateMachine {
                 frame.requests.push_angular(0, Vec3::ZERO);
                 frame.requests.push_linear(0, run.velocity);
                 if (frame.origin - run.exit).dot(run.forward) >= 0.0 {
+                    frame.powers.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::VaultRestoreStanding);
                     frame.physics.set_posture(POSTURE_STANDING, 0.0);
                     frame.physics.disable_gravity(false);
                     // The scene keeps playing untracked.

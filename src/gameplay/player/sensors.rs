@@ -336,6 +336,8 @@ pub struct VaultSensor {
     /// +0x40 origin, +0x4c axis (columns forward, lateral, up).
     pub origin: Vec3,
     pub axis: Mat3,
+    /// FUN_1403d0450 sets an explicit query origin and basis for Blink.
+    query_frame: Option<(Vec3, Mat3)>,
     pub can_vault: bool,
     pub vault_position: Vec3,
     pub vault_exit: Vec3,
@@ -381,6 +383,7 @@ impl VaultSensor {
             filter: NormalFilter::new(ground_normal),
             origin: Vec3::ZERO,
             axis: Mat3::IDENTITY,
+            query_frame: None,
             can_vault: false,
             vault_position: Vec3::ZERO,
             vault_exit: Vec3::ZERO,
@@ -394,13 +397,19 @@ impl VaultSensor {
 
     /// FUN_1403d02d0.
     pub fn enable(&mut self, enabled: bool, ground_normal: Vec3) {
+        if self.enabled == enabled { return; }
         self.enabled = enabled;
         if enabled {
             self.filter = NormalFilter::new(ground_normal);
         } else {
             self.pending = None;
+            self.query_frame = None;
             self.can_vault = false;
         }
+    }
+
+    pub(super) fn set_query_frame(&mut self, position: Vec3, axis: Mat3) {
+        self.query_frame = Some((position, axis));
     }
 
     /// One frame: the previous queries' results, then this frame's queries.
@@ -415,10 +424,12 @@ impl VaultSensor {
     }
 
     fn issue(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32) {
-        self.origin = physics.position();
+        let (origin, entity) = self.query_frame.unwrap_or((physics.position(), physics.axis()));
+        self.origin = origin;
+        // 3d0bf0's override uses 7fcc10, the same five ground rays at the actor.
+        // Their normals have already been collected in the physics-query stage.
         self.filter.add(physics.ground_ray_normal_average, dt);
         let n = self.filter.get();
-        let entity = physics.axis();
         let (forward, left) = (entity.x_axis, entity.y_axis);
         let up = normalize_min(n - left * left.dot(n));
         let side = normalize_min(up.cross(forward));

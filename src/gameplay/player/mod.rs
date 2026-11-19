@@ -1330,6 +1330,8 @@ impl Player {
         if dt != 0.0 {
             let input = MotionInput { linear: self.requests.linear, angular: self.requests.angular };
             self.physics.step(world, dt, input);
+            self.powers.traversal_history.after_physics(&self.physics, self.entity_event_time,
+                self.machine.active_states().first().copied(), input.linear, dt);
         }
         if self.machine.is_active(StateId::GRAPPLE) {
             if let Some(destination) = self.grapple_state().and_then(|run| run.beam_destination()) {

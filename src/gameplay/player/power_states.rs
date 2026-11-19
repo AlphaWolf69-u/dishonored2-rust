@@ -1,6 +1,7 @@
 //! Selected power and real UsePower/Blink state instances. The app executes
 //! family callbacks on input/release; these states own arm scenes and motion.
 use super::{states::{Frame, Scenes, StateId}, Player};
+use super::diagnostics::{TraversalEvent, TraversalHistory};
 use crate::gameplay::powers::{self, Cast, Phase, Admission, AdmissionContext, action::{Action, Scenes as SceneHost},
     traversal::{BlinkMotion, BlinkContact, BlinkStep}};
 use bevy_math::Vec3;
@@ -42,6 +43,7 @@ pub struct Runtime {
     pub active: bool,
     pub cancel: bool,
     pub blink: Option<BlinkMotion>,
+    pub(super) traversal_history: TraversalHistory,
     pub grapple: Option<super::grapple_state::Runtime>,
     pub grapple_pending: bool,
     pub(super) grapple_feedback: std::sync::Arc<super::grapple_state::Feedback>,
@@ -90,6 +92,7 @@ impl Runtime {
             let _ = writeln!(report, "    power clock={} last_cast={:?} cooldown={} cooldown_ready={} bypass={}", self.now, cast.last_cast_time(), cast.settings.cooldown, cast.cooldown_ready(self.now, !self.cooldown_bypass), self.cooldown_bypass);
         }
         if let Some(motion) = &self.blink { motion.write_diagnostics(report); }
+        self.traversal_history.write(report);
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -247,6 +250,11 @@ pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
 }
 pub fn activate_blink(frame: &mut Frame<'_>) {
     let runtime = &mut *frame.powers;
+    if let Some(motion) = &runtime.blink {
+        runtime.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkBegin {
+            request: motion.request.clone(), previous_velocity: motion.prior_velocity,
+        });
+    }
     runtime.blink_pending = false; runtime.blink_finished = false; runtime.blink_aborted = false;
     runtime.blink_mantle_requested = false;
     runtime.previous_posture = frame.physics.posture;
@@ -258,6 +266,8 @@ pub fn activate_blink(frame: &mut Frame<'_>) {
     frame.physics.set_posture(4, 0.0);
     if let Some(motion) = &runtime.blink {
         if motion.request.camera_source != Vec3::ZERO { frame.physics.set_position(motion.request.camera_source); }
+        frame.vault_sensor.enable(true, frame.physics.ground_ray_normal_average);
+        frame.vault_sensor.set_query_frame(motion.request.final_position, frame.axis);
     }
     frame.requests.push_angular(0, Vec3::ZERO);
 }
@@ -285,6 +295,9 @@ pub fn update_blink(frame: &mut Frame<'_>) -> Option<StateId> {
             if runtime.blink_from_swimming {
                 position.z -= frame.physics.posture_settings(super::shape::POSTURE_SWIMMING).z_offset;
             }
+            runtime.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkPlace {
+                interrupted_by: step.err(), position,
+            });
             frame.physics.set_position(position);
             runtime.blink_finished = true;
             Some(StateId(motion.request.exit_state))
@@ -293,6 +306,11 @@ pub fn update_blink(frame: &mut Frame<'_>) -> Option<StateId> {
 }
 pub fn deactivate_blink(frame: &mut Frame<'_>) {
     let runtime = &mut *frame.powers;
+    // 857a30 clears the override and releases the destination sensor.
+    frame.vault_sensor.enable(false, frame.physics.ground_ray_normal_average);
+    if !runtime.blink_finished {
+        runtime.traversal_history.record(frame.physics, frame.action_time, TraversalEvent::BlinkInterrupted);
+    }
     frame.physics.disable_gravity(false);
     frame.controller.enable_actions(0x4000);
     runtime.blink_finished = true;
