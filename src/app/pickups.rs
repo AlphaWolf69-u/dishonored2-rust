@@ -55,22 +55,7 @@ pub(in crate::app) fn request_borrowed(
     if !player.request_loot_object(id) {
         return Ok(false);
     }
-    interactions.pending_pickup = Some(Pending {
-        entity: id,
-        reference,
-        definition,
-        item,
-        hold,
-        maximum,
-        phase: 0,
-        admitted: 0,
-        currency_notice: None,
-        hud_notified: false,
-        from_grapple,
-        notice: Default::default(),
-        rejected_notice: false,
-        rejected_sound: None,
-    });
+    interactions.pending_pickup = Some(Pending::new(id, reference, definition, item, hold, maximum, from_grapple));
     Ok(true)
 }
 
@@ -92,6 +77,12 @@ pub(super) struct Pending {
     pub rejected_sound: Option<u32>,
 }
 impl Pending {
+    pub(super) fn new(entity: EntityId, reference: CheckedComponent, definition: Arc<PickableDefinition>,
+        item: Option<Arc<crate::assets::inventory_item::PickableItem>>,
+        hold: Option<crate::gameplay::player::carrying::Target>, maximum: u32, from_grapple: bool) -> Self {
+        Self { entity, reference, definition, item, hold, maximum, from_grapple, phase: 0, admitted: 0,
+            currency_notice: None, hud_notified: false, notice: Default::default(), rejected_notice: false, rejected_sound: None }
+    }
     ///615d40/615d90: admitted ammo uses the current inventory record maximum;
     ///the collection's prepared value supplies a not-yet-hosted record.
     pub(super) fn inventory_full(

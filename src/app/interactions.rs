@@ -1311,21 +1311,10 @@ pub(super) fn focus_and_interact(
                         let requested=player.request_loot_object(id);
                         if trace_input {eprintln!("ACTION_INTERACT_REQUEST id={id:?} state=47 requested={requested} item={:?}",item.path);}
                         if requested {
-                            interactions.pending_pickup = Some(super::pickups::Pending {
-                                entity: id,
-                                reference,
-                                definition: pickable.definition.clone(),
-                                item: Some(item.clone()),
-                                hold:None,
-                                maximum: interactions.limits.maximum(&item.path),
-                                phase: 0,
-                                admitted: 0,
-                                hud_notified: false,
-                                from_grapple: false,
-                                notice: Default::default(),
-                                rejected_notice: false,
-                                rejected_sound: None,
-                            });
+                            interactions.pending_pickup = Some(super::pickups::Pending::new(
+                                id, reference, pickable.definition.clone(), Some(item.clone()), None,
+                                interactions.limits.maximum(&item.path), false,
+                            ));
                         }
                     }
                 }
