@@ -187,7 +187,7 @@ struct LocalStaticInputs {
     world: Vec<u32>,
     models: Vec<(usize, usize)>,
     /// Exact published rigid transform plus weak palette generation; no second palette owner.
-    model_poses: Vec<(Option<std::sync::Weak<shadow_updates::RestSkinning>>, [[f32; 4]; 3])>,
+    model_poses: Vec<(Option<std::sync::Weak<shadow_updates::RestSkinning>>, [[f32; 4]; 4])>,
     /// Particle system surfaces as of the cache entry's first source
     /// generation: like any static-bucket model they stay in the cached
     /// layer until it is rebuilt (the cache key is the light pose, 2cd500).

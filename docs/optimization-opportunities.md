@@ -2739,7 +2739,7 @@ The check borrows the already-collected per-light side roster, uses palette
 weak identity, compares the exact published rigid affine matrix and existing
 runtime surface inputs. It allocates no per-frame comparison vector and copies
 no skeleton pose. Each retained cache input owns one optional Weak pointer and
-48 bytes of rigid matrix per existing model record; replacement releases those
+64 bytes of rigid matrix per existing model record; replacement releases those
 certificates with the same cache entry. No startup, frame-time or FPS benefit
 is claimed; actual root validation must cover pose changes, Hide/removal,
 unchanged allocation reuse, GPU completion and shutdown.

@@ -653,3 +653,23 @@ pub(super) fn write_diagnostics(world:&World,eye:[f32;3],report:&mut String) {
         }
     }
 }
+
+///Named fixture observation only, called from the existing F8 owner dump.
+///It borrows the actual retained command/skin; no resampling or acquisition.
+pub(in crate::app) fn write_named_diagnostics(world:&World,name:&str,report:&mut String){
+    use std::fmt::Write;
+    let Some(interactions)=world.get_resource::<super::interactions::Interactions>() else{return;};
+    let Some(&actor)=interactions.actor_by_entity.get(name) else{return;};
+    let state=&interactions.actors[actor];
+    let _=writeln!(report,"  usable_state name={name} started={} enabled={} declared_initial={} current={:?} transitioning={:?} instigator={:?}",state.started,state.enabled,state.definition.initial_step,state.state.as_ref().map(|s|s.state),state.state.as_ref().map(|s|s.transitioning()),state.last_instigator);
+    let Some(owner)=world.get_resource::<UsableAnimations>() else{return;};
+    let Some((&placement,slot))=owner.placements.iter().find(|(_,slot)|slot.actor==actor) else{return;};
+    let _=writeln!(report,"    actual_animation placement={placement} asset={} initialized={} command={:?} clip={:?} playing={:?} settled={:?}",slot.asset.is_some(),slot.initialized,slot.command,slot.node.as_ref().and_then(|node|node.current_clip()),slot.node.as_ref().map(|node|node.input_playing()),slot.node.as_ref().map(|node|node.is_settled()));
+    let Some(source)=slot.source_index.and_then(|index|world.get_resource::<super::shadow_updates::ModelShadowSources>().and_then(|sources|sources.0.get(index))) else{return;};
+    if let Some(Ok(skin))=&source.skinning{
+        let _=writeln!(report,"    actual_published_palette matrices={} hash={:016x} first16={:?}",skin.matrices.len(),super::diagnostics::pose_fingerprint(&skin.matrices),&skin.matrices[..skin.matrices.len().min(16)]);
+    }
+    if let Some(asset)=&slot.asset{
+        let _=writeln!(report,"    actual_skeleton first16={:?}",&asset.rig.skeleton.joint_names[..asset.rig.skeleton.joint_names.len().min(16)]);
+    }
+}

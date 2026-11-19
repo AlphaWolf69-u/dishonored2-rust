@@ -7,11 +7,12 @@ use bevy::{
     render::{
         camera::ExtractedCamera,
         render_phase::{SortedRenderPhase, ViewSortedRenderPhases},
-        render_resource::{CachedRenderPipelineId, PipelineCache, RenderPassDescriptor, ShaderDefVal, StoreOp},
+        render_resource::{CachedRenderPipelineId, PipelineCache, RenderPassDescriptor, StoreOp},
         renderer::{RenderContext, ViewQuery},
         view::{ExtractedView, RetainedViewEntity, ViewTarget, ViewDepthTexture},
         Render, RenderApp, RenderSystems,
     },
+    shader::ShaderDefVal,
 };
 use hashbrown::HashMap;
 

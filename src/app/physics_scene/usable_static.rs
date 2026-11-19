@@ -209,6 +209,20 @@ impl PhysicsScene {
         use std::fmt::Write;
         let interactions=world.get_resource::<super::super::interactions::Interactions>();
         let _=writeln!(report,"\nStatic usable owners: total={} cooldown_pending={} accepted_uses={}",self.static_usables.allocated_count(),self.static_usable_updates_pending,self.usable_uses.len());
+        //These are the exact submitted F8 fixtures, observed only on demand.
+        for name in ["script_rich_small_01_sndctrl","script_rich_small_gp_window_handle_135","script_invisible_window_locked_1",
+            "script_door_latch_01_right_1","script_door_latch_blackmarket_apartment"]{
+            let entity=self.entities.iter().find(|entity|entity.name==name);
+            let live=world.get_resource::<LiveEntities>();
+            let _=writeln!(report,"  captured_usable name={name} scene={:?}",entity.map(|entity|(entity.shared,entity.retired,entity.entity_flags,entity.entity_flags_d7,live.and_then(|live|live.stage(entity.shared)))));
+            if let Some(entity)=entity{
+                if let Some(&index)=self.shared_indices.get(&entity.shared){
+                    let body=self.document_rigid(index).ok().flatten().and_then(|handle|self.rigid_component(handle).ok()).and_then(|component|component.body());
+                    let _=writeln!(report,"    actual_collision_body={body:?} frame={:?}",entity.frame.pose);
+                }
+            }
+            super::super::usable_animation::write_named_diagnostics(world,name,report);
+        }
         for position in 0..self.static_usables.allocated_count(){
             let slot=self.static_usables.roster.indices[position];
             let Some(component)=self.static_usables.get(slot) else{continue;};

@@ -643,7 +643,8 @@ pub(super) fn focus_and_interact(
                         return;
                     };
                     let binding = &interactions.readable[binding_index];
-                    if interactions.parent.contains_key(&read.entity)
+                    let parent=match live.parent(read.identity.0){Ok(parent)=>parent,Err(error)=>{warn!("document pickup parent identity: {error}");return;}};
+                    if parent.is_some()
                         || !binding.unsupported_pickup_components.is_empty()
                     {
                         warn!(
@@ -1663,7 +1664,7 @@ pub(super) fn request_admitted_readable(
             // focused action, not a diagnostic-only admission path.
             if binding.locked
                 || !binding.component.usable_by_player
-                || interactions.parent.contains_key(&binding.entity)
+                || live.find(&binding.entity).map(|id|live.parent(id)).transpose()?.flatten().is_some()
                 || !binding.unsupported_pickup_components.is_empty()
             {
                 continue;

@@ -236,15 +236,30 @@ pub(super) fn specialize_model_depth_hack(
 
 use surface_gpu::SurfaceKey;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///Single-output world movies consume target0 blend plus stencil, depth and
+///raster words. MRT1..3 have no output here and do not specialize this draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct MoviePipelineState([u32; 6]);
+impl MoviePipelineState {
+    fn from_state(state: &[u32; 9]) -> Self {
+        Self([state[0], state[4], state[5], state[6], state[7], state[8]])
+    }
+    fn state(self) -> [u32; 9] {
+        let [colour, stencil, depth, bias, clamp, slope] = self.0;
+        [colour, 0, 0, 0, stencil, depth, bias, clamp, slope]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ProbeKey {
     pub(super) surface: SurfaceKey,
-    world_movie: Option<std::sync::Arc<[u32; 9]>>,
+    world_movie: Option<MoviePipelineState>,
 }
 
 impl From<&ProbeExtension> for ProbeKey {
     fn from(extension: &ProbeExtension) -> Self {
-        Self { surface: SurfaceKey::from(&extension.surface), world_movie: extension.world_movie_state.clone() }
+        Self { surface: SurfaceKey::from(&extension.surface),
+            world_movie: extension.world_movie_state.as_deref().map(MoviePipelineState::from_state) }
     }
 }
 
@@ -480,17 +495,20 @@ impl MaterialExtension for ProbeExtension {
         specialize_vertex_lighting(descriptor, layout, key.bind_group_data.surface);
         specialize_surface(descriptor, key.bind_group_data.surface);
         specialize_skin(descriptor, key.bind_group_data.surface);
-        if let Some(state) = key.bind_group_data.world_movie.as_deref() {
+        if let Some(movie) = key.bind_group_data.world_movie {
+            let state = movie.state();
             //Use the same decoded state owner as other installed programs.
             //The no-Z and with-Z Iggy materials intentionally differ here.
-            let raster = crate::rendering::bevy_backend::pipeline_state::mesh_raster(state, true);
+            let raster = crate::rendering::bevy_backend::pipeline_state::mesh_raster(&state, true);
             descriptor.primitive.front_face = raster.0;
             descriptor.primitive.cull_mode = raster.1;
             if let Some(depth) = descriptor.depth_stencil.as_mut() {
-                *depth = crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(state, depth.format)
+                *depth = crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(&state, depth.format)
                     .expect("admitted world movie depth state");
             }
-            if let (Some(fragment), Some(blend)) = (descriptor.fragment.as_mut(), crate::render_state::blend_state(state).targets[0]) {
+            let blend_state = crate::render_state::blend_state(&state);
+            descriptor.multisample.alpha_to_coverage_enabled = blend_state.alpha_to_coverage;
+            if let (Some(fragment), Some(blend)) = (descriptor.fragment.as_mut(), blend_state.targets[0]) {
                 if let Some(Some(target)) = fragment.targets.first_mut() {
                     target.blend = crate::rendering::bevy_backend::pipeline_state::blend_target(blend)
                         .expect("admitted world movie blend state");
