@@ -384,6 +384,20 @@ impl PhysicsScene {
         Ok(())
     }
 
+    ///540e20→752260 admits the same PRE traversal for a placed AnimBase
+    ///owner as for a runtime AnimBase. The existing JointFrames owner supplies
+    ///phase3 samples to7506d0; this does not solve or copy another transform.
+    pub(in crate::app) fn request_placed_animation_update(&mut self,id:EntityId,clock:&crate::gameplay::game_clock::GameClock)->Result<(),String>{
+        let Some(&index)=self.shared_indices.get(&id) else{return Ok(());};
+        if self.entities[index].retired||!self.document_hierarchy.ancestors.contains_key(&index){return Ok(());}
+        let delta=clock.entity_delta(self.entities[index].timespace).ok_or("placed AnimBase entity timespace invalid")?;
+        if delta<=0.{return Ok(());}
+        if let Some(handle)=self.entities[index].components.reference_actor{
+            self.request_pre_physics_actor(usize::from(handle.slot))?;
+        }
+        Ok(())
+    }
+
     /// 808880 has a separate render virtual: it composes the parent's live
     /// render frame and phase3 joint, without moving the physics body. The
     /// existing final mesh/shadow/query publication owner consumes the delta.

@@ -25973,3 +25973,5 @@ remove-on-FX-end flag and one-shot completion state. No per-frame log, resource
 lease, production history, new timer, earlier removal or gameplay override is
 introduced. Consolidated unsampled frame-gap validation remains pending;
 no actual frame-stall fix or whole-frame performance claim is made here.
+
+`verified` for the captured Edge of the World window's initial availability. In the global level program, first load also starts a separate 1,000 ms Delay. Its Finished output passes literal false to Set Usability on handle 135 alone. The loaded rewrite reported that handle disabled with zero uses and no cooldown, handle 136 enabled, the window actor enabled at settled stage 1 with its open joint pose, and its invisible locked proxy retired. The window-local program also listens for an arkNPC entering or leaving its authored trigger. That contact writes false or true respectively to Lock and forwards the resulting value to the same handle. Player contact alone does not satisfy that class filter. The startup capture did not exercise an NPC crossing.

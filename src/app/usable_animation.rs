@@ -260,6 +260,7 @@ pub(super) fn advance(
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
     mut joint_frames: Option<ResMut<super::joint_frames::JointFrames>>,
     live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
+    mut physics_scene: Option<ResMut<super::physics_scene::PhysicsScene>>,
     mut events: Option<ResMut<crate::gameplay::entity_events::EntityEvents>>,
     mut exit: MessageWriter<bevy::app::AppExit>,
 ) {
@@ -308,6 +309,7 @@ pub(super) fn advance(
         if let Some(asset) = owner.lookup.get(&key).and_then(Weak::upgrade) {
             let slot = owner.placements.get_mut(&index).unwrap();
             slot.node = Some(asset.instantiate());
+            slot.initialized = false;
             slot.asset = Some(asset);
             let pending = !slot.audio_ready;
             owner.audio_pending |= pending;
@@ -333,6 +335,7 @@ pub(super) fn advance(
                     let matches = if interactions.catalog.has_overlays() { key == format!("{}#{index}", slot.model) } else { key == slot.model };
                     if interactions.actors[slot.actor].started && slot.requested && slot.asset.is_none() && matches {
                         slot.node = Some(asset.instantiate());
+                        slot.initialized = false;
                         slot.asset = Some(asset.clone());
                         owner.audio_pending |= !slot.audio_ready;
                     }
@@ -483,7 +486,20 @@ pub(super) fn advance(
     }
     // A stationary pose lives in the published palette; the source rig and
     // clips need not remain resident solely because the actor once moved.
+    let pre_clock=if advanced{clock.clock().ok()}else{None};
     for (&index, slot) in &mut owner.placements {
+        //540e20 admits the same PRE walk even for an unchanged held pose.
+        //Reuse this existing owner traversal; no second placement scan.
+        if interactions.actors[slot.actor].started&&slot.initialized{
+            if let (Some(scene),Some(live),Some(clock))=(physics_scene.as_deref_mut(),live.as_deref(),pre_clock){
+                if let Some(id)=live.find(&interactions.actors[slot.actor].entity){
+                    if let Err(error)=scene.request_placed_animation_update(id,clock){
+                        bevy::log::error!("Usable bound PRE admission: {error}");
+                        exit.write(bevy::app::AppExit::error());return;
+                    }
+                }
+            }
+        }
         let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
         let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
@@ -494,9 +510,10 @@ pub(super) fn advance(
             slot.animation_pose = None;
             slot.local_pose = None;
             slot.requested = false;
-            // A later acquisition creates a fresh node. Reapply the current
-            // authored idle state instead of leaving that node at its rest pose.
-            slot.initialized = false;
+            //The placed pose remains initialized in the published skin and
+            //JointFrames. Resetting this flag here makes invisible settled
+            //actors reacquire their assets every frame as an initial demand.
+            //Actual fresh node acquisition above resets it before sampling.
         }
     }
 }

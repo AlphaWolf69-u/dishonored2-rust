@@ -584,7 +584,10 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters))
         .add_systems(PostUpdate, super::usable_animation::advance
-            .after(super::interactions::focus_and_interact)
+            // 8ad260 runs stage 4 before 8af460 consumes joint poses.
+            // A moving handle's collider and this frame's focus query must
+            // see the same window pose as its mesh.
+            .before(super::physics_scene::runtime_animation::update)
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
             .run_if(super::loading_screen::scene_published))
