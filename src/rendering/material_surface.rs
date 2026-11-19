@@ -64,6 +64,8 @@ pub enum Program {
     /// iris occlusion, cornea Ward specular and two camera-relative fake
     /// specular lights).
     Eye = 13,
+    ///arkInGameIggy: premultiplied world-movie colour, after tone mapping.
+    InGameIggy = 14,
 }
 
 /// arkEyeball / BRDF_eye inputs. Defaults are the installed renderParm
@@ -340,6 +342,7 @@ impl Surface {
             Some("arksssrender") => Program::Skin,
             Some("arkhair") => Program::Hair,
             Some("arkeyeball") => Program::Eye,
+            Some("arkingameiggy") => Program::InGameIggy,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }

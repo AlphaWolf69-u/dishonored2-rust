@@ -480,8 +480,8 @@ fn forward_fog_flags(
 }
 
 pub(super) struct MaterialResolver<'a> {
-    /// Materials created with AlphaMode::Blend, the only ones whose instances
-    /// enter the transparent phase that alpha depth is drawn from.
+    ///Scene alpha materials that can enter the depth/lighting alpha lists.
+    ///Premultiplied post-tone world movies have their own source list.
     pub(super) blended_materials: HashSet<MaterialHandle>,
     pub(super) fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings,
     pub(super) reflections: Option<Handle<Image>>,
@@ -1166,7 +1166,8 @@ impl MaterialResolver<'_> {
             return None;
         }
         let transparency = material::transparency_with_program(bytes, program);
-        if transparency == material::Transparency::Blend
+        if (transparency == material::Transparency::Blend
+            && surface.program() != material_surface::Program::InGameIggy)
             || surface.program() == material_surface::Program::Hair
         {
             // 325130 binds OIT/Weights and OIT/Params per surface from its
@@ -1321,7 +1322,9 @@ impl MaterialResolver<'_> {
             }
             material::Transparency::Blend => {
                 self.blended += 1;
-                AlphaMode::Blend
+                if surface.program() == material_surface::Program::InGameIggy {
+                    AlphaMode::Premultiplied
+                } else { AlphaMode::Blend }
             }
         };
         let cull_mode = match material::cull_mode_with_program(bytes, program) {
@@ -1334,6 +1337,26 @@ impl MaterialResolver<'_> {
                 return None;
             }
         };
+        let world_movie_state = if surface.program() == material_surface::Program::InGameIggy {
+            let result = (|| -> Result<_, String> {
+                let library = self.programs.as_deref_mut().ok_or("world movie program library absent")?
+                    .as_mut().map_err(|error| error.clone())?;
+                let main = surface.main_program.as_deref().ok_or("world movie MAIN absent")?;
+                let definition = library.definition(main.as_bytes())?.ok_or("world movie MAIN definition absent")?;
+                let state = render_state::material_render_state(&entities::declaration_text(bytes), definition.render_state())?;
+                //Validate once during the existing material admission. The
+                //pipeline key keeps these exact native words for both variants.
+                crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(
+                    &state, bevy::core_pipeline::core_3d::CORE_3D_DEPTH_FORMAT)?;
+                crate::rendering::bevy_backend::pipeline_state::blend_target(
+                    render_state::blend_state(&state).targets[0].ok_or("world movie colour state absent")?)?;
+                Ok(state)
+            })();
+            match result {
+                Ok(state) => Some(std::sync::Arc::new(state)),
+                Err(error) => { eprintln!("World movie material {path}: {error}"); self.misses += 1; return None; }
+            }
+        } else { None };
         let base = StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: None,
@@ -1346,6 +1369,7 @@ impl MaterialResolver<'_> {
                     p.eq_ignore_ascii_case("arkSky")
                         || p.eq_ignore_ascii_case("arkClouds")
                         || p.eq_ignore_ascii_case("arkSimpleSprite")
+                        || p.eq_ignore_ascii_case("arkInGameIggy")
                 }),
             perceptual_roughness: 1.0 - surface.ward[1],
             metallic: surface.metallic_min_max[1],
@@ -1496,6 +1520,7 @@ impl MaterialResolver<'_> {
             MaterialHandle::Probe(self.probe_materials.add(ProbeMaterial {
                 base,
                 extension: ProbeExtension {
+                    world_movie_state,
                     fog_parameters: self.fog_material.parameters.clone(),
                     fog_objects: self.fog_material.objects.clone(),
                     fog_world: self.fog_material.world.clone(),

@@ -212,6 +212,8 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                 })
             })?;owner.damage_done=true;}
             if owner.packets.is_none(){
+                let _timing=super::breakables::measure("explosion_effect_contacts_packets",
+                    super::breakables::TimingOwner::Entity(request.inflictor));
                 let contact_hits=owner.queries.contact_hits.clone();
                 let(contacts,height)=world.resource_mut::<super::physics_scene::PhysicsScene>()
                     .explosion_effect_contacts(&mut owner.effect_queries,&request,&contact_hits)?;
@@ -224,7 +226,12 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             }
             let mut packets=owner.packets.take().unwrap();
             let mut cursor=owner.effect_cursor;
+            let mut timing=super::breakables::measure("explosion_effect_dispatch",
+                super::breakables::TimingOwner::Entity(request.inflictor));
+            timing.count(0,packets.len());
             let result=owner.effects.dispatch(world,&packets,&mut cursor);owner.effect_cursor=cursor;
+            timing.count(1,cursor);
+            drop(timing);
             if result.is_err(){owner.packets=Some(std::mem::take(&mut packets));}result
             })();
             if let Err(error)=result{owner.failure=Some(error.clone());return Err(error)}

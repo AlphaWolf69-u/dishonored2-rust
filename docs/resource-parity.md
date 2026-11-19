@@ -25735,3 +25735,142 @@ closure, the player and rendered camera moved 1.166 m horizontally. Across
 Usable animation and its audio admission stop when the interaction owner
 closes acquisition for the outgoing level. The existing retirement pass
 then drains pending readers before releasing that level's assets.
+
+### Captured wall thrust evidence, November 19
+
+The latest wall report collision-1795084974980 retains forward window54's WORLD body16782057/material111 point[13.894038,86.89018,23.615936]. With its actual saved feet/eye/camera and authored WORLD focus, the point is0.42135m lateral from the focus axis, outside the0.3m halfwidth; the cone passes. Native631020 genuinely calls62ee20/62f900 before player118/630890, so removing that initial rejection or widening the authored box is not justified. Installed player-melee vtable141b9d508 resolves+140=62f080 (weapon forward for thrust),+148=634990,+150=62f290,+118=630890; these source branches match the current producer. No gameplay correction is claimed from this one retained point.
+
+Host diagnostic: app/melee retains at most64 numeric frames of only the latest forward window, with the actual consumed/submitted ticket generations, per-bank raw/eligible counts, up to32 retained WORLD packets with focus decisions, actual weapon/camera frames/delta and selected callback witness. It performs no new query or animation evaluation; storage is reused at the next forward window and dropped with the existing melee component owner. Dropped-frame/count bounds are explicit. world-wall-poke is an opt-in windowless production-input variant restoring this F8's feet once, equipping through real input, charging by the actual authored Slash predicate and steering back to the captured direction. It verifies the current real collision surface against the saved point/normal before releasing the physical input, and requires a new real focused-forward WORLD callback/weak FX ticket. Setup matching tolerances do not alter any production collision/focus predicate. No build, launch or test was performed by this worker; root owns the coherent runtime observation needed to identify where the centered-wall opportunity is lost.
+
+### Local model shadow cache source withdrawal — 2026-11-19
+
+`app/local_shadow_updates.rs` now validates the existing retained static
+caster source before reusing its atlas allocation. Native235880 publishes
+model dirtiness;2cc860/2cd200 discard cached model pixels, and2cca20 releases
+the old keyed allocation before replacement. Previously the host lookup
+checked only the light pose/crop/width, so Hide/removal or a changed skeletal
+palette could leave the first model draw cached indefinitely.
+
+The host bridge compares the current side-filtered caster roster using the
+same collector iterator, weak identities of its actual published palettes,
+the exact published placement affine matrix used by the model shadow draw,
+and retained runtime static surface inputs. This includes rigid rotations
+whose AABB is unchanged. A changed source uses the existing
+insert/release/new-allocation path and genuine GPU completion fence. Source
+errors retain the original deferred failure boundary; missing poses are never
+invented. Weak certificates live only with their existing cache entry and do
+not keep a second pose, skeleton or palette resource alive. Unchanged sources
+retain the same allocation. No native dynamic-caster bit, shader, deformation,
+geometry, clock or bucket policy is guessed or changed. Status: source repair;
+root's combined build and actual animated/hidden-lamp action validation pending.
+
+The separate non-swinging-lamp prerequisite remains explicit: ordinary
+arkCpntConstraint is presently represented only by the legacy machinery
+assembly owner, whose seed filter is motor/wind/PhysicsSystem-driven. Canonical
+document rigid admission must not be supplemented with duplicate simulated
+bodies or fabricated oscillation. Actual constraint/body ownership and shared
+solver integration require completion before claiming that class fixed.
+
+### Carry release world-center publication (2026-11-19)
+
+`ported` — HoldObject release safety query83c860 obtains878230's current
+render-model world-bounds center. The placed carry host now reads that center
+from the existing ModelShadowSources bounds, which ModelPose updates alongside
+the real color geometry. It previously treated a center computed from the
+already-moved placement as a spawn-space center, then applied the current held
+frame again. No body, actor, model, hand-tag or authored offset is relocated by
+this getter; the existing query and native release rules choose the position.
+
+Prediction before correction: the release query's endpoint loses the second
+spawn-to-hand transform. In particular, F-drop and LMB-throw safety casts should
+use the actual currently rendered bottle center. This is a coordinate-fidelity
+correction, with no frame-time or audible/visual acceptance claim before the
+consolidated observation. It removes one matrix inverse and redundant transforms
+per release plan; no performance benchmark or aggregate gain is claimed.
+
+`host` — Existing opt-in carry diagnostics now observe F-drop, same-generation
+repick and actual throw-owner acknowledgement. Read-only snapshots include the
+hand tag, actor/body/COM, authored baseline, current placed draw transforms and
+post-release solver/support receipts. The actual83c860 query logs its start,
+world center, fraction and chosen position only while that bounded diagnostic
+is enabled. Ordinary gameplay keeps no added history or retained asset leases.
+
+`ported` — Deferred PhysicsBase149 velocity consumption is now connected:
+80b9e0 calls80b680 after its ordinary desired-velocity publication, except on
+the original stopped-entity/static-body early returns. The existing coalesced
+727100 request is evaluated against that same collision payload, published via
+18d020's existing90200 body-command queue, optionally delivered to853220's real
+PhysicsBase notification owner, then cleared through726f50. The small flagged
+notification receipt carries actual component generation; it is drained after
+the borrowed physics read guard is released and before command dispatch. No
+second physics world, inventory, actor motion request or new asset lease is
+created. Unflagged ordinary throw packets add no allocation.
+
+Prediction before implementation: true149 throw requests now change the actual
+first post-release body velocity/angular velocity instead of falling under
+gravity alone. Existing main baseline SHA256
+07A3211A4E4D05D409AA59E0D9A2665A9C112193F9EB7DF5F5FE9ABCB9112D5A
+posted linear[-3.327558,-8.588568,4.917224] and angular
+[9.32407,-3.614101,-0.0027584126] at frame112, but frame113 retained only
+linear[0,0,-1.1445003]/angular[0,0,0]. This is execution evidence of the missing
+consumer, not a pixel or forward-distance judgement. Consolidated verification
+must observe real command/solver output; the historical throw-ACK-plus-gravity
+motion/support pass alone does not close throwing correctness. The unchanged
+per-component path adds one pending-byte check; extra publication happens only
+for actual requested149 work. No whole-frame performance claim is made.
+
+### Particle contact collection during gunfire
+
+The cached static collision pass at `140fc1370` submits mesh leaf contacts to
+`140fe31e0`. One quad contributes one leaf. The host triangle map splits a
+quad into adjacent keys and returns accepted keys in order. The collector now
+consumes both halves together whenever both are present. It preserves the
+original leaf order, strict distance comparisons, second contact, and material
+key when only one half passes the bounds check. The candidate traversal borrows
+the map and reuses the stage scratch storage until the stage retires.
+
+The prediction was that the repeated scan of previously seen leaves accounted
+for nearly all CPU time in a dense query. In the main release, 210 sampled
+instruction pointers landed on the comparison loop at `static_cached+0x1005`.
+One Edge of the World shot query contained 65,956 triangles and 65,858 leaves.
+Across six alternating optimized replays of the captured candidates, mean leaf
+collection time was 630,335 µs before and 1,733 µs after. The nearest key,
+contact point, and both distances matched. This timing covers leaf collection.
+
+### Usable Kiscule notifications and component actions
+
+`ported` for the Edge of the World window and latch routes. The existing graph instance owner retains the enabled UsableNotification receiver and its notification count. It resolves linked or literal entity parameters once on startup and again on Reset, indexes receivers by managed target generation, and removes the target, graph and queued actions on retirement. Use and state-change callbacks at 1407af990, 1407af810 and 1407af8d0 publish the authored ports with their actual instigator and stage. The window handle's Used output invokes Next Stage on its separate state-list component (140797750). The two market latches invoke ActionInteractable.Set on their own listened entity (14052dc30). ActionUsable.Set Usability and Set Stage use 140797d30 and 140797c40. No additional asset loads, graph clones or GPU allocations are required.
+
+The window's first Stage changed (Start) consumes a one-notification budget and invokes ActionDestroy (140792f40) on an invisible rigid-body proxy with no attached children. Its 1cf message and reflected removal go through the level's entity-event and ordinary removal owners, which release the collision body and unregister its receivers. The direct entity branch admits leaf removal and explicit removal without children. The spawn-tag and recursive child-filtering branches of ActionDestroy require separate execution support. No performance or in-game appearance claim for this change precedes the integrated build.
+
+### Gameplay use, world audio and translucent world movies
+
+- UsableStatic now has a component owner for declaration acquisition, start,
+  notification 96, cooldown, stop and release (0x1404cd160 through 0x1404cda40).
+  Sensor candidates use the existing host fake box. Their occlusion ray uses the
+  same retained collision world as physical candidates (0x1403b7b90). The
+  existing graph and removal queues own stage notifications, latch availability
+  and removal of the window proxy.
+- The audio bank owner retains Wwise State instances, their sparse properties
+  and per-node group bindings (0x1410f6560, 0x141131aa0, 0x141113fa0).
+  Init and voice playback share each instance. The shared state registry
+  notifies subscribed voice and bus nodes at the output quantum. Subscriptions
+  retire with the node and bank references retire after their last voice tail.
+  In the installed underwater mix, bus 1973600711 selects low-pass 57 and +2 dB.
+  Exiting water restores the prior mix and the authored stop event owns the
+  surfacing sound. Effect time dilation updates its RTPC (0x14022fe30).
+- World Iggy movie meshes reuse their existing targets and batched draw
+  bindings in the host post-tone pass (0x1403386a0). Both installed square
+  materials use premultiplied RGB. Their distinct depth states are retained.
+  Level retirement clears view draws. The pipeline cache owns classifications.
+  Switching between two powers uses 0x1408363f0 and 0x140836120 and reuses
+  the equipment scene owner.
+- The swimming mode loads the shared equipment states in its own declaration,
+  with their existing scene leases. Blink mode transitions preserve the
+  authored exit offset and hand the time request to the incoming state
+  (0x140858010, 0x14088a620, 0x14088a7a0). The 1.15 s reuse cooldown remains
+  the value in the equipped Blink declaration.
+- The explosion sphere consumes the main hit collector, including contacts
+  initially overlapping the sphere (0x1407b3830, 0x140096ac0). The host still
+  executes the explosion query synchronously. Diagnostic counters record time
+  in overlap, ray, damage, impulse and component startup separately.

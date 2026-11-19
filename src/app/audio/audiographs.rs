@@ -322,6 +322,7 @@ pub(super) fn update(
                 interactions
                     .pending
                     .push(crate::app::interactions::PendingChange {
+                        stage:None,
                         actor: device.actor,
                         animation,
                         stop_effect,

@@ -575,11 +575,11 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
     states_in(&declarations.states)
 }
 
-/// Equipment states retain the same authored class/slot rules in each mode.
+/// Shared states retain the same authored class/slot rules in each mode.
 /// Never synthesize default-mode states that are absent from the swim mode.
 pub fn swimming_equipment_states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
     Ok(states_in(&declarations.swimming_states)?.into_iter().filter(|state|
-        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::LootObject(_) | Kind::GrabObject(_) | Kind::HoldObject(_) | Kind::ReleaseObject(_) | Kind::PowerWheel | Kind::CancelAction(_))).collect())
+        !matches!(state.kind, Kind::Swimming(_) | Kind::SwimMantle | Kind::Dead(_) | Kind::ReadNote)).collect())
 }
 
 fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl>, String> {

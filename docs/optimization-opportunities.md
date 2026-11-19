@@ -2730,3 +2730,22 @@ GPU work remains pending. No second persistent cache or extra draw/pass exists.
 Root validation must match the same-run future-layout preload receipt against
 actual visible source/key/layout, compare first-use creation times, startup
 duration/memory and unchanged output/retirement. No FPS improvement is inferred.
+
+### Local shadow source certificates — 2026-11-19
+
+Prediction before validation: changed or withdrawn static model sources will
+stop reusing stale local atlas pixels; unchanged sources keep their allocation.
+The check borrows the already-collected per-light side roster, uses palette
+weak identity, compares the exact published rigid affine matrix and existing
+runtime surface inputs. It allocates no per-frame comparison vector and copies
+no skeleton pose. Each retained cache input owns one optional Weak pointer and
+48 bytes of rigid matrix per existing model record; replacement releases those
+certificates with the same cache entry. No startup, frame-time or FPS benefit
+is claimed; actual root validation must cover pose changes, Hide/removal,
+unchanged allocation reuse, GPU completion and shutdown.
+
+Opened-owner opportunity retained: publish_local_shadow_draws constructs an
+uncached LocalStaticInputs (including runtime surface clones) before selecting
+an existing cached entry. That existing settled-frame construction could be
+deferred to the uncached branch after measuring it; this repair does not claim
+or introduce a resource/performance improvement there.

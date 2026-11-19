@@ -139,6 +139,11 @@ impl Runtime {
         let active = player.machine.is_active(StateId::BLINKING);
         if active {
             self.pending=false; self.was_active=true;
+            if player.take_blink_mode_restart() {
+                if let Some(lease) = self.time.take() {
+                    clock.release_time_request(lease, self.motion.ease_out_duration)?;
+                }
+            }
             if self.time.is_none() {
                 let world = if player.attributes.get("ARK_ATTRIBUTE_STOP_TIME_DURING_BLINK") > 0.0 {0.0} else {self.motion.world_time_scale};
                 self.time=Some(clock.acquire_time_request(TimeRequest {world,unbent:self.motion.unbent_time_scale,ease:self.motion.ease_in_duration})?);
@@ -159,6 +164,7 @@ impl Runtime {
     /// Safe before map clock/FX owners retire. Repeated calls release no
     /// other component's lease and never clear another power's time request.
     pub fn retire(&mut self, player:&mut Player, clock:&mut ClockRuntime, effects:&mut EffectRequests)->Result<(),String>{
+        player.take_blink_mode_restart();
         if let Some(lease)=self.time.take(){clock.release_time_request(lease,self.motion.ease_out_duration)?;}
         // Native80f040 restores the player's group when no retained world
         // bending applies. Do not erase an override held by another power.

@@ -58,6 +58,24 @@ struct WorldWitness {
     focus_step_back: f32,
     inside_focus: bool,
 }
+/// Bounded last-forward-window evidence. No extra queries or animation sample.
+#[derive(Debug)]
+struct ForwardFrame {
+    app_frame: Option<u32>,
+    previous: ReferenceFrame,
+    current: ReferenceFrame,
+    origin: Vec3,
+    eye: Vec3,
+    camera: Mat3,
+    dt: f32,
+    consumed: [u32; 4],
+    raw: [usize; 4],
+    eligible: [usize; 4],
+    candidates: [Option<(ShapeRayContact, bool)>; 32],
+    candidate_count: usize,
+    selected: Option<ShapeRayContact>,
+    submitted: [u32; 4],
+}
 struct Delivery {
     world: bool,
     raw_hit: ShapeRayContact,
@@ -160,6 +178,9 @@ struct Owned {
     activation_player_time: f64,
     last_world_witness: Option<WorldWitness>,
     last_rejected_world: Option<WorldWitness>,
+    forward_frames: Vec<ForwardFrame>,
+    forward_frames_dropped: usize,
+    forward_window: u64,
 }
 #[derive(Resource, Default)]
 pub(super) struct Melee {
@@ -185,6 +206,8 @@ impl Melee {
             let _ = writeln!(report, "    entity={:?} ready={} requested={} retiring={} active={} stop_pending={} forward={} heavy_block={} damage_factor={} previous_frame={} hit_count={} seen_count={} contact_callbacks={} tails={} world_hit_duration={}", entry.entity, entry.ready, entry.requested, entry.retiring, entry.active, entry.stop_after_update, entry.forward_attack, entry.heavy_block, entry.factor, entry.previous.is_some(), entry.hits.len(), entry.seen.len(), entry.deliveries.len(), entry.tails.len(), entry.world_hit_duration);
             let _ = writeln!(report, "      receipts={:?} last_sweep={:?}", entry.receipts, entry.last_sweep);
             let _ = writeln!(report, "      last_retained_WORLD_before_focus={:?}\n      last_rejected_WORLD={:?}", entry.last_world_witness, entry.last_rejected_world);
+            let _ = writeln!(report,"      last_forward_window={} frames={} dropped_frames={} max_frames=64",entry.forward_window,entry.forward_frames.len(),entry.forward_frames_dropped);
+            for frame in &entry.forward_frames { let _=writeln!(report,"        forward_frame={frame:?}"); }
             let _ = writeln!(report, "      damage_input amount={} sword_factor={} target={:?} accepted={} health_damage={} focused={} forward={}",
                 entry.receipts.last_damage_amount, entry.receipts.last_damage_factor,
                 entry.receipts.last_damage_target, entry.receipts.last_damage_accepted,
@@ -301,6 +324,9 @@ pub(super) fn request_owned(
             shape_length,
             receipts: Receipts::default(),
             last_sweep: None,
+            forward_frames: Vec::new(),
+            forward_frames_dropped: 0,
+            forward_window: 0,
             physics_base,
             npc_range,
             activation_player_time: 0.,
@@ -418,6 +444,11 @@ pub(super) fn handle_animation_event(
             entry.activation_player_time = activation_player_time;
             entry.receipts.windows += 1;
             entry.forward_attack = settings.forward_attack;
+            if settings.forward_attack {
+                entry.forward_frames.clear();
+                entry.forward_frames_dropped = 0;
+                entry.forward_window = entry.receipts.windows;
+            }
             entry.heavy_block = settings.heavy_block;
             entry.factor = settings.damage_factor;
             entry.stop_after_update = false;
@@ -832,6 +863,12 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 continue;
             }
             let previous = entry.previous.unwrap_or(current);
+            let mut forward_trace=(entry.forward_attack&&(entry.active||entry.stop_after_update||entry.queries.iter().any(|id|id.is_valid()))).then(||ForwardFrame{
+                app_frame:world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame|frame.0),
+                previous,current,origin,eye,camera,dt,consumed:entry.queries.map(QueryId::bits),
+                raw:[0;4],eligible:[0;4],candidates:[None;32],candidate_count:0,selected:None,
+                submitted:[u32::MAX;4],
+            });
             let velocity =
                 (Vec3::from_array(current.position) - Vec3::from_array(previous.position)) / dt;
             entry.hits.clear();
@@ -841,6 +878,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 let scene = world.resource::<PhysicsScene>();
                 let live = world.resource::<LiveEntities>();
                 if let Some(hits) = scene.poll_melee_query(live, &mut owner.queries, id)? {
+                    if let Some(trace)=&mut forward_trace {trace.raw[bank]=hits.len();}
                     entry.receipts.completed += 1;
                     entry.receipts.raw_contacts += hits.len() as u64;
                     for hit in hits {
@@ -854,6 +892,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                             continue;
                         }
                         entry.receipts.eligible_contacts += 1;
+                        if let Some(trace)=&mut forward_trace {trace.eligible[bank]+=1;}
                         let world_hit = scene.melee_contact_world(live, hit, bank)?;
                         let pass = if world_hit { ContactPass::World } else { ContactPass::Entity };
                         entry.receipts.world_packets += u64::from(world_hit);
@@ -902,6 +941,10 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                     entry.definition.world_focus
                 } else { entry.definition.npc_focus });
                 if pass == ContactPass::World {
+                    if let Some(trace)=&mut forward_trace {
+                        if trace.candidate_count<trace.candidates.len(){trace.candidates[trace.candidate_count]=Some((witness(hit.hit),keep));}
+                        trace.candidate_count+=1;
+                    }
                     let snapshot = WorldWitness { stage: "retained collision-data packet before focus", window: entry.receipts.windows,
                         target: hit.entity, hit: witness(hit.hit), weapon: current,
                         previous_weapon: previous, entity_delta: dt,
@@ -956,6 +999,7 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                         entry.physics_base,
                     )? } else { (raw_witness, hit.entity) };
                     if target != hit.entity { entry.receipts.retargeted += 1; }
+                    if let Some(trace)=&mut forward_trace {trace.selected=Some(witness);}
                     if entry.seen.contains(&target) { continue; }
                     let point = Vec3::new(
                         witness.position[0],
@@ -1077,6 +1121,11 @@ fn update_owned(world: &mut World, owner: &mut Melee) -> Result<(), String> {
                 )?;
             }
             entry.previous = Some(current);
+            if let Some(mut trace)=forward_trace {
+                trace.submitted=entry.queries.map(QueryId::bits);
+                if entry.forward_frames.len()<64 {entry.forward_frames.push(trace);}
+                else {entry.forward_frames_dropped+=1;}
+            }
         }
     }
     let mut ready = Vec::new();

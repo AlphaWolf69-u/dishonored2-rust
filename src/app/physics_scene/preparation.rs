@@ -145,7 +145,7 @@ fn rollback_rigid(
                         )?;
                     }
                 }
-                2 => world.storage.add_dynamic_body_resumable(
+                2 => world.storage.add_body_resumable(
                     &mut world.geometry,
                     &mut events,
                     body,

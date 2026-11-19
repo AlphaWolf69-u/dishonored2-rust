@@ -101,6 +101,7 @@ impl PhysicsScene {
     ///already accepted first leaf a second time during cleanup/retry.
     pub(in crate::app) fn process_openable_uses(&mut self,world:&mut bevy::prelude::World,
         live:&LiveEntities,events:&mut EntityEvents)->Result<(),String>{
+        self.process_usable_uses(world,live)?;
         if !self.openable_uses_pending{return Ok(());}
         for position in 0..self.openables.allocated_count(){
             let slot=self.openables.roster.indices[position];
@@ -200,7 +201,7 @@ impl PhysicsScene {
         self.openable_updates_pending=pending;Ok(())
     }
     fn openables_active(&self)->bool{
-        self.openable_updates_pending
+        self.openable_updates_pending||self.static_usable_updates_pending
     }
     pub(in crate::app) fn prepare_placed_openables(&mut self,catalog:&archive::Catalog,document:&entities::Document,
         models:&[entities::PlacedModel],live:&mut LiveEntities,_registry:&mut ComponentRegistry)->Result<(),String>{
@@ -458,7 +459,7 @@ impl PhysicsScene {
 pub(in crate::app) fn update(world:&mut bevy::prelude::World){
     if !world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>().is_some_and(|clock|clock.advanced())
         ||!world.get_resource::<PhysicsScene>().is_some_and(|scene|scene.openables_active()){return;}
-    if let Err(error)=super::super::runtime_entities::with_scene(world,|world,scene,live,_|scene.advance_openables(world,live)){
+    if let Err(error)=super::super::runtime_entities::with_scene(world,|world,scene,live,_|{scene.advance_static_usables(world)?;scene.advance_openables(world,live)}){
         bevy::log::error!("Openable update failed: {error}");
         crate::platform::client_diagnostics::record(&format!("Openable update failed: {error}"));
         world.write_message(bevy::app::AppExit::error());
@@ -470,6 +471,7 @@ impl PhysicsScene {
     pub(in crate::app) fn write_openable_diagnostics(&self, world:&bevy::prelude::World,
         eye:[f32;3], report:&mut String) {
         use std::fmt::Write;
+        self.write_static_usable_diagnostics(world,eye,report);
         let focus=world.get_resource::<super::super::interaction_focus::FocusedInteraction>()
             .and_then(|owner|owner.current.as_ref()).map(|prompt|prompt.entity.as_str());
         let live=world.get_resource::<LiveEntities>();

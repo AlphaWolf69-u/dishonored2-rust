@@ -59,6 +59,9 @@ struct Slot {
     phase: Phase,
     handle: u32,
     flags: u32,
+    ///8363f0: only an equipped power replaced by another power uses the
+    ///state's shared switch scene. Other incoming powers use their own equip.
+    power_switch: bool,
     uid: u32,
     /// 836920: one counted request per source state, except anonymous90.
     restrictions: Vec<StateId>,
@@ -125,6 +128,7 @@ impl Runtime {
         let slot = &mut self.slots[side];
         slot.requested = false;
         slot.handle = 0;
+        slot.power_switch = false;
         slot.phase = if slot.equipped { Phase::Detach } else { Phase::Attach };
     }
     pub fn request(&mut self, target: Target, flags: u32, source: StateId) -> Result<u32, String> {
@@ -200,6 +204,14 @@ pub(super) fn advance(decl: &Declaration, sneaking: bool, sliding: bool,
             slot.restore = false;
             return Ok(true);
         }
+        //8363f0 computes this before replacing either inventory reference.
+        //The resulting skip-unequip flag belongs to this accepted request,
+        //not to every item whose incoming archetype happens to be POWER.
+        slot.power_switch = permitted && slot.equipped
+            && slot.current.as_ref().is_some_and(|target| target.equipment.archetype == 5)
+            && slot.incoming.as_ref().or(slot.current.as_ref().filter(|_| slot.restore))
+                .is_some_and(|target| target.equipment.archetype == 5);
+        if slot.power_switch { slot.flags |= 0x20; }
         if slot.equipped { slot.phase = Phase::Unequip; }
         else if permitted && (slot.incoming.is_some() || slot.restore) { slot.phase = Phase::Attach; }
         else { return Ok(true); }
@@ -221,7 +233,7 @@ pub(super) fn advance(decl: &Declaration, sneaking: bool, sliding: bool,
     if matches!(slot.phase, Phase::Detach | Phase::Attach) { return Ok(false); }
     if slot.phase == Phase::Equip {
         let path = slot.current.as_ref().map(|target| {
-            if target.equipment.archetype == 5 {
+            if slot.power_switch {
                 if slot.flags & 0x10 != 0 { return Ok(None); }
                 Ok(if sliding { decl.power_switch_slide.as_ref().or(decl.power_switch.as_ref()) } else { decl.power_switch.as_ref() }.map(String::as_str))
             } else { target.equipment.equip_scene(slot.flags, sneaking) }

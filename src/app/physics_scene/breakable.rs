@@ -919,6 +919,8 @@ impl PhysicsScene {
                     )?;
                 }
             }
+            let _timing = super::super::breakables::measure("breakable_chunk_component_startup",
+                super::super::breakables::TimingOwner::Entity(Some(child)));
             self.run_runtime_startup(world, live, events, &mut registry)
         })();
         self.registry = Some(registry);
@@ -1048,7 +1050,7 @@ impl PhysicsScene {
         }
         self.set_rigid_instigator_notification(live, handle, enabled)
     }
-    fn set_rigid_instigator_notification(
+    pub(super) fn set_rigid_instigator_notification(
         &mut self,
         live: &LiveEntities,
         handle: ComponentHandle,

@@ -100,6 +100,37 @@ pub struct Mixer {
     pub primary_bus: Option<u32>,
     pub bus_order: Vec<u32>,
     pub activity: Option<Arc<super::activity::Activity>>,
+    pub states: Arc<std::sync::Mutex<super::states::States>>,
+}
+
+///The actual source and logical-output bus subscriptions, retained by the
+///existing voice property owner rather than a second audio state manager.
+#[derive(Default)]
+pub struct StateRoute {
+    source: Vec<Arc<super::states::Node>>,
+    output: Vec<Arc<super::states::Node>>,
+    all_output: Vec<Arc<super::states::Node>>,
+}
+#[derive(Clone, Copy, Default)]
+pub struct StateValues {
+    pub source: [f32; 6],
+    pub output_db: f32,
+    pub total_output_db: f32,
+}
+impl StateRoute {
+    pub fn sample(&self) -> StateValues {
+        let mut result = [0.; 6];
+        for node in &self.source {
+            for (slot, value) in result.iter_mut().zip(node.sample()) {
+                *slot += value;
+            }
+        }
+        StateValues {
+            source: result,
+            output_db: self.output.iter().map(|node| node.sample()[5]).sum(),
+            total_output_db: self.all_output.iter().map(|node| node.sample()[5]).sum(),
+        }
+    }
 }
 
 /// Voice properties before a mixing bus (141104c30/1410dbb30). Makeup
@@ -116,13 +147,53 @@ pub struct VoiceRouting {
 impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
         let bus_order = bank.buses.iter().map(|bus| bus.id).collect();
+        let states=Arc::new(std::sync::Mutex::new(super::states::States::new(bank.state_groups)));
         Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters.into_iter().collect(),
             effects: bank.effects.into_iter().map(|effect| ((effect.shared, effect.id), effect)).collect(),
-            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order, activity: None }
+            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order, activity: None, states }
     }
 }
 
 impl Mixer {
+    pub fn state_node(
+        &self,
+        node: &NodeProperties,
+    ) -> Result<Option<Arc<super::states::Node>>, String> {
+        if node.states.groups.is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .subscribe(node.id, &node.states))
+    }
+    pub fn state_output_nodes(&self, id: u32) -> Result<Vec<Arc<super::states::Node>>, String> {
+        let mut result = Vec::new();
+        for (index, node) in self.bus_chain(id)?.into_iter().enumerate() {
+            if index != 0 && self.bus_mixes(node.id)? {
+                break;
+            }
+            result.extend(self.state_node(node)?);
+        }
+        Ok(result)
+    }
+    pub fn state_route(&self, source: &MediaProperties) -> Result<StateRoute, String> {
+        let mut result = StateRoute::default();
+        for node in source.nodes.iter() {
+            result.source.extend(self.state_node(node)?);
+        }
+        for node in self.bus_chain(source.bus)? {
+            if let Some(state) = self.state_node(node)? {
+                result.source.push(state.clone());
+                result.all_output.push(state);
+            }
+        }
+        if source.bus != 0 && !self.bus_mixes(source.bus)? {
+            result.output = self.state_output_nodes(source.bus)?;
+        }
+        Ok(result)
+    }
     /// 1410df700 selects the nearest positioning override or root.
     /// 141112160 uses static X/Y only if neither axis has an RTPC; once
     /// either is subscribed, an unsubscribed axis is zero. These controls

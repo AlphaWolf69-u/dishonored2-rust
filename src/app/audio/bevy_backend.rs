@@ -518,12 +518,18 @@ impl Shared {
         }
         // 1410d87b0 stores the current ID after notifying subscribers. Child
         // switches created by callbacks therefore still observe the old ID.
-        self.states.lock().unwrap_or_else(|error| error.into_inner()).set(group, value);
+        let mut states=self.states.lock().unwrap_or_else(|error|error.into_inner());
+        let duration=states.set(group,value);
+        if self.trace_retirement {
+            eprintln!("AUDIO_STATE group={group:#010x} value={value:#010x} transition_ms={duration:?} output_tick={}",self.tick);
+            states.visit_properties(|node,properties|eprintln!("AUDIO_STATE_PROPERTIES node={node:#010x} properties={properties:?}"));
+        }
         Ok(())
     }
 
     fn block(&mut self) -> Result<[f32; FRAMES * 2], String> {
         let tick = self.tick;
+        self.states.lock().unwrap_or_else(|error|error.into_inner()).publish_tick(tick);
         // Due actions execute before voice preparation/rendering (1410e6800).
         for pending in std::mem::take(&mut self.pending_actions) {
             if pending.paused_at.is_some() || pending.tick > tick { self.pending_actions.push(pending); }

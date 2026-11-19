@@ -377,6 +377,7 @@ pub(super) struct RigidBodyComponent {
     requested_motion_flags: u8,
     requested_motion_additive: bool,
     requested_motion_pending: bool,
+    requested_motion_published: bool,
     /// arkCpntPhysicsBase +0xd2, written by rigid freeze/thaw callbacks.
     pub(super) freeze_state: u8,
     /// Bit 0 of +0x1ac tracks the component's own update-roster pause.
@@ -417,6 +418,7 @@ impl Default for RigidBodyComponent {
             requested_motion_flags: 0,
             requested_motion_additive: false,
             requested_motion_pending: false,
+            requested_motion_published: false,
             freeze_state: 0,
             update_paused_by_body: false,
             materials: Default::default(),
@@ -636,6 +638,7 @@ impl RigidBodyComponent {
         });
         let additive = payload[25] != 0;
         self.requested_motion_pending = true;
+        self.requested_motion_published = false;
         if additive {
             for i in 0..3 {
                 self.requested_motion[i] = values[i] + self.requested_motion[i];
@@ -656,7 +659,7 @@ impl RigidBodyComponent {
     /// payload. The caller publishes it through 18d020's queued path and,
     /// when requested, runs the actual 140853220 component notification.
     pub(super) fn pending_motion_request(&self) -> Option<([f32; 4], [f32; 4], bool)> {
-        if !self.requested_motion_pending {
+        if !self.requested_motion_pending || self.requested_motion_published {
             return None;
         }
         let mut linear = [
@@ -690,12 +693,21 @@ impl RigidBodyComponent {
         Some((linear, angular, self.requested_motion_flags != 0))
     }
 
+    pub(super) fn motion_notification_pending(&self) -> bool {
+        self.requested_motion_pending && self.requested_motion_published
+    }
+    pub(super) fn has_motion_request(&self) -> bool { self.requested_motion_pending }
+    pub(super) fn mark_motion_published(&mut self) {
+        self.requested_motion_published = true;
+    }
+
     /// 140726f50 runs only after velocity publication and notification.
     pub(super) fn clear_motion_request(&mut self) {
         self.requested_motion = [0.0; 6];
         self.requested_motion_flags = 0;
         self.requested_motion_additive = false;
         self.requested_motion_pending = false;
+        self.requested_motion_published = false;
     }
 
     /// 140808ea0 registers the actual entity-scoped timespace callbacks in
@@ -1424,7 +1436,7 @@ impl RigidBodyComponent {
             progress.phase = StartPhase::Publish;
         }
         if progress.phase == StartPhase::Publish {
-            world.add_dynamic_body_resumable(geometry, events, body, progress.activation)?;
+            world.add_body_resumable(geometry, events, body, progress.activation)?;
             progress.phase = StartPhase::BodyPublished;
         }
         Ok(())
@@ -1457,7 +1469,7 @@ impl RigidBodyComponent {
             progress.phase = StartPhase::RollbackCallbacks;
         }
         if progress.phase == StartPhase::Publish {
-            world.add_dynamic_body_resumable(geometry, events, body, progress.activation)?;
+            world.add_body_resumable(geometry, events, body, progress.activation)?;
             progress.phase = StartPhase::RollbackUnpublish;
         }
         if matches!(

@@ -20,6 +20,8 @@ pub(super) struct Actor {
     pub frame: crate::gameplay::reference_frame::ReferenceFrame,
     pub fake_box: Option<navigation::ComponentBox>,
     pub started: bool,
+    pub enabled: bool,
+    pub last_instigator:Option<crate::gameplay::entity_lifetime::EntityId>,
     pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
     last_delta: Option<[[f32; 4]; 3]>,
 }
@@ -38,7 +40,6 @@ pub(super) struct Interactions {
     pub casts: crate::gameplay::interaction_sensor::Scratch,
     pub(super) physics_queries: super::physics_scene::interaction_queries::InteractionQueries,
     pub(super) pending_pickup: Option<super::pickups::Pending>,
-    parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(SelectionKind, usize, usize)>,
     grapple_prompt:Option<(crate::gameplay::entity_lifetime::EntityId,crate::gameplay::pickable_component::CheckedComponent)>,
@@ -89,6 +90,7 @@ impl Drop for Interactions {
 
 pub(super) struct PendingChange {
     pub actor: usize,
+    pub stage:Option<(usize,bool,Option<crate::gameplay::entity_lifetime::EntityId>)>,
     pub animation: Option<crate::gameplay::player::animation::AnimBasicCommand>,
     pub stop_effect: bool,
     pub start_effect: Option<EffectSpawn>,
@@ -178,7 +180,9 @@ impl Interactions {
                 }
             };
             let started = binding.definition.starts_on_spawn;
+            let enabled=binding.definition.usable_by_player;
             actors.push(Actor {
+                enabled,last_instigator:None,
                 entity: binding.entity,
                 definition: binding.definition,
                 state,
@@ -204,10 +208,6 @@ impl Interactions {
             .enumerate()
             .map(|(i, a)| (a.entity.clone(), i))
             .collect();
-        let parent = entities::resolved_entity_binds(document)
-            .into_iter()
-            .map(|bind| (bind.entity_id, bind.parent))
-            .collect();
         let pending = actors
             .iter()
             .enumerate()
@@ -219,6 +219,7 @@ impl Interactions {
                 let change = state.initial();
                 change.start_effect.map(|effect| PendingChange {
                     actor,
+                    stage:None,
                     animation: None,
                     stop_effect: change.stop_effect,
                     start_effect: Some(effect_spawn(state, effect)),
@@ -238,7 +239,6 @@ impl Interactions {
             readable_by_entity,
             carrying_by_entity,
             casts: Default::default(),
-            parent,
             pending,
             selected: None,
             grapple_prompt:None,
@@ -303,6 +303,25 @@ impl Interactions {
         Ok(true)
     }
 
+    ///77aec0/77b3b0 authored action: mutate the one actual Usable state.
+    pub(in crate::app) fn request_usable_stage(&mut self,entity:&str,stage:Option<usize>,instant:bool)->Result<bool,String>{
+        let Some(&index)=self.actor_by_entity.get(entity) else{return Ok(false);};
+        let actor=&mut self.actors[index];
+        if !actor.started{return Ok(false);}
+        let Some(state)=actor.state.as_mut() else{return Ok(false);};
+        let changes=match stage{Some(stage)=>state.set_stage(stage,instant),None=>state.interact()};
+        let animation=changes.animation;let stop_effect=changes.stop_effect;
+        let notification=changes.stage_notification;
+        let path=changes.start_effect.map(str::to_owned);
+        let stage=notification.map(|started|(state.state,started,actor.last_instigator));
+        if notification==Some(false){actor.last_instigator=None;}
+        self.pending.push(PendingChange{actor:index,stage,animation,stop_effect,
+            start_effect:path.as_deref().map(|path|effect_spawn(state,path))});
+        self.selected=None;Ok(true)
+    }
+
+    pub(in crate::app) fn invalidate_selection(&mut self){self.selected=None;}
+
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> {
         self.limits.clone()
     }
@@ -344,10 +363,11 @@ impl Interactions {
             let animation = changes.animation;
             let stop_effect = changes.stop_effect;
             let effect = changes.start_effect.map(str::to_owned);
-            PendingChange { actor: index, animation, stop_effect,
+            PendingChange { actor: index, stage:None, animation, stop_effect,
                 start_effect: effect.as_deref().map(|path| effect_spawn(state, path)) }
         });
         actor.started = true;
+        if !preserve_state{actor.enabled=actor.definition.usable_by_player;}
         if actor.definition.fake_collision && actor.fake_box.is_none() {
             let corners = entities::usable::fake_box_corners(&actor.frame, &actor.definition)
                 .map(super::game_to_view);
@@ -382,6 +402,7 @@ impl Interactions {
             return;
         }
         actor.started = false;
+        actor.enabled = false;
         if let Some(handle) = actor.fake_box.take() {
             collision.remove_interaction_box(handle);
         }
@@ -506,7 +527,6 @@ pub(super) fn focus_and_interact(
     mut inventory: ResMut<super::interaction_focus::DiscoveredDocuments>,
     mut focused: ResMut<super::interaction_focus::FocusedInteraction>,
     mut entity_events: ResMut<crate::gameplay::entity_events::EntityEvents>,
-    mut occlusion: Local<crate::gameplay::interaction_sensor::OcclusionScratch>,
 ) {
     //Existing action-scenario trace only. A previous HUD prompt is not proof
     //that this frame's sensor retained a primary interaction (7fc420).
@@ -928,10 +948,25 @@ pub(super) fn focus_and_interact(
                     interactions.readable[index].allowed_swimming,
                 )
             } else if let Some(index) = actor {
+                if interactions.actors[index].definition.static_definition.is_some() {
+                    let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else {continue;};
+                    let Some(id)=live.find(entity) else {continue;};
+                    let Some((reference,definition))=scene.interaction_static(live,id).ok().flatten() else {continue;};
+                    let Ok(Some(frame))=scene.entity_frame(live,id) else {continue;};
+                    let Some(bounds)=super::world_models::entity_bounds_from_parts(live,id,models.as_deref(),Some(&sources),&placements).ok().flatten() else {continue;};
+                    let context=crate::gameplay::interaction_definition::CandidateContext {interactable:reference,
+                        player_mode:i32::from(swimming),is_possessing:false,camera:super::view_to_game(eye),
+                        point:super::view_to_game(hit.position),target_forward:frame.basis[0],target_min_z:bounds[0][2],target_max_z:bounds[1][2]};
+                    if !crate::gameplay::interaction_definition::admits_candidate(definition,&context,|mode,state,_|
+                        Err(format!("static usable interaction requires hosted mode{mode}/state{state}"))).unwrap_or(false){continue;}
+                    let Ok(shape)=usize::try_from(definition.occlusion_shape) else {continue;};
+                    (SelectionKind::Usable,index,0,definition.maximum_distance,shape,
+                        definition.has(crate::gameplay::interaction_definition::ALLOW_SWIMMING))
+                } else {
                 let Some(state) = interactions.actors[index].state.as_ref() else {
                     continue;
                 };
-                if !interactions.actors[index].started {
+                if !interactions.actors[index].started||!interactions.actors[index].enabled {
                     continue;
                 }
                 let step = state.state;
@@ -956,6 +991,7 @@ pub(super) fn focus_and_interact(
                         state.definition.allowed_swimming
                     },
                 )
+                }
             } else if let Some(id) = hit.entity {
                 use crate::gameplay::interaction_definition::{
                     ALLOW_SWIMMING, CandidateContext, admits_candidate,
@@ -1045,7 +1081,7 @@ pub(super) fn focus_and_interact(
             if eye.distance_squared(hit.position) > max_distance * max_distance {
                 continue;
             }
-            if let Some(target) = hit.entity {
+            if let Some(target) = hit.entity.or_else(||live.as_deref()?.find(entity)) {
                 let (Some(scene), Some(live)) = (physics.as_deref(), live.as_deref()) else {
                     continue;
                 };
@@ -1084,49 +1120,7 @@ pub(super) fn focus_and_interact(
                 selected = Some((kind, index, step));
                 break 'casts;
             }
-            let classify = |key, owner| {
-                use crate::gameplay::interaction_sensor::OcclusionHit;
-                let owner = world.0.owner_name(owner);
-                if owner == Some(entity)
-                    || owner
-                        .and_then(|name| interactions.parent.get(name))
-                        .is_some_and(|parent| parent == entity)
-                {
-                    OcclusionHit::Target
-                } else if owner.is_some_and(live_breakable)
-                    && world
-                        .0
-                        .physics_material(key)
-                        .is_some_and(|material| material.can_blink_through())
-                {
-                    OcclusionHit::Ignore
-                } else {
-                    OcclusionHit::Block
-                }
-            };
-            if crate::gameplay::interaction_sensor::occluded(
-                &world.0,
-                eye,
-                hit.position,
-                sensor.shape_radii[0],
-                &classify,
-                &mut occlusion,
-            ) || (shape > 0
-                && sensor.shape_radii.get(shape).is_some_and(|&radius| {
-                    crate::gameplay::interaction_sensor::occluded(
-                        &world.0,
-                        eye,
-                        hit.position,
-                        radius,
-                        &classify,
-                        &mut occlusion,
-                    )
-                }))
-            {
-                continue;
-            }
-            selected = Some((kind, index, step));
-            break 'casts;
+
         }
     }
     interactions.physics_queries = physics_queries;
@@ -1151,6 +1145,15 @@ pub(super) fn focus_and_interact(
                     return Some(super::interaction_focus::InteractionPrompt{entity:live.get(id)?.0.to_owned(),
                         name:labels[0].clone(),usage_text:labels[1].clone(),interaction_type:definition.icon,
                         binding:"<GBA_INTERACT>".to_owned(),name_postfix:String::new(),hold:false,
+                        locked:definition.has(crate::gameplay::interaction_definition::LOCKED),player_state:String::new()});
+                }
+                if kind==SelectionKind::Usable&&interactions.actors[index].definition.static_definition.is_some(){
+                    let (Some(scene),Some(live))=(physics.as_deref(),live.as_deref()) else{return None;};
+                    let actor=&interactions.actors[index];let id=live.find(&actor.entity)?;
+                    let (reference,definition)=scene.interaction_static(live,id).ok().flatten()?;
+                    let labels=scene.static_usable_labels(reference.handle).ok()?;
+                    return Some(super::interaction_focus::InteractionPrompt{entity:actor.entity.clone(),name:labels[0].clone(),
+                        usage_text:labels[1].clone(),interaction_type:definition.icon,binding:"<GBA_INTERACT>".to_owned(),name_postfix:String::new(),hold:false,
                         locked:definition.has(crate::gameplay::interaction_definition::LOCKED),player_state:String::new()});
                 }
                 if let SelectionKind::Pickup(id) | SelectionKind::CarryLive(id) = kind {
@@ -1192,8 +1195,8 @@ pub(super) fn focus_and_interact(
                 } else {
                     let actor = &interactions.actors[index];
                     let def = &actor.definition;
-                    let entry = &def.steps[step];
-                    if entry.overrides_interaction {
+                    let entry = def.steps.get(step);
+                    if let Some(entry)=entry.filter(|entry|entry.overrides_interaction) {
                         (
                             &actor.entity,
                             entry.interaction_name.as_deref(),
@@ -1370,6 +1373,19 @@ pub(super) fn focus_and_interact(
         //This host executes the Usable directly below; publish its authored
         //use notification to the shared observers without a second executor.
         let actor=&interactions.actors[index];
+        if actor.definition.static_definition.is_some(){
+            let notify=physics.as_deref().zip(live.as_deref()).and_then(|(scene,live)|live.find(&actor.entity).and_then(|id|scene.interaction_static(live,id).ok().flatten()))
+                .is_some_and(|(_,definition)|definition.has(crate::gameplay::interaction_definition::SEND_USE_NOTIFICATION));
+            if notify{
+                if let (Some(target),Some(instigator))=(live.as_deref().and_then(|live|live.find(&actor.entity)),
+                    player.as_deref().and_then(|state|state.player.as_ref()).and_then(|player|player.managed_entity())){
+                    entity_events.post(crate::gameplay::entity_events::Event{id:0x96,target:Some(target),
+                        payload:crate::gameplay::entity_events::Payload::Use{instigator:Some(instigator)}});
+                }
+            }
+            interactions.selected=None;
+            return;
+        }
         if let Some(state)=actor.state.as_ref(){
             let step=&state.definition.steps[state.state];
             let notify=if step.overrides_interaction{step.send_use_notification}else{state.definition.send_use_notification};
@@ -1381,24 +1397,6 @@ pub(super) fn focus_and_interact(
                 }
             }
         }
-        let changes = {
-            let actor = &mut interactions.actors[index];
-            let Some(state) = actor.state.as_mut() else {
-                return;
-            };
-            let changes = state.interact();
-            let animation = changes.animation;
-            let stop_effect = changes.stop_effect;
-            let path = changes.start_effect.map(str::to_owned);
-            PendingChange {
-                actor: index,
-                animation,
-                stop_effect,
-                start_effect: path.as_deref().map(|path| effect_spawn(state, path)),
-            }
-        };
-        interactions.pending.push(changes);
-        // A state may change the authored prompt without a camera movement.
         interactions.selected = None;
     }
 }

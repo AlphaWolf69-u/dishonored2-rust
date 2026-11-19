@@ -935,8 +935,10 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
                 match indexed {
                     Ok((bank_mix, bank_attenuations, bytes)) => {
                         for attenuation in bank_attenuations { Arc::make_mut(&mut registry.attenuations).entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
+                        Arc::make_mut(&mut registry.library).insert_resident_with_states(
+                            bytes, bank_mix.as_ref().map_or(&[], |mix| mix.states.as_slice()),
+                        )?;
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        Arc::make_mut(&mut registry.library).insert_resident(bytes)?;
                         Arc::make_mut(&mut registry.banks).push(Bank { path: path.clone(), package: package.clone(), entry });
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
@@ -964,11 +966,12 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
     })();
     match result {
         Ok(Some((output_mix, bindings, time_dilation, physics_scale))) => {
-            registry.states = Arc::new(std::sync::Mutex::new(crate::gameplay::sound::states::States::new(output_mix.state_groups.iter().cloned())));
             mix.time_dilation = Some(time_dilation);
             mix.physics_scale = Some(physics_scale);
             info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", registry.banks.len(), registry.library.event_count(), registry.library.actor_count());
-            mix.mixer = Some(output_mix.into());
+            let initialized_mix: crate::gameplay::sound::mix::Mixer = output_mix.into();
+            registry.states = initialized_mix.states.clone();
+            mix.mixer = Some(initialized_mix);
             mix.bindings = bindings;
             mix.apply_settings();
             if let Some(mixer) = mix.mixer.as_ref().filter(|_| playback != PlaybackBackend::Absent) {

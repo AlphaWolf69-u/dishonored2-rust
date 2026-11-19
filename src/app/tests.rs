@@ -1698,6 +1698,7 @@ fn authored_surface_gpu_pipelines_compile() {
         .add(ProbeMaterial {
             base: StandardMaterial::default(),
             extension: ProbeExtension {
+                world_movie_state: None,
                 fog_parameters: fog_parameters.clone(),
                 fog_objects: fog_bindings.objects.clone(),
                 fog_world: fog_bindings.world.clone(),
@@ -7427,6 +7428,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let material = materials.add(ProbeMaterial {
         base: StandardMaterial::default(),
         extension: ProbeExtension {
+            world_movie_state: None,
             fog_parameters: default(),
             fog_objects: default(),
             fog_world: None,

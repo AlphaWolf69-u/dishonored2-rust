@@ -50,12 +50,15 @@ pub struct DisplayFrame {
 }
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct DisplaySceneFrame(pub Option<DisplayFrame>);
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct DisplayPass;
 pub struct DisplayPlugin;
 impl Plugin for DisplayPlugin {
     fn build(&self, app: &mut App) {
         crate::loading::gate("initial gameplay composition");
         super::camera_scene::register(app);
         super::alpha_depth_scene::register(app);
+        super::world_movies::register(app);
         super::display_capture::register(app);
         super::debug_graphics_capture::register(app);
         super::debug_shaders::register(app);
@@ -74,6 +77,7 @@ impl Plugin for DisplayPlugin {
                     Core3d,
                     render_display
                         .in_set(Core3dSystems::PostProcess)
+                        .in_set(DisplayPass)
                         .after(ExposurePass)
                         .before(tonemapping),
                 );

@@ -17,6 +17,7 @@ struct Bus {
     effects: BusEffects,
     gain: GainRamp,
     base_db: f32,
+    state_output: Vec<Arc<crate::gameplay::sound::states::Node>>,
     input: bool,
     started: bool,
 }
@@ -59,7 +60,8 @@ impl Buses {
         let effects = BusEffects::new(definition, mixer, tables, 48000, 3, settings.auxiliary)?;
         let index = self.nodes.len();
         self.nodes.push(Bus { id, parent, channels: [vec![0.0; FRAMES], vec![0.0; FRAMES]], effects,
-            gain: GainRamp::default(), base_db: mixer.bus_output_base_db(id)?, input: false, started: false });
+            gain: GainRamp::default(), base_db: mixer.bus_output_base_db(id)?,
+            state_output:mixer.state_output_nodes(id)?, input: false, started: false });
         self.indices.insert(id, index);
         Ok(index)
     }
@@ -80,7 +82,8 @@ impl Buses {
         if id == 0 { return 1.0; }
         self.indices.get(&id).map_or(1.0, |&index| {
             let bus = &self.nodes[index];
-            power10((bus.base_db + self.activity.output_ducking(bus.id, false)) * 0.05)
+            power10((bus.base_db + bus.state_output.iter().map(|node|node.sample()[5]).sum::<f32>()
+                + self.activity.output_ducking(bus.id, false)) * 0.05)
         })
     }
     /// Diagnostic target, not per-source attribution after shared bus DSP.
@@ -133,7 +136,8 @@ impl Buses {
             let count = usize::from(status.valid_frames);
             bus.started = count != 0;
             if count == 0 { continue; }
-            let target = power10((bus.base_db + self.activity.output_ducking(bus.id, false)) * 0.05);
+            let target = power10((bus.base_db + bus.state_output.iter().map(|node|node.sample()[5]).sum::<f32>()
+                + self.activity.output_ducking(bus.id, false)) * 0.05);
             bus.gain.begin([target; 8], FRAMES as u16);
             if let Some(parent) = bus.parent {
                 let parent = &mut parents[parent];

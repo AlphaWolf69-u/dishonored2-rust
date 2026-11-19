@@ -1084,6 +1084,7 @@ impl Player {
                     fall_damage: self.fall_damage.as_deref(),
                     fall_incapacitated: &mut fall_incapacitated,
                     underwater,
+                    swimming: self.swimming_active,
                     swim_mantle_exit: &mut swim_mantle_exit,
                     game_over_requested: &mut self.game_over_requested,
                     drowning_fx_requested: &mut self.drowning_fx_requested,
@@ -1121,7 +1122,10 @@ impl Player {
             }
         }) };
         if in_water != self.swimming_active && self.swimming_available {
-            if !in_water {
+            //88a620/88a7a0 finish the outgoing Blink without snapping its
+            //destination, then805fc0 schedules12 in the incoming mode.
+            let blinking = self.machine.is_active(StateId::BLINKING) && self.powers.blink.is_some();
+            if !in_water && !blinking {
                 // 88a2e0: before restoring the previous mode, keep the
                 // standing shape's step hull above the sampled ground.
                 let step = self.physics.posture_settings(shape::POSTURE_STANDING).step_height;
@@ -1135,14 +1139,23 @@ impl Player {
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = in_water;
             self.change_swimming_equipment(in_water);
+            if blinking {
+                if let Some(motion) = self.powers.blink.as_mut() { motion.restart_for_mode(in_water); }
+                self.powers.blink_pending = true;
+                self.powers.blink_finished = false;
+                self.powers.blink_restart_time = true;
+                self.machine.request(StateId::BLINKING);
+            }
             if in_water {
                 self.swimming_current = swimming::WaterCurrent::default();
                 self.breath.reset_for_water_entry();
-                let swim_height = self.physics.posture_settings(shape::POSTURE_SWIMMING).height;
-                let old_height = self.physics.posture_settings(self.physics.posture).height;
-                self.physics.proxy.position.z -= swim_height - old_height;
-                self.physics.set_posture(shape::POSTURE_SWIMMING, 0.0);
-                origin = self.physics.position();
+                if !blinking {
+                    let swim_height = self.physics.posture_settings(shape::POSTURE_SWIMMING).height;
+                    let old_height = self.physics.posture_settings(self.physics.posture).height;
+                    self.physics.proxy.position.z -= swim_height - old_height;
+                    self.physics.set_posture(shape::POSTURE_SWIMMING, 0.0);
+                    origin = self.physics.position();
+                }
             }
         }
         if !self.swimming_active {

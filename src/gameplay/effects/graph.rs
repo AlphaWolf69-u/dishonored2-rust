@@ -21,7 +21,17 @@ use std::{
 
 pub type FxRuntimeParameters = FxNodeParameters<EntityReference>;
 
+#[derive(Clone, Copy, Debug)]
+pub enum UsableAction {
+    Stage { stage: Option<usize>, instant: bool },
+    SetAvailability(bool),
+    Remove { attached: bool },
+}
+
 pub trait FxGraphWorld {
+    fn request_usable_action(&mut self, _entity: crate::gameplay::entity_lifetime::EntityId, _action: UsableAction) -> Result<(), String> {
+        Err("graph usable component owner is unavailable".into())
+    }
     fn managed_entity(&self,_entity:&EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>{Err("managed entity resolver is not connected".into())}
     fn managed_frame(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<Option<crate::gameplay::reference_frame::ReferenceFrame>,String>{Err("managed frame resolver is not connected".into())}
     fn managed_spawn_tag(&self,_entity:crate::gameplay::entity_lifetime::EntityId)->Result<String,String>{Err("managed spawn tag resolver is not connected".into())}
@@ -62,6 +72,7 @@ pub trait FxGraphWorld {
     fn entity_clock(&mut self, entity: u32) -> Result<Option<f64>, String>;
 }
 pub enum GraphStep {
+    UsableReset { node: u32 },
     PickupReset { node: u32 },
     BreakableReset { node: u32 },
     Idle,
@@ -92,7 +103,7 @@ pub struct FxGraphRuntime {
     pending_spawns:HashMap<u32,u64>,
 }
 #[derive(Default)]
-struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3] }
+struct NotificationState { count: i32, instigator: Option<EntityReference>, step: i32, location: [f32; 3], usable_stage: Option<i32> }
 impl GraphInputs for FxGraphRuntime {
     fn boolean_override(&self, node: &Node, name: &str) -> Option<bool> {
         (node.class == "arkKisculeNodeGate" && name == "m_isOpen")
@@ -146,12 +157,16 @@ impl GraphInputs for FxGraphRuntime {
                     atom(&node.params,"m_variableName").unwrap_or(""))),
             };
         }
-        if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeBreakableNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
+        if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeUsableNotification"|"arkKisculeNodeBreakableNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
             return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
                 .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
         }
         if node.class == "arkKisculeNodeEntitySpawnerControl" && point.name == "m_createdEntity" {
             return Ok(Some(GraphValue::Entity(self.spawned.get(&node.id).cloned().flatten())));
+        }
+        if node.class == "arkKisculeNodeUsableNotification" && point.name == "m_stageIndex" {
+            let current = self.notifications.as_ref().and_then(|states| states.get(&node.id)).and_then(|state| state.usable_stage);
+            return Ok(Some(GraphValue::Int(current.unwrap_or(-1))));
         }
         if node.class == "arkKisculeNodeBreakableNotification" {
             let state = self.notifications.as_ref().and_then(|states| states.get(&node.id));
@@ -404,6 +419,25 @@ impl FxGraphRuntime {
         }
         Ok(())
     }
+    /// 7af990 uses the common notification count, instigator, Used and Out ports.
+    pub(super) fn used(&mut self, node: u32, instigator: Option<EntityReference>) -> Result<(), String> {
+        let definition = self.shared_definition();
+        let source = definition.node(node)?;
+        let maximum = self.integer_input(source, "m_maxNotificationCount", -1)?;
+        self.notifications.get_or_insert_with(Default::default).entry(node).or_default().instigator = instigator;
+        self.notification_outputs(node, maximum, "Used")
+    }
+
+    /// 7af810/7af8d0 write the actual stage before firing the phase-specific output.
+    pub(super) fn usable_stage(&mut self, id: u32, stage: i32, started: bool, instigator: Option<EntityReference>) -> Result<(), String> {
+        let definition = self.shared_definition();
+        let maximum = self.integer_input(definition.node(id)?, "m_maxNotificationCount", -1)?;
+        let state = self.notifications.get_or_insert_with(Default::default).entry(id).or_default();
+        state.usable_stage = Some(stage);
+        state.instigator = instigator;
+        self.notification_outputs(id, maximum, if started { "Stage changed (Start)" } else { "Stage changed (Finished)" })
+    }
+
     pub fn breakable_subscriptions(&self) -> (Vec<(u32, EntityReference)>, Vec<String>) {
         self.notification_subscriptions("arkKisculeNodeBreakableNotification")
     }
@@ -459,7 +493,7 @@ impl FxGraphRuntime {
     pub fn pickup_subscription(&self, id: u32) -> Result<Option<EntityReference>, String> {
         self.notification_subscription(id, "arkKisculeNodePickupNotification")
     }
-    fn notification_subscription(&self, id: u32, class: &str) -> Result<Option<EntityReference>, String> {
+    pub(crate) fn notification_subscription(&self, id: u32, class: &str) -> Result<Option<EntityReference>, String> {
         let node = self.node(id)?;
         if node.class != class { return Err(format!("node is not a {class}")); }
         if !self.boolean_input(node, "m_enabled", true)? { return Ok(None); }
@@ -468,7 +502,7 @@ impl FxGraphRuntime {
             .map(|name| EntityReference::Named(name.to_owned()));
         Ok(self.entity_input(node, "m_listenedEntity", default)?.filter(|target| *target != EntityReference::Invalid))
     }
-    fn notification_subscriptions(&self, class: &str) -> (Vec<(u32, EntityReference)>, Vec<String>) {
+    pub(crate) fn notification_subscriptions(&self, class: &str) -> (Vec<(u32, EntityReference)>, Vec<String>) {
         let mut subscriptions = Vec::new();
         let mut errors = Vec::new();
         for node in self.graph.nodes.iter().filter(|node| node.class == class && self.relevant.contains(&node.id)) {
@@ -566,6 +600,48 @@ impl FxGraphRuntime {
                 self.reset_notification_count(id);
                 self.emit(id,"Reset")?;
                 false
+            }
+            "arkKisculeNodeUsableNotification" if port.name == "Reset" => {
+                return Ok(GraphStep::UsableReset { node: id });
+            }
+            // 792f40 emits 1cf and invokes remove/removeEntityAndAttachedObjects.
+            "arkKisculeNodeActionDestroy" if port.name == "In" => {
+                if self.declaration_input(node, "m_spawnTag", "SPAWN_TAG_NONE")? != "SPAWN_TAG_NONE" {
+                    return Err("tag-wide graph destruction requires its spawn-tag owner".into());
+                }
+                let default = atom(&node.params, "m_entity").filter(|name| !name.is_empty() && *name != "NULL")
+                    .map(|name| EntityReference::Named(name.to_owned()));
+                if let Some(reference) = self.entity_input(node, "m_entity", default)? {
+                    if let Some(entity) = world.managed_entity(&reference)? {
+                        world.request_usable_action(entity, UsableAction::Remove { attached: self.boolean_input(node, "m_attachedObjects", true)? })?;
+                    }
+                }
+                true
+            }
+            "arkKisculeNodeActionInteractable" if port.name == "Set" => {
+                // 52dc30 calls the resolved Interactable's virtual availability setter.
+                self.queue_availability(world, node, "m_entity", "m_usable", false)?;
+                true
+            }
+            "arkKisculeNodeActionUsable" if port.name == "Set Usability" => {
+                // 797d30 checks UsableWithStateList, then UsableStatic, and calls the same setter.
+                self.queue_availability(world, node, "m_usable", "m_usableByPlayer", true)?;
+                true
+            }
+            "arkKisculeNodeActionUsable" if matches!(port.name.as_str(), "Next Stage" | "Set Stage") => {
+                let default = atom(&node.params, "m_usable").filter(|name| !name.is_empty() && *name != "NULL")
+                    .map(|name| EntityReference::Named(name.to_owned()));
+                if let Some(reference) = self.entity_input(node, "m_usable", default)? {
+                    if let Some(entity) = world.managed_entity(&reference)? {
+                        // 797750 advances with normal timing. 797c40 alone reads instantChangeState.
+                        if port.name == "Next Stage" {
+                            world.request_usable_action(entity, UsableAction::Stage { stage: None, instant: false })?;
+                        } else if let Ok(stage) = usize::try_from(self.integer_input(node, "m_wantedStageIndex", -1)?) {
+                            world.request_usable_action(entity, UsableAction::Stage { stage: Some(stage), instant: self.boolean_input(node, "m_instantChangeState", false)? })?;
+                        }
+                    }
+                }
+                true
             }
             "arkKisculeNodeBreakableNotification" if port.name == "Reset" => {
                 return Ok(GraphStep::BreakableReset { node: id });
@@ -787,6 +863,17 @@ impl FxGraphRuntime {
         }
         Ok(GraphStep::Action { schedule })
     }
+    fn queue_availability(&self, world: &mut impl FxGraphWorld, node: &Node, target_field: &str, flag_field: &str, initial: bool) -> Result<(), String> {
+        let default = atom(&node.params, target_field).filter(|name| !name.is_empty() && *name != "NULL")
+            .map(|name| EntityReference::Named(name.to_owned()));
+        if let Some(reference) = self.entity_input(node, target_field, default)? {
+            if let Some(entity) = world.managed_entity(&reference)? {
+                world.request_usable_action(entity, UsableAction::SetAvailability(self.boolean_input(node, flag_field, initial)?))?;
+            }
+        }
+        Ok(())
+    }
+
     fn invoke_fx(
         &mut self,
         id: u32,

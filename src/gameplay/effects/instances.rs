@@ -307,10 +307,10 @@ impl FxGraphInstances {
         runtime.set_spawner(self.spawner.clone());
         runtime.random_owner = Some(Arc::clone(random));
         let effectful = runtime.definition().nodes.iter().any(|node|
-            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class)
+            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class) || usable_action(node, runtime.definition())
                 || super::story_flags::kind(&node.class).is_some());
         let mut targets = runtime.definition().nodes.iter().filter(|node|
-            all_nodes || node.class == "arkKisculeNodeEntityFx" || gameflow_action(&node.class)
+            all_nodes || node.class == "arkKisculeNodeEntityFx" || gameflow_action(&node.class) || usable_action(node, runtime.definition())
                 || super::story_flags::kind(&node.class).is_some()
                 || (parent.is_some() && node.class == "arkKisculeNodeDeclExit"))
             .map(|node| node.id).collect::<Vec<_>>();
@@ -495,6 +495,19 @@ impl FxGraphInstances {
         }
         Ok(())
     }
+    pub fn used(&mut self, graph: u64, node: u32, instigator: Option<crate::gameplay::entity_lifetime::EntityId>) -> Result<Vec<String>, String> {
+        let index = self.instance_index(graph).ok_or("usable graph retired")?;
+        self.runtimes[index].as_mut().ok_or("usable graph busy")?
+            .used(node, instigator.map(crate::gameplay::event_graph::EntityReference::Managed))?;
+        Ok(self.collect(index))
+    }
+    pub fn usable_stage(&mut self, graph: u64, node: u32, stage: i32, started: bool,
+        instigator: Option<crate::gameplay::entity_lifetime::EntityId>) -> Result<Vec<String>, String> {
+        let index = self.instance_index(graph).ok_or("usable graph retired")?;
+        self.runtimes[index].as_mut().ok_or("usable graph busy")?.usable_stage(node, stage, started,
+            instigator.map(crate::gameplay::event_graph::EntityReference::Managed))?;
+        Ok(self.collect(index))
+    }
     pub fn broken(&mut self, id: u64, node: u32, entity: crate::gameplay::event_graph::EntityReference, step: i32, removed: bool, location: [f32; 3]) -> Result<Vec<String>, String> {
         let index = self.instance_index(id).ok_or("breakable graph retired")?;
         self.runtimes[index].as_mut().ok_or("breakable graph busy")?.broken(node, entity, step, removed, location)?;
@@ -669,6 +682,21 @@ impl FxGraphInstances {
         }
         Ok(())
     }
+}
+
+fn usable_action(node: &crate::assets::entities::event_graph::Node, graph: &FxGraph) -> bool {
+    if node.class == "arkKisculeNodeActionDestroy" {
+        // Keep only an actual usable notification's destruction route in a host-scoped program.
+        return node.ports.iter().filter(|port| port.kind == "InputRegular" && port.name == "In")
+            .flat_map(|port| &port.links).any(|(source, _)| graph.node(*source).is_ok_and(|n| n.class == "arkKisculeNodeUsableNotification"));
+    }
+    if !matches!(node.class.as_str(), "arkKisculeNodeActionUsable" | "arkKisculeNodeActionInteractable") {
+        return false;
+    }
+    node.ports.iter().any(|port| port.kind == "InputRegular" && !port.links.is_empty() &&
+        matches!((node.class.as_str(), port.name.as_str()),
+            ("arkKisculeNodeActionUsable", "Next Stage" | "Set Stage" | "Set Usability") |
+            ("arkKisculeNodeActionInteractable", "Set")))
 }
 
 fn gameflow_action(class: &str) -> bool {

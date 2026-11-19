@@ -62,6 +62,7 @@ struct RigidPostHost<'a> {
     pre: &'a ObjectUpdateTask<usize>,
     pre_frame: i32,
     commands: &'a crate::gameplay::physics_world::commands::PhysicsCommands,
+    motion_notifications: Vec<(ComponentHandle,u32)>,
 }
 impl RigidPostHost<'_> {
     fn basic_body(
@@ -230,7 +231,8 @@ impl RigidPostHost<'_> {
         let (component, body) = self.body(actors, actor)?;
         let body_id = body.id;
         let current = component.velocities;
-        self.publish_motion_data(actors, actor, body_id, current)
+        let pending=component.has_motion_request();
+        self.publish_motion_data(actors, actor, body_id, current,pending)
     }
 
     fn publish_component_motion(
@@ -240,8 +242,8 @@ impl RigidPostHost<'_> {
         family: usize,
         slot: u16,
     ) -> Result<(), String> {
-        let (body_id, current) = self.component_body_data(actors, actor, family, slot)?;
-        self.publish_motion_data(actors, actor, body_id, current)
+        let (body_id, current,pending) = self.component_body_data(actors, actor, family, slot)?;
+        self.publish_motion_data(actors, actor, body_id, current,pending)
     }
 
     fn publish_motion_data(
@@ -250,6 +252,7 @@ impl RigidPostHost<'_> {
         actor: usize,
         body_id: u32,
         current: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
+        pending: bool,
     ) -> Result<(), String> {
         let entity = self.actor_entity(actors, actor)?;
         let delta = self.clock.entity_delta(self.entities[entity].timespace)
@@ -301,6 +304,30 @@ impl RigidPostHost<'_> {
             crate::gameplay::collision_user_data::velocity::publish_velocities(
                 self, id, linear, angular, true,
             )?;
+        }
+        //80b9e0 always finishes with80b680, even without desired actor motion.
+        //The real149 packet overrides the ordinary desired-velocity command.
+        if !pending{return Ok(());}
+        let handle=CollisionUserData::decode(self.world.bodies.get(id)
+            .ok_or("pending motion body retired")?.user_data)?.component;
+        let family=self.rigid.iter().position(|(class,_)|*class==handle.class_id)
+            .ok_or("pending motion body has no rigid component owner")?;
+        let component=self.rigid[family].1.get(handle.slot).ok_or("pending motion component absent")?;
+        let identity=(handle,component.owner.generation);
+        let pending=component.pending_motion_request();
+        let notify=component.motion_notification_pending()||pending.is_some_and(|request|request.2);
+        if notify && !self.motion_notifications.contains(&identity){
+            self.motion_notifications.try_reserve(1).map_err(|error|format!("motion notification receipt: {error}"))?;
+            self.motion_notifications.push(identity);
+        }
+        if let Some((linear,angular,notify))=pending{
+            crate::gameplay::collision_user_data::velocity::publish_velocities(self,id,linear,angular,true)?;
+            static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+            if *TRACE.get_or_init(||matches!(std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),Ok("carry"|"full"))){
+                eprintln!("ACTION_SMOKE_MOTION149_PUBLISHED frame={} body={id} component={handle:?} linear={linear:?} angular={angular:?} notification={notify} source=80b680 queued90200=true actual_solver_consumption_required=true",self.clock.frame_marker());
+            }
+            let component=self.rigid[family].1.get_mut(handle.slot).ok_or("published motion component absent")?;
+            if notify{component.mark_motion_published();}else{component.clear_motion_request();}
         }
         Ok(())
     }
@@ -379,7 +406,7 @@ impl RigidPostHost<'_> {
         family: usize,
         slot: u16,
     ) -> Result<(), String> {
-        let (body_id, current) = self.component_body_data(actors, actor, family, slot)?;
+        let (body_id, current,_) = self.component_body_data(actors, actor, family, slot)?;
         let linear = current.requested_linear[..3].try_into().unwrap();
         let angular = current.requested_angular[..3].try_into().unwrap();
         self.publish_body_data(actors, actor, body_id, linear, angular, true)
@@ -391,7 +418,7 @@ impl RigidPostHost<'_> {
         actor: usize,
         family: usize,
         slot: u16,
-    ) -> Result<(u32, crate::gameplay::collision_user_data::velocity::CollisionVelocities), String> {
+    ) -> Result<(u32, crate::gameplay::collision_user_data::velocity::CollisionVelocities,bool), String> {
         let entity = self.actor_entity(actors, actor)?;
         let component = self.rigid[family].1.get(slot)
             .ok_or("scheduled rigid publication component absent")?;
@@ -404,7 +431,7 @@ impl RigidPostHost<'_> {
         if link.actor != Some(actor) || link.body_id != body_id {
             return Err("scheduled rigid publication interface identity differs".into());
         }
-        Ok((body_id, component.velocities))
+        Ok((body_id, component.velocities,component.has_motion_request()))
     }
 
     fn publish_body_data(
@@ -996,6 +1023,7 @@ impl PhysicsScene {
             pre: &self.pre_updates,
             pre_frame: self.pre_frame,
             commands: &self.body_commands,
+            motion_notifications: Vec::new(),
         };
         if queued {
             self.actors.consume_pre_updates_reuse(
@@ -1028,6 +1056,18 @@ impl PhysicsScene {
                     .map_err(|error| host.context_error(&self.actors, actor,
                         &format!("phase5 scheduled rigid class={} slot={slot}", host.rigid[family].0), error))?;
             }
+        }
+        let notifications=std::mem::take(&mut host.motion_notifications);
+        drop(host);
+        drop(world);
+        for (handle,generation) in notifications{
+            let component=self.rigid_component(handle)?;
+            if component.owner.generation!=generation{return Err("motion notification component generation changed".into());}
+            if !component.motion_notification_pending(){continue;}
+            //853220 -> PhysicsBase virtual1a0; no world-lock reentry while
+            //the shared body/constraint notification owner is called.
+            self.set_rigid_instigator_notification(live,handle,true)?;
+            self.rigid_component_mut(handle)?.clear_motion_request();
         }
         self.rigid_pre_started = false;
         Ok(())
@@ -1095,6 +1135,7 @@ impl PhysicsScene {
             pre: &self.pre_updates,
             pre_frame: self.pre_frame,
             commands: &self.body_commands,
+            motion_notifications: Vec::new(),
         };
         // The accepted frame owns this cursor: a fallible queue admission
         // cannot replay acknowledged components or lose the failed component.
@@ -1181,6 +1222,7 @@ impl PhysicsScene {
             pre: &self.pre_updates,
             pre_frame: self.pre_frame,
             commands: &self.body_commands,
+            motion_notifications: Vec::new(),
         };
         self.actors.consume_post_updates_reuse(
             &self.post_updates,

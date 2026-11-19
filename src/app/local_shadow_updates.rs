@@ -186,6 +186,8 @@ struct LocalStaticInputs {
     clip: render_shadow::ShadowMatrix,
     world: Vec<u32>,
     models: Vec<(usize, usize)>,
+    /// Exact published rigid transform plus weak palette generation; no second palette owner.
+    model_poses: Vec<(Option<std::sync::Weak<shadow_updates::RestSkinning>>, [[f32; 4]; 3])>,
     /// Particle system surfaces as of the cache entry's first source
     /// generation: like any static-bucket model they stay in the cached
     /// layer until it is rebuilt (the cache key is the light pose, 2cd500).
@@ -193,6 +195,40 @@ struct LocalStaticInputs {
     clocks: game_clock::GameplayViewClocks,
     dimensions: [u32; 2],
     prepared: Option<(Vec<shadow_pass::ShadowInstance>, bool)>,
+}
+
+impl LocalStaticInputs {
+    fn certify_model_poses(&mut self, sources: &shadow_updates::ModelShadowSources,
+        placements: &RenderSourcePlacements,
+    ) {
+        self.model_poses = self.models.iter().map(|&(source, _)| {
+            let source = &sources.0[source];
+            let placement = &placements.0[source.placement];
+            (source.skinning.as_ref().and_then(|skin| skin.as_ref().ok())
+                .map(std::sync::Arc::downgrade),
+                render_model::affine_rows(placement.position, placement.rotation, placement.scale))
+        }).collect();
+    }
+
+    fn matches_models(&self, records: &[(usize, usize)], clip: render_shadow::ShadowMatrix,
+        sources: &shadow_updates::ModelShadowSources,
+        placements: &RenderSourcePlacements,
+        runtime: Option<&std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
+    ) -> bool {
+        self.model_poses.len() == self.models.len()
+            && self.models.iter().copied().eq(local_side_model_iter(records, clip, sources))
+            && self.models.iter().zip(&self.model_poses).all(|(&(source, _), (previous, model))| {
+                let source = &sources.0[source];
+                let Some(placement) = placements.0.get(source.placement) else { return false; };
+                *model == render_model::affine_rows(placement.position, placement.rotation, placement.scale)
+                && match (previous, source.skinning.as_ref()) {
+                    (None, None) => true,
+                    (Some(previous), Some(Ok(current))) => previous.as_ptr() == std::sync::Arc::as_ptr(current),
+                    _ => false,
+                }
+            })
+            && self.runtime_surfaces.iter().eq(local_side_runtime_surface_iter(records, clip, runtime))
+    }
 }
 
 #[derive(Resource, Default)]
@@ -208,18 +244,25 @@ fn local_side_models(
     clip: render_shadow::ShadowMatrix,
     sources: &shadow_updates::ModelShadowSources,
 ) -> Vec<(usize, usize)> {
+    local_side_model_iter(records, clip, sources).collect()
+}
+
+fn local_side_model_iter<'a>(
+    records: &'a [(usize, usize)],
+    clip: render_shadow::ShadowMatrix,
+    sources: &'a shadow_updates::ModelShadowSources,
+) -> impl Iterator<Item = (usize, usize)> + 'a {
     let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
     //329120 repeats side-frustum admission after the whole-light collector.
     records
         .iter()
         .copied()
-        .filter(|&(source, _)| source < sources.0.len())
-        .filter(|&(source, _)| sources.0[source].flags_18bc&8!=0)
-        .filter(|&(source, _)| {
+        .filter(move |&(source, _)| source < sources.0.len())
+        .filter(move |&(source, _)| sources.0[source].flags_18bc&8!=0)
+        .filter(move |&(source, _)| {
             let bounds = sources.0[source].bounds;
             !render_model::transformed_aabb_clip_cull(&clip, bounds[0], bounds[1]).culled
         })
-        .collect()
 }
 
 /// The particle system surfaces of a whole-light caster list inside one
@@ -229,15 +272,23 @@ fn local_side_runtime_surfaces(
     clip: render_shadow::ShadowMatrix,
     runtime_surfaces: Option<&std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
 ) -> Vec<shadow_updates::RuntimeShadowSurface> {
-    let Some(runtime_surfaces) = runtime_surfaces else { return Vec::new() };
+    local_side_runtime_surface_iter(records, clip, runtime_surfaces).cloned().collect()
+}
+
+fn local_side_runtime_surface_iter<'a>(
+    records: &'a [(usize, usize)],
+    clip: render_shadow::ShadowMatrix,
+    runtime_surfaces: Option<&'a std::sync::Arc<Vec<shadow_updates::RuntimeSurfaceCaster>>>,
+) -> impl Iterator<Item = &'a shadow_updates::RuntimeShadowSurface> + 'a {
     let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
     records
         .iter()
-        .filter_map(|&(source, _)| shadow_updates::runtime_surface_caster_index(source, runtime_surfaces.len()))
-        .map(|index| &runtime_surfaces[index])
-        .filter(|caster| !render_model::transformed_aabb_clip_cull(&clip, caster.bounds[0], caster.bounds[1]).culled)
-        .flat_map(|caster| caster.surfaces.iter().cloned())
-        .collect()
+        .filter_map(move |&(source, _)| {
+            let runtime = runtime_surfaces?;
+            shadow_updates::runtime_surface_caster_index(source, runtime.len()).map(|index| &runtime[index])
+        })
+        .filter(move |caster| !render_model::transformed_aabb_clip_cull(&clip, caster.bounds[0], caster.bounds[1]).culled)
+        .flat_map(|caster| caster.surfaces.iter())
 }
 
 pub(super) fn publish_local_shadow_draws(
@@ -315,6 +366,7 @@ pub(super) fn publish_local_shadow_draws(
                             light.clips[side_index],
                             &model_sources,
                         ),
+                        model_poses: Vec::new(),
                         runtime_surfaces: local_side_runtime_surfaces(
                             &light.model_casters[0],
                             light.clips[side_index],
@@ -327,6 +379,10 @@ pub(super) fn publish_local_shadow_draws(
                         ],
                         prepared: None,
                     });
+                let retained = draws.static_inputs.get_mut(&allocation.id).unwrap();
+                if retained.model_poses.len() != retained.models.len() {
+                    retained.certify_model_poses(&model_sources, &placements);
+                }
             }
         }
         draws.static_inputs.retain(|id, _| {
@@ -376,6 +432,7 @@ pub(super) fn publish_local_shadow_draws(
                     clip,
                     world: light.world_casters[side_index].clone(),
                     models: local_side_models(&light.model_casters[0], clip, &model_sources),
+                    model_poses: Vec::new(),
                     runtime_surfaces: local_side_runtime_surfaces(&light.model_casters[0], clip, cpu.runtime_surfaces.as_ref()),
                     clocks,
                     dimensions,
@@ -790,6 +847,8 @@ pub(super) fn prepare_local_shadow_cpu(
     model_sources: Res<shadow_updates::ModelShadowSources>,
     runtime_casters: Res<shadow_updates::RuntimeSurfaceCasters>,
     completion: Res<shadow_pass::LocalShadowCompletion>,
+    retained_draws: Res<LocalShadowDraws>,
+    placements: Res<RenderSourcePlacements>,
     mut view_controls: ResMut<LocalShadowViewControls>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
@@ -1146,7 +1205,20 @@ pub(super) fn prepare_local_shadow_cpu(
                     crop: crops[side],
                     width: request.resolution[0] as u32,
                 };
-                let cached = owner.cache.lookup(0, key, &cache_source, frame.0).cloned();
+                //235880 publishes renderer dirtiness;2cc860/2cd200 revoke
+                //cached model pixels. bevy_backend: validate that same source
+                //at the existing lookup, including Hide/removal and palette
+                //generation. A changed source gets a new real allocation and
+                //GPU completion fence through insert(), never a ready bypass.
+                let cached = owner.cache.lookup(0, key, &cache_source, frame.0).cloned()
+                    .filter(|cached| match &model_casters {
+                        Ok(models) => retained_draws.static_inputs.get(&cached.allocation.id)
+                            .is_some_and(|input| input.matches_models(&models[0],
+                                clips[side], &model_sources, &placements, cpu.runtime_surfaces.as_ref())),
+                        // Preserve the original allocation/error boundary
+                        //below; this error never publishes an accepted frame.
+                        Err(_) => true,
+                    });
                 let cache_match = cached.is_some();
                 let cached = cached.or_else(|| {
                     owner

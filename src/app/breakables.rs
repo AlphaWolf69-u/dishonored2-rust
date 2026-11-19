@@ -6,6 +6,9 @@ use crate::gameplay::{
     entity_lifetime::{EntityId, LiveEntities},
 };
 use bevy::prelude::*;
+#[path = "destruction_timing.rs"]
+mod timing;
+pub(super) use timing::{measure, Owner as TimingOwner};
 
 #[derive(Resource, Default)]
 pub(super) struct Breakables {
@@ -100,6 +103,20 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         }
         while let Some((handle, generation, effect)) = world.resource::<super::physics_scene::PhysicsScene>()
             .pending_breakable_effect().map(|(handle, generation, effect)| (handle, generation, effect.clone())) {
+            let phase = match &effect {
+                Effect::HideAndDetachChildren { .. } => "breakable_hide_detach",
+                Effect::StopOwnerRigid { .. } => "breakable_stop_rigid",
+                Effect::SpawnFx { .. } => "breakable_request_fx",
+                Effect::ReleaseChunk { .. } => "breakable_release_chunk_dispatch",
+                Effect::ChunkImpulse { .. } => "breakable_chunk_impulse",
+                Effect::KeepBindInfo { .. } => "breakable_keep_binding",
+                Effect::Damage { .. } => "breakable_delayed_damage",
+                Effect::SoundOcclusion { .. } => "breakable_sound_occlusion",
+                Effect::BrokenCallback { .. } => "breakable_graph_callback",
+                Effect::BrokenMessage { .. } => "breakable_message",
+                Effect::Remove { .. } | Effect::RemoveOrGhost { .. } => "breakable_remove_request",
+            };
+            let _timing = measure(phase, TimingOwner::Component { handle, generation });
             match effect {
                 Effect::HideAndDetachChildren { owner: id, culprit } => {
                     //7ed000 snapshots actual bound children. Each unbind removes

@@ -142,6 +142,18 @@ impl FxSimulation {
     pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
         self.world_particles.retire_entity_graph(entity)
     }
+    pub(crate) fn dispatch_used(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        instigator: Option<crate::gameplay::entity_lifetime::EntityId>) -> Result<(), String> {
+        self.world_particles.dispatch_used(entity, instigator)
+    }
+    pub(crate) fn dispatch_usable_stage(&mut self, entity: crate::gameplay::entity_lifetime::EntityId, stage: i32, started: bool,
+        instigator: Option<crate::gameplay::entity_lifetime::EntityId>) -> Result<(), String> {
+        self.world_particles.dispatch_usable_stage(entity, stage, started, instigator)
+    }
+    pub(crate) fn usable_actions_pending(&self) -> bool { self.world_particles.usable_actions_pending() }
+    pub(crate) fn drain_usable_actions(&mut self) -> impl Iterator<Item = (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::effects::graph::UsableAction)> + '_ {
+        self.world_particles.drain_usable_actions()
+    }
     pub(crate) fn dispatch_broken(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
         step: i32, removed: bool, location: [f32; 3], live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
         self.world_particles.dispatch_broken(entity, step, removed, location, live)

@@ -538,7 +538,7 @@ impl PhysicsScene {
         if step <= 2 {
             {
                 scene_publication_events!(self, registry, events);
-                world.storage.add_dynamic_body_resumable(
+                world.storage.add_body_resumable(
                     &mut world.geometry,
                     &mut events,
                     body,
@@ -559,10 +559,10 @@ impl PhysicsScene {
                 1 => world
                     .storage
                     .keyframe_single_body(&mut world.geometry, &mut events, body)?,
-                // 727a00 compares the current body type with the declaration.
-                // BodyInfo created this body dynamic already: equality returns
-                // without a c86800 motion conversion (including sleeping loads).
-                2 => {}
+                //727a00 compares the actual mode. A dormant body's binding
+                //may already have converted it before this Start.
+                2 => world.storage.dynamic_single_body(
+                    &mut world.geometry, &mut events, body)?,
                 _ => return Err("rigid body behavior is invalid".into()),
             }
         }

@@ -217,6 +217,10 @@ impl Runtime {
         self.debug_trace.as_ref().is_some_and(|rows|rows.iter().any(|row|
             *row==("throw-owner-ack",Some(entity),14,true)))
     }
+    pub(crate) fn observed_drop_ack(&self, entity:EntityId)->bool {
+        self.debug_trace.as_ref().is_some_and(|rows|rows.iter().any(|row|
+            *row==("drop-owner-ack",Some(entity),14,true)))
+    }
     ///Debug action evidence only. Disabled gameplay retains no history or
     ///allocations; the enabled fixture keeps at most64 transition receipts.
     pub(crate) fn trace(&mut self,event:&'static str,target:Option<EntityId>,state:i32,accepted:bool){

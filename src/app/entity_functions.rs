@@ -12,6 +12,7 @@ use bevy::prelude::*;
 enum Function {
     Activate,
     Remove,
+    GraphRemove,
     RemoveOrGhost,
     RemoveWhenHidden { retry_delay:f32, retries:i32 },
     Damage(Parameters),
@@ -90,6 +91,9 @@ pub(super) fn enqueue_removal(
 ) -> Result<(), String> {
     enqueue(world, target, delay, Function::Remove)
 }
+pub(super) fn enqueue_graph_removal_with_live(world: &mut World, live: &LiveEntities, target: EntityId) -> Result<(), String> {
+    enqueue_with_live(world, live, target, 0., Function::GraphRemove)
+}
 pub(super) fn enqueue_removal_with_live(
     world: &mut World,
     live: &LiveEntities,
@@ -154,7 +158,12 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             if world.resource::<LiveEntities>().get(entry.target).is_some() {
                 match entry.function {
                     Function::Activate => super::runtime_entities::activate(world, entry.target)?,
-                    Function::Remove => {
+                    Function::Remove | Function::GraphRemove => {
+                        if matches!(entry.function, Function::GraphRemove) {
+                            world.resource_mut::<EntityEvents>().post(crate::gameplay::entity_events::Event {
+                                id: 0x1cf, target: Some(entry.target), payload: crate::gameplay::entity_events::Payload::None,
+                            });
+                        }
                         world.resource_mut::<LiveEntities>().request_removal(entry.target)?;
                         //884980 invokes the native function, then883d10 sends
                         //its actual linked notice_EV_Remove to observers.

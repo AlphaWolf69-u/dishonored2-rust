@@ -8,8 +8,12 @@ use super::{
 use bevy::prelude::*;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-#[bind_group_data(SurfaceKey)]
+#[bind_group_data(ProbeKey)]
 pub(super) struct ProbeExtension {
+    ///Resolved MAIN+material state for the post-tone world-movie list.
+    ///CPU-only pipeline metadata; no additional shader buffer or target.
+    #[reflect(ignore)]
+    pub(super) world_movie_state: Option<std::sync::Arc<[u32; 9]>>,
     #[storage(167, read_only)]
     pub(super) fog_objects: Handle<ShaderBuffer>,
     #[storage(161, read_only)]
@@ -232,9 +236,15 @@ pub(super) fn specialize_model_depth_hack(
 
 use surface_gpu::SurfaceKey;
 
-impl From<&ProbeExtension> for SurfaceKey {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ProbeKey {
+    pub(super) surface: SurfaceKey,
+    world_movie: Option<std::sync::Arc<[u32; 9]>>,
+}
+
+impl From<&ProbeExtension> for ProbeKey {
     fn from(extension: &ProbeExtension) -> Self {
-        Self::from(&extension.surface)
+        Self { surface: SurfaceKey::from(&extension.surface), world_movie: extension.world_movie_state.clone() }
     }
 }
 
@@ -242,6 +252,12 @@ pub(super) fn specialize_surface(
     descriptor: &mut RenderPipelineDescriptor,
     key: surface_gpu::SurfaceKey,
 ) {
+    if key.0[6] == 14 {
+        //The already-batched draw moves to the post-tone world-movie list.
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("DH2_IGGY3D".into());
+        }
+    }
     if key.0[7]&24==24 && !descriptor.vertex.shader_defs.iter().any(
         |value| matches!(value,bevy::shader::ShaderDefVal::Bool(name,true) if name=="PREPASS_PIPELINE")
     ) {
@@ -428,18 +444,18 @@ pub(super) fn depth_prepass_material_keys(
 ) -> bevy::pbr::DepthPrepassMaterialKeys {
     let mut keys = bevy::pbr::DepthPrepassMaterialKeys::default();
     keys.register::<super::ProbeMaterial>(|mut key| {
-        key.extension = key.extension.depth_prepass();
+        key.extension.surface = key.extension.surface.depth_prepass();
         key
     });
     if material_free {
         keys.register_material_free::<super::ProbeMaterial>(|key| {
-            !key.extension.depth_needs_material()
+            !key.extension.surface.depth_needs_material()
         });
     }
     // arkHair keeps its zPrePass slot (finalize_material_programs clears
     // nothing for hairType) and draws in the opaque depth prepass at
     // r_hairAlphaTestOpaque (original menu capture events 691-763).
-    keys.register_blended_prepass::<super::ProbeMaterial>(|key| key.extension.0[6] == 12);
+    keys.register_blended_prepass::<super::ProbeMaterial>(|key| key.extension.surface.0[6] == 12);
     keys
 }
 
@@ -461,16 +477,34 @@ impl MaterialExtension for ProbeExtension {
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.push("DH2_LOCAL_SHADOWS".into());
         }
-        specialize_vertex_lighting(descriptor, layout, key.bind_group_data);
-        specialize_surface(descriptor, key.bind_group_data);
-        specialize_skin(descriptor, key.bind_group_data);
+        specialize_vertex_lighting(descriptor, layout, key.bind_group_data.surface);
+        specialize_surface(descriptor, key.bind_group_data.surface);
+        specialize_skin(descriptor, key.bind_group_data.surface);
+        if let Some(state) = key.bind_group_data.world_movie.as_deref() {
+            //Use the same decoded state owner as other installed programs.
+            //The no-Z and with-Z Iggy materials intentionally differ here.
+            let raster = crate::rendering::bevy_backend::pipeline_state::mesh_raster(state, true);
+            descriptor.primitive.front_face = raster.0;
+            descriptor.primitive.cull_mode = raster.1;
+            if let Some(depth) = descriptor.depth_stencil.as_mut() {
+                *depth = crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(state, depth.format)
+                    .expect("admitted world movie depth state");
+            }
+            if let (Some(fragment), Some(blend)) = (descriptor.fragment.as_mut(), crate::render_state::blend_state(state).targets[0]) {
+                if let Some(Some(target)) = fragment.targets.first_mut() {
+                    target.blend = crate::rendering::bevy_backend::pipeline_state::blend_target(blend)
+                        .expect("admitted world movie blend state");
+                    target.write_mask = bevy::render::render_resource::ColorWrites::from_bits_truncate(u32::from(blend.write_mask));
+                }
+            }
+        }
         authored_basis_pipeline(descriptor, layout)?;
         specialize_model_depth_hack(descriptor, layout)?;
         specialize_skin8(descriptor, layout)?;
         crate::rendering::bevy_backend::vegetation_wind::specialize(
             descriptor,
             layout,
-            key.bind_group_data.0[6],
+            key.bind_group_data.surface.0[6],
         )
     }
 

@@ -994,8 +994,15 @@ impl ComponentLifecycleWorld for Host<'_> {
             self.scene.start(handle,registry)?;
             return self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle);
         }
+        if handle.class_id==self.scene.classes[58]{
+            self.scene.start(handle,registry)?;
+            self.scene.start_static_usable(self.live,self.events,handle)?;
+            if let Some(world)=self.world.as_deref_mut(){self.scene.start_usable_backend(world,handle)?;}
+            return Ok(());
+        }
         if handle.class_id==self.scene.classes[5]{
             self.scene.start(handle,registry)?;
+            self.scene.start_usable_events(self.live,self.events,handle)?;
             if let Some(world)=self.world.as_deref_mut(){self.scene.start_usable_backend(world,handle)?;}
             return Ok(());
         }
@@ -1169,12 +1176,11 @@ impl ComponentReleaseWorld for Host<'_> {
                 return Err("audio Stop requires the accepted animation post backend".into());
             }
             scene.stop_audio_events(self.events, handle)?;
-        } else if handle.class_id == scene.classes[5] {
-            let actor = scene
-                .usables
-                .get(handle.slot)
-                .ok_or("usable component absent")?
-                .actor;
+        } else if handle.class_id == scene.classes[5] || handle.class_id==scene.classes[58] {
+            if handle.class_id==scene.classes[58]{scene.stop_static_usable(self.events,handle)?;}
+            else{scene.stop_usable_events(self.events,handle)?;}
+            let actor = if handle.class_id==scene.classes[58]{scene.static_usables.get(handle.slot)}else{scene.usables.get(handle.slot)}
+                .ok_or("usable component absent")?.actor;
             // Preparation has not published interactions or submitted game actions.
             let Some(world) = self.world.as_deref_mut() else {
                 return registry.stop_update_ownership(handle, &mut **scene);
@@ -1560,6 +1566,8 @@ impl ComponentReleaseWorld for Host<'_> {
                 handle,
                 scene.audios.get_mut(handle.slot).ok_or("audio absent")?,
             )
+        } else if handle.class_id==scene.classes[58] {
+            entity.components.release(handle,scene.static_usables.get_mut(handle.slot).ok_or("static usable absent")?)
         } else if handle.class_id == scene.classes[5] {
             entity.components.release(
                 handle,
@@ -1771,6 +1779,8 @@ impl ComponentReleaseWorld for Host<'_> {
             }
         } else if handle.class_id == scene.classes[4] {
             scene.audios.release(handle.slot)?;
+        } else if handle.class_id == scene.classes[58] {
+            scene.static_usables.release(handle.slot)?;
         } else if handle.class_id == scene.classes[5] {
             scene.usables.release(handle.slot)?;
         } else if handle.class_id == scene.classes[6] {

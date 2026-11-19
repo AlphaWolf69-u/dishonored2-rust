@@ -862,6 +862,7 @@ pub struct Frame<'a> {
     pub fall_damage: Option<&'a crate::assets::damage::Declaration>,
     pub fall_incapacitated: &'a mut bool,
     pub underwater: bool,
+    pub swimming: bool,
     pub swim_mantle_exit: &'a mut bool,
     pub game_over_requested: &'a mut bool,
     pub drowning_fx_requested: &'a mut Option<String>,
@@ -2750,6 +2751,11 @@ impl StateMachine {
         }
         if matches!(decl.kind, Kind::Blinking) {
             super::power_states::activate_blink(frame);
+            //857300 quits ordinary Slash through854190; the focused-hold
+            //branch has a separate Blink-assault policy and stays owned.
+            if self.is_active(StateId::SLASH) && !self.melee_focus_active() {
+                self.quit(StateId::SLASH);
+            }
             return;
         }
         if matches!(decl.kind, Kind::SwimMantle) {

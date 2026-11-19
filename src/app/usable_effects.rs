@@ -657,7 +657,7 @@ pub(super) fn prepare_requests(
                 owner.request(actor, spawn.path, catalog.clone(), &programs, &resources, &world.0);
             }
         }
-        interactions.pending.retain(|change| change.animation.is_some() || change.stop_effect || change.start_effect.is_some());
+        interactions.pending.retain(|change| change.animation.is_some() || change.stop_effect || change.start_effect.is_some() || change.stage.is_some());
     }
     if let Some(mut requests) = requests.filter(|requests| !requests.0.is_empty()) {
         for request in requests.0.drain(..) {

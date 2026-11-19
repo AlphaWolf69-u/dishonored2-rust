@@ -352,10 +352,10 @@ fn player_declarations_with_listener(
     let mut swimming_states = Vec::new();
     for name in list_items(&swimming_mode, "m_states") {
         let Some(kind) = kind_of(&name) else { continue };
-        if matches!(kind, "playerstateswimming" | "playerstateswimmantle" | "playerstatedead"
-            | "playerstateequipchange" | "playerstatedraw" | "playerstateundraw") {
-            swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
-        }
+        //8642c0 acquires each mode's actual declarations. SWIM also authors
+        //UsePower/Blinking and shared action/equipment states; their typed
+        //runtime admission remains the supported-state decoder's decision.
+        swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
     }
     let locomotion = match md6_decl(&body_model, "locomotionDecl", &mut read)? {
         Some(name) => component_fields("playerlocomotion", &name, 0, &mut cache, &mut read)?,

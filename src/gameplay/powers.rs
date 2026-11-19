@@ -71,6 +71,8 @@ pub struct Cast {
 impl Cast {
     pub fn new(settings: Settings) -> Self { Self { settings, phase: Phase::Idle, last_cast: None, free_until: 0.0 } }
     pub fn phase(&self) -> Phase { self.phase }
+    ///The real61bea0/61c320 timestamp, for the existing on-demand report.
+    pub fn last_cast_time(&self) -> Option<f64> { self.last_cast }
     /// 61c320 refreshes the same last-use timestamp during traversal.
     pub fn refresh_cooldown(&mut self, now: f64) { self.last_cast = Some(now); }
     /// 14061c350 extends the free-cost deadline, never shortens it.

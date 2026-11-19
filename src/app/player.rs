@@ -393,11 +393,15 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
     let declarations = source.full(catalog, character_name(character))?;
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
+    let swimming_equipment = decls::swimming_equipment_states(&declarations)?;
     let slash_rules = states.iter().find_map(|state| match &state.kind {
         crate::gameplay::player::states::Kind::Slash(declaration) => Some(declaration.rule_handler.as_str()),
         _ => None,
     }).map(|name| crate::assets::slash_rules::Definition::acquire(catalog, name)).transpose()?;
-    let scene_paths = scene_paths(&states);
+    let mut scene_paths = scene_paths(&states);
+    for path in crate::gameplay::player::states::scene_paths(&swimming_equipment) {
+        if !scene_paths.contains(&path) { scene_paths.push(path); }
+    }
     let listener = if catalog.has_overlays() || std::env::var_os("DH2_PLAYER_DECL_READ_BASELINE").is_some() {
         let trace = std::env::var_os("DH2_PLAYER_DECL_READ_TRACE").is_some();
         crate::entities::player::entity_component(
@@ -502,7 +506,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         adrenaline: decls::adrenaline(&declarations.adrenaline)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,
-        swimming_equipment: decls::swimming_equipment_states(&declarations)?,
+        swimming_equipment,
         swimming_rules: decls::rules(&declarations.swimming_mode)?,
         swimming_default_state: decls::default_state(&declarations.swimming_mode),
         swimming_has_mantle: declarations.swimming_states.iter().any(|(kind, _)| kind == "playerstateswimmantle"),

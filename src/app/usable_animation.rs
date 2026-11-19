@@ -465,15 +465,19 @@ pub(super) fn advance(
     if !advanced { return; }
     for (actor, is_playing) in playing.iter().copied().enumerate().filter_map(|(index, playing)| playing.map(|value| (index, value))) {
         let change = {
-            let Some(state) = interactions.actors[actor].state.as_mut() else { continue };
+            let actor_state=&mut interactions.actors[actor];
+            let Some(state) = actor_state.state.as_mut() else { continue };
             let change = state.tick(dt, is_playing);
+            let notification=change.stage_notification;
             let animation = change.animation;
             let stop_effect = change.stop_effect;
             let path = change.start_effect.map(str::to_owned);
-            super::interactions::PendingChange { actor, animation, stop_effect,
+            let stage=notification.map(|started|(state.state,started,actor_state.last_instigator));
+            if notification==Some(false){actor_state.last_instigator=None;}
+            super::interactions::PendingChange { actor, stage, animation, stop_effect,
                 start_effect: path.as_deref().map(|path| super::interactions::effect_spawn(state, path)) }
         };
-        if change.animation.is_some() || change.stop_effect || change.start_effect.is_some() {
+        if change.animation.is_some() || change.stop_effect || change.start_effect.is_some() || change.stage.is_some() {
             interactions.pending.push(change);
         }
     }
@@ -632,8 +636,8 @@ pub(super) fn write_diagnostics(world:&World,eye:[f32;3],report:&mut String) {
     for (_,distance,index) in nearest.into_iter().take(8) {
         let slot=&owner.placements[&index];
         let actor=&interactions.actors[slot.actor];
-        let _=writeln!(report,"  entity={} placement={index} distance={} started={} declared_initial={} current_state={:?} transitioning={:?} model={} requested={} failed={} initialized={} asset={} node={} command={:?} audio_ready={} physics_owned={} prepared_pose={} animation_pose={} local_pose={} source_index={:?}",
-            actor.entity,distance.sqrt(),actor.started,actor.definition.initial_step,actor.state.as_ref().map(|state|state.state),actor.state.as_ref().map(|state|state.transitioning()),
+        let _=writeln!(report,"  entity={} placement={index} distance={} started={} enabled={} declared_initial={} current_state={:?} transitioning={:?} model={} requested={} failed={} initialized={} asset={} node={} command={:?} audio_ready={} physics_owned={} prepared_pose={} animation_pose={} local_pose={} source_index={:?}",
+            actor.entity,distance.sqrt(),actor.started,actor.enabled,actor.definition.initial_step,actor.state.as_ref().map(|state|state.state),actor.state.as_ref().map(|state|state.transitioning()),
             slot.model,slot.requested,slot.failed,slot.initialized,slot.asset.is_some(),slot.node.is_some(),slot.command,slot.audio_ready,slot.physics_owned,
             slot.prepared_pose.is_some(),slot.animation_pose.is_some(),slot.local_pose.is_some(),slot.source_index);
         let _=writeln!(report,"    current_clip={:?} input_playing={:?} settled={:?} initial_command={:?} frame={:?}",

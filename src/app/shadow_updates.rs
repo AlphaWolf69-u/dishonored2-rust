@@ -55,7 +55,7 @@ pub(super) struct ModelShadowCaster {
 
 /// A runtime renderer surface: FX instances or an actual world actor. Shared
 /// mesh/material handles use the same ordinary source shadow programs.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct RuntimeShadowSurface {
     pub mesh: Handle<Mesh>,
     pub material: super::MaterialHandle,
@@ -66,7 +66,7 @@ pub(super) struct RuntimeShadowSurface {
     pub clock: Option<(u8,f32)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct RuntimeSurfaceSkin {
     pub palette: Handle<ShaderBuffer>,
     pub matrix_offset: u32,

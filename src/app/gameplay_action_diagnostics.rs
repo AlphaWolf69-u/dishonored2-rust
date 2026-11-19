@@ -9,6 +9,7 @@ mod blink;
 mod bolt;
 pub(super) mod grenade;
 mod contact_fx;
+mod wall_thrust;
 
 #[derive(Resource, Default)]
 struct Receipts { heart_uses: u64, heart: Option<EntityId>, heart_selected:Option<bool>,
@@ -66,7 +67,7 @@ fn player(world: &World) -> Result<&Player, String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldPower, WorldSword, WorldCharge, WorldAim, WorldContact, WorldTail, PickObject, ThrowObject, ObjectMotion, Done }
+enum Stage { Begin, Crossbow, Bolt, Gun, GunShot, Empty, Sheath, Draw, Focus, FocusFade, Heart, HeartUse, WheelOpen, WheelMove, WheelClose, CarryApproach, ContactGun, ContactSword, ContactAim, ContactLookAway, ContactFocus, ContactPokeAim, ContactDamage, WorldPower, WorldSword, WorldCharge, WorldAim, WorldContact, WorldTail, PickObject, DropObject, DroppedObject, ThrowObject, ObjectMotion, Done }
 struct WorldEffectObservation {
     ticket:super::usable_effects::EffectTicket,
     identity:Option<(std::sync::Arc<str>,std::sync::Arc<str>)>,
@@ -96,6 +97,7 @@ pub(super) struct Observation {
     projectile_seen: bool,
     object: Option<(EntityId,[f32;3])>,
     object_motion_seen: bool,
+    object_drop_seen: bool,
     object_throw_frame: Option<i32>,
     object_motion_frame: Option<i32>,
     focus_samples: u32,
@@ -142,11 +144,12 @@ pub(super) struct Observation {
     blink: Option<blink::Observation>,
     bolt:Option<bolt::Observation>,
     grenade: Option<grenade::Observation>,
+    wall: Option<wall_thrust::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("blink")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Err(_)=>false,
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Err(_)=>false,
             Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, bolt, bolt-bottle or grenade")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
@@ -172,14 +175,15 @@ impl Observation {
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
         let bolt=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){Ok("bolt")=>Some(bolt::Observation::begin(world)?),Ok("bolt-bottle")=>Some(bolt::Observation::begin_bottle(world)?),_=>None};
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
+        let wall=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-wall-poke"){Some(wall_thrust::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
-        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup=actual_level_spawn no_teleport=true no_fake_ACK=true");
+        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if wall.is_some(){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
         Ok(Self { bolt,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
-            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_throw_frame:None,object_motion_frame:None,
+            seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_drop_seen:false,object_throw_frame:None,object_motion_frame:None,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
             contact_serial:0,contact_windows:0,contact_damage_seen:false,contact_health:None,contact_health_reported:false,contact_effects:None,approach_move:None,fixture_gate:None,fixture_reports:0,projectile_draw_reports:HashSet::new(),stuck_projectile_reports:HashSet::new(),
             audio_admissions,expected_audio:HashSet::new(),expected_fx:HashSet::new(),observed_fx:HashSet::new(),bolt_c8_observed:false,wheel_cursor:None,
-            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade })
+            world_only,world_poke,world_power,world_recovery_baseline:0,world_chain_inputs:0,world_chain_activations:0,world_replacement_pending:None,world_recovery_pending:None,world_left_response_seen:false,world_prior_effects:Vec::new(),world_crouch:None,world_target:None,world_contacts:0,world_effect:None,blink,grenade,wall })
     }
     fn stage(&mut self, next: Stage, world: &World) -> Result<(), String> {
         eprintln!("ACTION_SMOKE_STAGE completed={:?} next={next:?} shots={} ammo_before={} elapsed={:.3}",self.stage,self.shot_count,self.before_ammo,self.since.elapsed().as_secs_f64());
@@ -634,6 +638,7 @@ impl Observation {
         Ok((fx.focus_requested(),count,count>0&&full))
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(wall)=&mut self.wall {return wall.poll(world)}
         if let Some(bolt)=&mut self.bolt{
             let complete=bolt.poll(world)?;
             if complete{self.stage=Stage::Done;}
@@ -1176,7 +1181,23 @@ impl Observation {
                 let held=player(world)?.carrying.held.as_ref().unwrap().entity;
                 if self.object.map(|(id,_)|id)!=Some(held){return Err("carry input picked a different entity generation".into())}
                 eprintln!("ACTION_SMOKE_PASS check=actual_pickup_hold entity={held:?}");
-                self.stage(Stage::ThrowObject,world)?;
+                eprintln!("ACTION_CARRY_POSE stage=held {}",super::physics_scene::carrying_host::describe_pose(world,held)?);
+                self.stage(if self.object_drop_seen{Stage::ThrowObject}else{Stage::DropObject},world)?;
+            }
+            Stage::DropObject if player(world)?.possession_state()==Some(14) => {
+                let id=self.object.unwrap().0;
+                eprintln!("ACTION_CARRY_POSE stage=before_drop {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
+                self.tap(world,22)?;self.stage(Stage::DroppedObject,world)?;
+            }
+            Stage::DroppedObject if !player(world)?.carrying.has_work() => {
+                let id=self.object.unwrap().0;
+                if !player(world)?.carrying.observed_drop_ack(id){return Ok(false)}
+                let live=world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+                if live.parent(id)?.is_some(){return Ok(false)}
+                eprintln!("ACTION_SMOKE_PASS check=actual_drop_owner_ack unparented=true entity={id:?}");
+                eprintln!("ACTION_CARRY_POSE stage=after_drop {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
+                self.object_drop_seen=true;
+                self.stage(Stage::CarryApproach,world)?;
             }
             Stage::ThrowObject if player(world)?.possession_state()==Some(14) => {
                 // Pickup aimed down at the real bottle. Aim level/up through
@@ -1191,6 +1212,7 @@ impl Observation {
                 let frame=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),id)?
                     .ok_or("held object's actual frame absent")?;
                 self.object_throw_frame=Some(world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>().clock().map_err(str::to_owned)?.frame_marker());
+                eprintln!("ACTION_CARRY_POSE stage=before_throw {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
                 self.object=Some((id,frame.position));self.tap(world,19)?;self.stage(Stage::ObjectMotion,world)?;
             }
             Stage::ObjectMotion if !player(world)?.carrying.has_work() => {
@@ -1204,6 +1226,7 @@ impl Observation {
                         let Some(motion)=scene.observe_rigid_completed_motion(live,id)? else{return Ok(false)};
                         if self.object_throw_frame.is_none_or(|release|motion.0<=release){return Ok(false)}
                         if !self.object_motion_seen {
+                            eprintln!("ACTION_CARRY_POSE stage=after_throw {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
                             eprintln!("ACTION_SMOKE_PASS check=actual_throw_owner_ack_and_completed_motion entity={id:?} actual_body_motion={motion:?} held_baseline={before:?} actor_position={:?} scope=throw_branch_ack_plus_postrelease_body_motion_not_direction_or_ballistic_parity",frame.position);
                             self.object_motion_frame=Some(motion.0);
                             eprintln!("ACTION_SMOKE_PASS check=actual_throw_motion unparented=true entity={id:?} before={before:?} after={:?} world_support_still_required=true",frame.position);
@@ -1212,6 +1235,7 @@ impl Observation {
                         if let Some(support)=scene.observe_rigid_world_support(live,id)? {
                             if self.object_motion_frame.is_none_or(|motion|support.completed_frame<=motion){return Ok(false)}
                             eprintln!("ACTION_SMOKE_PASS check=actual_throw_world_support unparented=true entity={id:?} after={:?} actual_solver_support={support:?} scope=observed_completed_physics_step continuous_support_or_never_falls_not_claimed=true",frame.position);
+                            eprintln!("ACTION_CARRY_POSE stage=world_support {}",super::physics_scene::carrying_host::describe_pose(world,id)?);
                             self.stage(Stage::Done,world)?;
                         }
                     }

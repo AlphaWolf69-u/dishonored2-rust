@@ -637,7 +637,10 @@ pub fn transparency_with_program(bytes: &[u8], program: &[u8]) -> Transparency {
     // arkDecal defaults to SRC_ALPHA even if a material changes stageSort.
     let blend = values.get("blend").map_or(
         matches!(sort, Some("sorttrans" | "sortwater" | "sortdecal")),
-        |v| v == "src_alpha",
+        // ONE/ONE_MINUS_SRC_ALPHA (arkInGameIggy) is blended too. The
+        //native factor parser also distinguishes explicit ONE/ZERO, which
+        //must remain opaque even when a sort bucket suggests transparency.
+        |_| shadow_blend_factor_state(bytes, program).is_ok_and(blend_enabled),
     );
     if blend {
         Transparency::Blend

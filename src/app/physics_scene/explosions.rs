@@ -57,6 +57,8 @@ impl PhysicsScene {
         force_full_player_owned:bool,
         mut bounds: impl FnMut(&LiveEntities, EntityId) -> Result<Option<[[f32; 3]; 2]>, String>,
     ) -> Result<(), String> {
+        let _request_timing = super::super::breakables::measure("explosion_request",
+            super::super::breakables::TimingOwner::Entity(request.inflictor));
         if queries.applying {return self.deliver_explosion(queries,live,events);}
         let d = &request.declaration;
         let hit = ShapeHitInfo {
@@ -93,6 +95,8 @@ impl PhysicsScene {
             .world
             .read()
             .map_err(|_| "explosion canonical world poisoned")?;
+        let mut overlap_timing = super::super::breakables::measure("explosion_overlap",
+            super::super::breakables::TimingOwner::Entity(request.inflictor));
         world.convex_hits(
             &mut queries.convex,
             &WorldConvexRequest {
@@ -102,8 +106,17 @@ impl PhysicsScene {
             &mut queries.hits,
             &mut queries.initial,
         )?;
+        overlap_timing.count(0, queries.hits.len());
+        overlap_timing.count(1, queries.initial.len());
+        drop(overlap_timing);
+        let mut grouping_timing = super::super::breakables::measure("explosion_grouping",
+            super::super::breakables::TimingOwner::Entity(request.inflictor));
         queries.used = 0;
-        for contact in &queries.initial {
+        //7b3830 submits095280 with initial-collector flag0.096ac0's
+        //all-hits result therefore comes from the MAIN collector only;
+        //cbd060 also publishes actual overlaps there. The independent
+        //initial collector is not its result (and must not be merged).
+        for contact in &queries.hits {
             let Some(body_id) = contact.target.body_id else {
                 continue;
             };
@@ -172,10 +185,16 @@ impl PhysicsScene {
             //are retained rather than replaced with a guessed body dedup.
             queries.groups[group].bodies.push(body_id);
         }
+        grouping_timing.count(0, queries.hits.len());
+        grouping_timing.count(1, queries.used);
+        drop(grouping_timing);
         drop(world);
         queries.actions.clear();
         queries.contact_hits.clear();
+        let mut targets_timing = super::super::breakables::measure("explosion_target_queries",
+            super::super::breakables::TimingOwner::Entity(request.inflictor));
         for (group_index, group) in queries.groups[..queries.used].iter().enumerate() {
+            targets_timing.count(0, 1);
             let Some(aabb) = bounds(live, group.entity)? else {
                 return Err("explosion target lacks its actual entity RenderModel bounds".into());
             };
@@ -224,7 +243,9 @@ impl PhysicsScene {
                             required_flags: 0x800,
                         }),
                     };
+                    targets_timing.count(1, 1);
                     world.ray_hits(&mut queries.ray, &ray, 2, &mut queries.ray_hits)?;
+                    targets_timing.count(2, queries.ray_hits.len());
                     let closest = queries
                         .ray_hits
                         .iter()
@@ -259,7 +280,9 @@ impl PhysicsScene {
                 let world=self.world.read().map_err(|_|"explosion contact ray world poisoned")?;
                 let ray=WorldRayRequest{origin:request.position.to_array(),direction:(queries.samples[0]-request.position).to_array(),maximum_fraction:1.,hit,
                     filter:Some(CollisionQueryFilter{layers:d.occlusion_layers,required_flags:0x800})};
+                targets_timing.count(1, 1);
                 world.ray_hits(&mut queries.ray,&ray,2,&mut queries.ray_hits)?;
+                targets_timing.count(2, queries.ray_hits.len());
                 if let Some(contact)=queries.ray_hits.iter().min_by(|a,b|a.fraction.total_cmp(&b.fraction)){queries.contact_hits.push(*contact);}
             }
             if let Some((params, impulse)) = request.damage(aabb, center, false, modifiers, force_full_player_owned) {
@@ -270,6 +293,8 @@ impl PhysicsScene {
                 });
             }
         }
+        targets_timing.count(3, queries.actions.len());
+        drop(targets_timing);
         queries.applying=true;
         queries.action_cursor=0;
         queries.body_cursor=0;
@@ -280,14 +305,18 @@ impl PhysicsScene {
     ///the native grouped recipient plan and completed callbacks rather than
     ///running the spatial query and damaging those recipients a second time.
     fn deliver_explosion(&mut self,queries:&mut ExplosionQueries,live:&mut LiveEntities,events:&mut EntityEvents)->Result<(),String>{
+        let mut timing = super::super::breakables::measure("explosion_damage_impulse_delivery",
+            super::super::breakables::TimingOwner::Entity(None));
         while queries.action_cursor<queries.actions.len(){
             let action=&queries.actions[queries.action_cursor];
             let group=&queries.groups[action.group];
             if !queries.damage_delivered{
+                timing.count(0, 1);
                 self.damage_entity(live,events,group.entity,&action.params)?;
                 queries.damage_delivered=true;
             }
             while queries.body_cursor<group.bodies.len(){
+                timing.count(1, 1);
                 self.explosion_body_impulse(group.bodies[queries.body_cursor],action.impulse)?;
                 queries.body_cursor+=1;
             }

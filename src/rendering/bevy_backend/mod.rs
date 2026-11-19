@@ -46,6 +46,7 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
     camera_scene::release_level(world);
     fog_scene::FogGpu::release_level(world);
     display_scene::release_level(world);
+    world_movies::release_level(world);
     display_capture::DisplayCaptureGpu::release_level(world);
     auto_exposure::release_level(world);
     alpha_depth_scene::AlphaGpu::release_level(world);
@@ -284,6 +285,8 @@ pub mod colour_cube;
 pub mod tone_mapping;
 #[cfg(feature = "game")]
 pub mod display_scene;
+#[cfg(feature = "game")]
+mod world_movies;
 #[cfg(feature = "game")]
 pub mod flash_ui;
 

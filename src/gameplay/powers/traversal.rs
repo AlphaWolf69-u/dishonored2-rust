@@ -311,6 +311,10 @@ pub struct BlinkMotion {
     finish_next: bool,
 }
 impl BlinkMotion {
+    pub(crate) fn write_diagnostics(&self, report: &mut String) {
+        use std::fmt::Write;
+        let _ = writeln!(report, "    blink motion first_step={} finish_next={} speed={} target={:?} final={:?} prior_velocity={:?} exit_state={} posture={}", self.first_step, self.finish_next, self.settings.speed, self.request.position, self.request.final_position, self.prior_velocity, self.request.exit_state, self.request.posture);
+    }
     /// The host's 140857300 entry must first save the posture/velocity,
     /// remove ordinary movement/gravity requests, select posture shape4,
     /// zero velocity, set controller lock0x4000, disable ordinary mantle and
@@ -318,6 +322,15 @@ impl BlinkMotion {
     /// time lease described by settings; that lease ends on every exit.
     pub fn new(settings: BlinkMotionSettings, request: BlinkRequest, prior_velocity: Vec3) -> Self {
         Self { settings, request, prior_velocity, first_step: true, finish_next: false }
+    }
+    ///805fc0 enters the other mode's state12 using the same owned target.
+    ///Its constructor has no61ec20 entry camera correction to replay.
+    pub fn restart_for_mode(&mut self, swimming: bool) {
+        self.first_step = true;
+        self.finish_next = false;
+        self.request.camera_source = Vec3::ZERO;
+        //88adc0 clears the new SWIM Blink state's saved80/84/88 velocity.
+        if swimming { self.prior_velocity = Vec3::ZERO; }
     }
     pub fn step(&mut self, position: Vec3, velocity: Vec3, dt: f32, contacts: &[BlinkContact]) -> Result<BlinkStep, BlinkFailure> {
         if self.finish_next { return Ok(BlinkStep::Finish); }

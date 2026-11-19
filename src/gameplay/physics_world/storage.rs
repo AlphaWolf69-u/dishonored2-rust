@@ -458,6 +458,27 @@ impl WorldStorage {
         result.map(|()| true)
     }
 
+    /// c8e930 dispatches from the body's CURRENT motion-backed bit. Binding
+    /// can change a dormant component's mode before its first Start.
+    pub(crate) fn add_body_resumable<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32, activation: BodyActivation,
+    ) -> Result<(), String> {
+        //An accepted partial publication keeps its existing cursor; never
+        //select another branch while a callback is awaiting acknowledgement.
+        if self.static_addition.body().is_some() {
+            return self.add_static_body_resumable(geometry, events, id, activation);
+        }
+        if self.dynamic_addition.body().is_some() {
+            return self.add_dynamic_body_resumable(geometry, events, id, activation);
+        }
+        let motion_backed = self.bodies.get(id).ok_or("added body is missing")?.flags & 2 != 0;
+        if motion_backed {
+            self.add_dynamic_body_resumable(geometry, events, id, activation)
+        } else {
+            self.add_static_body_resumable(geometry, events, id, activation)
+        }
+    }
+
     pub(crate) fn add_static_body_resumable<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, id: u32, activation: BodyActivation,
     ) -> Result<(), String> {

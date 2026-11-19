@@ -29,6 +29,7 @@
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
     decal::clustered::apply_decals,
 }
+#import bevy_pbr::pbr_bindings::material
 
 #import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow, translucency_mask}
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
@@ -80,6 +81,19 @@ fn fragment(
     vertex_output: VertexOutput,
     @builtin(front_facing) is_front: bool,
 ) -> ProbeOutput {
+#ifdef DH2_IGGY3D
+    //Installed arkInGameIggy: an already-premultiplied transparent movie.
+    //No surface lighting, fog, HDR exposure or second alpha multiplication.
+    var movie_uv=vec2(0.0);
+#ifdef VERTEX_UVS_A
+    movie_uv=vertex_output.uv;
+#endif
+    let movie=textureSample(diffuse0,linear_clamp,movie_uv)*material.base_color;
+    if movie.a<1.0/255.0 {discard;}
+    var movie_out:ProbeOutput;
+    movie_out.color=movie;
+    return movie_out;
+#else
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
     if compiled_misc.z==9u {
         var uv=vec2(0.0);var color=vec4(1.0);
@@ -695,4 +709,5 @@ fn fragment(
     out.sss_surface=vec4(skin_albedo,skin_kernel);
 #endif
     return out;
+#endif
 }

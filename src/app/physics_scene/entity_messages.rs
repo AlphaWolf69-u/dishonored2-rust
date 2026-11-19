@@ -136,6 +136,9 @@ impl PhysicsScene {
         if handle.class_id == self.classes[4] {
             return self.audio_message(live, listener, event);
         }
+        if handle.class_id==self.classes[58]{return self.static_usable_message(live,registry,listener,event);}
+        if handle.class_id==self.classes[5]{return self.usable_message(live,listener,event);}
+
         //7ed9f0's A2/A5/1A6 subscribers belong to the actual Breakable
         //pool, never the RigidBody/Throwable payload projection.
         if handle.class_id == self.classes[11] {

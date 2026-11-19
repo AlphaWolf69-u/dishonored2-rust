@@ -74,6 +74,7 @@ mod entity_removal;
 pub(super) mod explosions;
 pub(super) mod explosion_effects;
 mod interaction_components;
+mod usable_static;
 mod flash_surfaces;
 mod grenade_cooking;
 pub(super) mod openable;
@@ -146,8 +147,8 @@ pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     grapple_dependency_ranges:[Option<[i32;2]>;5],
-    factories: [u32; 58],
-    classes: [i32; 58],
+    factories: [u32; 59],
+    classes: [i32; 59],
     entities: Vec<PhysicsEntity>,
     free_entities: Vec<usize>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
@@ -161,6 +162,9 @@ pub(super) struct PhysicsScene {
     winds: ComponentPool<ComponentOwner>,
     audios: ComponentPool<crate::gameplay::sound::component::AudioComponent>,
     usables: ComponentPool<UsableComponent>,
+    static_usables: ComponentPool<UsableComponent>,
+    static_usable_updates_pending: bool,
+    usable_uses:std::collections::VecDeque<usable_static::AcceptedUse>,
     pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
     readable_components: HashMap<String, crate::gameplay::pickable_component::CheckedComponent>,
     loots: ComponentPool<crate::gameplay::loot_component::LootComponent>,
@@ -547,6 +551,7 @@ impl PhysicsScene {
             factory(b"arkCpntOpenable")?,
             factory(b"arkCpntRetargeting")?,
             factory(b"arkCpntFX")?,
+            factory(b"arkCpntUsableStatic")?,
         ];
         let names = types
             .classes()
@@ -576,7 +581,7 @@ impl PhysicsScene {
         let grapple_dependency_ranges=[interactable_range?,navigation_range?,movable_range?,reaction_range?,evolved_range?];
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 58];
+        let mut classes = [0; 59];
         for i in 0..factories.len() {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
@@ -687,6 +692,9 @@ impl PhysicsScene {
             winds: types.create_pool(factories[2], &cvars.cvars)?,
             audios: types.create_pool(factories[4], &cvars.cvars)?,
             usables: types.create_pool(factories[5], &cvars.cvars)?,
+            static_usables: types.create_pool(factories[58], &cvars.cvars)?,
+            static_usable_updates_pending:false,
+            usable_uses:Default::default(),
             pickables: types.create_pool(factories[6], &cvars.cvars)?,
             readable_components: HashMap::new(),
             loots: types.create_pool(factories[7], &cvars.cvars)?,
@@ -1455,6 +1463,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.actors.actors.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[58] {
+            self.static_usables.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[6] {
@@ -1536,6 +1546,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[58] {
+            self.static_usables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[6] {
@@ -1838,6 +1850,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                     self.winds.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[3] {
                     self.actors.actors.schedule(handle.slot)?;
+                } else if handle.class_id == self.classes[58] {
+                    self.static_usables.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[5] {
                     self.usables.schedule(handle.slot)?;
                 } else if handle.class_id == self.classes[6] {

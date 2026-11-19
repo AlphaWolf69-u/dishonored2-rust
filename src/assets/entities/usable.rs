@@ -40,8 +40,22 @@ impl Default for Step {
     }
 }
 
+///4cd160's immutable UsableStatic declaration shares the existing usable
+///asset owner and fake-collision projection; it has no animation/state list.
+#[derive(Clone, Debug)]
+pub(crate) struct StaticDefinition {
+    pub interaction: crate::gameplay::interaction_definition::InteractionDef,
+    pub locked_interaction: crate::gameplay::interaction_definition::InteractionDef,
+    pub labels:[[String;2];2],
+    pub usable_by_player: bool,
+    pub deactivation_delay: f32,
+    pub maximum_uses: i32,
+}
+
 #[derive(Clone, Debug)]
 pub struct DefinitionData {
+    pub(crate) static_definition: Option<StaticDefinition>,
+    pub usable_by_player: bool,
     pub starts_on_spawn: bool,
     pub initial_step: usize,
     pub fake_collision: bool,
@@ -322,7 +336,7 @@ fn animation_index(fields: &[(String, Value)], name: &str) -> Result<Option<u8>,
     }
 }
 
-fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
+fn parse(fields: &[(String, Value)], is_static: bool) -> Result<DefinitionData, String> {
     let initial_step = atom(fields, "m_initialStep").unwrap_or("0").parse()
         .map_err(|_| "invalid usable initial step")?;
     let interaction = child(fields, "m_usableInteraction");
@@ -372,6 +386,15 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
     }
     let steps = slots.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into_boxed_slice();
     Ok(DefinitionData {
+        static_definition: if is_static { Some(StaticDefinition {
+            interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(interaction)?,
+            locked_interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(child(fields,"m_lockedInteraction"))?,
+            labels:[interaction,child(fields,"m_lockedInteraction")].map(|fields|["m_name","m_usageText"].map(|name|atom(fields,name).unwrap_or("").to_owned())),
+            usable_by_player: boolean(fields,"m_usableByPlayer",true)?,
+            deactivation_delay: number(child(fields,"m_deactivationDelayAfterUse"),"m_seconds",0.)?,
+            maximum_uses: atom(fields,"m_maxUsableCount").unwrap_or("-1").parse().map_err(|_|"invalid static usable count")?,
+        }) } else { None },
+        usable_by_player:boolean(fields,"m_usableByPlayer",true)?,
         starts_on_spawn: components::scheduling(fields,
             crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?.starts_on_spawn(),
         initial_step,
@@ -411,12 +434,14 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
             let (definition, scheduling) = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
                 shared.clone()
             } else {
-                let fields = match components::entry_fields(entry, "cpntusablewithstatelist", &declarations, &mut source_cache, &mut read) {
+                let is_static=components::entry_class(entry,&declarations)?.as_deref()==Some("cpntusablestatic");
+                let kind=if is_static {"cpntusablestatic"} else {"cpntusablewithstatelist"};
+                let fields = match components::entry_fields(entry, kind, &declarations, &mut source_cache, &mut read) {
                     Ok(Some(fields)) => fields,
                     Ok(None) => continue,
                     Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
                 };
-                let definition = match parse(&fields) {
+                let definition = match parse(&fields,is_static) {
                     Ok(definition) => Arc::new(definition),
                     Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
                 };

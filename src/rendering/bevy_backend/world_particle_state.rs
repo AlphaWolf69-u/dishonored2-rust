@@ -7,12 +7,13 @@ use super::{
 use crate::{
     assets::entities::event_graph::atom,
     gameplay::effects::{
-        graph::{FxGraphWorld, FxRuntimeParameters, GraphStep},
+        graph::{FxGraphWorld, FxRuntimeParameters, GraphStep, UsableAction},
         instances::{FxGraphInstances, GraphEvent},
         pool::EffectPoolLinks,
         world_component::{ReferenceReadiness, WorldFxComponent, WorldFxComponentHost},
         world_node::{CreatedEffect, FxNode},
     },
+    gameplay::entity_lifetime::{EntityId, LiveEntities},
     gameplay::event_graph::EntityReference,
     gameplay::reference_frame::ReferenceFrame,
     rendering::particles::world_sources::{WorldEffectDefinition, WorldFxSources},
@@ -559,6 +560,8 @@ pub(crate) struct WorldParticleState {
     graphs: FxGraphInstances,
     entity_graphs: HashMap<crate::gameplay::entity_lifetime::EntityId, u64>,
     started_entity_graphs: HashSet<crate::gameplay::entity_lifetime::EntityId>,
+    usable_subscribers: HashMap<EntityId, Vec<(u64, u32)>>,
+    usable_actions: Vec<(u64, EntityId, UsableAction)>,
     breakable_subscribers: HashMap<crate::gameplay::entity_lifetime::EntityId, Vec<(u64, u32)>>,
     pickup_subscribers: HashMap<crate::gameplay::entity_lifetime::EntityId, Vec<(u64, u32)>>,
     actors_initialized: bool,
@@ -614,6 +617,8 @@ impl Default for WorldParticleState {
             entity_graphs: HashMap::new(),
             started_entity_graphs: HashSet::new(),
             pickup_subscribers: HashMap::new(),
+            usable_subscribers: HashMap::new(),
+            usable_actions: Vec::new(),
             breakable_subscribers: HashMap::new(),
             actors_initialized: false,
             closed: false,
@@ -766,6 +771,12 @@ impl WorldParticleState {
             let root = self
                 .graphs
                 .admit_render_root(Arc::clone(graph), declarations)?;
+            if let Some(live) = live {
+                let indices = self.graphs.retirement_subtree(root).ok_or("host usable graph subtree absent")?;
+                for index in indices {
+                    self.start_usable_receivers(index, live)?;
+                }
+            }
             self.graphs.queue_loading_end(root)?;
         }
         //DeclInstance entry refresh may read another actor's variable while
@@ -793,6 +804,7 @@ impl WorldParticleState {
             .pickup_subscribers
             .values()
             .chain(self.breakable_subscribers.values())
+            .chain(self.usable_subscribers.values())
             .map(Vec::len)
             .sum();
         eprintln!(
@@ -851,6 +863,7 @@ impl WorldParticleState {
                 .graphs
                 .instance_id(index)
                 .ok_or("graph generation is unavailable")?;
+            self.start_usable_receivers(index, live)?;
             let (subscriptions, errors) = self.graphs.pickup_subscriptions(graph)?;
             if !errors.is_empty() {
                 return Err(errors.join("; "));
@@ -870,6 +883,66 @@ impl WorldParticleState {
         self.started_entity_graphs.insert(entity);
         Ok(())
     }
+    fn start_usable_receivers(&mut self, index: usize, live: &LiveEntities) -> Result<(), String> {
+        let graph = self.graphs.instance_id(index).ok_or("usable graph generation absent")?;
+        let (receivers, errors) = self.graphs[index].as_ref().ok_or("usable graph busy")?
+            .notification_subscriptions("arkKisculeNodeUsableNotification");
+        for error in errors {
+            self.report(format!("{} usable notification: {error}", self.graphs.owner(index)));
+        }
+        for (node, reference) in receivers {
+            self.register_usable_receiver(graph, node, reference, live)?;
+        }
+        Ok(())
+    }
+
+    fn register_usable_receiver(&mut self, graph: u64, node: u32, reference: EntityReference, live: &LiveEntities) -> Result<(), String> {
+        let target = match reference {
+            EntityReference::Named(name) => live.find(&name),
+            EntityReference::Managed(entity) => Some(entity),
+            EntityReference::Invalid => None,
+            // 8ad9c0 registers client zero under this name in this same entity owner.
+            EntityReference::Player => live.find("player1"),
+        };
+        if let Some(target) = target.filter(|&entity| live.stage(entity) == Some(crate::gameplay::entity_lifetime::Stage::Spawned)) {
+            let receivers = self.usable_subscribers.entry(target).or_default();
+            if !receivers.contains(&(graph, node)) {
+                receivers.push((graph, node));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_used(&mut self, entity: EntityId, instigator: Option<EntityId>) -> Result<(), String> {
+        if let Some(receivers) = self.usable_subscribers.get(&entity) {
+            for &(graph, node) in receivers.iter().rev() {
+                let errors = self.graphs.used(graph, node, instigator)?;
+                if !errors.is_empty() {
+                    return Err(errors.join("; "));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_usable_stage(&mut self, entity: EntityId, stage: i32, started: bool, instigator: Option<EntityId>) -> Result<(), String> {
+        if let Some(receivers) = self.usable_subscribers.get(&entity) {
+            for &(graph, node) in receivers.iter().rev() {
+                let errors = self.graphs.usable_stage(graph, node, stage, started, instigator)?;
+                if !errors.is_empty() {
+                    return Err(errors.join("; "));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn usable_actions_pending(&self) -> bool { !self.usable_actions.is_empty() }
+
+    pub(crate) fn drain_usable_actions(&mut self) -> impl Iterator<Item = (EntityId, UsableAction)> + '_ {
+        self.usable_actions.drain(..).map(|(_, target, action)| (target, action))
+    }
+
     fn register_breakable_receiver(
         &mut self,
         graph: u64,
@@ -1071,6 +1144,8 @@ impl WorldParticleState {
         &mut self,
         entity: crate::gameplay::entity_lifetime::EntityId,
     ) -> Result<(), String> {
+        self.usable_actions.retain(|request| request.1 != entity);
+        self.usable_subscribers.remove(&entity);
         let indices = match self.entity_graphs.get(&entity) {
             Some(root) => self
                 .graphs
@@ -1086,6 +1161,11 @@ impl WorldParticleState {
             .iter()
             .filter_map(|&index| self.graphs.instance_id(index))
             .collect();
+        self.usable_subscribers.retain(|_, listeners| {
+            listeners.retain(|(graph, _)| !ids.contains(graph));
+            !listeners.is_empty()
+        });
+        self.usable_actions.retain(|request| !ids.contains(&request.0));
         self.pickup_subscribers.retain(|target, listeners| {
             listeners.retain(|(graph, _)| !ids.contains(graph));
             *target != entity && !listeners.is_empty()
@@ -1511,6 +1591,8 @@ impl WorldParticleState {
                 entity.owner = FxEntityOwner::Detached;
             }
         }
+        self.usable_subscribers.clear();
+        self.usable_actions.clear();
         self.pickup_subscribers.clear();
         self.breakable_subscribers.clear();
         self.entity_graphs.clear();
@@ -2040,6 +2122,7 @@ impl WorldParticleState {
             let result = runtime.update_timer(
                 node,
                 &mut GraphHost {
+                    live,
                     state: self,
                     systems,
                     frames,
@@ -2082,6 +2165,7 @@ impl WorldParticleState {
             let mut runtime = self.graphs[index].take().ok_or("FX graph busy")?;
             runtime.notify(node, port);
             let result = runtime.step(&mut GraphHost {
+                live,
                 state: self,
                 systems,
                 frames,
@@ -2091,6 +2175,18 @@ impl WorldParticleState {
             });
             self.graphs[index] = Some(runtime);
             match result {
+                Ok(GraphStep::UsableReset { node }) => {
+                    let graph = self.graphs.instance_id(index).ok_or("usable reset graph retired")?;
+                    self.usable_subscribers.retain(|_, receivers| {
+                        receivers.retain(|entry| *entry != (graph, node));
+                        !receivers.is_empty()
+                    });
+                    let runtime = self.graphs[index].as_mut().ok_or("usable reset graph busy")?;
+                    runtime.reset_notification_count(node);
+                    if let Some(reference) = runtime.notification_subscription(node, "arkKisculeNodeUsableNotification")? {
+                        self.register_usable_receiver(graph, node, reference, live.ok_or("usable reset has no entity owner")?)?;
+                    }
+                }
                 Ok(GraphStep::BreakableReset { node }) => {
                     let graph = self
                         .graphs
@@ -2409,6 +2505,7 @@ impl WorldParticleState {
                 node,
                 handle,
                 &mut GraphHost {
+                    live,
                     state: self,
                     systems,
                     frames,
@@ -2446,6 +2543,7 @@ impl WorldParticleState {
 }
 
 struct GraphHost<'a> {
+    live: Option<&'a LiveEntities>,
     state: &'a mut WorldParticleState,
     systems: &'a mut ParticleSystems,
     frames: &'a FrameReferences<'a>,
@@ -2454,6 +2552,17 @@ struct GraphHost<'a> {
     graph: usize,
 }
 impl FxGraphWorld for GraphHost<'_> {
+    fn request_usable_action(&mut self, target: EntityId, action: UsableAction) -> Result<(), String> {
+        if matches!(action, UsableAction::Remove { attached: true })
+            && !self.live.ok_or("destroy action has no entity lifetime owner")?.children(target)?.is_empty() {
+            // 8797f0 skips children carrying entity flag d2 bit 5. The graph cannot
+            // authorize a recursive removal until that live flag is available.
+            return Err("graph removal with bound children awaits their per-child removal flags".into());
+        }
+        let owner = self.state.graphs.instance_id(self.graph).ok_or("usable action graph retired")?;
+        self.state.usable_actions.push((owner, target, action));
+        Ok(())
+    }
     fn managed_entity(&self,entity:&EntityReference)->Result<Option<crate::gameplay::entity_lifetime::EntityId>,String>{
         self.frames.managed.ok_or("script entity resolver is unavailable")?.entity(entity)
     }

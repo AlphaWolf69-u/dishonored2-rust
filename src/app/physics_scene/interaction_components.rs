@@ -8,6 +8,7 @@ use crate::gameplay::{
 pub(super) struct UsableComponent {
     pub owner: ComponentOwner,
     pub actor: usize,
+    pub(super) static_state: Option<super::usable_static::State>,
 }
 impl ComponentInstance for UsableComponent {
     fn owner(&self) -> &ComponentOwner {
@@ -126,12 +127,16 @@ impl PhysicsScene {
                 indices.insert(actor.entity.clone(), index);
                 index
             };
-            let declaration =
-                self.types
-                    .declaration(self.factories[5], actor_index, actor.scheduling.clone())?;
+            let is_static=actor.definition.static_definition.is_some();
+            let factory=if is_static{58}else{5};
+            let locked=if is_static&&self.throwable_class_is(self.entities[index].class,b"arkUsable")? {
+                let edit=definitions.get(actor.entity.as_str()).and_then(|def|entities::scope(entities::field(&def.fields,"edit"))).unwrap_or(&[]);
+                entities::scene_motion::atom(edit,"m_locked")==Some("true")
+            }else{false};
+            let declaration = self.types.declaration(self.factories[factory],actor_index,actor.scheduling.clone())?;
             let handle = ComponentFactory {
                 declaration: &declaration,
-                pool: &mut self.usables,
+                pool: if is_static {&mut self.static_usables}else{&mut self.usables},
                 registry,
                 grow_one_at_a_time: false,
             }
@@ -139,9 +144,12 @@ impl PhysicsScene {
                 &mut self.entities[index].components,
                 declaration.scheduling.starts_on_spawn(),
                 |_, _, _| {
+                    let mut owner=ComponentOwner::default();
+                    if is_static{owner.request_update(1);} //4cd0f0.
                     Ok(UsableComponent {
-                        owner: Default::default(),
+                        owner,
                         actor: actor_index,
+                        static_state:is_static.then(||super::usable_static::State::new(actor.definition.clone(),locked)),
                     })
                 },
                 |_, _, _| Ok(()),
@@ -389,7 +397,7 @@ impl PhysicsScene {
 
     pub(super) fn start_usable_backend(&self, world: &mut bevy::prelude::World,
         handle: ComponentHandle) -> Result<(), String> {
-        let component = self.usables.get(handle.slot).ok_or("Usable Start component absent")?;
+        let component = if handle.class_id==self.classes[58]{self.static_usables.get(handle.slot)}else{self.usables.get(handle.slot)}.ok_or("Usable Start component absent")?;
         let preserve_state = component.owner.flags & (1 << 30) != 0;
         if !world.contains_resource::<super::super::interactions::Interactions>() {
             return Err("Usable Start interaction owner absent".into());
@@ -781,8 +789,14 @@ impl ComponentLifecycleWorld for Startup<'_> {
             } else if handle.class_id == self.scene.classes[19] {
                 self.scene.start(handle,registry)?;
                 self.scene.start_grenade(self.world.as_deref_mut(),self.live,self.events,handle)
+            } else if handle.class_id==self.scene.classes[58] {
+                self.scene.start(handle,registry)?;
+                self.scene.start_static_usable(self.live,self.events,handle)?;
+                if let Some(world)=self.world.as_deref_mut(){self.scene.start_usable_backend(world,handle)?;}
+                Ok(())
             } else if handle.class_id == self.scene.classes[5] {
                 self.scene.start(handle, registry)?;
+                self.scene.start_usable_events(self.live,self.events,handle)?;
                 //Preparation has not published Interactions yet. Its initial
                 //state/body queue already belongs to the prepared level.
                 if let Some(world) = self.world.as_deref_mut() {
@@ -930,6 +944,8 @@ impl PhysicsScene {
             membership!(self.actors.actors)
         } else if handle.class_id == self.classes[4] {
             membership!(self.audios)
+        } else if handle.class_id == self.classes[58] {
+            membership!(self.static_usables)
         } else if handle.class_id == self.classes[5] {
             membership!(self.usables)
         } else if handle.class_id == self.classes[6] {

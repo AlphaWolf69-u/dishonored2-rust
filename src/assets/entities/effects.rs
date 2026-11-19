@@ -134,7 +134,7 @@ pub(crate) fn load_with_entities(document: &Document,
         let fields = child(child(&entity.fields, "edit"), "m_kiscule");
         let relevant = super::event_graph::items(child(fields, "m_nodes")).any(|node|
             matches!(super::event_graph::atom(node, "m_name"),
-                Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance" |
+                Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance" | "arkKisculeNodeActionUsable" | "arkKisculeNodeActionInteractable" |
                     //63fa90 startup writers can live on componentless script
                     //actors. Retain their actual program before filtering its
                     //executable paths; current StoryFlag getters share its

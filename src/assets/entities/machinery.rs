@@ -180,28 +180,6 @@ pub fn constraints(
             if let Some(inline) = scope(field(entry, "inlineDecl")) {
                 overlay(&mut fields, inline);
             }
-            let mode = match atom(&fields, "m_angularMotorType") {
-                Some("CONSTRAINT_MOTOR_VELOCITY") => Some(MotorMode::Velocity),
-                Some("CONSTRAINT_MOTOR_POSITION") => Some(MotorMode::Position),
-                None | Some("CONSTRAINT_MOTOR_NONE") => None,
-                Some(value) => return Err(format!("{} {key}: unknown motor {value}", entity.id)),
-            };
-            let number = |key: &str, default: f32| -> Result<f32, String> {
-                let Some(value) = atom(&fields, key) else {
-                    return Ok(default);
-                };
-                value
-                    .parse::<f32>()
-                    .ok()
-                    .filter(|value| value.is_finite())
-                    .ok_or_else(|| format!("{}: invalid {key}={value}", entity.id))
-            };
-            let axis_index = match atom(&fields, "m_angularAxis").unwrap_or("AXIS_FORWARD") {
-                "AXIS_FORWARD" => 0,
-                "AXIS_LEFT" => 1,
-                "AXIS_UP" => 2,
-                value => return Err(format!("{}: unknown hinge axis {value}", entity.id)),
-            };
             let basis = scope(field(edit, "spawnOrientation")).and_then(|v| scope(field(v, "mat")));
             let mut rotation = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
             for (index, axis) in rotation.iter_mut().enumerate() {
@@ -211,64 +189,95 @@ pub fn constraints(
                         .ok_or_else(|| format!("{}: invalid constraint basis", entity.id))?;
                 }
             }
-            let axis = rotation[axis_index];
             let pivot = scope(field(edit, "spawnPosition"))
                 .and_then(|v| vector(v, [0.; 3]))
                 .ok_or_else(|| format!("{}: missing hinge pivot", entity.id))?;
-            // 140712640 defaults; conversion coefficient read by 140713850.
-            let radians = f32::from_bits(0x3c8e_fa35);
-            let velocity = number("m_angularTargetVelocity", 360.)? * radians;
-            let acceleration = (number("m_angularTargetAcceleration", 360.)? * radians).abs();
-            let force = number("m_angularMotorForce", 1_000_000.)?;
-            let started = match atom(&fields, "m_angularMotorStarted").unwrap_or("true") {
-                "true" => true,
-                "false" => false,
-                value => return Err(format!("{}: invalid motor started {value}", entity.id)),
-            };
-            let endpoint = |key| {
-                atom(&fields, key)
-                    .filter(|value| !value.is_empty() && *value != "NULL")
-                    .map(str::to_owned)
-            };
-            result.push(ConstraintSettings {
-                constraint_id: entity.id.clone(),
-                entity_a: endpoint("m_entityA"),
-                entity_b: endpoint("m_entityB"),
-                joint_a: endpoint("m_jointIdA"),
-                joint_b: endpoint("m_jointIdB"),
-                pivot,
-                axis,
-                basis: rotation,
-                angular_axis: axis_index,
-                angular_constraint: atom(&fields, "m_angularConstraintType")
-                    .unwrap_or("ANGULAR_CONSTRAINT_FIXED")
-                    .to_owned(),
-                angular_minimum: number("m_angularMinAngle", -45.)? * radians,
-                angular_maximum: number("m_angularMaxAngle", 45.)? * radians,
-                angular_cone: number("m_angularConeAngle", 90.)? * radians,
-                started,
-                target_position: number("m_angularTargetPosition", 0.)? * radians,
-                linear_constraint: atom(&fields, "m_linearConstraintType")
-                    .unwrap_or("LINEAR_CONSTRAINT_FIXED")
-                    .to_owned(),
-                angular_friction: number("m_angularFriction", -1.)?,
-                angular_limits_tau_factor: number("m_angularLimitsTauFactor", 1.)?,
-                motor: mode.map(|mode| AngularMotorSettings {
-                    mode,
-                    target_velocity: if mode == MotorMode::Position {
-                        velocity.abs()
-                    } else {
-                        velocity
-                    },
-                    target_acceleration: acceleration,
-                    force,
-                }),
-            });
+            result.push(read_constraint_fields(&fields, &entity.id, pivot, rotation)?);
         }
     }
     Ok(result)
 }
 
+
+/// Shared712640/713850 declaration projection; callers supply the actual
+/// constraint owner world frame, never a replacement body or render camera.
+pub(crate) fn read_constraint_fields(
+    fields: &[(String, super::Value)], identity: &str, pivot: [f32; 3],
+    rotation: [[f32; 3]; 3],
+) -> Result<ConstraintSettings, String> {
+    let mode = match atom(fields, "m_angularMotorType") {
+        Some("CONSTRAINT_MOTOR_VELOCITY") => Some(MotorMode::Velocity),
+        Some("CONSTRAINT_MOTOR_POSITION") => Some(MotorMode::Position),
+        None | Some("CONSTRAINT_MOTOR_NONE") => None,
+        Some(value) => return Err(format!("{} constraint: unknown motor {value}", identity)),
+    };
+    let number = |key: &str, default: f32| -> Result<f32, String> {
+        let Some(value) = atom(fields, key) else {
+            return Ok(default);
+        };
+        value
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("{}: invalid {key}={value}", identity))
+    };
+    let axis_index = match atom(fields, "m_angularAxis").unwrap_or("AXIS_FORWARD") {
+        "AXIS_FORWARD" => 0,
+        "AXIS_LEFT" => 1,
+        "AXIS_UP" => 2,
+        value => return Err(format!("{}: unknown hinge axis {value}", identity)),
+    };
+    let axis = rotation[axis_index];
+    // 140712640 defaults; conversion coefficient read by 140713850.
+    let radians = f32::from_bits(0x3c8e_fa35);
+    let velocity = number("m_angularTargetVelocity", 360.)? * radians;
+    let acceleration = (number("m_angularTargetAcceleration", 360.)? * radians).abs();
+    let force = number("m_angularMotorForce", 1_000_000.)?;
+    let started = match atom(fields, "m_angularMotorStarted").unwrap_or("true") {
+        "true" => true,
+        "false" => false,
+        value => return Err(format!("{}: invalid motor started {value}", identity)),
+    };
+    let endpoint = |key| {
+        atom(fields, key)
+            .filter(|value| !value.is_empty() && *value != "NULL")
+            .map(str::to_owned)
+    };
+    Ok(ConstraintSettings {
+        constraint_id: identity.to_owned(),
+        entity_a: endpoint("m_entityA"),
+        entity_b: endpoint("m_entityB"),
+        joint_a: endpoint("m_jointIdA"),
+        joint_b: endpoint("m_jointIdB"),
+        pivot,
+        axis,
+        basis: rotation,
+        angular_axis: axis_index,
+        angular_constraint: atom(fields, "m_angularConstraintType")
+            .unwrap_or("ANGULAR_CONSTRAINT_FIXED")
+            .to_owned(),
+        angular_minimum: number("m_angularMinAngle", -45.)? * radians,
+        angular_maximum: number("m_angularMaxAngle", 45.)? * radians,
+        angular_cone: number("m_angularConeAngle", 90.)? * radians,
+        started,
+        target_position: number("m_angularTargetPosition", 0.)? * radians,
+        linear_constraint: atom(fields, "m_linearConstraintType")
+            .unwrap_or("LINEAR_CONSTRAINT_FIXED")
+            .to_owned(),
+        angular_friction: number("m_angularFriction", -1.)?,
+        angular_limits_tau_factor: number("m_angularLimitsTauFactor", 1.)?,
+        motor: mode.map(|mode| AngularMotorSettings {
+            mode,
+            target_velocity: if mode == MotorMode::Position {
+                velocity.abs()
+            } else {
+                velocity
+            },
+            target_acceleration: acceleration,
+            force,
+        }),
+    })
+}
 /// Physical material density at declaration +0x58, selected by 14080951a.
 /// 14008b640 initializes it to 1000; inherited declarations override m_Density.
 pub fn material_density(

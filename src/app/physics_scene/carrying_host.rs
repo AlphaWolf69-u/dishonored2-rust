@@ -51,6 +51,47 @@ pub(in crate::app) fn describe_fixture_progress(world:&bevy::prelude::World,id:E
     world.get_resource::<CarryPhysics>().map_or_else(||"carry owner absent".into(),|owner|
         format!("progress={:?} last_error={:?}",owner.progress.get(&id),owner.error))
 }
+/// On-demand carry observation; reads the same physical/render/tag owners.
+/// It retains no model, material, entity lease or normal-frame history.
+pub(in crate::app) fn describe_pose(world:&bevy::prelude::World,id:EntityId)->Result<String,String>{
+    use std::fmt::Write;
+    let scene=world.get_resource::<PhysicsScene>().ok_or("carry pose Scene absent")?;
+    let live=world.get_resource::<LiveEntities>().ok_or("carry pose LiveEntities absent")?;
+    let mut out=String::new();
+    let Some(&index)=scene.shared_indices.get(&id) else{return Ok(format!("carry target={id:?} actual_scene_absent=true"))};
+    let entity=&scene.entities[index];
+    let _=writeln!(out,"carry_pose target={id:?} name={} live={:?} parent={:?} entity_frame={:?} initial_rigid_frame={:?}",entity.name,live.stage(id),live.parent(id),entity.frame,scene.initial_rigid_frames.get(&index));
+    if let Some(actor)=entity.components.reference_actor.and_then(|handle|scene.actors.actors.get(handle.slot)){
+        let _=writeln!(out,"  reference_actor frame={:?} binding={:?} current={} default={}",actor.frame.published(),(actor.binding.entity,actor.binding.joint,actor.binding.offset,actor.binding.orientation,actor.binding.phase),actor.current_body,actor.default_body);
+    }
+    if let Some(handle)=scene.document_rigid(index)?{
+        let component=scene.rigid_component(handle)?;
+        let shared=scene.point_queries()?;let queries=shared.read().map_err(|_|"carry pose physics world poisoned")?;
+        if let Some(body)=component.body().and_then(|body|queries.storage.bodies.get(body)){
+            let _=writeln!(out,"  actual_body id={} flags={:#x} transform={:?} motion={:?} requested_velocities={:?}",body.id,body.flags,body.transform,queries.storage.motions.get(body.motion_id),component.velocities);
+        }
+    }
+    if let Some(&placement)=scene.rigid_placements.get(&index){
+        if let Some(model)=world.get_resource::<super::super::RenderSourcePlacements>().and_then(|owner|owner.0.get(placement)){
+            let _=writeln!(out,"  placed index={placement} resource={} position={:?} basis={:?} scale={:?}",model.resource_path,model.position,model.rotation,model.scale);
+        }
+        if let Some(queue)=world.get_resource::<super::super::SceneRenderQueue>(){
+            for instance in queue.instances.iter().filter(|instance|instance.source.is_some_and(|source|match source.surface{
+                super::super::RenderModelSurface::Bmodel{placement:p,..}|super::super::RenderModelSurface::Bmd6{placement:p,..}=>p==placement,_=>false,
+            })).take(4){let _=writeln!(out,"  actual_draw transform={:?} bounds={:?} visible={}",instance.transform,instance.bounds,instance.visible);}
+        }
+    }
+    if let Some(player)=world.get_resource::<super::super::player::PlayerState>().and_then(|state|state.player.as_ref()){
+        let _=writeln!(out,"  player feet={:?} axis={:?} camera={:?}",player.feet(),player.physics.axis(),player.published_camera_frame());
+        if let Some((_,pickable))=scene.grapple_pickable(live,id)?{
+            if let Some(props)=pickable.definition.hold.as_ref(){
+                let _=writeln!(out,"  actual_hand_tag name={} world={:?} authored_offset={:?} authored_angles={:?}",props.attach_tag,CarryHost::tag_frame(player,&props.attach_tag),props.center_offset,props.angle_offset);
+            }
+        }
+    }
+    let _=writeln!(out,"  {}",describe_fixture_progress(world,id));
+    Ok(out)
+}
 pub(in crate::app) struct CarryHost<'a> {
     pub scene: &'a mut PhysicsScene,
     pub live: &'a mut LiveEntities,
@@ -342,29 +383,17 @@ impl CarryHost<'_> {
         let Some(&placement) = self.scene.rigid_placements.get(&index) else {
             return Ok(Vec3::from_array(frame.position)); //878230 null render-entity branch.
         };
-        let model = self
-            .placements
-            .0
-            .get(placement)
-            .ok_or("carry model placement is absent")?;
         let bounds = self
             .bounds
             .0
             .iter()
             .find(|source| source.placement == placement)
             .ok_or("carry render model has no canonical bounds")?
-            .local_bounds;
-        let local = (Vec3::from_array(bounds[0]) + Vec3::from_array(bounds[1])) * 0.5;
-        let initial = self
-            .scene
-            .initial_rigid_frames
-            .get(&index)
-            .ok_or("carry initial rigid frame is absent")?;
-        let initial_center = Vec3::from_array(model.position)
-            + Mat3::from_cols_array_2d(&model.rotation) * (local * Vec3::from_array(model.scale));
-        let initial_axis = Mat3::from_cols_array_2d(&initial.basis);
-        let local = initial_axis.inverse() * (initial_center - Vec3::from_array(initial.position));
-        Ok(Vec3::from_array(frame.position) + Mat3::from_cols_array_2d(&frame.basis) * local)
+            .bounds;
+        //878230 reads the render owner's current world bounds. ModelPose has
+        //already applied the body's world delta to these bounds; rebasing their
+        //center through the spawn frame would apply the pickup movement twice.
+        Ok((Vec3::from_array(bounds[0]) + Vec3::from_array(bounds[1])) * 0.5)
     }
     fn tag_frame(player: &Player, tag: &str) -> Result<(Vec3, Mat3), String> {
         let (joint, offset, orientation) = player.reference_tag_binding(tag)?;
@@ -641,10 +670,14 @@ impl CarryHost<'_> {
                 }
             }
         }
-        Ok(fraction.map(|fraction| {
+        let position=fraction.map(|fraction| {
             Vec3::from_array(frame.position)
                 - unit * (length - displacement.length() * fraction + f32::from_bits(0x3da3d70a))
-        }))
+        });
+        if player.carrying.tracing_enabled(){
+            eprintln!("ACTION_CARRY_RELEASE_CAST entity={:?} frame={} actor_origin={:?} render_center={center:?} camera_start={start:?} displacement={displacement:?} fraction={fraction:?} release_position={position:?}",target.entity,self.clock.frame_marker(),frame.position);
+        }
+        Ok(position)
     }
 }
 

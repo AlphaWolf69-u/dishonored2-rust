@@ -225,7 +225,10 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         let detail = crate::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
             .ok_or("environmental audio detail is absent")?;
         for (&emitter, object) in &mut bridge.objects {
-            let frozen = object.scale == 0.0 || paused.as_ref().is_some_and(|paused| paused.0);
+            //22fe30 publishes the FX clock as TimeDilation RTPC even at zero;
+            //it does not call the sound-object pause operation. Blink's frozen
+            //world clock must not pause the authored travel/stop event actions.
+            let frozen = paused.as_ref().is_some_and(|paused| paused.0);
             object.publish_frame(frozen);
             if object.has_events() {
                 let settings = crate::gameplay::sound::component::Settings {
@@ -239,7 +242,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                     positions: Vec::new(), levels: Default::default(), auxiliary: Vec::new(),
                 });
                 scene.publish(emitter, super::spatial::Position { position: object.position, front: Some(object.front) },
-                    propagated, object.scale, object.scale == 0.0);
+                    propagated, object.scale, false);
             }
         }
         let mut spawned = Vec::new();

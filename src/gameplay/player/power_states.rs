@@ -52,6 +52,8 @@ pub struct Runtime {
     contacts: Vec<BlinkContact>,
     previous_posture: usize,
     pub blink_finished: bool,
+    pub(super) blink_restart_time: bool,
+    blink_from_swimming: bool,
     pub sound_events: Vec<u32>,
     camera_modifier_applied: bool,
     camera_gamepad: bool,
@@ -84,6 +86,10 @@ impl Runtime {
         use std::fmt::Write;
         let _ = writeln!(report, "  power selected={:?} phase={:?} owned={} available={} active={} cancel={} execution_requested={} action={:?} button={} pressure={} analog={} overcast={} cost_factor={} cooldown_bypass={} potion_requested={}", self.selected.as_ref().map(|cast| cast.settings.id), self.selected.as_ref().map(Cast::phase), self.owned, self.family_available, self.active, self.cancel, self.execution_requested, self.action_state, self.action_button, self.input_pressure, self.input_analog, self.health_overcast, self.cost_factor, self.cooldown_bypass, self.mana_potion_requested);
         let _ = writeln!(report, "    blink present={} pending={} finished={} aborted={} contacts={} grapple present={} pending={} effects={} equipment_events={} sound_events={} lifecycle_callbacks={}", self.blink.is_some(), self.blink_pending, self.blink_finished, self.blink_aborted, self.contacts.len(), self.grapple.is_some(), self.grapple_pending, self.grapple_effects.len(), self.grapple_equipment_events.len(), self.sound_events.len(), self.lifecycle.len());
+        if let Some(cast) = &self.selected {
+            let _ = writeln!(report, "    power clock={} last_cast={:?} cooldown={} cooldown_ready={} bypass={}", self.now, cast.last_cast_time(), cast.settings.cooldown, cast.cooldown_ready(self.now, !self.cooldown_bypass), self.cooldown_bypass);
+        }
+        if let Some(motion) = &self.blink { motion.write_diagnostics(report); }
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -244,6 +250,7 @@ pub fn activate_blink(frame: &mut Frame<'_>) {
     runtime.blink_pending = false; runtime.blink_finished = false; runtime.blink_aborted = false;
     runtime.blink_mantle_requested = false;
     runtime.previous_posture = frame.physics.posture;
+    runtime.blink_from_swimming = frame.swimming;
     frame.controller.disable_actions(0x4000);
     frame.physics.instant_motion();
     frame.physics.disable_gravity(true);
@@ -267,7 +274,13 @@ pub fn update_blink(frame: &mut Frame<'_>) -> Option<StateId> {
         Ok(BlinkStep::Velocity(velocity)) => { frame.requests.push_linear(0, velocity); None },
         Ok(BlinkStep::Finish) => {
             frame.requests.push_linear(0, Vec3::ZERO);
-            frame.physics.proxy.position = motion.request.final_position;
+            let mut position = motion.request.final_position;
+            //858010: saved entry mode1 subtracts PhysicsPlayer+15c,
+            //the authored posture7 z_offset, from the final destination.
+            if runtime.blink_from_swimming {
+                position.z -= frame.physics.posture_settings(super::shape::POSTURE_SWIMMING).z_offset;
+            }
+            frame.physics.proxy.position = position;
             runtime.blink_finished = true;
             Some(StateId(motion.request.exit_state))
         },
@@ -448,6 +461,7 @@ impl Player {
         self.powers.contacts.clear(); self.powers.contacts.extend_from_slice(contacts);
     }
     pub fn blink_finished(&self) -> bool { self.powers.blink_finished }
+    pub fn take_blink_mode_restart(&mut self) -> bool { std::mem::take(&mut self.powers.blink_restart_time) }
     pub fn take_finished_blink(&mut self) -> Option<BlinkMotion> {
         if self.powers.blink_finished && !self.machine.is_active(StateId::BLINKING) { self.powers.blink_finished = false; self.powers.blink.take() }
         else { None }
