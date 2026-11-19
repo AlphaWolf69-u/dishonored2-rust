@@ -321,10 +321,7 @@ pub struct VaultLimits {
     pub clear_right: f32,
 }
 
-/// arkCpntPlayerSensorVault (PLAYER_SENSOR 6, vtable 0x141b430b8). Issue
-/// FUN_1403d0bf0 and results FUN_1403d06c0: the results read a frame's
-/// queries in the next frame. Damageables (breakables in the clearance)
-/// need dynamic bodies, which the static world has none of.
+/// arkCpntPlayerSensorVault (PLAYER_SENSOR 6, vtable 0x141b430b8).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VaultSensor {
     pub enabled: bool,
@@ -345,7 +342,6 @@ pub struct VaultSensor {
     pub vault_height: f32,
     distance_hit: bool,
     obstacle: Vec3,
-    pending: Option<VaultQueries>,
     /// +0x110 m_collisionMask: the sensor decl's m_collisionLayers (Start
     /// FUN_1403d0210; ctor FUN_1403cf880 0x802b, installed decl empty).
     collision_mask: u32,
@@ -390,7 +386,6 @@ impl VaultSensor {
             vault_height: 0.0,
             distance_hit: false,
             obstacle: Vec3::ZERO,
-            pending: None,
             collision_mask: 0x802b,
         }
     }
@@ -402,7 +397,6 @@ impl VaultSensor {
         if enabled {
             self.filter = NormalFilter::new(ground_normal);
         } else {
-            self.pending = None;
             self.query_frame = None;
             self.can_vault = false;
         }
@@ -412,18 +406,18 @@ impl VaultSensor {
         self.query_frame = Some((position, axis));
     }
 
-    /// One frame: the previous queries' results, then this frame's queries.
+    /// 954bc0 issues queries in QUERY_PHYSICS. After the physics wait,
+    /// 9503f0 consumes them in DEFAULT. Height and depth still use the
+    /// obstacle found by the preceding frame's forward cast.
     pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32) {
         if !self.enabled {
             return;
         }
-        if let Some(q) = self.pending.take() {
-            self.results(world, q);
-        }
-        self.issue(world, physics, dt);
+        let queries = self.issue(world, physics, dt);
+        self.results(world, queries);
     }
 
-    fn issue(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32) {
+    fn issue(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32) -> VaultQueries {
         let (origin, entity) = self.query_frame.unwrap_or((physics.position(), physics.axis()));
         self.origin = origin;
         // 3d0bf0's override uses 7fcc10, the same five ground rays at the actor.
@@ -462,7 +456,7 @@ impl VaultSensor {
                 q.ray_position = hit.position;
             }
         }
-        self.pending = Some(q);
+        q
     }
 
     fn results(&mut self, world: &dyn PlayerWorld, q: VaultQueries) {
