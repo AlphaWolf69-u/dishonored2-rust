@@ -2,7 +2,7 @@
 //! The renderer owns sampled joint frames; this owner retains identities and
 //! local offsets only, never another skin, clip, physics world or model cache.
 use super::*;
-use crate::gameplay::{entity_lifetime::LiveEntities, reference_frame::{ReferenceFrame, relative_binding, compose}};
+use crate::gameplay::{entity_lifetime::{EntityId, LiveEntities}, reference_frame::{ReferenceFrame, relative_binding, compose}};
 
 #[derive(Default)]
 pub(super) struct DocumentHierarchy {
