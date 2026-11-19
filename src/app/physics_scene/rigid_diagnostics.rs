@@ -43,6 +43,16 @@ impl PhysicsScene {
         Ok(self.simulation.as_ref().and_then(|driver| driver.observe_world_support(&storage.storage, body)))
     }
 
+    pub(in crate::app) fn observe_rigid_contact(&self,live:&crate::gameplay::entity_lifetime::LiveEntities,id:EntityId)
+        ->Result<Option<crate::gameplay::physics_world::contacts::BodyContactObservation>,String>{
+        if live.get(id).is_none(){return Err("contact observation entity generation retired".into());}
+        let index=*self.shared_indices.get(&id).ok_or("contact observation Scene identity absent")?;
+        let Some(handle)=self.document_rigid(index)?else{return Ok(None)};
+        let Some(body)=self.rigid_component(handle)?.body()else{return Ok(None)};
+        let world=self.world.read().map_err(|_|"contact observation physics world poisoned")?;
+        Ok(self.simulation.as_ref().and_then(|driver|driver.observe_body_contact(&world.storage,body)))
+    }
+
     pub(in crate::app) fn write_rigid_diagnostics(
         &self,
         world: &bevy::prelude::World,

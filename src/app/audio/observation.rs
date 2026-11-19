@@ -311,6 +311,22 @@ pub(in crate::app) struct Snapshot {
     pub source_jobs: Vec<(u32, u8, bool)>,
 }
 
+#[derive(Debug)]
+pub(in crate::app) struct StateSnapshot {
+    pub value:u32,
+    ///Last properties actually published by the canonical subscription owner.
+    ///Reading this does not advance a curve, clock, callback or audio graph.
+    pub properties:Vec<(u32,[f32;6])>,
+}
+
+pub(in crate::app) fn state_snapshot(world:&World,group:u32)->Result<StateSnapshot,String>{
+    let registry=world.get_resource::<WwiseRegistry>().ok_or("Wwise registry absent")?;
+    let state=registry.states.lock().map_err(|_|"Wwise state owner poisoned")?;
+    let mut properties=Vec::new();
+    state.visit_properties(|node,values|properties.push((node,values)));
+    Ok(StateSnapshot{value:state.current(group),properties})
+}
+
 /// Snapshot never drains an owner queue or invokes a callback. Only the copy
 /// of packets already consumed by PlayingEvents is drained from the observer.
 pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {

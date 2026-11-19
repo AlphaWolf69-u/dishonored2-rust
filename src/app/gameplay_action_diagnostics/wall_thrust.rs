@@ -54,8 +54,14 @@ impl Observation {
             let normal=Vec3::from_slice(&hit.normal);
             // Match the saved collision surface, allowing camera animation
             // while steering; these bounds gate only diagnostic setup.
+            // F8's actual center-ray triangle (report line13), not the
+            // unrelated off-axis last melee packet from report line367.
+            let a=Vec3::new(14.715664,87.30931,21.549978);
+            let b=Vec3::new(4.488506,80.475746,26.049978);
+            let c=Vec3::new(14.715664,87.30931,26.049978);
+            let expected_normal=(b-a).cross(c-a).normalize();
             if point.distance(Vec3::new(14.33991,87.05824,23.376156))>0.15
-                ||normal.dot(Vec3::new(0.5493019,0.83562386,0.))<0.99{
+                ||normal.dot(expected_normal)<0.99{
                 return Err(format!("captured wall geometry differs: actual={hit:?}"));
             }
             if !decl.world_focus.contains(p.physics.position(),eye,axis,decl.focus_step_back,point){
@@ -88,6 +94,10 @@ impl Observation {
             }
             Stage::Aim=>{
                 if Self::steer(world,FORWARD)?{
+                    let mut window = String::new();
+                    world.resource::<super::super::physics_scene::PhysicsScene>()
+                        .write_static_usable_diagnostics(world, player(world)?.feet().to_array(), &mut window);
+                    eprintln!("ACTION_CAPTURED_WINDOW after_first_load={window}");
                     let hit=Self::fixture(world)?;
                     eprintln!("ACTION_SMOKE_WALL_ACTUAL_RAY hit={hit:?} player_feet={:?} published_camera={:?}",player(world)?.feet(),player(world)?.published_camera_frame());
                     self.serial=super::super::melee::world_action_receipt(world).map_or(0,|receipt|receipt.0);

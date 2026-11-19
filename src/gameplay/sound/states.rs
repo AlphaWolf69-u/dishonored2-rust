@@ -110,6 +110,9 @@ impl Node {
                 }
             }
         }
+        self.published()
+    }
+    fn published(&self) -> [f32; 6] {
         std::array::from_fn(|property| {
             f32::from_bits(self.values[property].load(Ordering::Relaxed))
         })
@@ -314,7 +317,7 @@ impl States {
             .filter_map(Weak::upgrade)
             .collect::<Vec<_>>();
         for node in nodes {
-            visit(node.id, node.sample());
+            visit(node.id, node.published());
         }
     }
 }

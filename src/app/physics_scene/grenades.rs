@@ -242,6 +242,17 @@ impl PhysicsScene {
             Err(error)=>format!("Grenade {handle:?} {error}"),
         }
     }
+    ///Opt-in action observer: the actual synchronous call cursor, native
+    ///remove-on-FX-end predicate and real one-shot completion receipt.
+    ///No ticket/source lease or history is retained by this observation.
+    pub(in crate::app) fn debug_grenade_tail(&self,
+        live: &LiveEntities, id: EntityId) -> Result<Option<(Option<u8>, bool, Option<bool>)>, String> {
+        let Some(checked) = self.grenade_component(live, id)? else { return Ok(None) };
+        let Some(resources) = self.grenade_resources.get(&self.grenade_key(checked.handle)?) else { return Ok(None) };
+        Ok(Some((resources.exploding.as_ref().map(|call| call.phase),
+            resources.remove_after_explosion,
+            resources.explosion.as_ref().map(super::super::usable_effects::effect_completed))))
+    }
     pub(super) fn initialize_grenade(
         &mut self,
         handle: ComponentHandle,

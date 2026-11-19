@@ -30,6 +30,22 @@ enum Stage {
     Explosion,
     Done,
 }
+#[derive(Clone, Copy)]
+struct Tick {
+    wall: Instant,
+    app: Option<u32>,
+    game: Option<i32>,
+    game_time: Option<f64>,
+}
+#[derive(Default)]
+struct Progress {
+    first: Option<Tick>,
+    last: Option<Tick>,
+    call_finished: Option<Tick>,
+    longest_gap: Option<(Tick, Tick)>,
+    polls: u64,
+    signature: Option<(bool, Option<crate::gameplay::entity_lifetime::Stage>, Option<(Option<u8>, bool, Option<bool>)>)>,
+}
 pub(super) struct Observation {
     stage: Stage,
     since: Instant,
@@ -40,6 +56,7 @@ pub(super) struct Observation {
     before: HashSet<EntityId>,
     thrown: Option<EntityId>,
     hold_observation: Option<(u16, Option<EntityId>, Option<EntityId>)>,
+    progress: Progress,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -80,6 +97,7 @@ impl Observation {
             before,
             thrown: None,
             hold_observation: None,
+            progress: Progress::default(),
         })
     }
     fn stage(&mut self, stage: Stage) {
@@ -94,6 +112,7 @@ impl Observation {
         self.since = Instant::now();
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
+        if self.stage == Stage::Explosion { self.observe_progress(world)?; }
         if let Some(error) = app::runtime_materials::equipment_admission::startup_error(world) {
             return Err(format!("actual equipment publication failed during {:?}: {error}", self.stage));
         }
@@ -226,6 +245,7 @@ impl Observation {
                         grenade.entity, grenade.progress
                     );
                     self.stage(Stage::Explosion);
+                    self.observe_progress(world)?;
                 }
             }
             Stage::Explosion => {
@@ -234,6 +254,7 @@ impl Observation {
                     .thrown
                     .is_some_and(|entity| world.resource::<LiveEntities>().get(entity).is_none());
                 if receipt.exploded && gone {
+                    self.write_progress();
                     eprintln!(
                         "ACTION_SMOKE_PASS check=grenade_actual_490840_completion_and_entity_retirement full_entity={:?} exit=ordinary_ExitDrain",
                         self.thrown
@@ -247,5 +268,53 @@ impl Observation {
             }
         }
         Ok(false)
+    }
+    fn observe_progress(&mut self, world: &World) -> Result<(), String> {
+        let clock = world.get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .and_then(|owner| owner.clock().ok());
+        let current = Tick { wall: Instant::now(),
+            app: world.get_resource::<bevy::diagnostic::FrameCount>().map(|frame| frame.0),
+            game: clock.map(|clock| clock.frame_marker()),
+            game_time: clock.and_then(|clock| clock.time(0)),
+        };
+        let progress = &mut self.progress;
+        if let Some(previous) = progress.last {
+            let gap = current.wall.duration_since(previous.wall);
+            if progress.longest_gap.is_none_or(|(before, after)| gap > after.wall.duration_since(before.wall)) {
+                progress.longest_gap = Some((previous, current));
+            }
+        }
+        progress.first.get_or_insert(current);
+        progress.last = Some(current);
+        progress.polls += 1;
+        let live = world.resource::<LiveEntities>();
+        let stage = self.thrown.and_then(|id| live.stage(id));
+        let tail = self.thrown.map(|id| world.resource::<app::physics_scene::PhysicsScene>()
+            .debug_grenade_tail(live, id)).transpose()?.flatten();
+        let signature = (world.resource::<Receipt>().exploded, stage, tail);
+        if signature.0 { progress.call_finished.get_or_insert(current); }
+        if progress.signature != Some(signature) {
+            eprintln!("ACTION_SMOKE_GRENADE_PROGRESS stage={:?} app_frame={:?} game_frame={:?} game_time={:?} actual_490840_finished={} entity_stage={stage:?} tail_call_phase_remove_on_FX_end_effect_completed={tail:?} polls={}",
+                self.stage, current.app, current.game, current.game_time, signature.0, progress.polls);
+            progress.signature = Some(signature);
+        }
+        Ok(())
+    }
+    fn write_progress(&self) {
+        let progress = &self.progress;
+        let Some((first, last)) = progress.first.zip(progress.last) else { return };
+        let app_delta = first.app.zip(last.app).map(|(a, b)| b.wrapping_sub(a));
+        let game_delta = first.game.zip(last.game).map(|(a, b)| b.wrapping_sub(a));
+        let game_seconds = first.game_time.zip(last.game_time).map(|(a, b)| b - a);
+        let gap = progress.longest_gap.map(|(a, b)| (
+            b.wall.duration_since(a.wall).as_secs_f64() * 1000., a.app, b.app, a.game, b.game));
+        let tail = progress.call_finished.map(|first| (
+            last.wall.duration_since(first.wall).as_secs_f64(),
+            first.app.zip(last.app).map(|(a,b)| b.wrapping_sub(a)),
+            first.game.zip(last.game).map(|(a,b)| b.wrapping_sub(a)),
+            first.game_time.zip(last.game_time).map(|(a,b)| b-a)));
+        eprintln!("ACTION_SMOKE_GRENADE_FRAME_GAPS polls={} wall_seconds={} app_frames={app_delta:?} game_frames={game_delta:?} game_seconds={game_seconds:?} longest_poll_gap_ms_app_before_after_game_before_after={gap:?} retirement_is_not_frame_time=true",
+            progress.polls, last.wall.duration_since(first.wall).as_secs_f64());
+        eprintln!("ACTION_SMOKE_GRENADE_FX_END_WAIT observed_490840_completion_to_retirement_wall_seconds_app_frames_game_frames_game_seconds={tail:?}");
     }
 }

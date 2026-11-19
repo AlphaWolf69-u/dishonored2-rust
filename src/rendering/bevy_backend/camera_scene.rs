@@ -137,7 +137,7 @@ impl FxSimulation {
         graph: std::sync::Arc<crate::assets::entities::effects::FxGraph>,
         declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
         live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<u64, String> {
-        self.world_particles.admit_entity_graph(entity, graph, declarations, live)
+        self.world_particles.admit_entity_graph(entity, graph, declarations, live, false)
     }
     pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
         self.world_particles.retire_entity_graph(entity)

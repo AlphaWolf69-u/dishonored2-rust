@@ -25848,6 +25848,34 @@ explicit source release shift, followed by actual completed-solver snapshots.
 Consolidated continuity acceptance remains pending; the earlier real launch
 and contact receipt alone did not close held placement correctness.
 
+Follow-up observed continuity: the next actual run reached settled pre-throw
+registered-body/render residual[0,-0.000015258789,0]m and maximum basis
+component difference0.000002503395; the first completed post-throw publication
+had exactly zero residual in the same comparison. The native no-hit release
+shift of0.27m along the camera lateral axis was explicitly present in the
+planned position and is not a stale-origin correction. An immediate F-drop
+while the just-bound body was still rotating reported residual
+[0.03253174,0.009811401,0.012250423]m; its first post-drop publication matched
+exactly. Native7522d0 restores body mode/unlinks while preserving the current
+world pose; it does not snap to the separately sampled renderer, so no such
+snap was added. These are numerical observations, not full visual acceptance.
+
+The same run timed out only in its observer: it skipped the first actual
+launch solve while sending physical mouse-up, required a strictly later clock
+marker, then rejected same-step impacts and every non-static or sideways
+contact as though persistent floor support were part of throwing. The opt-in
+observer now samples before that input-release early return and retains the
+real same-generation solved contact/shape/point/positive-impulse receipt. The
+existing support getter retains its gravity/static interpretation; a separate
+read-only contact projection shares the same canonical retained-row reader
+without those support-only restrictions. No broadphase, solver, callback,
+body lifetime or trajectory behavior changes. Missing contact evidence and
+bare disappearance still do not pass. ObjectMotion timeout now records the
+actual target/body/render/contact state instead of hiding the final trajectory.
+Prediction: a valid first-step impact is observed rather than missed by input
+bookkeeping; no new timing run or gameplay-output claim is made before the
+next consolidated action observation.
+
 ### Particle contact collection during gunfire
 
 The cached static collision pass at `140fc1370` submits mesh leaf contacts to
@@ -25914,3 +25942,34 @@ collision proxy. The declaration instance owns its loop variables and 10 ms
 delay. Its clock comes from the script entity, advances with simulation, and
 retires with the graph instance. Clock-only script headers do not create
 physics bodies or render resources.
+
+### Grenade detonation completion versus particle-tail retirement
+
+`ported` — `app::physics_scene::grenades` keeps the actual exploded grenade
+identity until its one-shot FX completes. Native `140490840` installs the
+entity-removal-on-FX-end synchronizer through `1406dd720`; `1406dd550` requests
+RemoveOrGhost when that FX ends. The installed regular grenade selects
+`models/effects/weapons/grenade/grenade_expl.fx`. Its particle declaration's
+`grenadeBits` system emits one burst of 60 colliding pieces whose minimum and
+maximum life are both 10 seconds. Keeping the hidden entity and its component,
+source, callback and render-tail leases alive through that interval is expected
+lifecycle behavior, rather than a ten-second synchronous explosion call.
+
+The completed unsampled November19 action log records explosion-request work
+of 0.352 ms, effect dispatch of 0.003 ms, and a separate 10.60961-second wall
+interval from dispatch to final entity retirement. This is evidence about
+request cost and lifetime latency; it does not establish an individual frame
+gap or fix a visible freeze. The separate all-worker stack sample contains
+physics, FX, rendering and audio work and no sampled grenade explosion call.
+Its suspension totals are per-thread sampler overhead and are not interpreted
+as whole-process pause duration or normal gameplay timing.
+
+The existing opt-in grenade action observer now retains bounded counters for
+successive steady-clock polls, app frames, game-clock markers and game time.
+It reports the largest actual poll gap with its before/after frame markers,
+and separately counts frames/time from observed `490840` completion to entity
+retirement. Predicate-change receipts expose the actual call cursor,
+remove-on-FX-end flag and one-shot completion state. No per-frame log, resource
+lease, production history, new timer, earlier removal or gameplay override is
+introduced. Consolidated unsampled frame-gap validation remains pending;
+no actual frame-stall fix or whole-frame performance claim is made here.

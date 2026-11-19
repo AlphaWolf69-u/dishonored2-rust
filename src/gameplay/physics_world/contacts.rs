@@ -132,6 +132,18 @@ pub(crate) struct WorldSupportObservation {
     pub points: [ContactPoint; 4],
     pub impulses: [f32; 4],
 }
+///Actual solved impulse, without interpreting its normal as floor support.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BodyContactObservation {
+    pub completed_frame:i32,
+    pub serial:u64,
+    pub bodies:[u32;2],
+    pub shape_keys:[u32;2],
+    pub normal:[f32;3],
+    pub count:u8,
+    pub points:[ContactPoint;4],
+    pub impulses:[f32;4],
+}
 
 pub(crate) struct Contacts {
     manifolds: HashMap<Key, Manifold>,
@@ -166,6 +178,13 @@ pub(crate) struct Contacts {
 }
 impl Contacts {
     pub(crate) fn observe_world_support(&self, world: &WorldStorage, body: u32, completed_frame: i32) -> Option<WorldSupportObservation> {
+        let row=self.observe_body_contact_inner(world,body,completed_frame,true)?;
+        Some(WorldSupportObservation{completed_frame:row.completed_frame,serial:row.serial,body:row.bodies[0],world_body:row.bodies[1],shape_keys:row.shape_keys,normal:row.normal,count:row.count,points:row.points,impulses:row.impulses})
+    }
+    pub(crate) fn observe_body_contact(&self,world:&WorldStorage,body:u32,completed_frame:i32)->Option<BodyContactObservation>{
+        self.observe_body_contact_inner(world,body,completed_frame,false)
+    }
+    fn observe_body_contact_inner(&self,world:&WorldStorage,body:u32,completed_frame:i32,support:bool)->Option<BodyContactObservation>{
         world.bodies.get(body)?;
         for key in &self.active_keys {
             let side = key.bodies.iter().position(|&id| id == body);
@@ -175,7 +194,7 @@ impl Contacts {
                 continue;
             }
             let other = world.bodies.get(key.bodies[1 - side])?;
-            if other.flags & 1 == 0 { continue; }
+            if support && other.flags & 1 == 0 { continue; }
             let Some(rows) = entry.rows.as_ref() else { continue };
             if !entry.callback_state.stream_live || rows.stream_type == 3 || rows.count == 0 {
                 continue;
@@ -184,13 +203,13 @@ impl Contacts {
             let normal = rows.normal.map(|value| value * sign);
             let gravity_dot = (normal[0] * world.info.gravity[0] + normal[1] * world.info.gravity[1])
                 + normal[2] * world.info.gravity[2];
-            if !(gravity_dot < 0.0) || !entry.state.normal_impulses[..usize::from(rows.count).min(4)]
+            if (support && !(gravity_dot < 0.0)) || !entry.state.normal_impulses[..usize::from(rows.count).min(4)]
                 .iter().any(|&impulse| impulse > 0.0) {
                 continue;
             }
-            return Some(WorldSupportObservation {
-                completed_frame, serial: self.serial, body, world_body: other.id,
-                shape_keys: key.shapes, normal, count: rows.count,
+            return Some(BodyContactObservation {
+                completed_frame, serial: self.serial, bodies:[body,other.id],
+                shape_keys: [key.shapes[side],key.shapes[1-side]], normal, count: rows.count,
                 points: entry.points, impulses: entry.state.normal_impulses,
             });
         }
