@@ -159,7 +159,7 @@ pub(super) struct Observation {
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("grenade")|Ok("constraints")|Err(_)=>false,
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("bolt-tank")|Ok("grenade")|Ok("constraints")|Err(_)=>false,
             Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, blink-water, bolt, bolt-bottle, grenade or constraints")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
@@ -186,12 +186,12 @@ impl Observation {
         world.insert_resource(Receipts::default());
         let blink=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink"){Some(blink::Observation::begin(world)?)}else{None};
         let blink_water=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("blink-water"){Some(blink_water::Observation::begin(world)?)}else{None};
-        let bolt=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){Ok("bolt")=>Some(bolt::Observation::begin(world)?),Ok("bolt-bottle")=>Some(bolt::Observation::begin_bottle(world)?),_=>None};
+        let bolt=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){Ok("bolt")=>Some(bolt::Observation::begin(world)?),Ok("bolt-bottle")=>Some(bolt::Observation::begin_bottle(world)?),Ok("bolt-tank")=>Some(bolt::Observation::begin_tank(world)?),_=>None};
         let constraints=if constraint_only{Some(constraints::Observation::begin(world)?)}else{None};
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let wall=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-wall-poke"){Some(wall_thrust::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
-        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if wall.is_some()||blink_water.is_some(){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
+        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if wall.is_some()||blink_water.is_some()||std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt-tank"){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
         Ok(Self { bolt,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_drop_seen:false,object_throw_frame:None,object_motion_frame:None,object_contact:None,
             shot_frame_time:None,longest_shot_frame:Duration::ZERO,shot_frames:0,

@@ -120,6 +120,7 @@ pub(super) struct Observation {
     support_destroyed: bool,
     support_attempts:u32,
     support_misses:u32,
+    tank:bool,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -152,12 +153,26 @@ impl Observation {
             support_destroyed: false,
             support_attempts:0,
             support_misses:0,
+            tank:false,
         })
     }
     pub(super) fn begin_bottle(world: &mut World) -> Result<Self, String> {
+        Self::begin_support(world,"env_mulberry_mead_01_18",false)
+    }
+    pub(super) fn begin_tank(world:&mut World)->Result<Self,String>{
+        //The same captured, physically occupied feet used by wall_thrust.
+        //Only setup restores position; aim/fire use ordinary inputs.
+        let feet=Vec3::new(13.866425,87.776184,21.560005);
+        let forward=Vec3::new(0.5445311,-0.82580554,0.14673439);
+        world.resource_mut::<PlayerState>().player.as_mut().ok_or("tank setup Player absent")?
+            .teleport(feet,forward.y.atan2(forward.x));
+        eprintln!("ACTION_SMOKE_TANK_SETUP source=collision-1795084974980 feet={feet:?} target=script_tank_station_wol setup_restore_only=true LOS_not_assumed=true");
+        Self::begin_support(world,"script_tank_station_wol",true)
+    }
+    fn begin_support(world:&mut World,name:&str,tank:bool)->Result<Self,String>{
         let live = world.resource::<LiveEntities>();
         let target = live
-            .find("env_mulberry_mead_01_18")
+            .find(name)
             .ok_or("existing reachable bottle fixture is absent on this level")?;
         let scene = world.resource::<app::physics_scene::PhysicsScene>();
         let health = scene
@@ -170,8 +185,13 @@ impl Observation {
         if scene.breakable_component(live, target)?.is_none() {
             return Err("actual bottle fixture lacks started Breakable".into());
         }
+        if tank{
+            let snapshot=scene.whale_oil_tank_snapshot(live,target)?.ok_or("exact tank lacks its actual component")?;
+            eprintln!("ACTION_SMOKE_TANK_OWNER target={target:?} actual_component_energy_timer_thrown_started_updating_pusher={snapshot:?}");
+        }
         let mut observation = Self::begin(world)?;
         observation.support = Some(target);
+        observation.tank=tank;
         world.insert_resource(SupportContact {
             target,
             before_health: health,
@@ -180,7 +200,7 @@ impl Observation {
             fired: None,
             hit: None,
         });
-        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_BEGIN actual_target={target:?} before_health={health} fixture=existing_reachable_bottle physical_approach_look_fire_only=true no_damage_pose_or_RNG_override=true");
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_BEGIN actual_target={target:?} before_health={health} fixture={name} tank={tank} physical_approach_look_fire_only=true no_damage_pose_or_RNG_override=true");
         Ok(observation)
     }
     fn aim_bottle(&mut self, world: &mut World) -> Result<(), String> {
@@ -190,7 +210,7 @@ impl Observation {
             self.stop(world)?;
             return Ok(());
         }
-        if !Self::focused(world, target) {
+        if !self.tank&&!Self::focused(world, target) {
             self.move_with(world, 2)?;
             return Ok(());
         }
@@ -198,7 +218,13 @@ impl Observation {
         let p = player(world)?;
         //Installed rangedtarget enables DEBRIS alongside constructor WORLD
         //bits. This fixture requires its actual hit, not a forced target.
-        if p.ranged_target_entity()!=Some(target){return Ok(());}
+        if p.ranged_target_entity()!=Some(target){
+            if self.tank&&self.last_gate!=Some((true,false)){
+                eprintln!("ACTION_SMOKE_TANK_LOS actual_target={target:?} ranged_target={:?} ranged_hit={:?} fired=false no_navigation_or_ray_override=true",p.ranged_target_entity(),p.ranged_target_hit());
+                self.last_gate=Some((true,false));
+            }
+            return Ok(());
+        }
         let weapon = p
             .weapon
             .as_ref()
@@ -269,6 +295,9 @@ impl Observation {
         let live = world.resource::<LiveEntities>();
         let scene = world.resource::<app::physics_scene::PhysicsScene>();
         let receipt = world.resource::<SupportContact>();
+        if self.tank{
+            eprintln!("ACTION_SMOKE_TANK_OWNER reason={reason} target={target:?} actual_component_energy_timer_thrown_started_updating_pusher={:?}",scene.whale_oil_tank_snapshot(live,target)?);
+        }
         let health = if live.get(target).is_some() {
             scene.entity_health(live, target)?
         } else {
@@ -437,6 +466,11 @@ impl Observation {
                 send(world, input, false)?;
             }
             self.explain(world, "timeout")?;
+            if self.tank&&matches!(self.stage,Stage::Aim)&&self.projectile.is_none(){
+                eprintln!("ACTION_SMOKE_NOT_COVERED check=actual_whale_oil_tank_firearm_detonation reason=captured_start_did_not_produce_exact_target_native_ranged_LOS target={:?} actual_ranged_target={:?} actual_ranged_hit={:?} fired=false no_navigation_or_target_override=true",self.support,player(world)?.ranged_target_entity(),player(world)?.ranged_target_hit());
+                self.stage(Stage::Done);
+                return Ok(false);
+            }
             return Err(format!("actual bolt diagnostic timeout {:?}; focused={} pickup_input={} pending_seen={} picked_up={} after_shot={:?}",self.stage,self.focused_seen,self.input_sent,self.pending_seen,self.picked_up,self.after_shot));
         }
         match self.stage {
@@ -546,6 +580,12 @@ impl Observation {
                         self.support_destroyed=live.get(target).is_none()
                             ||damage_flags.is_some_and(|flags|flags&0x800!=0)
                             ||scene.entity_health(live,target)?.is_some_and(|health|health.0<=0.);
+                        if self.tank&&self.support_destroyed{
+                            self.report_support(world,"actual-tank-shot-death-committed")?;
+                            eprintln!("ACTION_SMOKE_PASS check=actual_whale_oil_tank_firearm_detonation exact_fired={id:?} exact_target={target:?} source_health_death_observed=true recovery_not_claimed=true");
+                            self.stage(Stage::Done);
+                            return Ok(false);
+                        }
                         if !self.support_destroyed {
                             if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
                                 self.retry_bottle(world,id,"actual_contact_did_not_destroy_living_bottle")?;

@@ -28,6 +28,16 @@ impl ComponentInstance for Component {
     }
 }
 impl PhysicsScene {
+    ///On-demand witness; borrows the actual component generation.
+    pub(in crate::app) fn whale_oil_tank_snapshot(&self,live:&LiveEntities,id:EntityId)
+        ->Result<Option<(crate::gameplay::pickable_component::CheckedComponent,i32,f32,bool,bool,bool,Option<EntityId>)>,String>{
+        if live.get(id).is_none(){return Ok(None);}
+        let Some(&index)=self.shared_indices.get(&id) else{return Ok(None);};
+        let Some(checked)=self.cue_dependency(index,b"arkCpntWhaleOilTank",[0,0])? else{return Ok(None);};
+        let component=self.whale_oil_tanks.get(checked.handle.slot).ok_or("WhaleOilTank observation payload absent")?;
+        Ok(Some((checked,component.runtime.energy,component.runtime.remaining,component.runtime.thrown,
+            component.runtime.started,component.updating,component.pusher)))
+    }
     pub(super) fn create_whale_oil_tank(
         &mut self,
         index: usize,
