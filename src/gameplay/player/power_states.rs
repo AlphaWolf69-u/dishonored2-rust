@@ -461,6 +461,7 @@ impl Player {
         self.powers.contacts.clear(); self.powers.contacts.extend_from_slice(contacts);
     }
     pub fn blink_finished(&self) -> bool { self.powers.blink_finished }
+    pub fn blink_aborted(&self) -> bool { self.powers.blink_aborted }
     pub fn take_blink_mode_restart(&mut self) -> bool { std::mem::take(&mut self.powers.blink_restart_time) }
     pub fn take_finished_blink(&mut self) -> Option<BlinkMotion> {
         if self.powers.blink_finished && !self.machine.is_active(StateId::BLINKING) { self.powers.blink_finished = false; self.powers.blink.take() }

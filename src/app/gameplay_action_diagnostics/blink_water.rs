@@ -654,10 +654,11 @@ impl Observation {
             }
             Stage::Flight if self.blink_seen && !blinking && self.mana_spent => {
                 let commits = world.resource::<Receipts>().blink_commits - self.commits_before;
-                if commits != 1 || !self.blink_in_water || p.feet() == self.cast_start {
+                if commits != 1 || !self.blink_in_water || p.blink_aborted() || p.feet() == self.cast_start {
                     return Err(format!(
-                        "water Blink cast incomplete: commits={commits} entered12_in_swim={} moved={} expected_positions={:?}",
+                        "water Blink cast incomplete: commits={commits} entered12_in_swim={} aborted={} moved={} expected_positions={:?}",
                         self.blink_in_water,
+                        p.blink_aborted(),
                         p.feet() != self.cast_start,
                         self.expected_positions
                     ));
