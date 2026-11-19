@@ -191,7 +191,7 @@ impl Observation {
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let wall=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-wall-poke"){Some(wall_thrust::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
-        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if wall.is_some()||blink_water.is_some()||std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt-tank"){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
+        eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt-tank"){"authored_waypoint_with_actual_LOS_restore_once"}else if wall.is_some()||blink_water.is_some(){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
         Ok(Self { bolt,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_drop_seen:false,object_throw_frame:None,object_motion_frame:None,object_contact:None,
             shot_frame_time:None,longest_shot_frame:Duration::ZERO,shot_frames:0,

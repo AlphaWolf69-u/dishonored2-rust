@@ -160,14 +160,58 @@ impl Observation {
         Self::begin_support(world,"env_mulberry_mead_01_18",false)
     }
     pub(super) fn begin_tank(world:&mut World)->Result<Self,String>{
-        //The same captured, physically occupied feet used by wall_thrust.
-        //Only setup restores position; aim/fire use ordinary inputs.
-        let feet=Vec3::new(13.866425,87.776184,21.560005);
-        let forward=Vec3::new(0.5445311,-0.82580554,0.14673439);
+        const TARGET:&str="script_tank_station_wol";
+        //Installed EotW arkWaypoint origins, ordered by distance to this tank.
+        //These are diagnostic starting locations, never gameplay navigation.
+        const WAYPOINTS:[(&str,[f32;3]);7]=[
+            ("script_waypoint_489",[65.5545730591,77.6455230713,24.2609863281]),
+            ("script_waypoint_119",[60.6339340210,60.8149299622,20.6080245972]),
+            ("script_waypoint_411",[53.25,57.8500022888,19.6499996185]),
+            ("script_waypoint_463",[70.9499969482,76.0299987793,24.2600002289]),
+            ("script_waypoint_409",[58.3500061035,53.1000022888,19.6499996185]),
+            ("script_waypoint_410",[49.7000007629,52.2000007629,19.6499996185]),
+            ("script_waypoint_32",[66.5015487671,56.6404457092,20.6671905518]),
+        ];
+        let target=world.resource::<LiveEntities>().find(TARGET).ok_or("authored tank fixture absent")?;
+        let center=Self::center(world,target)?;
+        let p=player(world)?;
+        let eye_offset=p.published_camera_frame().0-p.feet();
+        let layers=p.ranged_target.layers;
+        let scene=world.resource::<app::physics_scene::PhysicsScene>();
+        let live=world.resource::<LiveEntities>();
+        let query_owner=scene.point_queries()?;
+        let queries=query_owner.read().map_err(|_|"tank setup query owner poisoned")?;
+        let mut ray=crate::gameplay::world_ray_query::WorldRayQuery::default();
+        let mut hits=Vec::new();
+        let mut selected=None;
+        for (waypoint,feet) in WAYPOINTS{
+            let feet=Vec3::from_array(feet);
+            let eye=feet+eye_offset;
+            hits.clear();
+            queries.ray_hits(&mut ray,&crate::gameplay::world_ray_query::WorldRayRequest{
+                origin:eye.to_array(),direction:(center-eye).to_array(),maximum_fraction:1.,
+                hit:crate::gameplay::collision_hit::ShapeHitInfo{body_id:None,material_id:u16::MAX,shape_key:u32::MAX,filter_info:0,user_data:0},
+                filter:Some(crate::gameplay::collision_filter::CollisionQueryFilter{layers,required_flags:0x20000}),
+            },0,&mut hits)?;
+            hits.sort_by(|a,b|a.fraction.total_cmp(&b.fraction));
+            let actual=hits.first().map(|hit|(scene.collision_entity(live,&hit.target),hit.target,hit.position));
+            eprintln!("ACTION_SMOKE_TANK_SETUP_LOS source=installed_EotW_arkWaypoint waypoint={waypoint} feet={feet:?} eye={eye:?} target={target:?} closest={actual:?} actual_ranged_layers={layers:#x}");
+            if actual.is_some_and(|hit|hit.0==Some(target)){
+                selected=Some((waypoint,feet,eye));break;
+            }
+        }
+        drop(queries);
+        let Some((waypoint,feet,eye))=selected else{
+            let mut observation=Self::begin_support(world,TARGET,true)?;
+            eprintln!("ACTION_SMOKE_NOT_COVERED check=actual_whale_oil_tank_firearm_detonation reason=all_authored_nearby_waypoints_occluded fired=false no_target_ray_or_geometry_override=true");
+            observation.stage(Stage::Done);
+            return Ok(observation);
+        };
+        let direction=center-eye;
         world.resource_mut::<PlayerState>().player.as_mut().ok_or("tank setup Player absent")?
-            .teleport(feet,forward.y.atan2(forward.x));
-        eprintln!("ACTION_SMOKE_TANK_SETUP source=collision-1795084974980 feet={feet:?} target=script_tank_station_wol setup_restore_only=true LOS_not_assumed=true");
-        Self::begin_support(world,"script_tank_station_wol",true)
+            .teleport(feet,direction.y.atan2(direction.x));
+        eprintln!("ACTION_SMOKE_TANK_SETUP source=installed_EotW_arkWaypoint waypoint={waypoint} feet={feet:?} target={target:?} initial_LOS_verified=true setup_restore_only=true subsequent_native_ranged_target_gate_required=true");
+        Self::begin_support(world,TARGET,true)
     }
     fn begin_support(world:&mut World,name:&str,tank:bool)->Result<Self,String>{
         let live = world.resource::<LiveEntities>();
