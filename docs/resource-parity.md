@@ -25442,6 +25442,16 @@ not establish a fix for the reported floating bolt after destroying a bottle.
 
 Contact host scheduling: the shared material-contact producer uses the existing Bevy run condition after Player update. Only actual ground changes, incomplete source-scope admission and accepted/new packets enter its exclusive World update; canonical FX async progress and explicit retirement remain unchanged. Prediction: no settled idle exclusive contact invocation, not a measured CPU/FPS gain.
 
+Ground contact effects require a target material (140770990). A collision
+triangle can support the player without supplying one. The host preload in
+`app::player::update_player` then passes `None` to `observe_ground`, so
+the contact owner releases any previous surface's effects. A supplied ID or
+material name still has to resolve. Interaction boxes created by 14077af40
+retain body material 0 from 140ca65f0. Ray, sweep and overlap hits on a live box
+use the same preset bound by 1400932d0. The Edge of the World crash in session
+1795067795094-30316 identified a missing ground material but did not record the
+hit triangle.
+
 
 Actual58f dev acceptance (2026-11-18): game build and no-game core check passed; SHA25603D3C4D457C7F01BDC266E41BD9679171DE9E826C75AD8CD7DF2DBA0D3E2CBF7. Blink completed actual aim/cancel/cast/mana/holster/redraw, source-proven zero-weight ENV publication, real fullscreen-wobble draw and nonzero travel voice with clean exit0. Grenade reached actual arm binding, authored cooking fuse and real Iggy_Init/renderACK, then actual thrown hknpSphereShape2 body. It FAILED afterward: published equipment lost its binding parent and Throwable contact-list overflow aborted physics and retirement. No grenade detonation/clean-exit, remaining-scenario, main-release or FPS acceptance is claimed. Exact logs/results retained locally at analysis/gameplay-repair-20261116/58f-completed-actions. New landing/Loot/idle changes above remain pending compilation and runtime acceptance.
 

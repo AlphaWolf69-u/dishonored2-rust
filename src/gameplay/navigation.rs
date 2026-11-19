@@ -459,6 +459,13 @@ impl CollisionWorld {
         self.map.materials.get(material as usize)
     }
 
+    /// 77af40 keeps ca65f0's body material ID 0 on interaction boxes.
+    /// Map triangles use their decoded material slot instead.
+    pub(crate) fn interaction_box_material_id(&self, triangle: u32) -> Option<u16> {
+        let slot = (triangle as usize).checked_sub(self.map.triangles.len())?;
+        self.component_triangles.get(slot)?.as_ref().map(|_| 0)
+    }
+
     /// Nearest hit used by first_hit: (distance, triangle index, owner,
     /// vertices). The index is the key `triangles_in` reports.
     pub fn first_hit_details(&self, start: Vec3, end: Vec3, filter: QueryFilter) -> Option<(f32, u32, u32, [Vec3; 3])> {

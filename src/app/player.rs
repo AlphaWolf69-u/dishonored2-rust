@@ -106,12 +106,12 @@ impl GameCollision<'_> {
             if !accepts_owner(owner) { continue; }
             let body = if owner == u32::MAX { 0 } else { owner + 1 };
             if let Some((fraction, contact)) = shape_cast::cast(&points, motion, &triangle, 0.001) {
-                cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
+                cast.push(WorldHit { user_data: 0, body_flags: 1, material_id: self.0.interaction_box_material_id(key), position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
             }
             if let Some(start) = start.as_deref_mut().filter(|_| tolerance > 0.0) {
                 let contact = shape_cast::closest(&points, &triangle);
                 if contact.distance <= tolerance {
-                    start.push(WorldHit { user_data: 0, body_flags: 1, material_id: None, position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
+                    start.push(WorldHit { user_data: 0, body_flags: 1, material_id: self.0.interaction_box_material_id(key), position: to_game(contact.position), normal: to_game(contact.normal), value: contact.distance, body, key });
                 }
             }
         }
@@ -126,7 +126,7 @@ impl GameCollision<'_> {
             normal = -normal;
         }
         let body = if owner == u32::MAX { 0 } else { owner + 1 };
-        Some(RayHit { user_data: 0, body_flags: 1, material_id: None, distance, position: from + direction * distance, normal, body, key })
+        Some(RayHit { user_data: 0, body_flags: 1, material_id: self.0.interaction_box_material_id(key), distance, position: from + direction * distance, normal, body, key })
     }
 }
 
@@ -965,23 +965,19 @@ pub(super) fn update_player(
         .map(|owner| scene.contact_effect_enabled(owner))
         .transpose()?
         .unwrap_or(false);
-    let ground = player
+    let ground_hit = player
         .physics
         .ground_material_hit
         .as_ref()
-        .filter(|_| contacts_enabled)
-        .map(|hit| {
-            if let Some(id) = hit.material_id {
-                query_world.storage.materials.definition_for_id(id)
-            } else {
-                query_world.storage.materials.contact_definition_named(
-                    world
-                        .material(hit)
-                        .ok_or("actual ground witness has no physics material")?,
-                )
-            }
-        })
-        .transpose()?;
+        .filter(|_| contacts_enabled);
+    let materials = &query_world.storage.materials;
+    let ground = match ground_hit.and_then(|hit| hit.material_id) {
+        Some(id) => Some(materials.definition_for_id(id)?),
+        None => ground_hit
+            .and_then(|hit| world.material(hit))
+            .map(|name| materials.contact_definition_named(name))
+            .transpose()?,
+    };
     contact_sources.observe_ground(ground, &player.body.contact_materials);
     while let Some(contact) = player.body.next_contact_request() {
         let owner = player
