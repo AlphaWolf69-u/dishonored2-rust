@@ -236,7 +236,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
 }
 
 fn child_instigator(
-    world: &World,
+    world: &mut World,
     scene: &mut super::physics_scene::PhysicsScene,
     live: &LiveEntities,
     child: EntityId,
