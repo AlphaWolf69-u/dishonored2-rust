@@ -64,6 +64,7 @@ pub(super) struct Observation {
     underwater_seen: bool,
     blink_seen: bool,
     blink_in_water: bool,
+    aim_observed: bool,
     water_exit: Option<Stamp>,
     exit_during_blink: bool,
     released: Option<Stamp>,
@@ -152,6 +153,7 @@ impl Observation {
             underwater_seen: false,
             blink_seen: false,
             blink_in_water: false,
+            aim_observed: false,
             water_exit: None,
             exit_during_blink: false,
             released: None,
@@ -220,6 +222,10 @@ impl Observation {
         Ok(yaw.abs() < 0.01 && pitch.abs() < 0.01)
     }
     fn mix(&mut self, world: &World) -> Result<(), String> {
+        //Measure the actual dive/cast, not the setup surface recovery.
+        if matches!(self.stage, Stage::Water | Stage::Select | Stage::Surface) {
+            return Ok(());
+        }
         if self.mix_surface {
             return Ok(());
         }
@@ -535,14 +541,18 @@ impl Observation {
                 self.rising = false;
                 //The measured pair belongs to the forthcoming dive/cast,
                 //not a setup-only surface recovery after the feet restore.
-                self.mix_baseline = None;
-                self.mix_underwater = None;
-                self.mix_surface = false;
-                self.mix_value = None;
                 self.stage(Stage::Orient, world)?;
             }
             Stage::Orient => {
                 if Self::steer(world)? {
+                    //Use last actually published surface values at the dive
+                    //boundary, rather than an earlier setup fade-in-flight.
+                    self.mix_baseline = None;
+                    self.mix_underwater = None;
+                    self.mix_surface = false;
+                    self.mix_value = None;
+                    let audio_result = self.mix(world);
+                    self.optional_audio(audio_result);
                     send(world, self.down, true)?;
                     self.diving = true;
                     self.stage(Stage::Dive, world)?;
@@ -561,9 +571,9 @@ impl Observation {
             Stage::Aim => {
                 // Follow the same fixed real land landmark as the eye moves
                 // during the physical dive. The native target must still pass.
-                if !Self::steer(world)? {
-                    return Ok(false);
-                }
+                //Steering convergence only belongs to initial setup. While
+                //diving the eye moves: it must not gate a valid native cast.
+                let _ = Self::steer(world)?;
                 let p = player(world)?;
                 if !p.machine.is_active(StateId::USE_POWER)
                     || !p
@@ -583,6 +593,15 @@ impl Observation {
                     .swimming_contact
                     .ok_or("water Blink lost its actual water sample while aiming")?
                     .plane;
+                if !self.aim_observed {
+                    self.aim_observed = true;
+                    eprintln!(
+                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} steering_precision_is_not_cast_gate=true",
+                        p.is_underwater(),
+                        p.feet(),
+                        p.published_camera_frame()
+                    );
+                }
                 if target.position.z <= plane || !p.is_underwater() {
                     return Ok(false);
                 }
