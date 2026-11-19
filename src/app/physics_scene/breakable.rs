@@ -968,6 +968,7 @@ impl PhysicsScene {
             offset: actor.binding.offset,
             orientation: actor.binding.orientation,
             parent_placement: placement,
+            initial_pose: Some(self.entities[index].frame.pose), //738890 copies the existing owner's actual binding/frame.
         };
         self.bind_entity(live, child, parent, pose, events)
     }

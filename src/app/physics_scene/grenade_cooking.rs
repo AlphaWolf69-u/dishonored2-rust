@@ -170,6 +170,7 @@ impl PhysicsScene {
                     offset,
                     orientation,
                     parent_placement: None,
+                    initial_pose: None, //Missing tag/bare parent retains current world pose.
                 },
                 events,
             );
@@ -221,6 +222,7 @@ impl PhysicsScene {
                 offset,
                 orientation,
                 parent_placement: None,
+                initial_pose: Some(crate::gameplay::reference_frame::bind(joint_frame,offset,orientation)),
             },
             events,
         );

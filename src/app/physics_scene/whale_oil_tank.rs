@@ -156,6 +156,7 @@ impl PhysicsScene {
                         offset: [0.; 3],
                         orientation: [0., 0., 0., 1.],
                         parent_placement: None,
+                        initial_pose: Some(frame), //Explicit zero offset/identity; pusher was born in this same frame.
                     },
                     events,
                     registry,

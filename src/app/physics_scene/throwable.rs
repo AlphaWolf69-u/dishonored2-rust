@@ -11,6 +11,9 @@ pub(in crate::app) struct BindingPose {
     pub offset: [f32; 3],
     pub orientation: [f32; 4],
     pub parent_placement: Option<usize>,
+    ///752900's explicit offset/orientation world write, already resolved by
+    ///the caller's actual parent/joint owner. None preserves the world pose.
+    pub initial_pose: Option<ReferenceFrame>,
 }
 impl PhysicsScene {
     ///4c9560 drains each actual Throwable's inline contact queue in LIFO
@@ -647,6 +650,33 @@ impl PhysicsScene {
         Ok(())
     }
 
+    ///87d1e0/751d00 physical, entity and actor publication share one pose.
+    ///Authored model/body offsets stay in the existing ModelPose world delta.
+    pub(super) fn publish_entity_pose_in_registry(&mut self,index:usize,frame:ReferenceFrame,registry:&mut ComponentRegistry)->Result<(),String>{
+        if let Some(handle)=self.document_rigid(index)?{
+            if let Some(body)=self.rigid_component(handle)?.body(){
+                let shared=self.world.clone();
+                let mut guard=shared.write().map_err(|_|"entity pose world poisoned")?;
+                let world=&mut *guard;
+                let matrix=[
+                    [frame.basis[0][0],frame.basis[0][1],frame.basis[0][2],0.],
+                    [frame.basis[1][0],frame.basis[1][1],frame.basis[1][2],0.],
+                    [frame.basis[2][0],frame.basis[2][1],frame.basis[2][2],0.],
+                    [frame.position[0],frame.position[1],frame.position[2],1.],
+                ];
+                scene_publication_events!(self,registry,publication);
+                world.storage.set_body_transform(&mut world.geometry,&mut publication,body,matrix,0)?;
+            }
+        }
+        self.entities[index].frame.pose=frame;
+        if let Some(handle)=self.entities[index].components.reference_actor{
+            let actor=self.actors.actors.get_mut(handle.slot).ok_or("entity pose reference actor retired")?;
+            actor.set_transform(frame,false);
+            let generation=actor.owner.generation;
+            self.request_post_physics_actor(usize::from(handle.slot),generation)?;
+        }
+        Ok(())
+    }
     pub(in crate::app) fn publish_rigid_motion(
         &mut self,
         live: &LiveEntities,
@@ -670,34 +700,9 @@ impl PhysicsScene {
             .body()
             .ok_or("projectile body absent")?;
         let mut registry = self.registry.take().ok_or("projectile registry absent")?;
-        let result = (|| {
-            let shared = self.world.clone();
-            let mut guard = shared.write().map_err(|_| "projectile world poisoned")?;
-            let world = &mut *guard;
-            let matrix = [
-                [frame.basis[0][0], frame.basis[0][1], frame.basis[0][2], 0.],
-                [frame.basis[1][0], frame.basis[1][1], frame.basis[1][2], 0.],
-                [frame.basis[2][0], frame.basis[2][1], frame.basis[2][2], 0.],
-                [frame.position[0], frame.position[1], frame.position[2], 1.],
-            ];
-            scene_publication_events!(self, &mut registry, publication);
-            world.storage.set_body_transform(
-                &mut world.geometry,
-                &mut publication,
-                body,
-                matrix,
-                0,
-            )?;
-            Ok::<_, String>(())
-        })();
+        let result = self.publish_entity_pose_in_registry(index,frame,&mut registry);
         self.registry = Some(registry);
         result?;
-        self.entities[index].frame.pose = frame;
-        if let Some(actor) = self.entities[index].components.reference_actor {
-            self.actors.actors[usize::from(actor.slot)].set_transform(frame, false);
-            let generation = self.actors.actors[usize::from(actor.slot)].owner.generation;
-            self.request_post_physics_actor(usize::from(actor.slot), generation)?;
-        }
         self.queue_rigid_velocity(
             body,
             [linear[0], linear[1], linear[2], 0.],
@@ -742,6 +747,12 @@ impl PhysicsScene {
             || live.get(self.entities[parent].shared).is_none()
         {
             return Err("bound managed identity is stale".into());
+        }
+        //752900 writes explicit values through87d1e0 BEFORE link/body-mode
+        //change. Driving a whole pickup rotation as keyframe velocity instead
+        //would impart that artificial velocity to an immediate ordinary drop.
+        if let Some(frame)=pose.initial_pose{
+            self.publish_entity_pose_in_registry(child,frame,registry)?;
         }
         if let Some(binding) = self
             .document_hierarchy
@@ -944,6 +955,9 @@ impl PhysicsScene {
                 offset,
                 orientation,
                 parent_placement: None,
+                initial_pose: Some(crate::gameplay::reference_frame::bind(
+                    if joint>=0 {crate::gameplay::reference_frame::compose(self.entities[index].frame.pose,player.reference_local_joint(joint)?)}else{self.entities[index].frame.pose},
+                    offset,orientation)),
             },
             events,
         )
@@ -1433,6 +1447,7 @@ impl PhysicsScene {
                     offset,
                     orientation,
                     parent_placement: None,
+                    initial_pose: None, //The actual stick frame was published before this preserve-world bind.
                 },
                 events,
             )?;

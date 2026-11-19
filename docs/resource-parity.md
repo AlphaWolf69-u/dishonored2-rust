@@ -26101,3 +26101,5 @@ partial interruption, sound/event acknowledgements and final resource drops
 use the corrected ownership mask. No CPU gain, actual in-game action result
 or visual acceptance is claimed; root owns the coherent build and playback
 validation. No independent build, game launch or test suite was run.
+
+Explicit attachment placement follows 752900 calling 87d1e0 before linking the child and changing its body mode. A release run exposed the missing order on an immediate F-drop: the bottle retained the 22–44 rad/s turn used to move from its pickup orientation into its hand pose, rolled off the dock, and the second pickup failed. Explicitly positioned attachments now publish their real starting transform to the existing body, actor and model owner before keyframing begins. A bind with no supplied transform preserves its current world pose. Drop and throw continue through the existing motion owner.

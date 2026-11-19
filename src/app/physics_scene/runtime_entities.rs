@@ -29,10 +29,13 @@ impl PhysicsScene {
         result
     }
     pub(in crate::app) fn bind_animation_effect(&mut self,live:&mut LiveEntities,events:&mut EntityEvents,
-        id:EntityId,parent:EntityId,pose:super::throwable::BindingPose,joint_world:Option<crate::gameplay::reference_frame::ReferenceFrame>,registry:&mut ComponentRegistry)->Result<(),String>{
+        id:EntityId,parent:EntityId,mut pose:super::throwable::BindingPose,joint_world:Option<crate::gameplay::reference_frame::ReferenceFrame>,registry:&mut ComponentRegistry)->Result<(),String>{
         let &index=self.shared_indices.get(&id).ok_or("animation FX source header absent")?;
         //64bc20 sets this actual constructor field before875e80/4903b0.
         self.entity_flags_d4[index]|=0x10;
+        let parent_index=*self.shared_indices.get(&parent).ok_or("animation FX parent header absent")?;
+        let root=joint_world.unwrap_or(self.entities[parent_index].frame.pose);
+        pose.initial_pose=Some(crate::gameplay::reference_frame::bind(root,pose.offset,pose.orientation));
         if pose.joint>=0 {
             let parent_index=*self.shared_indices.get(&parent).ok_or("animation FX parent header absent")?;
             let parent_frame=self.entities[parent_index].frame.pose;

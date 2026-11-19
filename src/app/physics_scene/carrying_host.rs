@@ -248,53 +248,11 @@ impl CarryHost<'_> {
         let (index, _) = self.reference(target)?;
         let mut pose = self.frame(target)?;
         pose.position = position.to_array();
-        if let Some(handle) = self.scene.document_rigid(index)? {
-            let body = self
-                .scene
-                .rigid_component(handle)?
-                .body()
-                .ok_or("carry moved body absent")?;
-            let scene = &mut *self.scene;
-            let mut registry = scene.registry.take().ok_or("carry move registry absent")?;
-            let result = (|| {
-                let shared = scene.world.clone();
-                let mut guard = shared.write().map_err(|_| "carry move world poisoned")?;
-                let world = &mut *guard;
-                scene_publication_events!(scene, &mut registry, publication);
-                let frame = Mat4::from_cols(
-                    Vec3::from_array(pose.basis[0]).extend(0.),
-                    Vec3::from_array(pose.basis[1]).extend(0.),
-                    Vec3::from_array(pose.basis[2]).extend(0.),
-                    position.extend(1.),
-                )
-                .to_cols_array_2d();
-                world.storage.set_body_transform(
-                    &mut world.geometry,
-                    &mut publication,
-                    body,
-                    frame,
-                    0,
-                )?;
-                Ok::<_, String>(())
-            })();
-            scene.registry = Some(registry);
-            result?;
-        }
-        self.scene.entities[index].frame.pose = pose;
-        if let Some(handle) = self.scene.entities[index].components.reference_actor {
-            self.scene
-                .actors
-                .actors
-                .get_mut(handle.slot)
-                .ok_or("moved carry reference actor absent")?
-                .set_transform(pose, false);
-            let generation = self.scene.actors.actors[usize::from(handle.slot)]
-                .owner
-                .generation;
-            self.scene
-                .request_post_physics_actor(handle.slot as usize, generation)?;
-        }
-        Ok(())
+        let scene=&mut *self.scene;
+        let mut registry=scene.registry.take().ok_or("carry move registry absent")?;
+        let result=scene.publish_entity_pose_in_registry(index,pose,&mut registry);
+        scene.registry=Some(registry);
+        result
     }
     fn release_body(
         &mut self,
@@ -309,7 +267,7 @@ impl CarryHost<'_> {
             let world=shared.read().map_err(|_|"carry detach observation world poisoned")?;
             if let Some(body)=body.and_then(|id|world.storage.bodies.get(id)){
                 let pose=ReferenceFrame{position:body.transform[3][..3].try_into().unwrap(),basis:std::array::from_fn(|i|body.transform[i][..3].try_into().unwrap())};
-                eprintln!("ACTION_CARRY_DETACH entity={:?} thrown={thrown} body={} registered_pose={pose:?} actual_actor_pose={:?} planned_position={:?} game_alignment(expected_render_origin,actual_render_origin,residual_m,max_basis_error)={:?}",target.entity,body.id,self.scene.entities[index].frame.pose,self.state.progress.get(&target.entity).and_then(|progress|progress.position),placement_alignment(self.scene,index,pose,self.placements,self.render_bindings)?);
+                eprintln!("ACTION_CARRY_DETACH entity={:?} thrown={thrown} body={} registered_pose={pose:?} actual_actor_pose={:?} planned_position={:?} registered_motion(linear,world_angular)={:?} game_alignment(expected_render_origin,actual_render_origin,residual_m,max_basis_error)={:?}",target.entity,body.id,self.scene.entities[index].frame.pose,self.state.progress.get(&target.entity).and_then(|progress|progress.position),world.storage.motions.get(body.motion_id).map(|motion|(motion.linear_velocity,motion.world_angular_velocity())),placement_alignment(self.scene,index,pose,self.placements,self.render_bindings)?);
             }
         }
         if self

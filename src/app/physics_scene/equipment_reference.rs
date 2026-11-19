@@ -150,6 +150,7 @@ impl PhysicsScene {
                 offset,
                 orientation,
                 parent_placement: None,
+                initial_pose: None, //Source preserve-world relative binding.
             },
             events,
         )

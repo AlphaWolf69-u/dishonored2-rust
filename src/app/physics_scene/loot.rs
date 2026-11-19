@@ -196,6 +196,7 @@ impl PhysicsScene {
                             offset,
                             orientation,
                             parent_placement: None,
+                            initial_pose: None, //Source743c30 preserves the member's actual world frame.
                         },
                         events,
                         registry,

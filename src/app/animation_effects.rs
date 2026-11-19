@@ -300,6 +300,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                 offset,
                 orientation,
                 parent_placement: None,
+                initial_pose: None, //The runtime birth adapter resolves the actual source joint below.
             };
             super::runtime_entities::spawn_animation_effect(
                 world,
