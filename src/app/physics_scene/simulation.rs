@@ -784,7 +784,9 @@ pub(in crate::app) fn update(
     player: Option<bevy::prelude::Res<super::super::player::PlayerState>>,
     wind: Option<bevy::prelude::Res<super::super::vegetation_wind::VegetationWind>>,
     world_wind: Option<bevy::prelude::Res<super::super::fog_scene::WorldWind>>,
+    profile: Option<bevy::prelude::Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
+    let _span = profile.as_ref().map(|p| p.measure(crate::frame_profile::PHYSICS_FRAME));
     let Some(mut scene) = scene else {
         return;
     };

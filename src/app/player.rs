@@ -805,7 +805,7 @@ pub(super) fn update_player(
     query: (Local<DebugBenchmarkWalk>, Local<std::cell::RefCell<collision::Scratch>>,
         Option<Res<super::physics_scene::PhysicsScene>>,
         Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
-        ResMut<super::audio::ContactSources>),
+        ResMut<super::audio::ContactSources>, Option<Res<crate::frame_profile::CpuFrameProfile>>),
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
@@ -813,7 +813,8 @@ pub(super) fn update_player(
     mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
 ) -> Result<(), bevy::ecs::error::BevyError> {
-    let (mut walk, query_scratch, scene, mut simulation, mut contact_sources) = query;
+    let (mut walk, query_scratch, scene, mut simulation, mut contact_sources, profile) = query;
+    let _span = profile.as_ref().map(|p| p.measure(crate::frame_profile::PLAYER_UPDATE));
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();

@@ -361,6 +361,24 @@ impl Observation {
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         let p = player(world)?;
         let blink_active=p.machine.is_active(StateId::BLINKING);
+        if matches!(self.stage, Stage::AimCast | Stage::Cast | Stage::Recharge) {
+            if let Some(profile) = world.get_resource::<crate::frame_profile::CpuFrameProfile>() {
+                let frame = world.resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+                    .clock().map_err(str::to_owned)?.frame_marker();
+                eprintln!("BLINK_CPU frame={frame} stage={:?} travelling={blink_active} latest_ns={:?}",
+                    self.stage, profile.latest_ns());
+                if let Some(store) = world.get_resource::<bevy::diagnostic::DiagnosticsStore>() {
+                    let mut passes: Vec<_> = store.iter().filter_map(|diagnostic| {
+                        let path = diagnostic.path().as_str();
+                        if !path.ends_with("elapsed_gpu") { return None; }
+                        diagnostic.value().map(|ms| (path, ms))
+                    }).collect();
+                    passes.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                    eprintln!("BLINK_GPU latest_available_at={frame} longest_ms={:?}",
+                        &passes[..passes.len().min(8)]);
+                }
+            }
+        }
         self.cancel_seen |= p.machine.is_active(StateId::CANCEL_ACTION);
         self.blink_seen |= p.machine.is_active(StateId::BLINKING);
         self.mantle_seen |= p.machine.is_active(StateId::MANTLE);

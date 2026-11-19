@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-pub const LABELS: [&str; 50] = [
+pub const LABELS: [&str; 52] = [
     "main",
     "extract",
     "sync_extract_wait",
@@ -63,7 +63,11 @@ pub const LABELS: [&str; 50] = [
     "visibility_texture_demands",
     "visibility_light_outputs",
     "visibility_placed_models",
+    "physics_frame",
+    "player_update",
 ];
+pub const PHYSICS_FRAME: usize = 50;
+pub const PLAYER_UPDATE: usize = 51;
 pub const COUNT: usize = LABELS.len();
 
 struct Counters {
