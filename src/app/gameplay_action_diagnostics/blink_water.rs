@@ -82,6 +82,8 @@ pub(super) struct Observation {
     mix_baseline: Option<[f32; 6]>,
     mix_underwater: Option<[f32; 6]>,
     mix_surface: bool,
+    mix_value: Option<u32>,
+    audio_error: Option<String>,
     surface_emitters: Vec<Emitter>,
     surface_fx_source: bool,
 }
@@ -168,6 +170,8 @@ impl Observation {
             mix_baseline: None,
             mix_underwater: None,
             mix_surface: false,
+            mix_value: None,
+            audio_error: None,
             surface_emitters: Vec::new(),
             surface_fx_source: false,
         })
@@ -220,11 +224,20 @@ impl Observation {
             return Ok(());
         }
         let snapshot = super::super::audio::observation::state_snapshot(world, UNDERWATER_GROUP)?;
-        let Some((_, values)) = snapshot
+        let published = snapshot
             .properties
             .iter()
             .find(|(node, _)| *node == OUTSIDE_BUS)
-        else {
+            .map(|(_, values)| values);
+        if self.mix_value != Some(snapshot.value) {
+            self.mix_value = Some(snapshot.value);
+            eprintln!(
+                "ACTION_SMOKE_BLINK_WATER_MIX_OBSERVED group={UNDERWATER_GROUP:#010x} value={:#010x} node={OUTSIDE_BUS} published={published:?} underwater={} missing_published_node_is_not_mix_proof=true",
+                snapshot.value,
+                player(world)?.is_underwater()
+            );
+        }
+        let Some(values) = published else {
             return Ok(());
         };
         if self.mix_baseline.is_none() && !player(world)?.is_underwater() && snapshot.value == 0 {
@@ -417,8 +430,8 @@ impl Observation {
             send(world, input, false)?;
             return Ok(false);
         }
-        self.mix(world)?;
-        self.surface_emitters(world)?;
+        let audio_result = self.mix(world).and_then(|()| self.surface_emitters(world));
+        self.optional_audio(audio_result);
         let stamp = self.stamp(world)?;
         let p = player(world)?;
         let swimming = p.is_swimming();
@@ -520,21 +533,22 @@ impl Observation {
             Stage::Surface if !p.is_underwater() => {
                 send(world, self.up, false)?;
                 self.rising = false;
+                //The measured pair belongs to the forthcoming dive/cast,
+                //not a setup-only surface recovery after the feet restore.
+                self.mix_baseline = None;
+                self.mix_underwater = None;
+                self.mix_surface = false;
+                self.mix_value = None;
                 self.stage(Stage::Orient, world)?;
             }
             Stage::Orient => {
-                if Self::steer(world)? && self.mix_baseline.is_some() {
+                if Self::steer(world)? {
                     send(world, self.down, true)?;
                     self.diving = true;
                     self.stage(Stage::Dive, world)?;
                 }
             }
-            Stage::Dive
-                if p.is_underwater()
-                    && p.breath() < 100.
-                    && self.mix_underwater.is_some()
-                    && !self.surface_emitters.is_empty() =>
-            {
+            Stage::Dive if p.is_underwater() && p.breath() < 100. => {
                 // Suppressed while SWIM: only a later actual surface Start
                 // can qualify, never a pre-dive admission of the same event.
                 self.audio_before = super::super::audio::observation::snapshot(world)
@@ -638,23 +652,37 @@ impl Observation {
                 self.stage(Stage::Done, world)?;
             }
             Stage::Done => {
-                self.audio(world)?;
-                if !self.mix_surface
-                    || !self.surface_fx_source
-                    || (self.breath_start.is_some() && !self.breath_source)
-                {
-                    return Ok(false);
-                }
+                let audio_result = self.audio(world);
+                self.optional_audio(audio_result);
                 eprintln!(
-                    "ACTION_SMOKE_PASS check=blink_water_sequence_complete actual_mode_and_motion=true underwater_mix=true surface_mix=true authored_surfacing_fx_source=true actual_heavy_breath_play={} actual_heavy_breath_source={} exit=ordinary_ExitDrain no_pixels_or_heard_mix_claim=true",
+                    "ACTION_SMOKE_PASS check=blink_water_sequence_complete actual_mode_and_motion=true exit=ordinary_ExitDrain no_pixels_or_heard_mix_claim=true"
+                );
+                eprintln!(
+                    "ACTION_SMOKE_BLINK_WATER_OPTIONAL_AUDIO mix_baseline={:?} mix_underwater={:?} mix_surface={} authored_surfacing_fx_source={} actual_heavy_breath_play={} actual_heavy_breath_source={} observation_error={:?} unavailable_receipts_are_not_ACKs=true",
+                    self.mix_baseline,
+                    self.mix_underwater,
+                    self.mix_surface,
+                    self.surface_fx_source,
                     self.breath_voice.is_some(),
-                    self.breath_source
+                    self.breath_source,
+                    self.audio_error
                 );
                 return Ok(true);
             }
             _ => {}
         }
-        self.audio(world)?;
+        let audio_result = self.audio(world);
+        self.optional_audio(audio_result);
         Ok(false)
+    }
+    fn optional_audio(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            if self.audio_error.is_none() {
+                eprintln!(
+                    "ACTION_SMOKE_BLINK_WATER_AUDIO_UNAVAILABLE error={error} not_a_motion_gate=true"
+                );
+                self.audio_error = Some(error);
+            }
+        }
     }
 }

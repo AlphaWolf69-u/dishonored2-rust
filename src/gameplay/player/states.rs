@@ -1595,6 +1595,17 @@ impl StateMachine {
                 Err(error) => { frame.midnight.last_start_error = Some(error); self.quit(id); },
             }
         }
+        //The registered scene completion owns its accepted phase even when
+        //806350 has deactivated that mode's state (837240 ->835cf0).
+        for (side,id) in [(0,StateId::EQUIP_LEFT),(1,StateId::EQUIP_RIGHT)] {
+            if frame.equipment_changes.has_owned_phase(side) && !self.is_active(id) {
+                let sneak = [StateId::SNEAKING, StateId::AUTOCROUCH, StateId::WALLCROUCH, StateId::SLIDING]
+                    .into_iter().any(|id| self.is_active(id));
+                if let Err(error) = super::equipment_states::continue_owned(side, sneak, self.is_active(StateId::SLIDING), &self.active, frame) {
+                    frame.midnight.last_start_error = Some(error);
+                }
+            }
+        }
     }
 
     /// FUN_140854190 Р В Р вЂ Р Р†Р вЂљР’В Р Р†Р вЂљРІвЂћСћ FUN_140802a20.
@@ -2245,19 +2256,23 @@ impl StateMachine {
             self.request(StateId::RELOAD_WEAPON);
         }
         // Commands queued while activating are processed in the same frame.
-        self.process_commands(frame);
-        for _ in 0..16 {
-            if self.queue.is_empty() {
-                break;
-            }
-            self.process_commands(frame);
-        }
+        self.process_pending(frame);
         if frame.dt != 0.0 {
             for id in self.active.clone() {
                 if let Some(index) = self.index(id).filter(|&i| self.states[i].active) {
                     self.update(index, frame);
                 }
             }
+        }
+    }
+
+    ///8063f0 drains shared accepted requests before806350 changes modes.
+    ///No state update, input sampling, clock or physics step is repeated.
+    pub(super) fn process_pending(&mut self, frame: &mut Frame) {
+        self.process_commands(frame);
+        for _ in 0..16 {
+            if self.queue.is_empty() { break; }
+            self.process_commands(frame);
         }
     }
 

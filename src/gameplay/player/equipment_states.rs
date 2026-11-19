@@ -62,6 +62,8 @@ struct Slot {
     ///8363f0: only an equipped power replaced by another power uses the
     ///state's shared switch scene. Other incoming powers use their own equip.
     power_switch: bool,
+    ///Retained actual phase owner for837240's callback after mode exit.
+    owner: Option<Arc<Declaration>>,
     uid: u32,
     /// 836920: one counted request per source state, except anonymous90.
     restrictions: Vec<StateId>,
@@ -107,6 +109,9 @@ impl Runtime {
         self.slots.get(side).is_some_and(|slot| slot.requested || slot.phase != Phase::Idle)
     }
     pub fn has_request(&self, side: usize) -> bool { self.transitioning(side) }
+    pub(super) fn has_owned_phase(&self, side: usize) -> bool {
+        self.slots[side].phase != Phase::Idle && self.slots[side].owner.is_some()
+    }
     pub fn requests_other_hand(&self, side: usize) -> bool {
         self.slots.get(side).is_some_and(|slot| slot.requested
             && slot.flags & 0x104 == 0 && (slot.incoming.is_some() || slot.restore)
@@ -178,7 +183,37 @@ impl Runtime {
 /// Decisions run on the already admitted state. The outer Player applies
 /// Detach/Attach between frame borrows, then starts the incoming scene in the
 /// same simulation frame with the new entity's actual rig and clip bank.
-pub(super) fn advance(decl: &Declaration, sneaking: bool, sliding: bool,
+pub(super) fn advance(decl: &Arc<Declaration>, sneaking: bool, sliding: bool,
+    active: &[StateId], frame: &mut Frame<'_>) -> Result<bool, String> {
+    let Some(side) = decl.side() else { return Ok(true) };
+    if !frame.equipment_changes.has_request(side) { return Ok(true); }
+    if frame.equipment_changes.slots[side].owner.is_none() {
+        frame.equipment_changes.slots[side].owner = Some(decl.clone());
+    }
+    advance_owned(side, sneaking, sliding, active, frame)
+}
+
+///837240 matches the actual scene handle even after base8541a0 deactivates
+///its state. This cannot admit a fresh idle request in another mode.
+pub(super) fn continue_owned(side: usize, sneaking: bool, sliding: bool,
+    active: &[StateId], frame: &mut Frame<'_>) -> Result<(), String> {
+    if frame.equipment_changes.slots[side].phase != Phase::Idle {
+        advance_owned(side, sneaking, sliding, active, frame)?;
+    }
+    Ok(())
+}
+
+fn advance_owned(side: usize, sneaking: bool, sliding: bool,
+    active: &[StateId], frame: &mut Frame<'_>) -> Result<bool, String> {
+    let Some(decl) = frame.equipment_changes.slots[side].owner.take() else { return Ok(true) };
+    let result = advance_phase(&decl, sneaking, sliding, active, frame);
+    if frame.equipment_changes.slots[side].phase != Phase::Idle {
+        frame.equipment_changes.slots[side].owner = Some(decl);
+    }
+    result
+}
+
+fn advance_phase(decl: &Declaration, sneaking: bool, sliding: bool,
     active: &[StateId], frame: &mut Frame<'_>) -> Result<bool, String> {
     let Some(side) = decl.side() else { return Ok(true) };
     let slot = &mut frame.equipment_changes.slots[side];
@@ -369,6 +404,7 @@ impl Player {
                 slot.phase = if slot.incoming.is_some() { Phase::Attach } else { Phase::Idle };
                 slot.handle = 0;
                 slot.requested = slot.incoming.is_some();
+                if slot.phase == Phase::Idle { slot.owner = None; }
             }
             for entity in [incoming, current].into_iter().flatten() {
                 self.withdraw_equipment_frames(entity);

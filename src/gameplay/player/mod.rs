@@ -1122,6 +1122,13 @@ impl Player {
             }
         }) };
         if in_water != self.swimming_active && self.swimming_available {
+            //8063f0 handles accepted requests before806350 exits the old
+            //mode. Settle immediate equipment callbacks through their owner;
+            //never strand/reissue a selection in the incoming mode.
+            self.machine.process_pending(&mut frame!());
+            self.apply_equipment_changes();
+            self.machine.advance_equipment_changes(&mut frame!());
+            self.machine.process_pending(&mut frame!());
             //88a620/88a7a0 finish the outgoing Blink without snapping its
             //destination, then805fc0 schedules12 in the incoming mode.
             let blinking = self.machine.is_active(StateId::BLINKING) && self.powers.blink.is_some();
@@ -1189,6 +1196,10 @@ impl Player {
             self.game_over_fallback = None;
         }
         if self.swimming_active && swim_mantle_exit {
+            self.machine.process_pending(&mut frame!());
+            self.apply_equipment_changes();
+            self.machine.advance_equipment_changes(&mut frame!());
+            self.machine.process_pending(&mut frame!());
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = false;
