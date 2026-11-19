@@ -555,13 +555,7 @@ pub enum MantleHeight {
 /// FUN_1400efc60: an 8-sided prism (corner directions 0x141ae36e0) of
 /// radius `r` from `base` to `base + height`.
 fn prism(r: f32, base: f32, height: f32) -> Vec<Vec3> {
-    let (a, b) = (0.9238795, 0.38268343);
-    let corners = [(a, b), (b, a), (-b, a), (-a, b), (-a, -b), (-b, -a), (b, -a), (a, -b)];
-    let mut points = Vec::with_capacity(16);
-    for z in [base, base + height] {
-        points.extend(corners.iter().map(|&(x, y)| Vec3::new(x * r, y * r, z)));
-    }
-    points
+    super::shape::query_prism(r, base, height).to_vec()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

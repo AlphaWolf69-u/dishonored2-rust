@@ -68,6 +68,8 @@ pub(super) struct Runtime {
     motion: BlinkMotionSettings,
     mantle: Option<MantleSensor>,
     hits: Vec<WorldHit>,
+    ///61e3d0: these are dedicated0efc60 query shapes, not proxy bodies.
+    query_shapes: Box<[[Vec3;16];20]>,
     contacts: Vec<BlinkContact>,
     helpers: [Option<String>;3],
     helper_keys: [Arc<str>;3],
@@ -84,6 +86,10 @@ impl Runtime {
     pub fn new(prepared: Prepared, physics: &PlayerPhysics) -> Self {
         Self { blink: Blink::new(prepared.settings), motion: prepared.motion,
             mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new(), contacts: Vec::new(),
+            query_shapes: Box::new(std::array::from_fn(|slot| {
+                let shape = physics.posture_settings(slot);
+                crate::gameplay::player::shape::query_prism(shape.radius, 0.0, shape.height)
+            })),
             helpers: prepared.helpers, helper_keys: [Arc::from("blink:top"),Arc::from("blink:bottom"),Arc::from("blink:mantle")],
             helper_started:[false;3], screen:prepared.screen,screen_started:false,screen_key:"blink:screen".into(),pending:false,was_active:false,time:None,damage:prepared.damage }
     }
@@ -106,7 +112,7 @@ impl Runtime {
         let Some(mantle) = self.mantle.as_mut() else { return Ok(false) };
         let shapes = shape_info(&player.physics);
         let input = input(player, view, &shapes);
-        let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits,
+        let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits, query_shapes: &self.query_shapes,
             live, scene, error: std::cell::RefCell::new(None) };
         self.blink.aim(&mut world, &input);
         if let Some(error) = world.error.into_inner() { return Err(error); }
@@ -251,6 +257,7 @@ struct World<'a> {
     physics: &'a PlayerPhysics,
     mantle: &'a mut MantleSensor,
     hits: &'a mut Vec<WorldHit>,
+    query_shapes: &'a [[Vec3;16];20],
     live: &'a LiveEntities,
     scene: Option<&'a PhysicsScene>,
     error: std::cell::RefCell<Option<String>>,
@@ -258,13 +265,13 @@ struct World<'a> {
 impl BlinkWorld for World<'_> {
     fn sweep(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
         self.hits.clear();
-        self.queries.cast_shape(QueryFilter::layers(mask, 0x40), self.physics.posture_body(slot),
+        self.queries.cast_shape(QueryFilter::layers(mask, 0x40), &self.query_shapes[slot],
             Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
         self.hits.iter().min_by(|a,b| a.value.total_cmp(&b.value)).map(hit)
     }
     fn sweep_all(&mut self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, out: &mut Vec<Hit>) {
         self.hits.clear();
-        self.queries.cast_shape(QueryFilter::layers(mask, 0x40), self.physics.posture_body(slot),
+        self.queries.cast_shape(QueryFilter::layers(mask, 0x40), &self.query_shapes[slot],
             Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
         out.extend(self.hits.iter().map(hit));
     }

@@ -70,6 +70,17 @@ pub fn posture(name: &str) -> Option<usize> {
     POSTURE_NAMES.iter().position(|n| *n == name)
 }
 
+///0efc60 query hull outer vertices, independent of the character's stepped
+///1b3d00 posture body. Exact rounded ring141ae36e0; top ring precedes base.
+pub(crate) fn query_prism(radius: f32, base: f32, height: f32) -> [Vec3; 16] {
+    const RING: [(f32, f32); 8] = [(-0.92,0.38),(-0.38,0.92),(0.38,0.92),(0.92,0.38),
+        (0.92,-0.38),(0.38,-0.92),(-0.38,-0.92),(-0.92,-0.38)];
+    std::array::from_fn(|index| {
+        let (x,y) = RING[index & 7];
+        Vec3::new(x*radius,y*radius,if index<8 {base+height} else {base})
+    })
+}
+
 /// One posture record: settings plus its two hulls in player space
 /// (origin at the feet, +X forward, +Z up).
 #[derive(Clone, Debug, PartialEq)]

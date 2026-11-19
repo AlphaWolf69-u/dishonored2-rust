@@ -289,23 +289,7 @@ impl SensorDecl {
                 // 1403b3f69 supplies jumpShapeHeight, shapeRadius, 0 to
                 // 1400efc60. Its eight polygon coefficients at141ae36e0
                 // are deliberately the executable's rounded .38/.92.
-                const RING: [(f32, f32); 8] = [
-                    (-0.92, 0.38),
-                    (-0.38, 0.92),
-                    (0.38, 0.92),
-                    (0.92, 0.38),
-                    (0.92, -0.38),
-                    (0.38, -0.92),
-                    (-0.38, -0.92),
-                    (-0.92, -0.38),
-                ];
-                [self.jump_shape_height, 0.0]
-                    .into_iter()
-                    .flat_map(|z| {
-                        RING.into_iter()
-                            .map(move |(x, y)| Vec3::new(x * r, y * r, z))
-                    })
-                    .collect()
+                super::shape::query_prism(r, 0.0, self.jump_shape_height).to_vec()
             }
         })
     }

@@ -559,6 +559,10 @@ impl Observation {
                 }
             }
             Stage::Dive if p.is_underwater() && p.breath() < 100. => {
+                //One finite physical dive. Aiming must never keep lowering
+                //the player merely because the selected target is unsuitable.
+                send(world, self.down, false)?;
+                self.diving = false;
                 // Suppressed while SWIM: only a later actual surface Start
                 // can qualify, never a pre-dive admission of the same event.
                 self.audio_before = super::super::audio::observation::snapshot(world)
@@ -582,11 +586,11 @@ impl Observation {
                 {
                     return Ok(false);
                 }
-                let target = world
+                let owner = world
                     .get_resource::<super::super::player_actions::PlayerActions>()
-                    .and_then(|actions| actions.blink.as_ref())
-                    .and_then(|owner| owner.blink.target.as_ref());
-                let Some(target) = target else {
+                    .and_then(|actions| actions.blink.as_ref());
+                let Some(owner) = owner else { return Ok(false) };
+                let Some(target) = owner.blink.target.as_ref() else {
                     return Ok(false);
                 };
                 let plane = p
@@ -596,13 +600,16 @@ impl Observation {
                 if !self.aim_observed {
                     self.aim_observed = true;
                     eprintln!(
-                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} steering_precision_is_not_cast_gate=true",
+                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} initial_cast_obstruction={:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} steering_precision_is_not_cast_gate=true",
+                        owner.blink.obstruction,
                         p.is_underwater(),
                         p.feet(),
                         p.published_camera_frame()
                     );
                 }
-                if target.position.z <= plane || !p.is_underwater() {
+                //61ec20 has no head-depth veto. The handoff claim concerns
+                //actual SWIM mode; log actual head depth rather than forcing it.
+                if target.position.z <= plane || !p.is_swimming() {
                     return Ok(false);
                 }
                 eprintln!(
@@ -614,8 +621,6 @@ impl Observation {
                 self.cast_start = p.feet();
                 self.mana_before = p.mana();
                 self.released = Some(stamp);
-                send(world, self.down, false)?;
-                self.diving = false;
                 send(world, self.use_input, false)?;
                 self.using = false;
                 self.stage(Stage::Flight, world)?;

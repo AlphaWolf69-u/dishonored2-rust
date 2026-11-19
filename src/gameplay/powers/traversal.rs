@@ -119,12 +119,14 @@ pub struct Blink {
     pub breakables: Vec<Breakable>,
     lock: Option<MantleLock>,
     pub target: Option<BlinkTarget>,
+    ///Current first non-breakable initial cast hit; body/key, not posture.
+    pub obstruction: Option<Hit>,
 }
 impl Blink {
     pub fn new(settings: BlinkSettings) -> Self {
-        Self { settings, hits: Vec::new(), breakables: Vec::new(), lock: None, target: None }
+        Self { settings, hits: Vec::new(), breakables: Vec::new(), lock: None, target: None, obstruction: None }
     }
-    pub fn cancel(&mut self) { self.target = None; self.lock = None; self.breakables.clear(); self.hits.clear(); }
+    pub fn cancel(&mut self) { self.target = None; self.obstruction = None; self.lock = None; self.breakables.clear(); self.hits.clear(); }
     /// 14061ec20 prepares arkPlayerStateBlinking (state 12), then invokes
     /// shared mana payment. The host must admit that actual state before
     /// charging; a direct transform write omits collision/proxy restoration.
@@ -153,6 +155,7 @@ impl Blink {
         let origin = Vec3::new(input.camera_position.x, input.camera_position.y,
             input.physical_position.z + current_height - crouch_height);
         self.hits.clear(); self.breakables.clear();
+        self.obstruction = None;
         world.sweep_all(4, self.settings.collision_mask, origin, d, range, &mut self.hits);
         self.hits.sort_by(|a,b| a.fraction.total_cmp(&b.fraction));
         let mut normal = None;
@@ -160,7 +163,7 @@ impl Blink {
         for hit in &self.hits {
             if let Some(body) = world.blink_breakable(hit) {
                 if !self.breakables.iter().any(|entry| entry.entity == body) { self.breakables.push(Breakable { entity: body, hit_position: hit.position }); }
-            } else { normal = Some(hit.normal); hit_distance = range * hit.fraction; break; }
+            } else { self.obstruction = Some(*hit); normal = Some(hit.normal); hit_distance = range * hit.fraction; break; }
         }
         let mut hit_position = origin + d * hit_distance;
         if let Some(target) = input.assassination_target.filter(|target| target.distance(input.camera_position) <= range) {
