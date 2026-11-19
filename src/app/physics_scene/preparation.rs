@@ -40,6 +40,7 @@ pub(super) fn rollback(
         .take()
         .ok_or("preparation rollback registry absent")?;
     let result: Result<(), String> = (|| {
+        scene.finish_accepted_constraint_ignores(&mut registry, entity_events)?;
         // Start and creation callbacks borrow the real component pool. Split
         // their cursors around that borrow, never move a component out of it.
         let mut handles: Vec<_> = scene
@@ -313,6 +314,7 @@ pub(super) fn rollback_runtime_entities(
     events: &mut EntityEvents,
     entities: &[usize],
 ) -> Result<(), String> {
+    scene.finish_accepted_constraint_ignores_owned(events)?;
     let mut handles = Vec::new();
     for &entity in entities {
         let actor = scene.entities.get(entity).ok_or("runtime rollback actor absent")?;

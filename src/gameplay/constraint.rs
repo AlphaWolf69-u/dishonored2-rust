@@ -25,6 +25,8 @@ pub(crate) struct Component {
     pub enable_phase: u8,
     /// Host retry cursor for registration/withdrawal of the actual observers.
     pub observer_phase: u8,
+    ///The actual852040 filter request, continued before endpoint retirement.
+    pub collision_ignore: crate::gameplay::physics_world::storage::collision_pairs::CollisionIgnoreProgress,
 }
 impl Component {
     pub(crate) fn new(definition: Arc<Definition>) -> Self {
@@ -32,6 +34,7 @@ impl Component {
             owner: ComponentOwner::default(), definition,
             joint: None, retiring_joint: None, bodies: [0; 2], missing_endpoint_world: [false; 2], endpoints_resolved: 0, initialized: false,
             started: false, pending_enable: false, enable_phase: 0, observer_phase: 0,
+            collision_ignore: Default::default(),
         }
     }
 }

@@ -1098,14 +1098,23 @@ impl PhysicsScene {
                     constructor_tag,
                 )?;
             }
+            //The source reference lookup can resolve every constructed map
+            //header before shared component Initialize. Publish this existing
+            //identity index before constraints resolve their actual endpoints;
+            //initialized/Spawn callbacks retain their subsequent order.
+            for (index, entity) in scene.entities.iter().enumerate() {
+                if scene.shared_indices.insert(entity.shared, index)
+                    .is_some_and(|previous| previous != index) {
+                    return Err("placed scene managed identity has multiple actual headers".into());
+                }
+            }
             scene.admit_placed_constraints(catalog, document, models,
                 legacy_constraint_owners, live, &mut registry)?;
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.
-            for (index, entity) in scene.entities.iter().enumerate() {
+            for entity in &scene.entities {
                 live.initialized(entity.shared)?;
                 live.spawned(entity.shared)?;
-                scene.shared_indices.insert(entity.shared, index);
             }
             registry.initialize_and_start(&mut interaction_components::Startup { world: None,
                 scene: &mut scene,

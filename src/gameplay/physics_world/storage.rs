@@ -599,6 +599,7 @@ impl WorldStorage {
                             bodies: &mut self.bodies, motions: &mut self.motions,
                             deactivation: &mut self.deactivation, broadphase: &mut self.broadphase,
                         }, &progress.ids)?;
+                        self.collision_pairs.retire_bodies(&progress.ids);
                         progress.phase = DestructionPhase::Resources;
                     }
                     DestructionPhase::Resources => {
@@ -660,7 +661,6 @@ impl WorldStorage {
             self.registry.remove_body(shape, id, geometry)?;
         }
         self.material_sources.remove(id);
-        self.collision_pairs.retire_body(id);
         Ok(())
     }
 

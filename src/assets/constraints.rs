@@ -44,7 +44,6 @@ impl Definition {
     pub(crate) fn passive_rows_supported(&self) -> bool {
         self.settings.motor.is_none()
             && self.linear_stabilized && !self.breakable
-            && !self.disable_collision
             && self.settings.linear_constraint == "LINEAR_CONSTRAINT_FIXED"
             && matches!(self.settings.angular_constraint.as_str(),
                 "ANGULAR_CONSTRAINT_CONE" | "ANGULAR_CONSTRAINT_HINGE"

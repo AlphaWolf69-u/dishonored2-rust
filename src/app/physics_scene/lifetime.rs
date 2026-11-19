@@ -377,6 +377,7 @@ pub(super) fn poll_owned(
     {
         return Ok(false);
     }
+    scene.finish_accepted_constraint_ignores_owned(events)?;
     if let Some(world) = world.as_deref_mut() {
         if !finish_gameplay_drain(world, scene, live, events)? {
             return Ok(false);

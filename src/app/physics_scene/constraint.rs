@@ -18,6 +18,92 @@ pub(in crate::app) struct ConstraintObservation<'a> {
 }
 
 impl PhysicsScene {
+    ///852040 resolves a NULL PhysicsBase to the real worldspawn component's
+    ///CURRENT body batch. Its constructed empty list is valid; an absent
+    ///component, arbitrary anchor body0, or a named NoShape is not that witness.
+    fn publish_constraint_collision_ignore(&mut self, handle: ComponentHandle,
+        registry: &mut ComponentRegistry,
+        entity_events: &mut dyn super::constraint_removal::ListenerEdits,
+    ) -> Result<(), String> {
+        let component = self.constraints.get(handle.slot).ok_or("constraint filter payload absent")?;
+        let generation = component.owner.generation;
+        let mut progress = component.collision_ignore;
+        if progress.complete() { return Ok(()); }
+        let bodies = component.bodies;
+        let endpoints = component.definition.endpoints();
+        let world_endpoint = [0, 1].map(|index| endpoints[index].is_none()
+            || component.missing_endpoint_world[index]);
+        for index in 0..2 {
+            if bodies[index] == 0 && !world_endpoint[index] {
+                return Err("constraint collision suppression requires the named NoShape PhysicsBase body-batch provider".into());
+            }
+        }
+        let world_bodies = if world_endpoint.iter().any(|&world| world) {
+            if self.level_bodies.allocated_count() != 1 {
+                return Err("constraint NULL PhysicsBase requires one actual worldspawn PhysicsWorld component".into());
+            }
+            let slot = self.level_bodies.roster.indices[0];
+            let level = self.level_bodies.get(slot).ok_or("constraint worldspawn PhysicsWorld roster stale")?;
+            let index = level.owner.entity.ok_or("constraint worldspawn PhysicsWorld header absent")?;
+            let header = self.entities.get(index).ok_or("constraint worldspawn header stale")?;
+            let metadata = self.types.classes().metadata(header.class)
+                .ok_or("constraint worldspawn class metadata absent")?;
+            if header.retired || header.external
+                || self.types.classes().name_text(metadata.name) != Some(b"idWorldspawn".as_slice()) {
+                return Err("constraint NULL PhysicsBase owner is not actual live worldspawn".into());
+            }
+            level.bodies.as_slice()
+        } else { &[] };
+        let singleton = [[bodies[0]], [bodies[1]]];
+        let batches: [&[u32]; 2] = [0, 1].map(|index| if world_endpoint[index] {
+            world_bodies
+        } else { singleton[index].as_slice() });
+        let shared = self.world.clone();
+        let mut guard = shared.write().map_err(|_| "constraint filter world poisoned")?;
+        let world = &mut *guard;
+        let result = {
+            scene_publication_events!(self, registry, publication, &mut *entity_events);
+            world.storage.publish_collision_ignores(&mut world.geometry, &mut publication,
+                batches[0], batches[1], &mut progress)
+        };
+        //Retain accepted pair/callback progress on every result, before any
+        //caller may unwind Init. Never repeat the refcount mutation on retry.
+        let component = self.constraints.get_mut(handle.slot)
+            .ok_or("constraint filter callback removed its journal owner")?;
+        if component.owner.generation != generation {
+            return Err("constraint filter callback changed component generation".into());
+        }
+        component.collision_ignore = progress;
+        result
+    }
+    ///Only already-entered filter requests. Teardown must finish them while
+    ///their real body-batch witnesses and activation owner are still retained.
+    pub(super) fn finish_accepted_constraint_ignores(&mut self,
+        registry: &mut ComponentRegistry,
+        events: &mut dyn super::constraint_removal::ListenerEdits,
+    ) -> Result<(), String> {
+        let mut position = 0;
+        while position < self.constraints.allocated_count() {
+            let slot = self.constraints.roster.indices[position];
+            let progress = self.constraints.get(slot).ok_or("constraint filter journal roster stale")?
+                .collision_ignore;
+            if progress.accepted() && !progress.complete() {
+                self.publish_constraint_collision_ignore(ComponentHandle {
+                    class_id: self.classes[59], slot,
+                }, registry, events)?;
+            }
+            if self.constraints.roster.indices.get(position) == Some(&slot) { position += 1; }
+        }
+        Ok(())
+    }
+    pub(super) fn finish_accepted_constraint_ignores_owned(&mut self,
+        events: &mut EntityEvents,
+    ) -> Result<(), String> {
+        let mut registry = self.registry.take().ok_or("constraint filter continuation registry borrowed")?;
+        let result = self.finish_accepted_constraint_ignores(&mut registry, events);
+        self.registry = Some(registry);
+        result
+    }
     ///Opt-in caller borrows existing state; no normal-frame trace/history/cache.
     pub(in crate::app) fn visit_constraints(&self, live: &LiveEntities,
         mut visit: impl FnMut(ConstraintObservation<'_>) -> Result<(), String>,
@@ -56,7 +142,7 @@ impl PhysicsScene {
                 || binding.definition.joints().iter().any(Option::is_some) {
                 //Preserve the previous explicit provider boundary; no fake
                 //started component or weld/tether/articulated reinterpretation.
-                warn!("constraint {} {} remains unhosted: actual motor/atom/joint/suppression provider required",
+                warn!("constraint {} {} remains unhosted: actual motor/atom/joint provider required",
                     binding.entity, binding.slot);
                 continue;
             }
@@ -67,6 +153,14 @@ impl PhysicsScene {
             }
             let missing = binding.definition.endpoints()
                 .map(|name| name.is_some_and(|name| !authored_names.contains(name)));
+            if binding.definition.disable_collision
+                && binding.definition.endpoints().iter().enumerate()
+                    .any(|(index, name)| name.is_none() || missing[index])
+                && self.level_bodies.allocated_count() != 1 {
+                warn!("constraint {} {} remains unhosted: actual NULL PhysicsBase worldspawn body-batch provider required",
+                    binding.entity, binding.slot);
+                continue;
+            }
             let mut providers_ready = true;
             for (endpoint, name) in binding.definition.endpoints().into_iter().enumerate() {
                 let Some(name) = name else { continue; };
@@ -74,6 +168,12 @@ impl PhysicsScene {
                 let index = live.find(name).and_then(|id| self.shared_indices.get(&id).copied());
                 let handle = index.map(|index| self.document_rigid(index)).transpose()?.flatten();
                 if let Some(handle) = handle {
+                    if binding.definition.disable_collision
+                        && self.rigid_component(handle)?.missing_physics_shape() {
+                        //Its real empty PhysicsBase batch is a distinct
+                        //unported provider; body0 must not suppress the map.
+                        providers_ready = false;
+                    }
                     //The deferred host enable path requires the actual body
                     //Start in this batch (or an already Started body). It does
                     //not emulate c92dd0's unported pending-body batch producer.
@@ -131,7 +231,7 @@ impl PhysicsScene {
         registry: &mut ComponentRegistry, immediate: bool,
     ) -> Result<Option<ComponentHandle>, String> {
         if !definition.passive_rows_supported() {
-            return Err("constraint requires its actual unsupported motor/atom-row/suppression provider".into());
+            return Err("constraint requires its actual unsupported motor/atom-row provider".into());
         }
         if definition.joints().iter().any(Option::is_some) {
             return Err("constraint requires the actual articulated joint-to-body provider".into());
@@ -205,15 +305,17 @@ impl PhysicsScene {
             component.observer_phase = 1;
         }
         if self.constraints.get(handle.slot).unwrap().observer_phase == 1 {
-            let joint = self.constraints.get(handle.slot).unwrap().joint
-                .ok_or("constraint Init joint lease absent")?;
-            if definition.disable_collision {
-                return Err("constraint requires actual852040 collision-suppression batch/lifetime".into());
-            }
             //7164c0 is consolidated at the world's actual body-unpublish
             //boundary. The real Removed signal still owns716560 withdrawal.
             self.signals.constraint_removed.subscribe(handle.packed() as usize, generation as usize);
             self.constraints.get_mut(handle.slot).unwrap().observer_phase = 2;
+        }
+        if self.constraints.get(handle.slot).unwrap().observer_phase == 2 {
+            if definition.disable_collision {
+                self.publish_constraint_collision_ignore(handle, registry, events)?;
+            }
+            self.constraints.get_mut(handle.slot).ok_or("constraint filter callback released Init owner")?
+                .observer_phase = 3;
         }
         for event in [0xad, 0xac] {
             events.register(event, Some(id), Listener::Component {
@@ -251,6 +353,11 @@ impl PhysicsScene {
         registry: &mut ComponentRegistry,
         entity_events: &mut dyn super::constraint_removal::ListenerEdits,
     ) -> Result<(), String> {
+        let progress = self.constraints.get(handle.slot).ok_or("constraint Deinit slot absent")?
+            .collision_ignore;
+        if progress.accepted() && !progress.complete() {
+            self.publish_constraint_collision_ignore(handle, registry, entity_events)?;
+        }
         let component = self.constraints.get(handle.slot).ok_or("constraint Deinit slot absent")?;
         let generation = component.owner.generation;
         let joint = component.joint.or(component.retiring_joint);

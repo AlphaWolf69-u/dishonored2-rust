@@ -1,5 +1,41 @@
 # Resource parity ledger
 
+## Passive constraint endpoint lookup and collision suppression (2026-11-19)
+
+The integrated EotW observation loaded but found neither actual lamp joint.
+Both authored owners were explicitly skipped by the RigidbodyBase provider
+gate: the constructed endpoint headers existed, but Scene.load populated its
+canonical managed-ID/header index only after constraint admission. That same
+index is now populated before endpoint lookup; actual initialized/Spawn
+callbacks retain their original subsequent order. No fixture names, substitute
+bodies, observer match or authored state are changed.
+
+Native 712da0→852040→851b80 body-batch suppression uses the same Constraint59
+Init boundary, after its Removed subscription and before AD/AC. NULL
+PhysicsBase enumerates the actual current worldspawn body array; numerical
+anchor0 is not substituted. The canonical filter retains 091b50 uint32
+full-generation pair reference counts and shares c87dc0's existing dynamic
+invalidation/activation policy. Accepted callback progress is completed before
+rollback/endpoint retirement. Constraint destruction has no inverse filter
+request, so no invented per-joint re-enable is added. Body-generation
+destruction prunes real references once per acknowledged batch, before reuse.
+
+Installed EotW raw source has 151 additional candidate declarations, including
+25 hanging lamps; all candidate raw owners are unbound, single-component
+idEntity. Real legacy exclusion and typed endpoint/Start/provider gates remain.
+Articulated, bound, motorized, breakable, unsupported atom and named NoShape
+body-batch providers remain explicit boundaries. No per-name exception or
+alternate solver is added.
+
+Prediction: real lamp endpoints reach the existing typed constraint owner,
+and additional genuinely supported passive joints use authored ignore pairs.
+There is one uint32 count per unique pair and one small operation cursor per
+component, with no new normal-frame roster scan. Bulk body retirement scans
+the table once per actual destruction batch, using temporary membership only.
+Source patch applicability, syntax parsing and whitespace were checked;
+no independent build, test or game launch was run. Root owns coherent runtime
+validation. No observed swinging, rendered-shadow or CPU/FPS result is claimed.
+
 ## Selected decal program pipeline admission (2026-11-18)
 
 Prediction before implementation: the two actual bullet-on-stone ContactFX
