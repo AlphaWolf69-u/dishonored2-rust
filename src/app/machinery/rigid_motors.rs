@@ -94,7 +94,7 @@ impl Motor {
                 id, active: body.flags & 8 != 0, transform: body.transform,
                 motion: MotionRecord { centre: motion.pose.center, orientation: motion.pose.orientation,
                     linear: motion.linear_velocity, angular: motion.angular_velocity },
-                bounds: storage.quantization.unpack_bounds(body.bounds), shapes: shape.shapes.clone(),
+                bounds: storage.quantization.packed.unpack_bounds(body.bounds), shapes: shape.shapes.clone(),
                 material, filter: body.filter_info,
             });
         }

@@ -981,7 +981,7 @@ pub(super) fn prepare_level(
     let machinery_placements = (separate_placements && entity_document.is_some())
         .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
     let mut constraint_admission = super::machinery::ConstraintAdmission::default();
-    let machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
+    let mut machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
         catalog_for_machinery,
         entity_document.as_ref(),
         machinery_placements.as_deref().unwrap_or(&placed_models),
@@ -1007,7 +1007,6 @@ pub(super) fn prepare_level(
         .map_err(std::io::Error::other)?;
     let mut marker_positions = super::objective_markers::Positions::prepare(catalog_for_machinery, entity_document.as_ref(), objectives.as_ref(),
         &placed_models, &mut joint_frames, &machinery, &usable_animations).map_err(std::io::Error::other)?;
-    app.insert_resource(machinery);
     let mut bound_models = super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
@@ -1029,7 +1028,7 @@ pub(super) fn prepare_level(
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
         let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref(), &constraint_admission)
             .map_err(std::io::Error::other)?;
-        constraint_admission.finish(&mut app.world_mut().resource_mut::<super::machinery::AmbientMachinery>(), &mut physics, &live)
+        constraint_admission.finish(&mut machinery, &mut physics, &live)
             .map_err(std::io::Error::other)?;
         physics.admit_ai_section_owners(catalog, document, &mut live)
             .map_err(std::io::Error::other)?;
@@ -1068,6 +1067,7 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(machinery);
     app.insert_resource(bound_models);
     app.insert_resource(marker_positions);
     app.insert_resource(joint_frames);
