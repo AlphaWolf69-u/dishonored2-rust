@@ -1106,7 +1106,8 @@ impl Observation {
                 let physical=world.resource::<super::physics_scene::PhysicsScene>().entity_frame(live,id)?.ok_or("carry fixture actual frame disappeared")?.position;
                 let bounds=super::world_models::entity_bounds(world,live,id)?;
                 let center=bounds.map_or(Vec3::from(physical),|bounds|(Vec3::from(bounds[0])+Vec3::from(bounds[1]))*0.5);
-                let close=if self.melee_only||self.poke_only{Self::melee_fixture_reached(world,center)?}else{true};
+                let close=if self.named_contact.is_some(){contact_fixture::Named::reached(world,id)?}
+                    else if self.melee_only||self.poke_only{Self::melee_fixture_reached(world,center)?}else{true};
                 // Named non-pickable targets still require the same actual
                 // melee reach goal. ContactAim subsequently requires the real
                 // nearest ray hit before any attack input can be issued.

@@ -13,6 +13,39 @@ pub(super) struct Named {
     reported: bool,
 }
 impl Named {
+    /// Large actor centers may lie behind their collision surface. Approach
+    /// the actual nearest witness using the existing authored melee goal;
+    /// never require walking inside an actor or substitute its bounds for a hit.
+    pub(super) fn reached(world: &World, intended: EntityId) -> Result<bool, String> {
+        let p = player(world)?;
+        let (eye, axis) = p.published_camera_frame();
+        let scene = world.resource::<super::super::physics_scene::PhysicsScene>();
+        let live = world.resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+        let owner = scene.point_queries()?;
+        let queries = owner.read().map_err(|_| "named contact query owner poisoned")?;
+        let mut ray = crate::gameplay::world_ray_query::WorldRayQuery::default();
+        let mut hits = Vec::new();
+        // Same canonical ray/filter as ContactAim. Its witness merely admits
+        // the debug approach; the later actual sweep still decides damage.
+        queries.ray_hits(&mut ray, &crate::gameplay::world_ray_query::WorldRayRequest {
+            origin: eye.to_array(), direction: (axis.x_axis * 100.).to_array(), maximum_fraction: 1.,
+            hit: crate::gameplay::collision_hit::ShapeHitInfo {
+                body_id: None, material_id: u16::MAX, shape_key: u32::MAX, filter_info: 0, user_data: 0,
+            },
+            filter: Some(crate::gameplay::collision_filter::CollisionQueryFilter {
+                layers: 0x1ffff, required_flags: 0x800,
+            }),
+        }, 0, &mut hits)?;
+        let Some(hit) = hits.iter().min_by(|a, b| a.fraction.total_cmp(&b.fraction)) else { return Ok(false) };
+        if scene.collision_entity(live, &hit.target)? != Some(intended) { return Ok(false) }
+        let point = Vec3::new(hit.position[0], hit.position[1], hit.position[2]);
+        let reached = Observation::melee_fixture_reached(world, point)?;
+        if reached {
+            eprintln!("ACTION_SMOKE_NAMED_APPROACH intended={intended:?} actual_ray_point={point:?} actual_hit={:?} unchanged_authored_melee_goal=true", hit.target);
+        }
+        Ok(reached)
+    }
+
     pub(super) fn begin(world: &World, allowed: bool) -> Result<Option<Self>, String> {
         let target = std::env::var("DH2_DEBUG_ACTION_TARGET").ok();
         let capture = std::env::var_os("DH2_DEBUG_ACTION_CAPTURE");
