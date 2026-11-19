@@ -64,7 +64,18 @@ pub(super) fn keys(world: &World, live: &LiveEntities, id: EntityId) -> Result<V
     let (name, _) = live
         .get(id)
         .ok_or("shader fields targeted a stale entity generation")?;
-    let mut keys = world
+    // Host:87ce70/87d050 writes the entity's existing render-model pointer.
+    // Runtime actors and managed player parts own Actor draws, independently
+    // of the immutable placed-model list. Resolve that owner before searching
+    // level names; replacement keeps the same Actor identity and draw owner.
+    if super::super::world_models::frame(world, id).is_some()
+        || world
+            .get_resource::<super::super::player_arms::PlayerArms>()
+            .is_some_and(|arms| arms.has_managed_model(id))
+    {
+        return Ok(vec![ModelKey::Actor(id)]);
+    }
+    let keys = world
         .get_resource::<super::super::RenderSourcePlacements>()
         .map(|placements| {
             placements
@@ -80,13 +91,6 @@ pub(super) fn keys(world: &World, live: &LiveEntities, id: EntityId) -> Result<V
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if super::super::world_models::frame(world, id).is_some()
-        || world
-            .get_resource::<super::super::player_arms::PlayerArms>()
-            .is_some_and(|arms| arms.has_managed_model(id))
-    {
-        keys.push(ModelKey::Actor(id));
-    }
     Ok(keys)
 }
 pub(in crate::app) fn set_shader_clock(
