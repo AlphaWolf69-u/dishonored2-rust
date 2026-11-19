@@ -474,8 +474,10 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::weapon_firing::prepare,
                 gameplay_system(super::fx_gameplay::prepare),
                 gameplay_system(super::water_impacts::prepare),
-                gameplay_system(super::physics_scene::grenades::prepare),
-                gameplay_system(super::physics_scene::whale_oil_tank::update),
+                (
+                    gameplay_system(super::physics_scene::grenades::prepare),
+                    gameplay_system(super::physics_scene::whale_oil_tank::update),
+                ).chain(),
                 super::weapon_throwing::prepare,
                 gameplay_system(super::grenade_cooking::prepare),
                 super::carrying_resources::prepare,

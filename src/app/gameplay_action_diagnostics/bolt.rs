@@ -1,7 +1,7 @@
 //! Actual regular-bolt contact/recovery, including the stopped class13 phase.
 //! Physical input selects the existing nearby WORLD support fixture.
 use super::super as app;
-use super::{input_for, player, send, Input};
+use super::{input_for, player, send, Input, PlayerState};
 use crate::gameplay::{
     component_state::entity::ComponentHandle,
     entity_lifetime::{EntityId, LiveEntities},

@@ -136,7 +136,7 @@ pub(crate) fn entry_fields(
     Ok(Some(resolved))
 }
 
-pub(super) fn atom<'a>(fields: &'a [(String, Value)], key: &str) -> Option<&'a str> {
+pub(in crate::assets) fn atom<'a>(fields: &'a [(String, Value)], key: &str) -> Option<&'a str> {
     match field(fields, key)? {
         Value::Atom(value) => Some(value.trim_matches('"')),
         _ => None,

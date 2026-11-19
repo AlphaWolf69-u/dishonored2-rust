@@ -195,7 +195,7 @@ impl Joint {
         } else {
             0.
         };
-        let motor = joint
+        let motor = self
             .motor
             .as_mut()
             .filter(|_| self.settings.started)

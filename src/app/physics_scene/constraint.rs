@@ -1,5 +1,6 @@
 //!712da0/714560/714cd0/7149b0 on the existing canonical bodies and registry.
 use super::*;
+use bevy::log::warn;
 use crate::{assets::constraints::Definition, gameplay::{constraint::Component,
     entity_events::{EntityEvents, Listener}, entity_lifetime::LiveEntities}};
 
