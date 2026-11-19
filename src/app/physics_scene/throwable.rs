@@ -1115,34 +1115,14 @@ impl PhysicsScene {
                         .rigid_component(handle)?
                         .body()
                         .ok_or("bound body absent")?;
-                    let authored = self
-                        .rigid_component(handle)?
-                        .definition()
-                        .and_then(|definition| definition.settings.physics_behavior.as_deref())
-                        .and_then(entities::rigid_body_behavior_kind)
-                        .ok_or("unbound rigid declared behavior absent")?;
                     let shared = self.world.clone();
                     let mut guard = shared.write().map_err(|_| "unbind world poisoned")?;
                     let world = &mut *guard;
                     scene_publication_events!(self, &mut registry, publication);
-                    match authored {
-                        0 => world.storage.static_single_body(
-                            &mut world.geometry,
-                            &mut publication,
-                            body,
-                        )?,
-                        1 => world.storage.keyframe_single_body(
-                            &mut world.geometry,
-                            &mut publication,
-                            body,
-                        )?,
-                        2 => world.storage.dynamic_single_body(
-                            &mut world.geometry,
-                            &mut publication,
-                            body,
-                        )?,
-                        _ => return Err("unbound body mode invalid".into()),
-                    }
+                    // 8762d0 clears d0 bit7 before 727450(NULL) calls
+                    // vtable+188 (727880) with movement type 2. This is the
+                    // release request even when the spawn declaration was static.
+                    world.storage.dynamic_single_body(&mut world.geometry, &mut publication, body)?;
                 }
             }
             self.detach_document(live, index)
