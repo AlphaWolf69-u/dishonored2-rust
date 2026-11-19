@@ -903,6 +903,9 @@ impl super::super::carrying::Host for CarryHost<'_> {
                 .impulse_posted = true;
         }
         self.release_body(target, player, true)?;
+        //83de90 finishes a throw by arming the released actor's Breakable
+        //through 7edfa0. A normal drop never enters this branch.
+        self.scene.set_breakable_thrown(self.live, target.entity, true)?;
         if player.carrying.tracing_enabled() {
             let progress=&self.state.progress[&target.entity];
             eprintln!("ACTION_SMOKE_THROW_NATIVE entity={:?} frame={} release_position={:?} requested_linear={:?} requested_angular={:?} message149_posted={} release_complete={} source=83de90 actual_solver_consumption_required=true",
