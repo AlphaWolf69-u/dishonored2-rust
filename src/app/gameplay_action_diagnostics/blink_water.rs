@@ -56,6 +56,7 @@ pub(super) struct Observation {
     down: Input,
     use_input: Input,
     cancel: Input,
+    bearing: Vec3,
     cast_start: Vec3,
     mana_before: f32,
     mana_spent: bool,
@@ -93,6 +94,13 @@ pub(super) struct Observation {
 
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
+        //Diagnostic bearing only: retain the captured starting pose, then
+        //use ordinary mouse input. The actual Blink query must find a target.
+        let bearing = match std::env::var("DH2_DEBUG_ACTION_WATER_BEARING").as_deref() {
+            Err(_) | Ok("captured") => FORWARD,
+            Ok("open-water") => Vec3::new(-FORWARD.x, -FORWARD.y, 0.0),
+            Ok(other) => return Err(format!("unknown water Blink bearing {other}; expected captured or open-water")),
+        };
         let inventory = world
             .get_resource::<DiscoveredDocuments>()
             .ok_or("water Blink inventory absent")?;
@@ -134,7 +142,7 @@ impl Observation {
             .ok_or("water Blink Player absent")?
             .teleport(FEET, FORWARD.y.atan2(FORWARD.x));
         eprintln!(
-            "ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} aim=actual_saved_bearing setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}"
+            "ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} aim_forward={bearing:?} aim=physical_mouse_replay setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}"
         );
         Ok(Self {
             stage: Stage::Water,
@@ -149,6 +157,7 @@ impl Observation {
             down,
             use_input,
             cancel,
+            bearing,
             cast_start: FEET,
             mana_before: 0.,
             mana_spent: false,
@@ -216,9 +225,9 @@ impl Observation {
         self.since = Instant::now();
         Ok(())
     }
-    fn steer(world: &mut World) -> Result<bool, String> {
+    fn steer(&self, world: &mut World) -> Result<bool, String> {
         let (_, axis) = player(world)?.published_camera_frame();
-        let desired = FORWARD;
+        let desired = self.bearing;
         let yaw = desired.y.atan2(desired.x) - axis.x_axis.y.atan2(axis.x_axis.x);
         let yaw = yaw.sin().atan2(yaw.cos());
         let pitch = -desired.z.atan2(desired.truncate().length())
@@ -562,7 +571,7 @@ impl Observation {
                 self.stage(Stage::Orient, world)?;
             }
             Stage::Orient => {
-                if Self::steer(world)? {
+                if self.steer(world)? {
                     //Use last actually published surface values at the dive
                     //boundary, rather than an earlier setup fade-in-flight.
                     self.mix_baseline = None;
@@ -591,9 +600,9 @@ impl Observation {
                 self.stage(Stage::Aim, world)?;
             }
             Stage::Aim => {
-                //Replay the captured bearing after the finite dive. This
+                //Replay the selected bearing after the finite dive. This
                 //direction stays fixed as the eye moves; no target is written.
-                if !Self::steer(world)? {
+                if !self.steer(world)? {
                     return Ok(false);
                 }
                 let p = player(world)?;
@@ -618,15 +627,16 @@ impl Observation {
                 if !self.aim_observed {
                     self.aim_observed = true;
                     eprintln!(
-                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} initial_cast_obstruction={:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} bearing=actual_F8_capture",
+                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} initial_cast_obstruction={:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} aim_forward={:?} bearing=physical_mouse_replay",
                         owner.blink.obstruction,
                         p.is_underwater(),
                         p.feet(),
-                        p.published_camera_frame()
+                        p.published_camera_frame(),
+                        self.bearing
                     );
                 }
-                //61ec20 has no head-depth veto. The handoff claim concerns
-                //actual SWIM mode; log actual head depth rather than forcing it.
+                //61ec20 has no head-depth veto. Exercise actual SWIM mode
+                //and log head depth without forcing a surface transition.
                 if !p.is_swimming() {
                     return Err("water Blink fixture left actual SWIM before release".into());
                 }
