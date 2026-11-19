@@ -748,12 +748,6 @@ impl PhysicsScene {
         {
             return Err("bound managed identity is stale".into());
         }
-        //752900 writes explicit values through87d1e0 BEFORE link/body-mode
-        //change. Driving a whole pickup rotation as keyframe velocity instead
-        //would impart that artificial velocity to an immediate ordinary drop.
-        if let Some(frame)=pose.initial_pose{
-            self.publish_entity_pose_in_registry(child,frame,registry)?;
-        }
         if let Some(binding) = self
             .document_hierarchy
             .bindings
@@ -770,11 +764,13 @@ impl PhysicsScene {
                 && actor.binding.offset == pose.offset
                 && actor.binding.orientation == pose.orientation
             {
+                if let Some(frame)=pose.initial_pose{self.publish_entity_pose_in_registry(child,frame,registry)?;}
                 return self.refresh_bound_body_mode(live, child, registry);
             }
             //752900 updates the local binding in place when parent identity
             //is unchanged. A new empty tag may replace a previous joint tag.
             if binding.parent == parent {
+                if let Some(frame)=pose.initial_pose{self.publish_entity_pose_in_registry(child,frame,registry)?;}
                 let handle = self.entities[child]
                     .components
                     .reference_actor
@@ -810,6 +806,12 @@ impl PhysicsScene {
             //does not occur during a direct reparent in the source.
             live.preflight_reparent(self.entities[parent].shared, self.entities[child].shared)?;
             self.detach_document(live, child)?;
+        }
+        //752900 writes explicit values through87d1e0 after an old parent is
+        //detached and BEFORE the new link/body-mode change. A pickup rotation
+        //must not be synthesized as keyframe velocity then inherited by Drop.
+        if let Some(frame)=pose.initial_pose{
+            self.publish_entity_pose_in_registry(child,frame,registry)?;
         }
         let result: Result<(), String> = (|| {
             let child_handle = self.reference_actor(child, registry)?;

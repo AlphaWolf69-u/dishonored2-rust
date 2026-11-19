@@ -26103,3 +26103,21 @@ or visual acceptance is claimed; root owns the coherent build and playback
 validation. No independent build, game launch or test suite was run.
 
 Explicit attachment placement follows 752900 calling 87d1e0 before linking the child and changing its body mode. A release run exposed the missing order on an immediate F-drop: the bottle retained the 22–44 rad/s turn used to move from its pickup orientation into its hand pose, rolled off the dock, and the second pickup failed. Explicitly positioned attachments now publish their real starting transform to the existing body, actor and model owner before keyframing begins. A bind with no supplied transform preserves its current world pose. Drop and throw continue through the existing motion owner.
+
+Caller coverage: Player-tag holding resolves the actual parent/joint/tag pose;
+grenade cooking uses its already-resolved equipment tag frame; animation-FX
+birth uses its existing source joint-world frame; the whale-oil pusher uses
+its shared spawn frame for explicit zero offset; Breakable keep-binding copies
+the owner's existing world frame and parent/tag binding. Equipment reference,
+Loot membership, already-positioned sticky projectiles and missing-tag/bare
+parent preservation pass no initial world write. These are copied pose values,
+not another pose/asset cache. The common writer retains full body generations,
+original ModelPose baselines and the ordinary registry/publication callbacks.
+For reparenting, the old topology is removed before the explicit world write,
+then the new link/body mode is installed; unchanged-parent explicit writes
+still precede its ordinary phase request. No unbind snap or velocity reset was
+introduced. Prediction: the first held-frame release receipt no longer contains
+the artificial pickup-to-hand angular velocity; consolidated execution remains
+required. The release main run's angular vector was already44rad/s before
+F-drop and remained the same afterward, so the correction belongs to binding
+entry rather than dynamic restore or an invented drop damping rule.
