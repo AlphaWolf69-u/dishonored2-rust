@@ -8,7 +8,7 @@ use crate::gameplay::{
     physics_actor::{
         ActorMotionBody, ActorUpdatePhase, ResolvedMotion,
         basic_body::BasicBody,
-        body_frame::body_origin_velocities,
+        body_frame::{body_origin_velocities, center_rotation_velocity},
         post_update::{BoundFrame, PostPhysicsWorld},
         pre_update::PrePhysicsWorld,
     },
@@ -252,8 +252,9 @@ impl RigidPostHost<'_> {
         current: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
     ) -> Result<(), String> {
         let entity = self.actor_entity(actors, actor)?;
-        if self.clock.entity_delta(self.entities[entity].timespace)
-            .ok_or("rigid timespace absent")? <= 0. {
+        let delta = self.clock.entity_delta(self.entities[entity].timespace)
+            .ok_or("rigid timespace absent")?;
+        if delta <= 0. {
             return Ok(());
         }
         let body = self.world.bodies.get(body_id).ok_or("rigid motion body generation stale")?;
@@ -276,13 +277,16 @@ impl RigidPostHost<'_> {
                 .ok_or("rigid motion absent")?
                 .pose
                 .center;
-            let values = body_origin_velocities(
-                com[..3].try_into().unwrap(),
+            //80b9e0 calls movement virtual190→8086a0: the finite COM
+            //offset chord for the accepted entity delta.80b7c0's inverse
+            //origin-velocity publication is a different operation.
+            let correction = center_rotation_velocity(
                 body.transform[3][..3].try_into().unwrap(),
-                motion.velocities[0],
+                com[..3].try_into().unwrap(),
                 angular[..3].try_into().unwrap(),
+                delta,
             );
-            linear[..3].copy_from_slice(&values[0]);
+            for i in 0..3 { linear[i] = motion.velocities[0][i] + correction[i]; }
         }
         if motion.valid[0] || motion.valid[1] || flags & 4 != 0 {
             if !motion.valid[0] && !motion.valid[1] {

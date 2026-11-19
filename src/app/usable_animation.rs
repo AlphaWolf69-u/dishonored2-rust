@@ -83,6 +83,10 @@ impl Placement {
 /// No repeated metadata decode, frame allocation or I/O occurs here.
 pub(super) fn prepare_audio(world: &mut World) -> Result<(), String> {
     if !world.get_resource::<UsableAnimations>().is_some_and(|owner| owner.audio_pending) { return Ok(()); }
+    if world.get_resource::<super::interactions::Interactions>()
+        .is_none_or(|owner| owner.acquisitions_closed.load(Ordering::Acquire)) {
+        return Ok(());
+    }
     world.resource_scope(|world, mut owner: Mut<UsableAnimations>| {
         let mut pending = false;
         for (&index, slot) in &mut owner.placements {
@@ -260,6 +264,9 @@ pub(super) fn advance(
     mut exit: MessageWriter<bevy::app::AppExit>,
 ) {
     let Some(mut interactions) = interactions else { return };
+    // Once the level closes admission, retire_level_acquisitions exclusively
+    // drains pending loads. A cancelled read is expected during that drain.
+    if interactions.acquisitions_closed.load(Ordering::Acquire) { return; }
     if !owner.initialized {
         let physics = machinery.as_ref().map(|m| m.physics_placements()).unwrap_or_default();
         let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();

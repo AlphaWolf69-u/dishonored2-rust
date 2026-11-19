@@ -249,10 +249,18 @@ impl PhysicsScene {
     pub(in crate::app) fn publish_animation_binding_joints(&mut self,id:EntityId)->Result<(),String>{
         let Some(handle)=self.animation_handle_with_flags(id,[0x20,0])? else{return Ok(());};
         let parent=*self.shared_indices.get(&id).ok_or("AnimBase binding header absent")?;
-        let animation=self.animations.get_mut(handle.slot).ok_or("AnimBase payload absent")?;
-        animation.sample(0.)?;
-        let mut changed=false;
+        self.animations.get_mut(handle.slot).ok_or("AnimBase payload absent")?.sample(0.)?;
+        self.publish_sampled_binding_joints(handle.slot, parent, false)
+    }
+
+    fn publish_sampled_binding_joints(&mut self, slot:u16, parent:usize, advancing:bool)->Result<(),String>{
+        let animation=self.animations.get(slot).ok_or("AnimBase payload absent")?;
+        let mut schedule=false;
         for binding in self.document_hierarchy.bindings.iter().filter(|binding|binding.parent==parent&&binding.joint>=0){
+            // 540e20 calls 752260 on every accepted stage-4 update. 53e950
+            // accepts a positive entity delta even when the clip is held. A
+            // rotating physical body can still be converging on that pose.
+            schedule |= advancing;
             let matrix=animation.matrices.get(binding.joint as usize).ok_or("AnimBase bound joint matrix absent")?;
             let frame=crate::gameplay::reference_frame::ReferenceFrame{
                 position:[matrix[0][3],matrix[1][3],matrix[2][3]],
@@ -261,12 +269,12 @@ impl PhysicsScene {
             let current=self.document_hierarchy.external_joints.entry((parent,binding.joint));
             match current{
                 std::collections::hash_map::Entry::Occupied(mut current)=>{
-                    if current.get().position!=frame.position||current.get().basis!=frame.basis{current.insert(frame);changed=true;}
+                    if current.get().position!=frame.position||current.get().basis!=frame.basis{current.insert(frame);schedule=true;}
                 },
-                std::collections::hash_map::Entry::Vacant(current)=>{current.insert(frame);changed=true;}
+                std::collections::hash_map::Entry::Vacant(current)=>{current.insert(frame);schedule=true;}
             }
         }
-        if changed{
+        if schedule{
             if let Some(handle)=self.entities[parent].components.reference_actor{
                 // 540e20 schedules 752260 when animation updates bound joints.
                 // 7551c0 walks the children and moves their keyframed bodies
@@ -342,7 +350,7 @@ impl PhysicsScene {
                     crate::gameplay::entity_events::Payload::AnimationSound{joint,event,
                         placement:crate::gameplay::sound::component::AnimationSource::Runtime(id)}});
             }
-            self.publish_animation_binding_joints(id)?;
+            self.publish_sampled_binding_joints(slot, entity, delta > 0.)?;
         }
         Ok(())
     }

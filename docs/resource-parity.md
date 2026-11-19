@@ -25710,3 +25710,28 @@ same hinge sample. Animation sound messages retain their existing delivery
 phase. The expected change is matching collision and visual motion when a
 door pushes the player. Dynamic-body impulse feedback (c847a0) and movement
 inherited from a supporting body (1b4760) are separate operations.
+
+### Animated rigid-body binding, November 19
+
+`ported` — Rigid motion publisher 80b9e0 calls virtual 190 (8086a0).
+It rotates the vector from the hinge to the center of mass over the entity's
+timestep, then adds the resulting displacement divided by that timestep to
+the requested origin velocity. Throw launch subtracts the same compensation.
+Both consumers use one implementation. The installed squared-angular-speed
+cutoff at 1423cce40 is 2^-46. Stationary requests exit before the rotation.
+
+Stage 4 calls AnimBase 540e20. Virtual D8 (53e950) accepts positive entity
+time even when a clip holds the same pose. For a bound joint the reference
+actor therefore receives 752260 again, which allows the physical leaf to
+finish turning. The sampled joint matrix is shared by rendering and physics.
+Before these corrections an initially open metal leaf in Edge of the World
+ended up 1.99 m from its hinge and stayed there for 454 observed frames.
+After the fix, the hinge difference fell from 0.179 m on physics frame one
+to 0.00086 m on frame two and 0.000007 m on frame three. Player rays from
+both sides hit the open leaf and passed through the vacant doorway. During
+closure, the player and rendered camera moved 1.166 m horizontally. Across
+13 observations the camera stayed at least 0.138 m outside the panel.
+
+Usable animation and its audio admission stop when the interaction owner
+closes acquisition for the outgoing level. The existing retirement pass
+then drains pending readers before releasing that level's assets.

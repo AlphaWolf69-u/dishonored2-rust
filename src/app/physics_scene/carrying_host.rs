@@ -827,17 +827,11 @@ impl super::super::carrying::Host for CarryHost<'_> {
                     .motions
                     .get(body.motion_id)
                     .ok_or("thrown motion absent")?;
-                let speed=angular.length();
-                if speed*speed>f32::from_bits(0x00800000) {
-                    let delta=self.clock.entity_delta(self.scene.entities[index].timespace)
-                        .ok_or("throw entity timespace absent")?;
-                    let r=Vec3::from_array(motion.pose.center[..3].try_into().unwrap())
-                        -Vec3::from_array(body.transform[3][..3].try_into().unwrap());
-                    let turn=crate::gameplay::shape_transform::rotation::axis_angle_basis(
-                        (angular/speed).extend(0.).to_array(),speed*delta);
-                    let turn=Mat3::from_cols_array_2d(&turn.map(|v|[v[0],v[1],v[2]]));
-                    velocity-=(turn*r-r)/delta;
-                }
+                let delta=self.clock.entity_delta(self.scene.entities[index].timespace)
+                    .ok_or("throw entity timespace absent")?;
+                velocity-=Vec3::from_array(crate::gameplay::physics_actor::body_frame::center_rotation_velocity(
+                    body.transform[3][..3].try_into().unwrap(),
+                    motion.pose.center[..3].try_into().unwrap(),angular.to_array(),delta));
             }
             drop(queries);
             if safe.is_some() {

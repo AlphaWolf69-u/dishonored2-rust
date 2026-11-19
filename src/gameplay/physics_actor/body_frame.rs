@@ -5,6 +5,36 @@ use crate::{
     gameplay::reference_frame::ReferenceFrame,
 };
 
+/// 8086a0. Velocity of an offset center of mass rotating about the body origin.
+pub fn center_rotation_velocity(
+    position: [f32; 3],
+    center: [f32; 3],
+    angular: [f32; 3],
+    delta: f32,
+) -> [f32; 3] {
+    let squared = add(
+        add(multiply(angular[1], angular[1]), multiply(angular[0], angular[0])),
+        multiply(angular[2], angular[2]),
+    );
+    if squared <= f32::from_bits(0x2880_0000) { // 1423cce40 = 2^-46
+        return [0.; 3];
+    }
+    let inverse = super::super::constraint_solver::inverse_length(squared);
+    let [x, y, z] = angular.map(|value| multiply(value, inverse));
+    let axis = [x, y, z, 0.];
+    let angle = multiply(multiply(inverse, squared), delta);
+    let rotation = super::super::shape_transform::rotation::axis_angle_basis(axis, angle);
+    let offset: [f32; 3] = std::array::from_fn(|i| subtract(center[i], position[i]));
+    let rotated: [f32; 3] = std::array::from_fn(|i| {
+        add(
+            add(multiply(rotation[0][i], offset[0]), multiply(rotation[1][i], offset[1])),
+            multiply(rotation[2][i], offset[2]),
+        )
+    });
+    let inverse_delta = super::super::constraint_solver::reciprocal(delta);
+    std::array::from_fn(|i| multiply(subtract(rotated[i], offset[i]), inverse_delta))
+}
+
 /// 80b7c0 shifts the cached motion velocities to the body's published origin.
 /// Angular input is already in world space, not the motion's principal axes.
 pub fn body_origin_velocities(
