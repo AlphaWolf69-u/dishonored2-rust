@@ -6,8 +6,6 @@ use crate::gameplay::{game_clock_runtime::ClockRuntime, powers::Phase};
 
 const FEET: Vec3 = Vec3::new(-29.932283, 182.57669, -1.4056311);
 const FORWARD: Vec3 = Vec3::new(-0.8852807, -0.024919145, 0.46438906);
-// Existing actual EotW pier/start position, used solely for mouse steering.
-const PIER: Vec3 = Vec3::new(-31.830004, 188.40999, 1.2120594);
 // Installed Init/common sound-bank state/action identities; diagnostic only.
 const UNDERWATER_GROUP: u32 = 0xe58b68e3;
 const UNDERWATER_VALUE: u32 = 0x7dd27190;
@@ -65,6 +63,7 @@ pub(super) struct Observation {
     blink_seen: bool,
     blink_in_water: bool,
     aim_observed: bool,
+    blocked_target: Option<String>,
     water_exit: Option<Stamp>,
     exit_during_blink: bool,
     released: Option<Stamp>,
@@ -132,7 +131,7 @@ impl Observation {
             .ok_or("water Blink Player absent")?
             .teleport(FEET, FORWARD.y.atan2(FORWARD.x));
         eprintln!(
-            "ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} steer_landmark={PIER:?} setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}"
+            "ACTION_SMOKE_BLINK_WATER_SETUP source=collision-1794201780722 feet={FEET:?} captured_forward={FORWARD:?} aim=actual_saved_bearing setup_restore_once=true subsequent_motion=physical_inputs no_target_or_state_or_clock_override=true breath_start={breath_start:?}"
         );
         Ok(Self {
             stage: Stage::Water,
@@ -154,6 +153,7 @@ impl Observation {
             blink_seen: false,
             blink_in_water: false,
             aim_observed: false,
+            blocked_target: None,
             water_exit: None,
             exit_during_blink: false,
             released: None,
@@ -209,8 +209,8 @@ impl Observation {
         Ok(())
     }
     fn steer(world: &mut World) -> Result<bool, String> {
-        let (eye, axis) = player(world)?.published_camera_frame();
-        let desired = PIER - eye;
+        let (_, axis) = player(world)?.published_camera_frame();
+        let desired = FORWARD;
         let yaw = desired.y.atan2(desired.x) - axis.x_axis.y.atan2(axis.x_axis.x);
         let yaw = yaw.sin().atan2(yaw.cos());
         let pitch = -desired.z.atan2(desired.truncate().length())
@@ -573,11 +573,11 @@ impl Observation {
                 self.stage(Stage::Aim, world)?;
             }
             Stage::Aim => {
-                // Follow the same fixed real land landmark as the eye moves
-                // during the physical dive. The native target must still pass.
-                //Steering convergence only belongs to initial setup. While
-                //diving the eye moves: it must not gate a valid native cast.
-                let _ = Self::steer(world)?;
+                //Replay the captured bearing after the finite dive. This
+                //direction stays fixed as the eye moves; no target is written.
+                if !Self::steer(world)? {
+                    return Ok(false);
+                }
                 let p = player(world)?;
                 if !p.machine.is_active(StateId::USE_POWER)
                     || !p
@@ -600,7 +600,7 @@ impl Observation {
                 if !self.aim_observed {
                     self.aim_observed = true;
                     eprintln!(
-                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} initial_cast_obstruction={:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} steering_precision_is_not_cast_gate=true",
+                        "ACTION_SMOKE_BLINK_WATER_AIM_OBSERVED stamp={stamp:?} native_target={target:?} initial_cast_obstruction={:?} sampled_plane={plane} underwater={} feet={:?} camera={:?} bearing=actual_F8_capture",
                         owner.blink.obstruction,
                         p.is_underwater(),
                         p.feet(),
@@ -609,7 +609,25 @@ impl Observation {
                 }
                 //61ec20 has no head-depth veto. The handoff claim concerns
                 //actual SWIM mode; log actual head depth rather than forcing it.
-                if target.position.z <= plane || !p.is_swimming() {
+                let destination = target
+                    .mantle
+                    .map_or(target.position, |mantle| mantle.position);
+                if destination.z <= plane || !p.is_swimming() {
+                    let reason = format!(
+                        "saved water Blink bearing has no above-water handoff: target={target:?} destination={destination:?} obstruction={:?} plane={plane} swimming={} underwater={} feet={:?} camera={:?}",
+                        owner.blink.obstruction,
+                        p.is_swimming(),
+                        p.is_underwater(),
+                        p.feet(),
+                        p.published_camera_frame()
+                    );
+                    eprintln!(
+                        "ACTION_SMOKE_BLINK_WATER_TARGET_BLOCKED {reason} no_cast_performed=true cancel=physical_input"
+                    );
+                    self.blocked_target = Some(reason);
+                    send(world, self.cancel, true)?;
+                    self.release = Some(self.cancel);
+                    self.stage(Stage::Cancel, world)?;
                     return Ok(false);
                 }
                 eprintln!(
@@ -672,6 +690,9 @@ impl Observation {
                 if self.using {
                     send(world, self.use_input, false)?;
                     self.using = false;
+                }
+                if let Some(reason) = self.blocked_target.take() {
+                    return Err(reason);
                 }
                 self.stage(Stage::Done, world)?;
             }
