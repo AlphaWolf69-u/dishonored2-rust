@@ -75,6 +75,8 @@ impl BankBytes<'_> {
 
 #[derive(Clone, Copy)]
 struct Object { kind: u8, bank: usize, start: usize, length: usize }
+#[derive(Clone)]
+struct StateObject { bank: usize, definition: Arc<super::NodeStateDefinition> }
 
 #[derive(Default)]
 pub struct Controls {
@@ -109,6 +111,10 @@ pub struct PlaybackBanks<'a> {
     actions: HashMap<u32, Object>,
     events: HashMap<u32, Object>,
     custom_effects: HashMap<u32, Object>,
+    states: HashMap<u32, StateObject>,
+    ///One demanded binding owner per actual loaded actor, shared by every
+    ///child's property hierarchy and released with that actor's bank suffix.
+    node_states: Mutex<HashMap<u32, Arc<super::NodeStates>>>,
     property_chains: Mutex<HashMap<u32, Weak<[super::NodeProperties]>>>,
     music_graphs: Mutex<HashMap<u32, Weak<super::MusicGraph>>>,
     music_history: crate::gameplay::sound::music::playlist::History,
@@ -119,6 +125,8 @@ impl Clone for PlaybackBanks<'_> {
         Self {
             banks: self.banks.clone(), actors: self.actors.clone(), actions: self.actions.clone(),
             events: self.events.clone(), custom_effects: self.custom_effects.clone(),
+            states: self.states.clone(),
+            node_states: Mutex::new(self.node_states.lock().unwrap_or_else(|error| error.into_inner()).clone()),
             property_chains: Mutex::new(self.property_chains.lock().unwrap_or_else(|error| error.into_inner()).clone()),
             music_graphs: Mutex::new(self.music_graphs.lock().unwrap_or_else(|error| error.into_inner()).clone()),
             music_history: self.music_history.clone(),
@@ -137,6 +145,8 @@ impl<'a> PlaybackBanks<'a> {
         self.actions.retain(|_, object| object.bank < count);
         self.events.retain(|_, object| object.bank < count);
         self.custom_effects.retain(|_, object| object.bank < count);
+        self.states.retain(|_, object| object.bank < count);
+        self.node_states.get_mut().unwrap().retain(|id, _| self.actors.contains_key(id));
         // Existing instances retain their own source/bank leases until their
         // output voices drain; no outgoing graph may be reused by a new map.
         self.music_graphs.get_mut().unwrap().clear();
@@ -162,7 +172,18 @@ impl<'a> PlaybackBanks<'a> {
         self.insert_bank(BankBytes::Shared(bytes))
     }
 
+    ///Initialization-bank bus parsing already acquired these exact HIRC1
+    ///definitions. Reuse their source Arcs in the same playback namespace.
+    pub(crate) fn insert_resident_with_states(&mut self, bytes: MediaBytes,
+        states: &[(u32, Arc<super::NodeStateDefinition>)]) -> io::Result<usize> {
+        self.insert_bank_with_states(BankBytes::Shared(bytes), states)
+    }
+
     fn insert_bank(&mut self, bytes: BankBytes<'a>) -> io::Result<usize> {
+        self.insert_bank_with_states(bytes, &[])
+    }
+    fn insert_bank_with_states(&mut self, bytes: BankBytes<'a>,
+        prepared: &[(u32, Arc<super::NodeStateDefinition>)]) -> io::Result<usize> {
         let chunks = bank_chunks(&bytes)?;
         let feedback = bank_feedback(&chunks)?;
         let mut objects = chunks.get(b"HIRC").map(|hierarchy| bank_objects(hierarchy))
@@ -171,6 +192,19 @@ impl<'a> PlaybackBanks<'a> {
         let bank = self.banks.len();
         let records = objects.into_iter().map(|((kind, id), object)| (id, Object { kind, bank,
             start: object.as_ptr() as usize - bytes.as_ptr() as usize, length: object.len() })).collect::<Vec<_>>();
+        //1410f6560 loads HIRC1 into its separate State namespace. Parse once
+        //before registry mutation; active node definitions retain shared Arcs
+        //after a map's bank-index suffix is withdrawn.
+        let mut states = Vec::new();
+        for &(id, object) in &records {
+            if object.kind == 1 && !self.states.contains_key(&id) {
+                let definition = match prepared.iter().find(|(instance, _)| *instance == id) {
+                    Some((_, definition)) => definition.clone(),
+                    None => Arc::new(bank::state_definition(&bytes[object.start..object.start + object.length])?),
+                };
+                states.push((id, StateObject { bank, definition }));
+            }
+        }
         let range = |tag: &[u8; 4]| chunks.get(tag).map(|chunk| {
             let start = chunk.as_ptr() as usize - bytes.as_ptr() as usize;
             start..start + chunk.len()
@@ -179,6 +213,7 @@ impl<'a> PlaybackBanks<'a> {
         let media_data = range(b"DATA");
         let media_index_ordered = media_index.as_ref().is_some_and(|range| BankMediaIndex::ordered(&bytes[range.clone()]));
         self.banks.push(LoadedBank { bytes, feedback, media_index, media_data, media_index_ordered });
+        for (id, state) in states { self.states.entry(id).or_insert(state); }
         for (id, object) in records {
             match object.kind {
                 // 141150a90 loads music kinds 10..13 into the same actor
@@ -407,7 +442,17 @@ impl<'a> PlaybackBanks<'a> {
         while id != 0 {
             if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
             let object = *self.actors.get(&id).ok_or_else(|| invalid_owned(format!("missing Wwise parent {id:#010x}")))?;
-            let node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
+            let mut node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
+            {
+                let mut states = self.node_states.lock().unwrap_or_else(|error| error.into_inner());
+                if let Some(existing) = states.get(&id) {
+                    node.use_resolved_states(existing.clone());
+                } else {
+                    node.resolve_states(|instance| self.states.get(&instance).map(|state| state.definition.clone())
+                        .ok_or_else(|| invalid_owned(format!("missing loaded Wwise State instance {instance:#010x}"))))?;
+                    if !node.states.groups.is_empty() { states.insert(id, node.states.clone()); }
+                }
+            }
             id = node.parent;
             nodes.push(node);
         }

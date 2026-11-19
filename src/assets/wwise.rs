@@ -39,7 +39,7 @@ pub use bank::{music_segment, MusicCue, MusicNodePrelude, MusicSegment};
 pub use bank::{music_switch, DestinationTransition, MusicFade, MusicSwitchContainer, MusicTransitionRule, MusicTransitionRules, SourceTransition, TransitionSegment};
 pub use bank::{music_playlist, MusicPlaylistContainer, MusicPlaylistItem};
 pub use bank::{ActionDelay, ActionTransition, AdvancedSettings, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, NodeStates, NodeStateGroup, NodeStateValue, NodeStateDefinition, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
 
 /// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).
 pub fn language_name(game_language: &str) -> Option<&'static str> {
@@ -912,6 +912,7 @@ pub struct BankMix {
     pub effects: Vec<EffectDefinition>,
     pub parameters: std::collections::HashMap<u32, f32>,
     pub state_groups: Vec<StateGroup>,
+    pub states: Vec<(u32, std::sync::Arc<NodeStateDefinition>)>,
     pub volume_threshold_db: f32,
     pub environment: EnvironmentSettings,
     /// 141120750 marks the first root as the primary device's master bus.
@@ -997,14 +998,21 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     objects.sort_by_key(|(_, object)| object.as_ptr());
     let mut buses = Vec::new();
     let mut effects = Vec::new();
+    let states = objects.iter().filter(|((kind, _), _)| *kind == 1)
+        .map(|((_, id), object)| Ok((*id, std::sync::Arc::new(bank::state_definition(object)?))))
+        .collect::<io::Result<Vec<_>>>()?;
     for ((kind, _), object) in objects {
         if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback, kind == 20)?); }
         if matches!(kind, 18 | 19) { effects.push(bank::effect_definition(object, kind == 18)?); }
     }
+    for bus in &mut buses {
+        bus.resolve_states(|instance| states.iter().find(|(id, _)| *id == instance).map(|(_, definition)| definition.clone())
+            .ok_or_else(|| invalid_owned(format!("missing initialization-bank State instance {instance:#010x}"))))?;
+    }
     // 1410f85a0 disables all six environment tables before ENVS is loaded.
     let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
     let primary_bus = buses.iter().find(|bus| bus.parent == 0).map(|bus| bus.id);
-    Ok(Some(BankMix { buses, effects, parameters, state_groups, volume_threshold_db, environment, primary_bus }))
+    Ok(Some(BankMix { buses, effects, parameters, state_groups, states, volume_threshold_db, environment, primary_bus }))
 }
 
 /// Diagnostic: media ids read for streamed or prefetched sources (stream

@@ -2,7 +2,7 @@
 //! the installed banks and wwiser's CAkParameterNode/CAkRanSeqCntr readers:
 //! https://github.com/bnnm/wwiser/blob/master/wwiser/parser/wparser.py
 use super::{invalid, invalid_owned, SelectionMode};
-use std::io;
+use std::{io, sync::{Arc, Mutex, OnceLock}};
 mod music;
 pub use music::{music_track, music_track_prelude, MusicSource, MusicTrack, MusicTrackPrelude, TrackAutomation, TrackSwitch};
 pub use music::{music_segment, MusicCue, MusicNodePrelude, MusicSegment};
@@ -231,7 +231,45 @@ pub struct PropertyRange {
     pub max: f32,
 }
 
-#[derive(Clone, Debug, Default)]
+///HIRC1, loaded by141131aa0: sparse property IDs followed by raw float words.
+#[derive(Debug)]
+pub struct NodeStateDefinition { pub values: Vec<(u8, u32)> }
+#[derive(Clone, Debug)]
+pub struct NodeStateValue {
+    pub value: u32,
+    pub instance: u32,
+    pub definition: Arc<NodeStateDefinition>,
+}
+#[derive(Clone, Debug)]
+pub struct NodeStateGroup { pub group: u32, pub sync: u8, pub values: Vec<NodeStateValue> }
+#[derive(Default)]
+pub struct NodeStates {
+    pub groups: Vec<NodeStateGroup>,
+    pub(crate) runtime: Mutex<Option<Arc<crate::gameplay::sound::states::Node>>>,
+}
+impl std::fmt::Debug for NodeStates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeStates").field("groups", &self.groups).finish_non_exhaustive()
+    }
+}
+impl NodeStates {
+    fn empty() -> Arc<Self> {
+        static EMPTY: OnceLock<Arc<NodeStates>> = OnceLock::new();
+        EMPTY.get_or_init(|| Arc::new(Self::default())).clone()
+    }
+}
+#[derive(Clone, Debug)]
+struct StateGroupBinding { group: u32, sync: u8, values: Vec<(u32, u32)> }
+
+pub(super) fn state_definition(object: &[u8]) -> io::Result<NodeStateDefinition> {
+    let mut reader = Reader { bytes: object, offset: 0 };
+    reader.u32()?;
+    let values = reader.properties()?;
+    if reader.offset != object.len() { return Err(invalid("Wwise State fields did not consume its object")); }
+    Ok(NodeStateDefinition { values })
+}
+
+#[derive(Clone, Debug)]
 pub struct NodeProperties {
     pub id: u32,
     pub parent: u32,
@@ -239,6 +277,8 @@ pub struct NodeProperties {
     pub values: Vec<(u8, u32)>,
     pub ranges: Vec<PropertyRange>,
     pub curves: Vec<RtpcCurve>,
+    pub states: Arc<NodeStates>,
+    state_bindings: Vec<StateGroupBinding>,
     pub positioning_flags: u8,
     pub positioning_3d: Option<Positioning3d>,
     pub effects: EffectChain,
@@ -248,6 +288,36 @@ pub struct NodeProperties {
     pub bus_settings: Option<BusSettings>,
     /// 1410de430's playback-limit and virtual-voice settings (actor nodes).
     pub advanced: AdvancedSettings,
+}
+impl Default for NodeProperties {
+    fn default() -> Self {
+        Self { id: 0, parent: 0, bus: 0, values: Vec::new(), ranges: Vec::new(), curves: Vec::new(),
+            states: NodeStates::empty(), state_bindings: Vec::new(), positioning_flags: 0, positioning_3d: None,
+            effects: EffectChain::default(), auxiliary_flags: 0, auxiliary_buses: [0; 4], bus_settings: None,
+            advanced: AdvancedSettings::default() }
+    }
+}
+impl NodeProperties {
+    pub(super) fn use_resolved_states(&mut self, states: Arc<NodeStates>) {
+        self.states = states;
+        self.state_bindings = Vec::new();
+    }
+    ///141111300 resolves each serialized(state value, HIRC instance) pair
+    ///through the actual loaded State namespace before playback admission.
+    pub(crate) fn resolve_states(&mut self, mut resolve: impl FnMut(u32) -> io::Result<Arc<NodeStateDefinition>>) -> io::Result<()> {
+        if self.state_bindings.is_empty() { return Ok(()); }
+        let mut groups = Vec::with_capacity(self.state_bindings.len());
+        for source in &self.state_bindings {
+            let mut values = Vec::with_capacity(source.values.len());
+            for &(value, instance) in &source.values {
+                values.push(NodeStateValue { value, instance, definition: resolve(instance)? });
+            }
+            groups.push(NodeStateGroup { group: source.group, sync: source.sync, values });
+        }
+        self.states = Arc::new(NodeStates { groups, runtime: Mutex::new(None) });
+        self.state_bindings = Vec::new();
+        Ok(())
+    }
 }
 
 /// FUN_1410de430. `flags`: bit0 kill newest (else oldest), bit1 use
@@ -533,14 +603,18 @@ impl<'a> Reader<'a> {
         ids.iter().map(|&id| Ok((id, self.u32()?))).collect()
     }
 
-    fn states(&mut self) -> io::Result<()> {
-        let groups = self.u32()?;
-        for _ in 0..groups {
-            self.take(5)?;
-            let states = self.u16()? as usize;
-            self.records(states, 8)?;
+    fn states(&mut self) -> io::Result<Vec<StateGroupBinding>> {
+        let count = self.u32()?;
+        let mut groups = Vec::new();
+        for _ in 0..count {
+            let group = self.u32()?;
+            let sync = self.u8()?;
+            let count = self.u16()?;
+            let mut values = Vec::with_capacity(usize::from(count));
+            for _ in 0..count { values.push((self.u32()?, self.u32()?)); }
+            groups.push(StateGroupBinding { group, sync, values });
         }
-        Ok(())
+        Ok(groups)
     }
 
     fn node_base(&mut self, feedback: bool) -> io::Result<NodeProperties> {
@@ -588,7 +662,7 @@ impl<'a> Reader<'a> {
             below_threshold: self.u8()?,
             flags2: self.u8()?,
         };
-        self.states()?;
+        node.state_bindings = self.states()?;
         node.curves = self.rtpcs()?;
         if feedback { self.u32()?; }
         Ok(node)
@@ -669,7 +743,7 @@ pub(super) fn bus_properties(object: &[u8], feedback: bool, auxiliary: bool) -> 
         channel_config, hdr_flags, recovery_ms, max_duck_volume, ducks: duck_settings,
         mixer_id: reader.u32()?, mixer_shared: reader.u8()? != 0, attachment_override: reader.u8()? & 1 != 0 });
     node.curves = reader.rtpcs()?;
-    reader.states()?;
+    node.state_bindings = reader.states()?;
     if feedback { reader.u32()?; }
     if reader.offset != object.len() { return Err(invalid("Wwise bus fields did not consume its object")); }
     Ok(node)
