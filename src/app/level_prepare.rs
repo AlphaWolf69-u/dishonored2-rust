@@ -1046,6 +1046,9 @@ pub(super) fn prepare_level(
             physics.publish_navigation_ownership(&mut navigation.0).map_err(std::io::Error::other)?;
             app.insert_resource(navigation);
         }
+        if let Some(waypoints) = super::gameplay_action_diagnostics::destruction::Waypoints::capture(document).map_err(std::io::Error::other)? {
+            app.insert_resource(waypoints);
+        }
         app.insert_resource(physics.worldspawn_identity(document,&live).map_err(std::io::Error::other)?);
         app.insert_resource(live);
         app.insert_resource(entity_events);

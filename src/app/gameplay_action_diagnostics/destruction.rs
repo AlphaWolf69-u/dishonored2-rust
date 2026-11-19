@@ -8,6 +8,33 @@ use crate::gameplay::{
 use bevy::prelude::*;
 use std::time::{Duration, Instant};
 
+/// Patrol waypoints need no gameplay component or rigid body. Borrow their
+/// small placement records from the existing map parse only for these actions.
+#[derive(Resource)]
+pub(in crate::app) struct Waypoints(Vec<Vec3>);
+
+impl Waypoints {
+    pub(in crate::app) fn capture(
+        document: &crate::entities::Document,
+    ) -> Result<Option<Self>, String> {
+        if !matches!(
+            std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(),
+            Ok("gun-speaker" | "gun-nest" | "bolt-oil")
+        ) {
+            return Ok(None);
+        }
+        let mut points = Vec::new();
+        for def in &document.definitions {
+            if def.kind == "entity"
+                && crate::gameplay::options::decl::atom(&def.fields, "class") == Some("arkWaypoint")
+            {
+                points.push(Vec3::from(crate::entities::spawn_frame(def)?.position));
+            }
+        }
+        Ok(Some(Self(points)))
+    }
+}
+
 /// Select a real patrol waypoint with an unobstructed projectile ray. Only the
 /// initial pose is restored. Live aiming and the projectile still run normally.
 pub(super) fn start_at_visible_waypoint(
@@ -19,19 +46,15 @@ pub(super) fn start_at_visible_waypoint(
     let center = bolt::Observation::center(world, target)?;
     let p = player(world)?;
     let eye_offset = p.published_camera_frame().0 - p.feet();
-    let mut points = Vec::new();
-    for &id in live.spawned_entities() {
-        let Some((name, _)) = live.get(id) else {
-            continue;
-        };
-        if !name.starts_with("script_waypoint_") {
-            continue;
-        }
-        if let Some(frame) = scene.entity_frame(live, id)? {
-            let feet = Vec3::from(frame.position);
-            points.push((center.distance_squared(feet + eye_offset), feet, id));
-        }
-    }
+    let waypoints = world
+        .get_resource::<Waypoints>()
+        .ok_or("missing diagnostic waypoint inventory")?;
+    let mut points: Vec<_> = waypoints
+        .0
+        .iter()
+        .copied()
+        .map(|feet| (center.distance_squared(feet + eye_offset), feet))
+        .collect();
     points.sort_by(|a, b| a.0.total_cmp(&b.0));
     let owner = scene.point_queries()?;
     let queries = owner
@@ -40,7 +63,7 @@ pub(super) fn start_at_visible_waypoint(
     let mut ray = WorldRayQuery::default();
     let mut hits = Vec::new();
     let mut pose = None;
-    for (_, feet, waypoint) in points {
+    for (_, feet) in points {
         let eye = feet + eye_offset;
         // Center may be an authored pivot above or below the actual model.
         let direction = center - eye;
@@ -69,9 +92,8 @@ pub(super) fn start_at_visible_waypoint(
         if let Some(hit) = hits.iter().min_by(|a, b| a.fraction.total_cmp(&b.fraction)) {
             if scene.collision_entity(live, &hit.target)? == Some(target) {
                 eprintln!(
-                    "ACTION_SHOOT_WAYPOINT target={:?} waypoint={:?} feet={feet:?} target_center={center:?} nearest_hit={:?}",
+                    "ACTION_SHOOT_WAYPOINT target={:?} authored_waypoint_feet={feet:?} target_center={center:?} nearest_hit={:?}",
                     live.get(target),
-                    live.get(waypoint),
                     hit.position
                 );
                 pose = Some((feet, direction.y.atan2(direction.x)));
@@ -81,6 +103,7 @@ pub(super) fn start_at_visible_waypoint(
     }
     drop(queries);
     if let Some((feet, yaw)) = pose {
+        world.remove_resource::<Waypoints>();
         world
             .resource_mut::<PlayerState>()
             .player
