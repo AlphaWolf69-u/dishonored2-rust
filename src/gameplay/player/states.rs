@@ -3278,7 +3278,7 @@ impl StateMachine {
         //The admitted modes here are Default0 and Swim1; Swimming resumes
         //its target navigation without the ground/falling recovery branch.
         let falling_support = target != StateId::MANTLE && !frame.swimming && !frame.physics.near_ground();
-        if target != StateId::MANTLE && frame.physics.near_ground() { frame.controller.support_state = SupportState::Supported; }
+        if target != StateId::MANTLE && !frame.swimming && frame.physics.near_ground() { frame.controller.support_state = SupportState::Supported; }
         if falling_support {
             // Force=true in 1407fbb20 returns FALLING even when the prior
             // support state was already unsupported.
