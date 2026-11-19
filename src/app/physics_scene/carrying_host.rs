@@ -51,6 +51,24 @@ pub(in crate::app) fn describe_fixture_progress(world:&bevy::prelude::World,id:E
     world.get_resource::<CarryPhysics>().map_or_else(||"carry owner absent".into(),|owner|
         format!("progress={:?} last_error={:?}",owner.progress.get(&id),owner.error))
 }
+///Diagnostic only: apply the real body delta to the render owner's own
+///baseline, preserving authored model/body offsets and comparing game space.
+fn placement_alignment(scene:&PhysicsScene,index:usize,body:ReferenceFrame,
+    placements:&super::super::RenderSourcePlacements,
+    bindings:Option<&super::super::model_motion::ModelMotionBindings>)
+    ->Result<Option<([f32;3],[f32;3],[f32;3],f32)>,String>{
+    let Some(&placement)=scene.rigid_placements.get(&index)else{return Ok(None)};
+    let Some(initial_render)=bindings.and_then(|bindings|bindings.initial_pose(placement))else{return Ok(None)};
+    let initial_body=*scene.initial_rigid_frames.get(&index).ok_or("carry alignment original body absent")?;
+    let actual=placements.0.get(placement).ok_or("carry alignment current render placement absent")?;
+    let delta=super::rigid_actor::render_delta(initial_body,body)?;
+    let axis=Mat3::from_cols(Vec3::new(delta[0][0],delta[1][0],delta[2][0]),
+        Vec3::new(delta[0][1],delta[1][1],delta[2][1]),Vec3::new(delta[0][2],delta[1][2],delta[2][2]));
+    let expected=axis*Vec3::from_array(initial_render.position)+Vec3::new(delta[0][3],delta[1][3],delta[2][3]);
+    let expected_basis=(axis*Mat3::from_cols_array_2d(&initial_render.basis)).to_cols_array_2d();
+    let basis_error=expected_basis.iter().flatten().zip(actual.rotation.iter().flatten()).map(|(a,b)|(a-b).abs()).fold(0.,f32::max);
+    Ok(Some((expected.to_array(),actual.position,(Vec3::from_array(actual.position)-expected).to_array(),basis_error)))
+}
 /// On-demand carry observation; reads the same physical/render/tag owners.
 /// It retains no model, material, entity lease or normal-frame history.
 pub(in crate::app) fn describe_pose(world:&bevy::prelude::World,id:EntityId)->Result<String,String>{
@@ -69,6 +87,10 @@ pub(in crate::app) fn describe_pose(world:&bevy::prelude::World,id:EntityId)->Re
         let shared=scene.point_queries()?;let queries=shared.read().map_err(|_|"carry pose physics world poisoned")?;
         if let Some(body)=component.body().and_then(|body|queries.storage.bodies.get(body)){
             let _=writeln!(out,"  actual_body id={} flags={:#x} transform={:?} motion={:?} requested_velocities={:?}",body.id,body.flags,body.transform,queries.storage.motions.get(body.motion_id),component.velocities);
+            if let Some(placements)=world.get_resource::<super::super::RenderSourcePlacements>(){
+                let pose=ReferenceFrame{position:body.transform[3][..3].try_into().unwrap(),basis:std::array::from_fn(|i|body.transform[i][..3].try_into().unwrap())};
+                let _=writeln!(out,"  registered_body_vs_render_game(expected_origin,actual_origin,residual_m,max_basis_error)={:?}",placement_alignment(scene,index,pose,placements,world.get_resource::<super::super::model_motion::ModelMotionBindings>())?);
+            }
         }
     }
     if let Some(&placement)=scene.rigid_placements.get(&index){
@@ -100,6 +122,7 @@ pub(in crate::app) struct CarryHost<'a> {
     pub clock: &'a crate::gameplay::game_clock::GameClock,
     pub bounds: &'a super::super::shadow_updates::ModelShadowSources,
     pub placements: &'a super::super::RenderSourcePlacements,
+    pub render_bindings: Option<&'a super::super::model_motion::ModelMotionBindings>,
     pub effects: &'a mut super::super::usable_effects::EffectRequests,
 }
 ///Borrowed real47 transaction metadata. Neither inventory item nor a made-up
@@ -280,6 +303,15 @@ impl CarryHost<'_> {
         thrown: bool,
     ) -> Result<(), String> {
         let (index, reference) = self.reference(target)?;
+        if player.carrying.tracing_enabled(){
+            let body=self.scene.document_rigid(index)?.and_then(|handle|self.scene.rigid_component(handle).ok()).and_then(|component|component.body());
+            let shared=self.scene.point_queries()?;
+            let world=shared.read().map_err(|_|"carry detach observation world poisoned")?;
+            if let Some(body)=body.and_then(|id|world.storage.bodies.get(id)){
+                let pose=ReferenceFrame{position:body.transform[3][..3].try_into().unwrap(),basis:std::array::from_fn(|i|body.transform[i][..3].try_into().unwrap())};
+                eprintln!("ACTION_CARRY_DETACH entity={:?} thrown={thrown} body={} registered_pose={pose:?} actual_actor_pose={:?} planned_position={:?} game_alignment(expected_render_origin,actual_render_origin,residual_m,max_basis_error)={:?}",target.entity,body.id,self.scene.entities[index].frame.pose,self.state.progress.get(&target.entity).and_then(|progress|progress.position),placement_alignment(self.scene,index,pose,self.placements,self.render_bindings)?);
+            }
+        }
         if self
             .state
             .progress
@@ -1011,6 +1043,7 @@ fn run(world: &mut bevy::prelude::World, retiring: bool) -> Result<(), String> {
             clock,
             bounds,
             placements,
+            render_bindings:world.get_resource::<super::super::model_motion::ModelMotionBindings>(),
             effects: &mut effects,
         };
         if retiring {
@@ -1215,6 +1248,7 @@ fn run_loot_pull(world: &mut bevy::prelude::World, closing: bool) -> Result<(), 
             placements: world
                 .get_resource::<super::super::RenderSourcePlacements>()
                 .ok_or("Loot47 placed render owner absent")?,
+            render_bindings:world.get_resource::<super::super::model_motion::ModelMotionBindings>(),
             effects: &mut effects,
         };
         let target = LootTarget {

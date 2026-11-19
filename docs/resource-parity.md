@@ -25738,6 +25738,8 @@ then drains pending readers before releasing that level's assets.
 
 ### Captured wall thrust evidence, November 19
 
+The first completed captured-wall action result (`combat-repair-nov19-world-wall-poke.exit=1`) stopped in diagnostic fixture matching before physical thrust release. The real center ray found body16782057 at[14.394994,86.97476,23.397377] with normal[-0.55557,0.8314697,0]. The fixture had incorrectly used the last off-axis melee packet's normal. Its expected normal now comes from the cross product of the actual center-ray triangle retained at F8 report line13, which matches that observed normal. The approximately0.1m saved/new ray-position difference remains an observation, not a claimed geometry cause. No successful thrust acceptance or gameplay correction is inferred from this setup failure; no additional build or run was performed by this worker.
+
 The latest wall report collision-1795084974980 retains forward window54's WORLD body16782057/material111 point[13.894038,86.89018,23.615936]. With its actual saved feet/eye/camera and authored WORLD focus, the point is0.42135m lateral from the focus axis, outside the0.3m halfwidth; the cone passes. Native631020 genuinely calls62ee20/62f900 before player118/630890, so removing that initial rejection or widening the authored box is not justified. Installed player-melee vtable141b9d508 resolves+140=62f080 (weapon forward for thrust),+148=634990,+150=62f290,+118=630890; these source branches match the current producer. No gameplay correction is claimed from this one retained point.
 
 Host diagnostic: app/melee retains at most64 numeric frames of only the latest forward window, with the actual consumed/submitted ticket generations, per-bank raw/eligible counts, up to32 retained WORLD packets with focus decisions, actual weapon/camera frames/delta and selected callback witness. It performs no new query or animation evaluation; storage is reused at the next forward window and dropped with the existing melee component owner. Dropped-frame/count bounds are explicit. world-wall-poke is an opt-in windowless production-input variant restoring this F8's feet once, equipping through real input, charging by the actual authored Slash predicate and steering back to the captured direction. It verifies the current real collision surface against the saved point/normal before releasing the physical input, and requires a new real focused-forward WORLD callback/weak FX ticket. Setup matching tolerances do not alter any production collision/focus predicate. No build, launch or test was performed by this worker; root owns the coherent runtime observation needed to identify where the centered-wall opportunity is lost.
@@ -25818,6 +25820,33 @@ must observe real command/solver output; the historical throw-ACK-plus-gravity
 motion/support pass alone does not close throwing correctness. The unchanged
 per-component path adds one pending-byte check; extra publication happens only
 for actual requested149 work. No whole-frame performance claim is made.
+
+`ported` — The same November19 action run exposed a second held-binding
+defect despite successful real149 execution. Before throw, the actual body and
+reference actor remained at pickup position[-32.118763,188.04353,1.8812389],
+while the actual rendered placement was[-32.18274,187.85248,2.6382713]. Native
+751c80 selects PRE752260 when the attached actor has alternate-body hierarchy
+flag0x20, otherwise POST7521f0. The shared bind/rebind path now makes that choice
+instead of publishing only the parent's rendered traversal. This covers real
+rigid/Throwable bindings generally, preserving their existing body mode/filter.
+
+`host` — Player movement and joint sampling already replace the source Player
+movement-body publisher in player_reference. When its real hierarchy flag0x20
+is set, that existing bridge now requests the same PRE traversal before its
+POST traversal. This is the same joint-publication dependency as540e20 for
+AnimBase: bound bodies need7545a0 velocities before the solver, while808880's
+render-only update is insufficient. No new body, transform owner, traversal
+roster, asset lease, per-frame entity scan or release-time teleport is added.
+
+Prediction before implementation: held body/actor poses follow the sampled
+parent/tag through the existing keyframe solver; detachment begins from that
+pose instead of the last pickup pose. Opt-in observations now compare the
+registered body and current renderer in game space using ModelPose's actual
+retained baseline and the canonical body-world delta. Authored model/body
+offsets are preserved. Both detach branches record this comparison and the
+explicit source release shift, followed by actual completed-solver snapshots.
+Consolidated continuity acceptance remains pending; the earlier real launch
+and contact receipt alone did not close held placement correctness.
 
 ### Particle contact collection during gunfire
 

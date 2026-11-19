@@ -133,6 +133,12 @@ impl PhysicsScene {
                 *frame = player.reference_local_joint(joint)?;
             }
         }
+        //Host: the actual Player movement/tag publication replaces its native
+        //movement-body producer. Descendant alternate bodies still require
+        //the ordinary752260/7545a0 PRE traversal, not just rendered bindings.
+        if self.actors.actors[handle.slot as usize].flags & 0x20 != 0 {
+            self.request_pre_physics_actor(handle.slot as usize)?;
+        }
         self.request_post_physics_actor(
             handle.slot as usize,
             self.actors.actors[handle.slot as usize].owner.generation,

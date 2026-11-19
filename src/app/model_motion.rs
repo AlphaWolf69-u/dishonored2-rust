@@ -464,6 +464,13 @@ pub(super) fn probe_record_bytes(record: [[f32; 4]; 9]) -> [u8; 9 * 16] {
 
 #[derive(Resource, Default)]
 pub(super) struct ModelMotionBindings(HashMap<usize, Binding>);
+impl ModelMotionBindings {
+    ///Borrow the same authored baseline used by actual ModelPose publication.
+    pub(super) fn initial_pose(&self, placement:usize)->Option<crate::gameplay::reference_frame::ReferenceFrame>{
+        let binding=self.0.get(&placement)?;
+        Some(crate::gameplay::reference_frame::ReferenceFrame{position:binding.initial_position,basis:binding.initial_rotation})
+    }
+}
 
 #[cfg(test)]
 fn rigid_matrix(position: [f32; 3], rotation: [[f32; 3]; 3]) -> Mat4 {

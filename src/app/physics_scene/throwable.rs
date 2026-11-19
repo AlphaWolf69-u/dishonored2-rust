@@ -785,7 +785,11 @@ impl PhysicsScene {
                     .unwrap();
                 binding.joint = pose.joint;
                 binding.parent_placement = pose.parent_placement;
-                self.request_post_physics_actor(usize::from(handle.slot), generation)?;
+                if self.actors.actors[usize::from(handle.slot)].flags & 0x20 != 0 {
+                    self.request_pre_physics_actor(usize::from(handle.slot))?;
+                } else {
+                    self.request_post_physics_actor(usize::from(handle.slot), generation)?;
+                }
                 return self.refresh_bound_body_mode(live, child, registry);
             }
             //752900 changes parents in this same bind operation:879100
@@ -843,7 +847,14 @@ impl PhysicsScene {
                 target: Some(self.entities[child].shared),
                 payload: Payload::Entity(self.entities[parent].shared),
             });
-            self.request_post_physics_actor(pa, pg)?;
+            //751c80 chooses752260 for a real alternate-body hierarchy;
+            //POST-only admission updates its mesh but never drives the bound
+            //keyframed body through7545a0's desired-velocity calculation.
+            if self.actors.actors[ca].flags & 0x20 != 0 {
+                self.request_pre_physics_actor(ca)?;
+            } else {
+                self.request_post_physics_actor(ca, cg)?;
+            }
             Ok(())
         })();
         result?;
