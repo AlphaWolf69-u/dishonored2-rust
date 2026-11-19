@@ -17,7 +17,7 @@ use std::{
 #[derive(Resource)]
 struct SupportContact {
     target: EntityId,
-    before_health: f32,
+    before_health: Option<f32>,
     handoff: Option<(EntityId, Option<EntityId>)>,
     expected: Option<(EntityId, EntityId, usize)>,
     fired: Option<EntityId>,
@@ -121,6 +121,7 @@ pub(super) struct Observation {
     support_attempts:u32,
     support_misses:u32,
     tank:bool,
+    oil:bool,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
@@ -153,11 +154,11 @@ impl Observation {
             support_destroyed: false,
             support_attempts:0,
             support_misses:0,
-            tank:false,
+            tank:false, oil:false,
         })
     }
     pub(super) fn begin_bottle(world: &mut World) -> Result<Self, String> {
-        Self::begin_support(world,"env_mulberry_mead_01_18",false)
+        Self::begin_support(world,"env_mulberry_mead_01_18",false,false)
     }
     pub(super) fn begin_tank(world:&mut World)->Result<Self,String>{
         const TARGET:&str="script_tank_station_wol";
@@ -204,7 +205,7 @@ impl Observation {
         }
         drop(queries);
         let Some((waypoint,feet,eye))=selected else{
-            let mut observation=Self::begin_support(world,TARGET,true)?;
+            let mut observation=Self::begin_support(world,TARGET,true,false)?;
             eprintln!("ACTION_SMOKE_NOT_COVERED check=actual_whale_oil_tank_firearm_detonation reason=all_authored_nearby_waypoints_occluded fired=false no_target_ray_or_geometry_override=true");
             observation.stage(Stage::Done);
             return Ok(observation);
@@ -213,22 +214,36 @@ impl Observation {
         world.resource_mut::<PlayerState>().player.as_mut().ok_or("tank setup Player absent")?
             .teleport(feet,direction.y.atan2(direction.x));
         eprintln!("ACTION_SMOKE_TANK_SETUP source=installed_EotW_arkWaypoint waypoint={waypoint} feet={feet:?} target={target:?} initial_LOS_verified=true setup_restore_only=true subsequent_native_ranged_target_gate_required=true");
-        Self::begin_support(world,TARGET,true)
+        Self::begin_support(world,TARGET,true,false)
     }
-    fn begin_support(world:&mut World,name:&str,tank:bool)->Result<Self,String>{
+    pub(super) fn begin_oil(world: &mut World) -> Result<Self, String> {
+        let live = world.resource::<LiveEntities>();
+        let pos = player(world)?.feet();
+        let mut options = Vec::new();
+        for &id in live.spawned_entities() {
+            let Some((name,_)) = live.get(id) else { continue };
+            if !name.starts_with("pickups_processed_whale_oil") { continue; }
+            options.push((pos.distance_squared(Self::center(world,id)?), name.to_owned(),id));
+        }
+        options.sort_by(|a,b| a.0.total_cmp(&b.0));
+        for (_,name,id) in options {
+            if super::destruction::start_at_visible_waypoint(world,id)? {
+                return Self::begin_support(world,&name,false,true)
+            }
+        }
+        Err("no actual processed whale-oil pickup visible from an authored waypoint".into())
+    }
+    fn begin_support(world:&mut World,name:&str,tank:bool,oil:bool)->Result<Self,String>{
         let live = world.resource::<LiveEntities>();
         let target = live
             .find(name)
             .ok_or("existing reachable bottle fixture is absent on this level")?;
         let scene = world.resource::<app::physics_scene::PhysicsScene>();
-        let health = scene
-            .entity_health(live, target)?
-            .ok_or("actual bottle fixture lacks Health")?
-            .0;
-        if health <= 0. {
+        let health = scene.entity_health(live, target)?.map(|row|row.0);
+        if !oil && health.is_none_or(|health|health <= 0.) {
             return Err("actual bottle fixture is already destroyed".into());
         }
-        if scene.breakable_component(live, target)?.is_none() {
+        if !oil && scene.breakable_component(live, target)?.is_none() {
             return Err("actual bottle fixture lacks started Breakable".into());
         }
         if tank{
@@ -237,7 +252,7 @@ impl Observation {
         }
         let mut observation = Self::begin(world)?;
         observation.support = Some(target);
-        observation.tank=tank;
+        observation.tank=tank; observation.oil=oil;
         world.insert_resource(SupportContact {
             target,
             before_health: health,
@@ -246,7 +261,7 @@ impl Observation {
             fired: None,
             hit: None,
         });
-        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_BEGIN actual_target={target:?} before_health={health} fixture={name} tank={tank} physical_approach_look_fire_only=true no_damage_pose_or_RNG_override=true");
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_BEGIN actual_target={target:?} before_health={health:?} oil_pickup={oil} fixture={name} tank={tank} physical_approach_look_fire_only=true no_damage_pose_or_RNG_override=true");
         Ok(observation)
     }
     fn aim_bottle(&mut self, world: &mut World) -> Result<(), String> {
@@ -256,7 +271,7 @@ impl Observation {
             self.stop(world)?;
             return Ok(());
         }
-        if !self.tank&&!Self::focused(world, target) {
+        if !self.tank&&!self.oil&&!Self::focused(world, target) {
             self.move_with(world, 2)?;
             return Ok(());
         }
@@ -318,8 +333,8 @@ impl Observation {
         let live=world.resource::<LiveEntities>();
         let scene=world.resource::<app::physics_scene::PhysicsScene>();
         let alive=live.get(target).is_some()
-            &&scene.diagnostic_damage_flags(live,target)?.is_some_and(|flags|flags&0x800==0)
-            &&scene.entity_health(live,target)?.is_some_and(|health|health.0>0.);
+            &&!scene.diagnostic_damage_flags(live,target)?.is_some_and(|flags|flags&0x800!=0)
+            &&(self.oil || scene.entity_health(live,target)?.is_some_and(|health|health.0>0.));
         self.explain(world,reason)?;
         if !alive{
             eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=same_bottle_not_alive_for_physical_retry attempts={} misses={} no_recovery_claim=true",self.support_attempts,self.support_misses);
@@ -350,7 +365,7 @@ impl Observation {
             None
         };
         eprintln!("ACTION_SMOKE_BOLT_BOTTLE_DAMAGE_STATE reason={reason} target={target:?} actual_header_flags={:?} death_bit=0x800 Health_mode2_absence_not_death_proof=true",scene.diagnostic_damage_flags(live,target)?);
-        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_SUPPORT reason={reason} target={target:?} generation_live={} health={health:?} before_health={} hit={:?} handoff={:?} destroyed_observed={} children={:?}",live.get(target).is_some(),receipt.before_health,receipt.hit,receipt.handoff,self.support_destroyed,if live.get(target).is_some(){Some(live.children(target)?)}else{None});
+        eprintln!("ACTION_SMOKE_BOLT_BOTTLE_SUPPORT reason={reason} target={target:?} generation_live={} health={health:?} before_health={:?} hit={:?} handoff={:?} destroyed_observed={} children={:?}",live.get(target).is_some(),receipt.before_health,receipt.hit,receipt.handoff,self.support_destroyed,if live.get(target).is_some(){Some(live.children(target)?)}else{None});
         if live.get(target).is_some() {
             eprintln!(
                 "ACTION_SMOKE_BOLT_BOTTLE_TARGET {}",
@@ -398,7 +413,7 @@ impl Observation {
             && world.get_resource::<app::interactions::Interactions>()
                 .is_some_and(|owner|owner.selected_interaction_target(live)==Some(id))
     }
-    fn center(world: &World, id: EntityId) -> Result<Vec3, String> {
+    pub(super) fn center(world: &World, id: EntityId) -> Result<Vec3, String> {
         let live = world.resource::<LiveEntities>();
         if let Some(bounds) = app::world_models::entity_bounds(world, live, id)? {
             return Ok((Vec3::from(bounds[0]) + Vec3::from(bounds[1])) * 0.5);
@@ -409,7 +424,7 @@ impl Observation {
             .map(|frame| Vec3::from(frame.position))
             .ok_or_else(|| "bolt diagnostic actual target frame absent".into())
     }
-    fn steer(world: &mut World, center: Vec3) -> Result<bool, String> {
+    pub(super) fn steer(world: &mut World, center: Vec3) -> Result<bool, String> {
         let transform = *world
             .query_filtered::<&Transform, With<Camera3d>>()
             .single(world)
@@ -632,13 +647,17 @@ impl Observation {
                             self.stage(Stage::Done);
                             return Ok(false);
                         }
-                        if !self.support_destroyed {
+                        if !self.support_destroyed && !self.oil {
                             if super::Observation::ranged_ready(world, RangedFamily::Crossbow)? {
                                 self.retry_bottle(world,id,"actual_contact_did_not_destroy_living_bottle")?;
                             }
                             return Ok(false);
                         }
                         if live.get(id).is_none() {
+                            if self.oil {
+                                self.retry_bottle(world,id,"previous_oil_shot_retired")?;
+                                return Ok(false);
+                            }
                             self.report_support(world, "source-retired-bolt-after-contact")?;
                             eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_surviving_bolt_recovery reason=actual_bolt_retired response={response:?} destroyed_support=true no_recovery_claim=true");
                             self.stage(Stage::Done);
@@ -657,6 +676,10 @@ impl Observation {
                         .is_some_and(|(requested, _, _)| !requested);
                     if runtime.has_hit_and_stopped && owner_hidden {
                         self.explain(world, "actual-hidden-Break-or-Uncanny-response")?;
+                        if self.oil {
+                            self.retry_bottle(world,id,"previous_oil_shot_did_not_leave_a_recoverable_bolt")?;
+                            return Ok(false);
+                        }
                         if self.support.is_some() {
                             eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_surviving_bolt_recovery reason=actual_source_Break_or_Uncanny destroyed_support={} no_recovery_claim=true",self.support_destroyed);
                             self.stage(Stage::Done);
@@ -678,6 +701,10 @@ impl Observation {
                         &&scene.projectile_throwable_started(handle)? {
                         self.explain(world, "actual-impact-after-Throwable-Start")?;
                         if !scene.projectile_recoverable(id)? {
+                            if self.oil {
+                                self.retry_bottle(world,id,"previous_oil_shot_disabled_pickup")?;
+                                return Ok(false);
+                            }
                             if self.support.is_some() {
                                 eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=source625e80_disabled_Pickable no_recovery_claim=true");
                                 self.stage(Stage::Done);
@@ -782,7 +809,10 @@ impl Observation {
                     && self.after_shot.is_some_and(|after| quantity > after)
                 {
                     eprintln!("ACTION_SMOKE_PASS check=actual_fired_bolt_focus_pickup_ammo id={id:?} actual_state47_transaction_sampled={} source6274d0=true source76ec20_hidden=true ammunition_restored=true",self.pending_seen);
-                    if self.support.is_some() {
+                    if self.oil {
+                        self.report_support(world,"recovered-after-exact-oil-pickup-hit")?;
+                        eprintln!("ACTION_SMOKE_PASS check=actual_oil_pickup_bolt_recovery fired={id:?} support={:?} ammo={quantity} exact_fired_generation=true",self.support);
+                    } else if self.support.is_some() {
                         self.report_support(world, "exact-fired-ID-picked-up-after-destruction")?;
                         eprintln!("ACTION_SMOKE_PASS check=actual_destroyed_bottle_surviving_bolt_recovery fired={id:?} destroyed_support={} exact_focus_pickup_ammo=true",self.support_destroyed);
                     }

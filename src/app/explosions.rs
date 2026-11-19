@@ -210,7 +210,10 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                             modifiers,full,|live,id|super::runtime_entities::bounds_for(world,live,id))
                     })
                 })
-            })?;owner.damage_done=true;}
+            })?;
+            owner.damage_done=true;
+            super::gameplay_action_diagnostics::destruction::explosion_completed(world,&request,owner.queries.delivered_targets())?;
+            }
             if owner.packets.is_none(){
                 let _timing=super::breakables::measure("explosion_effect_contacts_packets",
                     super::breakables::TimingOwner::Entity(request.inflictor));

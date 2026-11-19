@@ -39,6 +39,11 @@ pub(in crate::app) struct ExplosionQueries {
     body_cursor: usize,
     damage_delivered: bool,
 }
+impl ExplosionQueries {
+    pub(in crate::app) fn delivered_targets(&self) -> usize {
+        self.action_cursor
+    }
+}
 impl PhysicsScene {
     pub(in crate::app) fn explosion_queries_ready(&self) -> Result<bool, String> {
         let world = self
