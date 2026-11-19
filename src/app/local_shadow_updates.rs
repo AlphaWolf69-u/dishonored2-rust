@@ -1004,7 +1004,7 @@ pub(super) fn prepare_local_shadow_cpu(
                 request.priority,
             );
         }
-        let runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters.clone());
+        let runtime_surfaces = runtime_casters.current.as_ref().map(|(_, casters)| casters);
         let model_inputs: LocalModelInputs = std::array::from_fn(|bucket| {
             let mut records = Vec::new();
             let mut inputs = Vec::new();
@@ -1214,7 +1214,7 @@ pub(super) fn prepare_local_shadow_cpu(
                     .filter(|cached| match &model_casters {
                         Ok(models) => retained_draws.static_inputs.get(&cached.allocation.id)
                             .is_some_and(|input| input.matches_models(&models[0],
-                                clips[side], &model_sources, &placements, cpu.runtime_surfaces.as_ref())),
+                                clips[side], &model_sources, &placements, runtime_surfaces)),
                         // Preserve the original allocation/error boundary
                         //below; this error never publishes an accepted frame.
                         Err(_) => true,
