@@ -343,11 +343,6 @@ pub struct VaultSensor {
     pub vault_height: f32,
     distance_hit: bool,
     obstacle: Vec3,
-    /// +0x144 / +0x148, +0x15c / +0x160: kept until a cast hits again.
-    height_blocked: bool,
-    height: f32,
-    depth_blocked: bool,
-    depth: f32,
     pending: Option<VaultQueries>,
     /// +0x110 m_collisionMask: the sensor decl's m_collisionLayers (Start
     /// FUN_1403d0210; ctor FUN_1403cf880 0x802b, installed decl empty).
@@ -392,10 +387,6 @@ impl VaultSensor {
             vault_height: 0.0,
             distance_hit: false,
             obstacle: Vec3::ZERO,
-            height_blocked: false,
-            height: 0.0,
-            depth_blocked: false,
-            depth: 0.0,
             pending: None,
             collision_mask: 0x802b,
         }
@@ -465,20 +456,18 @@ impl VaultSensor {
 
     fn results(&mut self, world: &dyn PlayerWorld, q: VaultQueries) {
         let l = self.limits;
-        // A cast with no hits leaves the previous flag and measure.
-        if let Some(Some(frac)) = q.height {
-            self.height = l.max_height - frac;
-            self.height_blocked = !(frac > f32::EPSILON);
-        }
-        if let Some(Some(frac)) = q.depth {
-            self.depth = l.max_depth - frac;
-            self.depth_blocked = !(frac > f32::EPSILON);
-        }
-        self.can_vault = self.distance_hit && !self.height_blocked && !self.depth_blocked;
+        // 3d06c0 initializes each result before reading its own query handle.
+        // Missing handles block admission. Completed casts with no hits use
+        // the minimum obstacle height and maximum exit depth for this query.
+        let clear = |query: Option<Option<f32>>| {
+            query.is_some_and(|hit| hit.is_none_or(|distance| distance > f32::EPSILON))
+        };
+        self.can_vault = self.distance_hit && clear(q.height) && clear(q.depth);
         if self.can_vault {
             self.vault_position = self.obstacle;
-            self.vault_exit = self.obstacle + self.axis.x_axis * self.depth;
-            self.vault_height = self.height;
+            let depth = l.max_depth - q.depth.flatten().unwrap_or(0.0);
+            self.vault_exit = self.obstacle + self.axis.x_axis * depth;
+            self.vault_height = q.height.flatten().map_or(l.min_height, |distance| l.max_height - distance);
         }
         let project = |p: Vec3| p - q.up * (p - q.origin).dot(q.up);
         let mut ray_ok = false;

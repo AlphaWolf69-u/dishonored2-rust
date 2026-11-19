@@ -436,12 +436,17 @@ impl PlayerPhysics {
         self.angular_deceleration = angular_deceleration * 0.017453292;
     }
 
+    /// FUN_1407ff0d0 places the proxy and clears its previous vertical limit.
+    pub fn set_position(&mut self, position: Vec3) {
+        self.proxy.position = position;
+        self.max_z = UNSET;
+    }
+
     /// Teleport (FUN_1407fe920 → FUN_1401b6b10) with the optional gravity and
     /// smoothing reset.
     pub fn teleport(&mut self, position: Vec3, yaw: f32) {
-        self.proxy.position = position;
+        self.set_position(position);
         self.proxy.velocity = Vec3::ZERO;
-        self.max_z = UNSET;
         self.yaw = wrap_angle(yaw);
         self.vertical = None;
         self.gravity_velocity = Vec3::ZERO;

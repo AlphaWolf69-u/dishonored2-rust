@@ -257,7 +257,7 @@ pub fn activate_blink(frame: &mut Frame<'_>) {
     frame.physics.set_gravity_velocity(Vec3::ZERO);
     frame.physics.set_posture(4, 0.0);
     if let Some(motion) = &runtime.blink {
-        if motion.request.camera_source != Vec3::ZERO { frame.physics.proxy.position = motion.request.camera_source; }
+        if motion.request.camera_source != Vec3::ZERO { frame.physics.set_position(motion.request.camera_source); }
     }
     frame.requests.push_angular(0, Vec3::ZERO);
 }
@@ -272,19 +272,23 @@ pub fn update_blink(frame: &mut Frame<'_>) -> Option<StateId> {
     frame.requests.push_angular(0, Vec3::ZERO);
     match motion.step(frame.physics.position(), frame.physics.velocity, frame.dt, &runtime.contacts) {
         Ok(BlinkStep::Velocity(velocity)) => { frame.requests.push_linear(0, velocity); None },
-        Ok(BlinkStep::Finish) => {
-            frame.requests.push_linear(0, Vec3::ZERO);
+        step => {
+            // 858950 sends a final short step, a blocking contact and low
+            // velocity through the same 858010(false) placement and posture
+            // handoff. Only the completed short step submits zero velocity.
+            if step.is_ok() {
+                frame.requests.push_linear(0, Vec3::ZERO);
+            }
             let mut position = motion.request.final_position;
             //858010: saved entry mode1 subtracts PhysicsPlayer+15c,
             //the authored posture7 z_offset, from the final destination.
             if runtime.blink_from_swimming {
                 position.z -= frame.physics.posture_settings(super::shape::POSTURE_SWIMMING).z_offset;
             }
-            frame.physics.proxy.position = position;
+            frame.physics.set_position(position);
             runtime.blink_finished = true;
             Some(StateId(motion.request.exit_state))
         },
-        Err(_) => { runtime.blink_finished = true; runtime.blink_aborted = true; Some(StateId::NULL) },
     }
 }
 pub fn deactivate_blink(frame: &mut Frame<'_>) {

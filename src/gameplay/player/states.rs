@@ -3522,7 +3522,7 @@ impl StateMachine {
             Kind::Blinking => {
                 if let Some(next) = super::power_states::update_blink(frame) {
                     self.quit(id);
-                    if !frame.powers.blink_aborted { self.finish_blink_navigation(next, frame); }
+                    self.finish_blink_navigation(next, frame);
                 }
             }
             Kind::Dead(dead) => {
