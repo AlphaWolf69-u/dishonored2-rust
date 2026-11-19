@@ -63,8 +63,12 @@ impl RemovalHost<'_> {
         }
         let joint = component.joint.or(component.retiring_joint)
             .ok_or("constraint removal receipt has no actual joint")?;
-        if joint.slot() != slot || joint.generation() != joint_generation {
-            return Err("constraint removal joint generation differs".into());
+        //716560 is subscribed to the WORLD's shared900 signal, not a
+        //per-joint signal. It first compares component+80 with the emitted
+        //slot and leaves every unrelated component/subscription untouched.
+        if joint.slot() != slot { return Ok(()); }
+        if joint.generation() != joint_generation {
+            return Err(format!("constraint removal joint generation differs: component={handle:?} component_generation={generation} retained={joint:?} emitted_slot={slot} emitted_generation={joint_generation}"));
         }
         //The source invalidates +80 before calling7e72c0. Preserve the same
         //receipt until that fallible canonical release request acknowledges.

@@ -2,6 +2,20 @@
 
 ## Passive constraint endpoint lookup and collision suppression (2026-11-19)
 
+Actual release-candidate observation now found both real fixtures Initialized,
+Started, enabled and linked through 120 physics steps, with 218 live joints.
+Both were legitimately asleep: zero velocities, no prepared solver rows,
+maximum pivot separation squared0 and cone-axis dot1. This verifies admission
+and adjacency, not swinging or active numerical rows. Ordinary exit failed
+because RemovalHost treated another joint's global Removed notification as a
+generation error. Native716560 explicitly returns unless component+80 equals
+the emitted slot. The host now makes that same selection before retaining its
+strict matching-slot generation check and actual release acknowledgement;
+unrelated subscriptions remain attached and untouched. A subsequent coherent
+run is still required for clean retirement. The captured nearby window remains
+Started but disabled, current=None and no accepted use; no window-pose fix is
+claimed by this constraint change.
+
 The second actual integrated observation still skipped both fixtures. The
 earlier identity-index correction removed one barrier but did not establish
 admission: the pre-Initialize hostability check also called document_rigid's
