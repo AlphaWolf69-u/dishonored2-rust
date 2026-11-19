@@ -420,7 +420,8 @@ impl PhysicsScene {
             .float("ark_physics_impulser_ignore_delay")
             .ok_or("physics instigator delay absent")?;
         let age =
-            (clock.entity_time(id).map_err(str::to_owned)? - component.instigator_time) as f32;
+            (clock.entity_time_from_definition(id, self.entities[index].timespace)
+                .map_err(str::to_owned)? - component.instigator_time) as f32;
         if age < delay {
             params.attacker = component.instigator.filter(|id| live.get(*id).is_some());
         }
