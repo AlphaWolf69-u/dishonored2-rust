@@ -320,6 +320,16 @@ impl Player {
     /// 7fb350 tests controller+2d0, the swimming controller(+258)+78,
     /// not possession/cinematic state. 88a8c0/88a7a0 use the same1..3 range
     /// for the active swimming mode represented by this player owner.
+    pub fn equipment_request_uid(&self, side: usize) -> Option<u32> {
+        self.equipment_changes.slots.get(side).map(|slot| slot.uid)
+    }
+
+    pub fn shortcut_already_equipped(&self, identity: &str, ammunition: Option<&str>) -> bool {
+        let left = &self.equipment_changes.slots[0];
+        left.equipped && left.current.as_ref().is_some_and(|target| target.identity == identity)
+            && self.equipment_ammunition(identity).is_none_or(|(_, current)| ammunition.is_none() || current == ammunition)
+    }
+
     pub fn shortcut_equipment_flags(&self) -> u32 {
         if self.swimming_active { 0x30 } else { 0x20 }
     }

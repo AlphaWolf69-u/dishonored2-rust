@@ -112,7 +112,33 @@ impl DiscoveredDocuments {
 
     /// 4de920 action mapping and 4de730 keyboard cycling. Returns inventory
     /// identities for the equipment request owner, not an activated slot.
-    pub fn shortcut_selection(&mut self, action: i32) -> Option<ShortcutSelection> {
+    pub(crate) fn preview_shortcut(&mut self, action: i32) {
+        if self.shortcut_action == Some(action) && !matches!(action, 23 | 24) { return; }
+        self.shortcut_action = Some(action);
+        self.shortcut_input = self.shortcut_input.wrapping_add(1);
+        self.shortcut_delay = if matches!(action, 23 | 24) {
+            crate::platform::console::shared().read().cvars.float("ark_player_shortcut_kb_display_duration").unwrap_or_default()
+        } else { 0. };
+        self.selected_shortcut = self.shortcut_index(action);
+    }
+
+    pub(crate) fn shortcut_preview(&self) -> Option<usize> {
+        self.shortcut_action.and(self.selected_shortcut)
+    }
+
+    pub(crate) fn release_shortcut(&mut self, action: i32) -> Option<ShortcutSelection> {
+        if self.shortcut_action != Some(action) || self.shortcut_delay > 0. { return None; }
+        self.shortcut_action = None;
+        self.commit_shortcut()
+    }
+
+    pub(crate) fn tick_shortcut(&mut self, delta: f32) -> Option<ShortcutSelection> {
+        let action = self.shortcut_action.filter(|action| matches!(action, 23 | 24))?;
+        self.shortcut_delay -= delta;
+        self.release_shortcut(action)
+    }
+
+    fn shortcut_index(&self, action: i32) -> Option<usize> {
         let owned = |index: usize| self.shortcuts[index].equipment.as_deref().is_some_and(|path| self.quantity(path) > 0);
         let index = match action {
             25..=34 => (action - 25) as usize,
@@ -130,7 +156,13 @@ impl DiscoveredDocuments {
             }
             _ => return None,
         };
-        self.selected_shortcut = Some(index);
+        Some(index)
+    }
+
+    pub(crate) fn last_shortcut(&self) -> Option<usize> { self.selected_shortcut }
+
+    fn commit_shortcut(&self) -> Option<ShortcutSelection> {
+        let index = self.selected_shortcut?;
         let slot = &self.shortcuts[index];
         let path = slot.equipment.as_ref()?;
         if self.quantity(path) == 0 { return None; }

@@ -830,6 +830,11 @@ impl PlayerActions {
     ///7fb350/7f8d60: shortcuts and the wheel enter the same source request
     ///queue; actual equipment states own the eventual selection callbacks.
     pub fn request_selection(&mut self, player: &Player, selection: ShortcutSelection) {
+        // 7fb350 returns before constructing the request if the selected
+        // left-hand actor already has this ammunition (or has no gun).
+        if player.shortcut_already_equipped(&selection.equipment, selection.ammunition.as_deref()) {
+            return;
+        }
         self.source_flags.insert(selection.equipment.clone(), player.shortcut_equipment_flags());
         self.selection_requests.push(selection);
     }

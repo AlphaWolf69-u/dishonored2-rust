@@ -152,6 +152,9 @@ pub(super) struct DiscoveredDocuments {
     shortcut_settings: Option<std::sync::Arc<inventory::ShortcutSettings>>,
     shortcuts: [inventory::ShortcutSlot; 14],
     selected_shortcut: Option<usize>,
+    shortcut_action: Option<i32>,
+    shortcut_delay: f32,
+    pub(super) shortcut_input: u64,
     ammunition_dependencies: Vec<(String, String)>,
 }
 impl Default for DiscoveredDocuments {
@@ -164,7 +167,7 @@ impl Default for DiscoveredDocuments {
             // first allowed 619760 arbitration clears bits0/1 with &fc.
             instant_equip_first_frame: true,
             auto_equip_candidates: Vec::new(), shortcut_settings: None, shortcuts: Default::default(),
-            selected_shortcut: None, ammunition_dependencies: Vec::new() }
+            selected_shortcut: None, shortcut_action: None, shortcut_delay: 0., shortcut_input: 0, ammunition_dependencies: Vec::new() }
     }
 }
 #[derive(Clone, Debug)]
@@ -242,7 +245,13 @@ impl DiscoveredDocuments {
             if let Some(record) = self.records.get_mut(&key) { record.is_new &= current > removed; }
             if removed == current {
                 self.auto_equip_candidates.retain(|(path, _)| path != &key);
-                if self.record(path).is_some_and(|record| record.declaration.equipment.is_some()) {
+                // 619760 skips the removal request for an acquired TYPE_AMMO
+                // actor. Its last throw still owns the empty/reload scenes.
+                // 619740 retires the empty equipped actor on actual unequip.
+                let retained_ammo = self.records.get(&key).is_some_and(|record|
+                    record.declaration.type_number == 4 && record.ever_owned)
+                    && self.equipped.iter().flatten().any(|equipped| equipped == &key);
+                if !retained_ammo && self.records.get(&key).is_some_and(|record| record.declaration.equipment.is_some()) {
                     self.changes.push_back(InventoryChange::EquipmentRemoved { path: key.clone() });
                 }
             }

@@ -51,6 +51,7 @@ enum Command {
     HudHealth(super::hud_movie::Health),
     HudMana(super::hud_movie::Mana),
     HudEquipment(super::hud_movie::Equipment),
+    HudShortcuts(u64, super::hud_movie::shortcuts::Update),
     HudPickup(u64, super::hud_movie::notifications::Pickup),
     HudObjectives(Vec<crate::gameplay::gameflow::ObjectiveUpdate>),
     HudMarkers(Vec<super::objective_markers::Marker>),
@@ -327,6 +328,7 @@ pub struct PauseMenu {
     hud_health: Option<super::hud_movie::Health>,
     hud_mana: Option<super::hud_movie::Mana>,
     hud_equipment: Option<super::hud_movie::Equipment>,
+    hud_shortcuts: (u64, bool),
     hud_notifications: Mutex<super::hud_movie::notifications::Mailbox>,
     hud_objectives: Vec<crate::gameplay::gameflow::ObjectiveUpdate>,
     marker_buffer: Option<Vec<super::objective_markers::Marker>>,
@@ -417,7 +419,7 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, power_wheel_open: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_equipment: None, hud_notifications: Mutex::new(Default::default()), hud_objectives: Vec::new(), marker_buffer: Some(Vec::new()), hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, power_wheel_open: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_equipment: None, hud_shortcuts: (0, false), hud_notifications: Mutex::new(Default::default()), hud_objectives: Vec::new(), marker_buffer: Some(Vec::new()), hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
@@ -509,6 +511,7 @@ impl PauseMenu {
         self.hud_health = None;
         self.hud_mana = None;
         self.hud_equipment = None;
+        self.hud_shortcuts = (0, false);
         self.hud_objectives.clear();
         self.hud_admission = None;
         self.hud_starting_powers = None;
@@ -755,6 +758,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             },
             Command::HudEquipment(value) => if let Some(movie) = hud.as_mut() {
                 if let Err(error) = movie.equipment(value) { warn!("HUD equipment: {error}"); }
+            },
+            Command::HudShortcuts(epoch, update) => if let Some(movie) = hud.as_mut().filter(|_| epoch == hud_epoch) {
+                if let Err(error) = movie.shortcuts(update) { warn!("HUD shortcuts: {error}"); }
             },
             Command::HudPickup(epoch, value) => if let Some(movie) = hud.as_mut().filter(|_| epoch == hud_epoch) {
                 if let Err(error) = movie.pickup(value) { let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
@@ -1103,6 +1109,13 @@ pub fn update_pause_menu(
             }
             if let Some(player) = player {
                 if let Some(inventory) = documents.as_deref() {
+                    let preview = inventory.shortcut_preview().is_some();
+                    let state = (inventory.shortcut_input, preview);
+                    if state != menu.hud_shortcuts {
+                        let update = super::hud_movie::shortcuts::snapshot(player, inventory, menu.hud_shortcuts);
+                        let _ = menu.commands.send(Command::HudShortcuts(menu.hud_epoch, update));
+                        menu.hud_shortcuts = state;
+                    }
                     let equipment = super::hud_movie::equipment_snapshot(player, inventory);
                     if menu.hud_equipment != Some(equipment) {
                         let _ = menu.commands.send(Command::HudEquipment(equipment));

@@ -6,6 +6,7 @@
 mod objectives;
 mod markers;
 mod equipment;
+pub(super) mod shortcuts;
 mod status;
 pub(in crate::app) mod notifications;
 pub(super) use equipment::{Snapshot as Equipment, snapshot as equipment_snapshot};

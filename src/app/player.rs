@@ -901,6 +901,7 @@ pub(super) fn update_player(
                         &events,
                         &mut inventory,
                         &mut actions,
+                        frame_delta,
                     );
                     super::player_actions::dispatch_potions(
                         player,

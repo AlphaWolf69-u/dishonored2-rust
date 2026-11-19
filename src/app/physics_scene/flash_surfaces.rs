@@ -69,7 +69,7 @@ instance!(Surface);
 instance!(Map);
 
 impl PhysicsScene {
-    fn is_surface_class(&self, class: i32) -> bool {
+    pub(super) fn is_surface_class(&self, class: i32) -> bool {
         class == self.classes[52] || class == self.classes[54]
     }
     fn surface(&self, handle: ComponentHandle) -> Result<&Surface, String> {
@@ -747,10 +747,10 @@ impl PhysicsScene {
         status: super::super::flash_surface_movie::Status,
         dt: f32,
         events: &mut EntityEvents,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, bool), String> {
         let s = self.checked_surface_mut(key)?;
         if !s.started {
-            return Ok(false);
+            return Ok((false, false));
         }
         if status.loaded && !s.loaded {
             s.loaded = true;
@@ -771,7 +771,8 @@ impl PhysicsScene {
         }
         s.configured = status.configured;
         s.rendered |= status.captured;
-        if !s.reported && s.loaded && s.playing && s.rendered && (!s.requires_configuration || s.configured) {
+        let show = !s.reported && s.loaded && s.playing && s.rendered && (!s.requires_configuration || s.configured);
+        if show {
             s.reported = true;
             static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_WORLD_FLASH").is_some()) {
@@ -791,9 +792,9 @@ impl PhysicsScene {
         //bound until Stop's actual target/renderer acknowledgement.
         if s.definition.is_static_texture && s.playing && !s.static_released {
             s.capture_remaining -= dt;
-            return Ok(s.capture_remaining <= 0. && status.captured);
+            return Ok((show, s.capture_remaining <= 0. && status.captured));
         }
-        Ok(false)
+        Ok((show, false))
     }
     ///HUD45af50/39ed10 initializes the actual subclass before Start. The
     ///later39ed20 value is the canonical Grenade490cd0 output, not a timer.

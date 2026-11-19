@@ -189,6 +189,7 @@ pub(in crate::app) fn prepare(world:&mut World){
     let result=(||{
         for entry in owner.owned.values_mut(){advance_owned(world,entry)?;}
         let Some(player)=state.player.as_mut() else{return Ok(());};
+        player.publish_throwable_magazine();
         let (eye,camera_axis)=player.published_camera_frame();
         let hit=player.ranged_target_hit();let attacker=player.managed_entity();
         let Some(runtime)=player.throwable.as_mut() else{return Ok(());};
@@ -240,7 +241,9 @@ pub(in crate::app) fn handle_animation_event(world:&mut World,event:&AnimationEv
     let Some(mut inventory)=world.remove_resource::<super::interaction_focus::DiscoveredDocuments>() else{world.insert_resource(state);return Ok(());};
     let result=state.player.as_mut().map_or(Ok(()),|player|{
         if let Some((id,origin))=origin{player.set_throwable_origin(id,origin);}
-        player.handle_throwable_animation_event(event,equipment[0],&mut inventory)
+        player.handle_throwable_animation_event(event,equipment[0],&mut inventory)?;
+        player.publish_throwable_magazine();
+        Ok::<_, String>(())
     });
     world.insert_resource(inventory);world.insert_resource(state);
     result?;

@@ -25,6 +25,7 @@ pub(in crate::app) fn exploded(world: &mut World, entity: EntityId) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Select,
+    Reselect,
     Hold,
     Throw,
     Explosion,
@@ -51,6 +52,9 @@ pub(super) struct Observation {
     since: Instant,
     release: Option<Input>,
     use_input: Input,
+    selection: Input,
+    request_uid: Option<u32>,
+    repeats: bool,
     held: Option<EntityId>,
     initial_progress: Option<f32>,
     before: HashSet<EntityId>,
@@ -67,7 +71,7 @@ impl Observation {
         let (index, item, archetype) = (0..10).find_map(|index| {
             let item = inventory.wheel_shortcut_pair(index).0?;
             let archetype = p.equipment_target_metadata(item)?.0.archetype;
-            matches!(archetype, 4 | 5).then(|| (index, item.to_owned(), archetype))
+            (archetype == 4).then(|| (index, item.to_owned(), archetype))
         }).ok_or("Grenade diagnostic requires an actual owned grenade shortcut in this level/loadout")?;
         let selection = input_for(25 + index as i32)?;
         let use_input = input_for(20)?;
@@ -92,6 +96,9 @@ impl Observation {
             since: Instant::now(),
             release: Some(selection),
             use_input,
+            selection,
+            request_uid: None,
+            repeats: std::env::var_os("DH2_DEBUG_EXHAUST_GRENADES").is_some(),
             held: None,
             initial_progress: None,
             before,
@@ -199,6 +206,19 @@ impl Observation {
                     );
                     self.held = Some(weapon.entity);
                     self.before.insert(weapon.entity);
+                    self.request_uid = p.equipment_request_uid(0);
+                    send(world, self.selection, true)?;
+                    self.release = Some(self.selection);
+                    self.stage(Stage::Reselect);
+                }
+            }
+            Stage::Reselect => {
+                let p = player(world)?;
+                if self.request_uid != p.equipment_request_uid(0) || p.throwable.as_ref().map(|weapon| weapon.entity) != self.held {
+                    return Err("reselecting equipped grenade started a new equipment request".into());
+                }
+                if p.equipment_action_status(0).is_some_and(|(_, equipped, changing)| equipped && !changing) {
+                    eprintln!("ACTION_SMOKE_PASS check=repeat_shortcut_preserved_equipment actual_request_uid={:?} owner={:?}", self.request_uid, self.held);
                     send(world, self.use_input, true)?;
                     self.stage(Stage::Hold);
                 }
@@ -259,6 +279,24 @@ impl Observation {
                         "ACTION_SMOKE_PASS check=grenade_actual_490840_completion_and_entity_retirement full_entity={:?} exit=ordinary_ExitDrain",
                         self.thrown
                     );
+                    if self.repeats {
+                        let p = player(world)?;
+                        let weapon = p.throwable.as_ref().ok_or("empty throwable retired before unequip")?;
+                        if weapon.total_ammo > 0 {
+                            self.before.extend(self.thrown.take());
+                            self.initial_progress = None;
+                            self.hold_observation = None;
+                            self.progress = Progress::default();
+                            *world.resource_mut::<Receipt>() = Receipt::default();
+                            self.stage(Stage::Select);
+                            return Ok(false);
+                        }
+                        let pose = p.body.arms.first().map(|arm| arm.equipment());
+                        if pose != Some("Empty") || p.body.equipment[0].as_ref().is_none_or(|tree| tree.visible) {
+                            return Err(format!("empty grenade retained incorrect arm/model presentation: pose={pose:?}"));
+                        }
+                        eprintln!("ACTION_SMOKE_PASS check=last_grenade_empty_hand owner={:?} ammo={} magazine={} pose={pose:?} held_model_visible=false", weapon.entity, weapon.total_ammo, weapon.magazine);
+                    }
                     self.stage(Stage::Done);
                 }
             }

@@ -65,6 +65,9 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
             .flash_request(key)?;
         let Some(request) = request else { continue };
         if let Some((definition, requires_configuration)) = request {
+            super::runtime_entities::with_scene(world, |world, scene, live, _| {
+                scene.set_runtime_actor_visible(world, live, key.entity, false)
+            })?;
             super::flash_surface_movie::request(world, key, definition, requires_configuration)?;
             world
                 .resource_mut::<super::physics_scene::PhysicsScene>()
@@ -73,12 +76,21 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
         let Some(status) = super::flash_surface_movie::status(world, key)? else {
             continue;
         };
-        let stop =
+        let (show, stop) =
             world.resource_scope(|world, mut events: bevy::prelude::Mut<EntityEvents>| {
                 world
                     .resource_mut::<super::physics_scene::PhysicsScene>()
                     .observe_flash_status(key, status, dt, &mut events)
             })?;
+        if show {
+            super::runtime_entities::with_scene(world, |world, scene, live, _| {
+                if std::env::var_os("DH2_DEBUG_ACTION_SCENARIO").is_some() {
+                    let was_visible = scene.runtime_actor_visible(live, key.entity)?;
+                    eprintln!("ACTION_SMOKE_WORLD_MOVIE_FIRST_DRAW entity={:?} generation={} previously_visible={was_visible} configured={} target_rendered_and_bound={}", key.entity, key.generation, status.configured, status.captured);
+                }
+                scene.set_runtime_actor_visible(world, live, key.entity, true)
+            })?;
+        }
         if stop {
             super::flash_surface_movie::stop(world, key)?;
             world

@@ -54,6 +54,7 @@ impl PhysicsScene {
                 self.entities[index].timespace = 0;
                 self.entities[index].components.start_deferred = false;
                 let context = live.entity_context(id)?.requested;
+                let mut starts_movie = false;
                 for handle in handles {
                     let scheduling = &self
                         .declarations
@@ -71,6 +72,7 @@ impl PhysicsScene {
                             },
                         )?;
                     } else if scheduling.starts_on_spawn() && self.owner(handle)?.flags & 3 != 3 {
+                        starts_movie |= self.is_surface_class(handle.class_id);
                         registry.request_start(
                             self.owner_mut(handle)?,
                             handle.packed() as usize,
@@ -79,7 +81,9 @@ impl PhysicsScene {
                         )?;
                     }
                 }
-                self.set_runtime_actor_visible(world, live, id, true)?;
+                // FlashSurface Start (4b0d70) hides the actor while the movie
+                // is pending. Enabling it must not expose its default quad.
+                self.set_runtime_actor_visible(world, live, id, !starts_movie)?;
                 self.entities[index].entity_flags &= !0x100;
             } else {
                 self.set_runtime_actor_visible(world, live, id, false)?;

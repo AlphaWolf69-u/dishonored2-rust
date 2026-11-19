@@ -2253,7 +2253,9 @@ impl StateMachine {
         // 14063bfc0: keep an explicit/empty-magazine reload pending until
         // the state machine can admit its actual reload state.
         if !self.is_active(StateId::RELOAD_WEAPON)
-            && frame.weapon.as_mut().is_some_and(|weapon| weapon.take_reload_request())
+            && (frame.weapon.as_mut().is_some_and(|weapon| weapon.take_reload_request())
+                || (!self.is_active(StateId::THROW_WEAPON)
+                    && frame.throwable.as_ref().is_some_and(|weapon| weapon.magazine == 0 && weapon.total_ammo > 0)))
             && self.allowed(StateId::RELOAD_WEAPON, frame)
         {
             self.request(StateId::RELOAD_WEAPON);

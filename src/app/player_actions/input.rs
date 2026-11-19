@@ -420,15 +420,19 @@ pub(in crate::app) fn dispatch_shortcuts(
     events: &[player::controller::ActionEvent],
     inventory: &mut DiscoveredDocuments,
     actions: &mut PlayerActions,
+    delta: f32,
 ) {
     actions.configure_shortcuts(inventory);
     for event in events {
-        if event.flags & 3 != 1 || !matches!(event.action, 23..=34 | 37..=40) {
-            continue;
-        }
-        if let Some(selection) = inventory.shortcut_selection(event.action) {
+        if event.flags & 2 != 0 || !matches!(event.action, 23..=34 | 37..=40) { continue; }
+        if event.flags & 1 != 0 {
+            inventory.preview_shortcut(event.action);
+        } else if let Some(selection) = inventory.release_shortcut(event.action) {
             actions.request_selection(player, selection);
         }
+    }
+    if let Some(selection) = inventory.tick_shortcut(delta) {
+        actions.request_selection(player, selection);
     }
 }
 

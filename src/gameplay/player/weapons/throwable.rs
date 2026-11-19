@@ -232,6 +232,7 @@ pub struct WeaponRuntime {
     pub ready: bool,
     pub ammunition_index: usize,
     pub magazine: i32,
+    pub(super) displayed_loaded: Option<bool>,
     pub total_ammo: u32,
     pub target_flags: u32,
     pub active_scene: u32,
@@ -268,7 +269,7 @@ pub enum Effect {
 impl WeaponRuntime {
     pub fn new(entity: EntityId, definition: Arc<Definition>) -> Self {
         Self { entity, definition, cooking_duration: 0., cooking_stage: -1, low_throw: false,
-            grenade_state: None, ready: false, ammunition_index: 0, magazine: 0, total_ammo: 0,
+            grenade_state: None, ready: false, ammunition_index: 0, magazine: 0, displayed_loaded: None, total_ammo: 0,
             target_flags: 0, active_scene: 0, equipment_target: 3, source: None, entity_delta:0., effects: VecDeque::new() }
     }
     pub fn ammunition(&self) -> Option<&Ammunition> { self.definition.ammunition.get(self.ammunition_index) }
@@ -371,10 +372,29 @@ impl super::super::Player {
     pub fn unequip_throwable(&mut self){
         if let Some(mut runtime)=self.throwable.take(){
             runtime.active_scene=0;
+            runtime.displayed_loaded=None;
             if runtime.grenade_state.is_some_and(|state|state.armed){runtime.push_effect(Effect::Disarm);}
             if let Some(identity)=self.throwable_identity.take(){self.holstered_throwables.insert(identity,runtime);}
         }
     }
+    /// 639d80: the weapon's magazine transition changes the base left-arm
+    /// pose as well as held-model visibility. Midnight still owns the throw.
+    pub fn publish_throwable_magazine(&mut self) {
+        let Some(runtime) = self.throwable.as_mut() else { return };
+        if !self.equipment_changes.equipped(0) || self.equipment_archetypes[0] != Some(4) { return; }
+        let loaded = runtime.magazine > 0;
+        if runtime.displayed_loaded == Some(loaded) { return; }
+        let Some(tree) = self.body.equipment[0].as_mut().filter(|tree| tree.managed_entity == Some(runtime.entity)) else { return };
+        let Some(equipment) = self.equipment_changes.preferred(0) else { return };
+        if let Some(arm) = self.body.arms.first_mut() {
+            if let Some(name) = if loaded { equipment.loco_equip_state.as_deref() } else { Some("Empty") } {
+                arm.request_equipment(name);
+            }
+        }
+        tree.visible = loaded;
+        runtime.displayed_loaded = Some(loaded);
+    }
+
     pub fn retire_throwable(&mut self,identity:&str){
         if self.throwable_identity.as_deref()==Some(identity){self.unequip_throwable();}
         if let Some(mut runtime)=self.holstered_throwables.remove(identity){
