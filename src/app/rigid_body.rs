@@ -275,16 +275,6 @@ pub(super) fn prepare_draft_with_surfaces(
     }))
 }
 
-/// Body values resolved by the real material/mass and motion-property
-/// owners. They cannot be inferred from whether a render placement moves.
-pub(super) struct RigidBodyCreationValues {
-    pub mass: f32,
-    pub mass_distribution: usize,
-    pub motion_properties_id: u16,
-    /// Reflected declaration byte +0xc4 from 140806eb0.
-    pub declaration_flags: u8,
-}
-
 impl RigidBodyResources {
     pub(super) fn clone_refs(&self) -> Self {
         Self {
@@ -297,38 +287,6 @@ impl RigidBodyResources {
             body_material: self.body_material,
             filter_info: self.filter_info,
         }
-    }
-}
-
-/// 140808ea0 starts from the native 140ca65f0 body-info constructor and
-/// applies its component values. Shape and user data are bound by `create`.
-pub(super) fn body_info(
-    model: &crate::entities::PlacedModel,
-    resources: &RigidBodyResources,
-    values: RigidBodyCreationValues,
-) -> BodyInfo {
-    let basis = crate::physworld::rigid_body_basis(model.rotation.map(|v| [v[0], v[1], v[2], 0.0]));
-    let flags =
-        0x80 | if values.declaration_flags & 2 != 0 {
-            0x40000
-        } else {
-            0
-        } | if values.declaration_flags & 4 != 0 {
-            0x20000
-        } else {
-            0
-        };
-    BodyInfo {
-        flags,
-        filter_info: resources.filter_info,
-        material_id: resources.body_material,
-        motion_type: 2,
-        position: [model.position[0], model.position[1], model.position[2], 0.0],
-        orientation: crate::physworld::rotation_quaternion(basis),
-        mass: values.mass,
-        mass_distribution: values.mass_distribution,
-        motion_properties_id: values.motion_properties_id,
-        ..BodyInfo::default()
     }
 }
 

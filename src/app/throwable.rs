@@ -6,18 +6,6 @@ use crate::gameplay::{
     entity_events::{EntityEvents, Listener},
     entity_lifetime::EntityId,
 };
-use std::sync::Arc;
-pub(super) struct Prepared {
-    pub definition: Arc<crate::assets::throwable::Definition>,
-    pub resources: super::rigid_body::RigidBodyResources,
-}
-impl Prepared {
-    /// Each source component takes its own shape-reference/material-table
-    /// lease. Geometry payload and resource wrappers are shared unchanged.
-    pub(super) fn instantiate_resources(&self) -> super::rigid_body::RigidBodyResources {
-        self.resources.clone_refs()
-    }
-}
 ///4c7fc0 installs125 only after the real base Start has completed. Retrying
 /// an already registered same component is idempotent; other owners reject.
 pub(super) fn start_listener(
@@ -152,75 +140,4 @@ pub(super) fn initialize<G: crate::gameplay::physics_world::body_creation::BodyC
     state.set_contact_damage_receiver(contact_damage_receiver);
     state.initialized = true;
     Ok(())
-}
-///4c7fc0/4c8f00/4c88e0. The source base Start/behavior transition must
-/// have finished before this call, so a dormant body is never implicitly woken.
-pub(super) fn configure_body<
-    G: crate::gameplay::physics_world::body_creation::BodyCreationGeometry,
-    E: crate::gameplay::physics_world::PublicationEvents
-        + crate::gameplay::physics_world::body_creation::BodyCreationCallbacks,
->(
-    component: &mut super::rigid_body::RigidBodyComponent,
-    storage: &mut crate::gameplay::physics_world::storage::WorldStorage,
-    geometry: &mut G,
-    events: &mut E,
-    quality_enabled: bool,
-) -> Result<(), String> {
-    let id = component
-        .body()
-        .ok_or("Throwable policy has no real body")?;
-    let quality = component.throwable()?.quality(quality_enabled);
-    if let Some(quality) = quality {
-        storage.set_body_quality(geometry, events, id, quality, 0)?;
-    }
-    component.throwable_mut()?.quality_applied(quality_enabled);
-    let flags = storage
-        .bodies
-        .get(id)
-        .ok_or("Throwable policy body retired")?
-        .flags;
-    let mode = if flags & 1 != 0 {
-        0
-    } else if flags & 4 != 0 {
-        1
-    } else {
-        2
-    };
-    let contact = component.throwable()?.contact_events(mode);
-    storage.set_body_user_flags(geometry, events, id, 0x40, contact, 0)?;
-    Ok(())
-}
-
-///125 ->4c9980 ->4c7570 observes the actual managed binding AFTER875e80
-/// or8762b0. It never manufactures a parent or motion transition.
-pub(super) fn binding_changed<
-    G: crate::gameplay::physics_world::body_creation::BodyCreationGeometry,
-    E: crate::gameplay::physics_world::PublicationEvents
-        + crate::gameplay::physics_world::body_creation::BodyCreationCallbacks,
->(
-    component: &mut super::rigid_body::RigidBodyComponent,
-    storage: &mut crate::gameplay::physics_world::storage::WorldStorage,
-    geometry: &mut G,
-    events: &mut E,
-    bound: bool,
-) -> Result<bool, String> {
-    let state = component.throwable()?;
-    if !state.stuck() && !state.collision_update_pending() {
-        return Ok(false);
-    }
-    let mut settings = state.source.rigid.settings.clone();
-    if bound {
-        settings.collision = Some(state.source.settings.attached_collision);
-    }
-    let filter = settings
-        .collision_filter()
-        .ok_or("Throwable binding collision filter is invalid")?;
-    let body = component
-        .body()
-        .ok_or("Throwable binding has no actual body")?;
-    storage.set_body_filter(geometry, events, body, filter)?;
-    if !bound {
-        component.throwable_mut()?.detached();
-    }
-    Ok(!bound)
 }

@@ -3,8 +3,6 @@ use super::*;
 #[path = "activation_events.rs"]
 mod activation_events;
 use crate::gameplay::{
-    body_activation::ActivationOwners,
-    physics_world::PublicationEvent,
     signal::Signal,
     trigger_body::initialization::physics::TriggerLevelInitialization,
     trigger_body::initialization::{LoadedTriggerShape, TriggerDependency},
@@ -13,17 +11,6 @@ use crate::gameplay::{
 pub(super) use activation_events::{
     WorldActivationObserver, install as install_activation_observers,
 };
-
-pub(super) fn dispatch_observer(
-    _: &mut Signal<usize, usize>,
-    _: usize,
-    _: usize,
-    _: ActivationOwners<'_>,
-    _: PublicationEvent<'_>,
-    _: &mut TriggerComponentStore<'_>,
-) -> Result<(), String> {
-    Err("physics observer has no registered level handler".into())
-}
 
 pub(super) struct TriggerLevel<'a> {
     pub entity: &'a EntityComponents,

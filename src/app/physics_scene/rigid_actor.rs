@@ -1191,35 +1191,3 @@ impl PhysicsScene {
         Ok(())
     }
 }
-
-/// Runs before model_motion::publish_model_poses; all GPU/query publication
-/// remains in that existing owner, with no new meshes or per-draw allocations.
-pub(in crate::app) fn update_rigid_actors(
-    scene: Option<bevy::prelude::ResMut<PhysicsScene>>,
-    clock: Option<bevy::prelude::Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
-    live: Option<bevy::prelude::Res<LiveEntities>>,
-    poses: Option<bevy::prelude::ResMut<ModelPoseUpdates>>,
-    joint_frames: Option<bevy::prelude::Res<super::super::joint_frames::JointFrames>>,
-) {
-    let Some(mut scene) = scene else {
-        return;
-    };
-    if scene.retirement.is_some() {
-        return;
-    }
-    let result = (|| -> Result<(), String> {
-        let clock = clock
-            .as_ref()
-            .ok_or("rigid actor game clock owner is absent")?;
-        if !clock.advanced() {
-            return Ok(());
-        }
-        let clock = clock.clock().map_err(str::to_owned)?;
-        let live = live.as_ref().ok_or("rigid actor entity owner is absent")?;
-        let mut poses = poses.ok_or("rigid actor render publication owner is absent")?;
-        scene.advance_rigid_actors(clock, live, &mut poses, joint_frames.as_deref())
-    })();
-    if let Err(error) = result {
-        bevy::log::error!("Rigid actor publication failed: {error}");
-    }
-}
