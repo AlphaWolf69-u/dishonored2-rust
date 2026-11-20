@@ -26329,3 +26329,7 @@ are outside this pickup path.
 ### Managed model shader-clock lookup (2026-11-19)
 
 - **Host / ported clock semantics.** `model_shader_data::keys` resolves the existing WorldModels or PlayerArms owner before searching immutable placed names. Native 87d050 writes the existing render-model pointer and clock fields; 80f620 still recurses bound children and explicit time attachments even without a selector change. Managed runtime construction and inventory part admission allocate distinct actual identities; model replacement keeps the Actor owner. Other actors retain the existing placed-name scan. No cache, clock state, model lifetime, image lease or visibility change was added. Source-only ownership review and standalone lookup comparison completed; integrated gameplay validation remains with the coordinated build.
+
+### Deferred breakable removal (2026-11-20)
+
+- **Ported.** `876ff0` uses `877720` in mode 2 and queues Remove only when its AITampering lookup is empty. The existing per-entity component-presence field makes the same decision for placed entities, including those that declared `aitampering_default`. Their existing context and retirement owners remain responsible for release. The callback reads one scalar through the existing entity slot and acquires no resources. Before the correction, the declared component made the callback fail after the destruction effects retired.

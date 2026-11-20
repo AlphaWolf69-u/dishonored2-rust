@@ -131,7 +131,7 @@ pub(super) struct PhysicsScene {
     owner_id: usize,
     contact_unbent_duration: Option<f32>,
     entity_flags_d4: Vec<u8>,
-    /// Source-absence certificate for unhosted AITampering lookup in876ff0.
+    /// Source component presence for the AITampering lookup in 876ff0.
     /// One compact lane per actual header; None is never assumed absent.
     removal_tampering: Vec<Option<bool>>,
     post_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,

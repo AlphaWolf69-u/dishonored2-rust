@@ -123,9 +123,9 @@ impl PhysicsScene {
         self.removal_tampering[index]=Some(declared);
         Ok(())
     }
-    ///876ff0 does nothing when lookup877720(mode2) finds actual AITampering;
-    ///otherwise it invokes Remove. Source-declared but unhosted is an error,
-    ///never a fabricated absent component or replacement ghost effect.
+    /// 876ff0 leaves a tampering entity for its own retirement path.
+    /// Placed declarations project that presence through the level owner;
+    /// this callback has no AI work of its own.
     pub(in crate::app) fn remove_or_ghost_removes(
         &self,
         live: &LiveEntities,
@@ -133,8 +133,7 @@ impl PhysicsScene {
     ) -> Result<bool, String> {
         let index = self.removal_index(live, id)?;
         match self.removal_tampering.get(index).copied().flatten() {
-            Some(false)=>Ok(true),
-            Some(true)=>Err("removeOrGhost requires the declared actual AITampering component lifecycle and context owner".into()),
+            Some(declared) => Ok(!declared),
             None=>Err("removeOrGhost has no complete source component-absence certificate".into()),
         }
     }
