@@ -29,6 +29,7 @@ pub(super) struct Observation {
     phase: Phase,
     since: Instant,
     input: Input,
+    movement: Option<Input>,
 }
 
 fn restore(world: &mut World, feet: Vec3, toward: Vec3) -> Result<(), String> {
@@ -108,11 +109,15 @@ impl Observation {
             phase: Phase::AimPotion,
             since: Instant::now(),
             input: input_for(22)?,
+            movement: None,
         })
     }
 
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         if self.since.elapsed() > Duration::from_secs(45) {
+            if let Some(movement) = self.movement.take() {
+                send(world, movement, false)?;
+            }
             return Err(format!(
                 "placed pickup observation timed out in {:?}: selected={:?} quantity={} player={:?}",
                 self.phase,
@@ -194,6 +199,28 @@ impl Observation {
                     );
                 } else if selected != Some(id) {
                     return Ok(false);
+                }
+                if !wall {
+                    let p = player(world)?;
+                    let state = p.machine.state(StateId::LOOT_OBJECT)
+                        .ok_or("placed pickup observation has no LootObject declaration")?;
+                    let crate::gameplay::player::states::Kind::LootObject(decl) = &state.decl.kind else {
+                        return Err("placed pickup observation found a different declared state".into());
+                    };
+                    let bounds = world.resource::<app::player_arms::PlayerArms>().body_model_bounds(p)?;
+                    let center = (Vec3::from(bounds[0]) + Vec3::from(bounds[1])) * 0.5;
+                    if center.distance_squared(point - Vec3::Z * decl.object_pickup_z_offset)
+                        >= decl.distance * decl.distance {
+                        if self.movement.is_none() {
+                            let movement = input_for(2)?;
+                            send(world, movement, true)?;
+                            self.movement = Some(movement);
+                        }
+                        return Ok(false);
+                    }
+                    if let Some(movement) = self.movement.take() {
+                        send(world, movement, false)?;
+                    }
                 }
                 send(world, self.input, true)?;
                 self.phase = if wall {

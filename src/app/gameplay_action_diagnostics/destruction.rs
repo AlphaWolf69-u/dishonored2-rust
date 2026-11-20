@@ -336,10 +336,7 @@ impl Observation {
             return Ok(false);
         }
         let Some(ammo) = ammo else { return Ok(false) };
-        if player(world)?.ranged_target_entity() == Some(self.target)
-            && ammo > 0
-            && self.last_shot != Some(ammo)
-        {
+        if ammo > 0 && self.last_shot != Some(ammo) {
             self.first_ammo.get_or_insert(ammo);
             self.last_shot = Some(ammo);
             let input = input_for(20)?;

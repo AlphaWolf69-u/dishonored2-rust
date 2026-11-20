@@ -207,12 +207,16 @@ impl CarryHost<'_> {
             self.pickable_reference(target.entity, target.definition, Some(target.reference))?;
         let pickable = self.scene.pickable(reference.handle)
             .ok_or("Loot pull Pickable absent")?;
-        //841500 tests raw+28 against all-ones, not the PhysicsBase pointer.
-        //Our admitted constructors use native managed-null0x3fff0010 or a
-        //real saved binding parent; neither is -1. No saved-state path
-        //currently admits the separate all-ones representation.
-        if pickable.interaction_flags & 4 != 0
-        {
+        // 841673 checks the +50 PhysicsBase reference's ID. Start stores
+        // all ones for an absent reference (76e8b0 -> 3dab80).
+        let can_pull = pickable
+            .references
+            .as_ref()
+            .ok_or("Loot pull Pickable Start references absent")?
+            .physics_base
+            .is_none()
+            || pickable.interaction_flags & 4 != 0;
+        if can_pull && (decl.instant_loot || pickable.definition.charm.is_some()) {
             return Ok(true);
         }
         let delta = if let Some(props) = target.definition.hold.as_ref() {
@@ -223,7 +227,16 @@ impl CarryHost<'_> {
         } else {
             player_center + Vec3::Z * decl.object_pickup_z_offset - target_center
         };
-        self.pull_delta(target.entity, delta, decl, player, target.from_grapple)
+        if can_pull {
+            self.pull_delta(target.entity, delta, decl, player, target.from_grapple)
+        } else if decl.pull_velocity(delta, player.physics.axis().x_axis, target.from_grapple).is_none() {
+            Ok(true)
+        } else {
+            if self.live.parent(target.entity)?.is_none() {
+                self.scene.request_actor_velocity(target.entity, [0.; 3], [0.; 3])?;
+            }
+            Ok(false)
+        }
     }
     fn hold_pull_delta(
         &self,

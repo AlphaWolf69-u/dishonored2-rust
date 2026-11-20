@@ -14,6 +14,7 @@ mod contact_fx;
 mod constraints;
 mod contact_fixture;
 mod placed_pickup;
+mod vault;
 mod wall_thrust;
 
 #[derive(Resource, Default)]
@@ -168,11 +169,12 @@ pub(super) struct Observation {
     destruction:Option<destruction::Observation>,
     constraints:Option<constraints::Observation>,
     placed_pickup: Option<placed_pickup::Observation>,
+    vault: Option<vault::Observation>,
 }
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let heart_only=match std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref(){
-            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("bolt-tank"|"bolt-oil"|"gun-speaker"|"gun-nest")|Ok("grenade")|Ok("constraints"|"placed-pickup")|Err(_)=>false,
+            Ok("heart")=>true,Ok("full")|Ok("carry")|Ok("contact")|Ok("melee")|Ok("poke")|Ok("world")|Ok("world-poke")|Ok("world-power")|Ok("world-power-poke")|Ok("world-wall-poke")|Ok("blink")|Ok("blink-water")|Ok("bolt")|Ok("bolt-bottle")|Ok("bolt-tank"|"bolt-oil"|"gun-speaker"|"gun-nest")|Ok("grenade")|Ok("constraints"|"placed-pickup"|"vault")|Err(_)=>false,
             Ok(other)=>return Err(format!("unknown action smoke scenario {other}; expected full, heart, carry, contact, melee, poke, world, world-poke, world-power, world-power-poke, blink, blink-water, bolt, bolt-bottle, grenade or constraints")),
         };
         if super::pause_menu::debug_character() != crate::gameplay::pause_state::Character::Corvo {
@@ -208,11 +210,14 @@ impl Observation {
         };
         let constraints=if constraint_only{Some(constraints::Observation::begin(world)?)}else{None};
         let placed_pickup=if pickup_only{Some(placed_pickup::Observation::begin(world)?)}else{None};
+        let vault = if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref() == Ok("vault") {
+            Some(vault::Observation::begin(world)?)
+        } else { None };
         let grenade=if grenade_only{Some(grenade::Observation::begin(world)?)}else{None};
         let wall=if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("world-wall-poke"){Some(wall_thrust::Observation::begin(world)?)}else{None};
         let audio_admissions=super::audio::observation::snapshot(world).admissions.len();
         eprintln!("ACTION_SMOKE_BEGIN provenance=installed_Corvo_loadout+03ab70_input+4de920_shortcuts+63a2b0_C8+802f90_Undraw setup={} no_fake_ACK=true",if std::env::var("DH2_DEBUG_ACTION_SCENARIO").as_deref()==Ok("bolt-tank"){"authored_waypoint_with_actual_LOS_restore_once"}else if wall.is_some()||blink_water.is_some(){"captured_F8_feet_restore_once"}else{"actual_level_spawn no_teleport=true"});
-        Ok(Self { bolt,placed_pickup,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
+        Ok(Self { bolt,placed_pickup,vault,stage:Stage::Begin,since:Instant::now(),release:None,held:None,before_ammo:0,initial_gun_ammo:None,
             seen_projectiles:HashSet::new(),shot_count:0,empty_scene:None,heart_before:0,heart_action:0,projectile_seen:false,object:None,object_motion_seen:false,object_drop_seen:false,object_throw_frame:None,object_motion_frame:None,object_contact:None,
             shot_frame_time:None,longest_shot_frame:Duration::ZERO,shot_frames:0,
             focus_samples:0,focus_nonzero:false,focus_release_attack:false,expected_bolt:None,gun_trigger_pending:false,heart_only,carry_only,contact_only,melee_only,poke_only,
@@ -703,6 +708,11 @@ impl Observation {
         Ok(())
     }
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool,String> {
+        if let Some(vault) = &mut self.vault {
+            let complete = vault.poll(world)?;
+            if complete { self.stage = Stage::Done; }
+            return Ok(complete);
+        }
         if let Some(pickup)=&mut self.placed_pickup {
             let complete=pickup.poll(world)?;
             if complete { self.stage=Stage::Done; }

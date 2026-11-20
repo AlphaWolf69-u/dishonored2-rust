@@ -425,12 +425,8 @@ impl Observation {
             .ok_or_else(|| "bolt diagnostic actual target frame absent".into())
     }
     pub(super) fn steer(world: &mut World, center: Vec3) -> Result<bool, String> {
-        let transform = *world
-            .query_filtered::<&Transform, With<Camera3d>>()
-            .single(world)
-            .map_err(|error| error.to_string())?;
-        let eye = Vec3::from(app::view_to_game(transform.translation));
-        let forward = Vec3::from(app::view_to_game(transform.forward().as_vec3()));
+        let (eye, axis) = player(world)?.published_camera_frame();
+        let forward = axis.x_axis;
         let to = center - eye;
         let yaw = to.y.atan2(to.x) - forward.y.atan2(forward.x);
         let yaw = yaw.sin().atan2(yaw.cos());
@@ -750,6 +746,11 @@ impl Observation {
                     if eye.distance(center) >= 3. {
                         self.stop(world)?;
                         self.explain(world, "physical-distance-beyond-user-two-metre-report")?;
+                        if self.oil && self.crouch.is_none() {
+                            let input = input_for(player(world)?.controller.sneak_action)?;
+                            send(world, input, true)?;
+                            self.crouch = Some(input);
+                        }
                         self.stage(Stage::Recover);
                     } else if Self::steer(world, center)? {
                         self.move_with(world, 3)?;
