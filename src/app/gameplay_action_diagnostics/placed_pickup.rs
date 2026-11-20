@@ -1,13 +1,13 @@
-//! Two saved laboratory viewpoints. Only the observer restores player feet.
+//! A placed health potion and the saved laboratory occlusion viewpoint.
 //! The player's real sensor, F binding, inventory, and pickup lifecycle run normally.
 use super::{super as app, *};
 use crate::gameplay::{entity_lifetime::LiveEntities, interaction_sensor::Scratch};
 use std::sync::Arc;
 
-const POTION: &str = "pickups_life_potion_01_12";
+const POTION: &str = "pickups_life_potion_01_14";
 const BOTTLE: &str = "env_interiors_lab_bottle_03_5";
-// F8 1793085101676 and 1793082964979, Edge of the World, low chaos.
-const OPEN_FEET: Vec3 = Vec3::new(69.5225, 12.616938, 32.944008);
+// Installed script_waypoint_174 and F8 1793082964979.
+const OPEN_FEET: Vec3 = Vec3::new(37.880363, 94.37499, 12.829023);
 const BLOCKED_FEET: Vec3 = Vec3::new(68.673, 8.303004, 32.943993);
 
 #[derive(Debug, Clone, Copy)]

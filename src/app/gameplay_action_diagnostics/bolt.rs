@@ -225,7 +225,12 @@ impl Observation {
             if !name.starts_with("pickups_processed_whale_oil") { continue; }
             options.push((pos.distance_squared(Self::center(world,id)?), name.to_owned(),id));
         }
-        options.sort_by(|a,b| a.0.total_cmp(&b.0));
+        // The installed patrol route passes this bottle at walking height.
+        // The closest bottle to spawn sits across a step behind a ledge.
+        options.sort_by(|a,b| {
+            (a.1 != "pickups_processed_whale_oil_9").cmp(&(b.1 != "pickups_processed_whale_oil_9"))
+                .then_with(|| a.0.total_cmp(&b.0))
+        });
         for (_,name,id) in options {
             if super::destruction::start_at_visible_waypoint(world,id)? {
                 return Self::begin_support(world,&name,false,true)

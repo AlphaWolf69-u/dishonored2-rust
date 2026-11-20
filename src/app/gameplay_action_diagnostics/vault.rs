@@ -8,11 +8,14 @@ pub(super) struct Observation {
     entered: bool,
     exited: Option<Vec3>,
     direction: Vec3,
+    jump: Input,
+    jump_pressed: bool,
+    release_jump: bool,
 }
 
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
-        use crate::gameplay::player::controller::{ACTION_MOVE_FORWARD, ACTION_SPRINT};
+        use crate::gameplay::player::controller::{ACTION_JUMP, ACTION_MOVE_FORWARD, ACTION_SPRINT};
         // Save positions are camera positions. Preserve the live eye offset
         // when restoring feet, then let ordinary support queries settle them.
         let approach = Vec3::new(14.629, 100.149, 14.484);
@@ -28,7 +31,8 @@ impl Observation {
         send(world, capture, false)?;
         let input = [input_for(ACTION_MOVE_FORWARD)?, input_for(ACTION_SPRINT)?];
         Ok(Self { input, started: Instant::now(), driving: false, entered: false,
-            exited: None, direction })
+            exited: None, direction, jump: input_for(ACTION_JUMP)?, jump_pressed: false,
+            release_jump: false })
     }
 
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
@@ -41,6 +45,7 @@ impl Observation {
             eprintln!("VAULT_CAPTURE_REPLAY_END entered={} exited={:?} feet={feet:?}{report}",
                 self.entered, self.exited);
             for input in self.input { send(world, input, false)?; }
+            if self.release_jump { send(world, self.jump, false)?; }
             return Err(format!("F8 vault approach timed out entered={} exited={:?} feet={feet:?}",
                 self.entered, self.exited));
         }
@@ -49,12 +54,26 @@ impl Observation {
             self.driving = true;
             return Ok(false);
         }
+        if self.release_jump {
+            send(world, self.jump, false)?;
+            self.release_jump = false;
+        } else if !self.jump_pressed && p.vault_sensor.can_vault {
+            let state = p.machine.state(StateId::VAULT).ok_or("vault declaration absent")?;
+            let crate::gameplay::player::states::Kind::Vault(decl) = &state.decl.kind else {
+                return Err("vault replay found a different declared state".into());
+            };
+            if p.velocity().truncate().length() >= decl.min_speed {
+                send(world, self.jump, true)?;
+                self.jump_pressed = true;
+                self.release_jump = true;
+            }
+        }
         if vault && !self.entered {
             self.entered = true;
             eprintln!("VAULT_CAPTURE_REPLAY_ENTER feet={feet:?}");
         } else if !vault && self.entered {
             let exit = *self.exited.get_or_insert(feet);
-            if (feet - exit).dot(self.direction) > p.physics.active_shape().radius {
+            if (feet - exit).dot(self.direction) > player(world)?.physics.active_shape().radius {
                 eprintln!("ACTION_SMOKE_PASS check=walk_clear_after_captured_vault_approach exit={exit:?} feet={feet:?}");
                 for input in self.input { send(world, input, false)?; }
                 return Ok(true);
