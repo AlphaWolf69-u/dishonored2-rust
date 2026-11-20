@@ -799,8 +799,15 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
         });
         Ok(())
     }
-    fn defer_render_pose(&mut self, _: &mut PhysicsActorLinks, _: usize) -> Result<(), String> {
-        Err("rigid deferred render owner is not admitted".into())
+    fn defer_render_pose(&mut self, _: &mut PhysicsActorLinks, render: usize) -> Result<(), String> {
+        // 753c10 calls render +38 instead of submitting a pose with +28 when
+        // either hidden flag is set. The host visibility owner already keeps
+        // this placement out of rendering. The physics frame above remains
+        // authoritative for queries and for the next visible publication.
+        if self.entity(render)?.entity_flags & 3 == 0 {
+            return Err("rigid render deferral targeted a visible entity".into());
+        }
+        Ok(())
     }
     fn post_joint_frame(
         &mut self,

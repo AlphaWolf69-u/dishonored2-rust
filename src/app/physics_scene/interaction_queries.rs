@@ -76,6 +76,15 @@ impl InteractionQueries {
     }
 }
 impl PhysicsScene {
+    pub(in crate::app) fn has_interaction_rigid_body(&self, live: &LiveEntities, target: EntityId) -> bool {
+        live.stage(target) == Some(Stage::Spawned)
+            && self.shared_indices.get(&target).is_some_and(|&index| {
+                self.document_rigid(index).ok().flatten()
+                    .and_then(|handle| self.rigid_component(handle).ok())
+                    .and_then(|body| body.body()).is_some()
+            })
+    }
+
     ///On-demand action diagnostic over the same retained bodies and source
     ///sphere casts. It changes no component, admission flag or query result.
     pub(in crate::app) fn describe_interaction_fixture(

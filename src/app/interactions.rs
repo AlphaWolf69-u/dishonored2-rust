@@ -865,6 +865,15 @@ pub(super) fn focus_and_interact(
             let Some(target) = hit.entity.or_else(|| live.as_deref()?.find(entity)) else {
                 continue;
             };
+            // A live collider owns selection for this actor. A second hit on
+            // its navigation proxy can come from a different pose or surface.
+            if hit.entity.is_none()
+                && physics.as_deref().zip(live.as_deref()).is_some_and(|(scene, live)| {
+                    scene.has_interaction_rigid_body(live, target)
+                })
+            {
+                continue;
+            }
             // 878c70 excludes committed context 4 before reading any ordinary
             // interaction descriptor, including a placed document or usable.
             if live.as_deref().and_then(|live| live.entity_context(target).ok())
