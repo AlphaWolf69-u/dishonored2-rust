@@ -207,16 +207,9 @@ impl CarryHost<'_> {
             self.pickable_reference(target.entity, target.definition, Some(target.reference))?;
         let pickable = self.scene.pickable(reference.handle)
             .ok_or("Loot pull Pickable absent")?;
-        // 841673 checks the +50 PhysicsBase reference's ID. Start stores
-        // all ones for an absent reference (76e8b0 -> 3dab80).
-        let can_pull = pickable
-            .references
-            .as_ref()
-            .ok_or("Loot pull Pickable Start references absent")?
-            .physics_base
-            .is_none()
-            || pickable.interaction_flags & 4 != 0;
-        if can_pull && (decl.instant_loot || pickable.definition.charm.is_some()) {
+        if pickable.interaction_flags & 4 != 0
+            && (decl.instant_loot || pickable.definition.charm.is_some())
+        {
             return Ok(true);
         }
         let delta = if let Some(props) = target.definition.hold.as_ref() {
@@ -227,16 +220,12 @@ impl CarryHost<'_> {
         } else {
             player_center + Vec3::Z * decl.object_pickup_z_offset - target_center
         };
-        if can_pull {
-            self.pull_delta(target.entity, delta, decl, player, target.from_grapple)
-        } else if decl.pull_velocity(delta, player.physics.axis().x_axis, target.from_grapple).is_none() {
-            Ok(true)
-        } else {
-            if self.live.parent(target.entity)?.is_none() {
-                self.scene.request_actor_velocity(target.entity, [0.; 3], [0.; 3])?;
-            }
-            Ok(false)
-        }
+        // 841500 uses its captured PhysicsBase ID to select the motion
+        // requests. The host's Start reference names an admitted component,
+        // including projectiles whose movement interface changes after Start.
+        // It cannot serve as that ID: doing so zeroed successful bolt pulls
+        // indefinitely after the Pickable had already accepted F.
+        self.pull_delta(target.entity, delta, decl, player, target.from_grapple)
     }
     fn hold_pull_delta(
         &self,
