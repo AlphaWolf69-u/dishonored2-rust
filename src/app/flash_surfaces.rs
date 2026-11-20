@@ -88,7 +88,8 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                     let was_visible = scene.runtime_actor_visible(live, key.entity)?;
                     eprintln!("ACTION_SMOKE_WORLD_MOVIE_FIRST_DRAW entity={:?} generation={} previously_visible={was_visible} configured={} target_rendered_and_bound={}", key.entity, key.generation, status.configured, status.captured);
                 }
-                scene.set_runtime_actor_visible(world, live, key.entity, true)
+                scene.set_runtime_actor_visible(world, live, key.entity, true)?;
+                scene.acknowledge_flash_visibility(key)
             })?;
         }
         if stop {

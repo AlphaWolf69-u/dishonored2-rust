@@ -9,9 +9,14 @@ struct Property<T> {
 }
 
 struct ReleaseProgress {
-    body: u32,
     first: u16,
     current: u16,
+}
+
+impl ReleaseProgress {
+    fn new(first: u16) -> Self {
+        Self { first, current: first }
+    }
 }
 
 #[derive(Default)]
@@ -19,9 +24,10 @@ pub struct BodyProperties<T = u64> {
     heads: Vec<u16>,
     properties: Vec<Property<T>>,
     free: Option<u16>,
-    deferred_release: Vec<u16>,
+    deferred_release: Vec<ReleaseProgress>,
+    deferred_cursor: usize,
     dispatching: bool,
-    pending_release: Option<ReleaseProgress>,
+    pending_release: Option<(u32, ReleaseProgress)>,
 }
 
 impl<T: Default> BodyProperties<T> {
@@ -37,8 +43,8 @@ impl<T: Default> BodyProperties<T> {
         body: u32,
         mut destroy_value: impl FnMut(&mut T) -> Result<(), String>,
     ) -> Result<(), String> {
-        if let Some(progress) = &self.pending_release {
-            if progress.body != body {
+        if let Some((pending_body, _)) = self.pending_release.as_ref() {
+            if *pending_body != body {
                 return Err("another body-property release is incomplete".into());
             }
         } else {
@@ -67,35 +73,16 @@ impl<T: Default> BodyProperties<T> {
                     .try_reserve(1)
                     .map_err(|error| format!("deferred property release: {error}"))?;
                 self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
-                self.deferred_release.push(first);
+                self.deferred_release.push(ReleaseProgress::new(first));
                 return Ok(());
             }
             self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
-            self.pending_release = Some(ReleaseProgress {
-                body,
-                first,
-                current: first,
-            });
+            self.pending_release = Some((body, ReleaseProgress::new(first)));
         }
-        loop {
-            let progress = self
-                .pending_release
-                .as_mut()
-                .expect("property release progress exists");
-            let property = self
-                .properties
-                .get_mut(progress.current as usize)
-                .ok_or("released property disappeared")?;
-            destroy_value(&mut property.value)?;
-            let next = property.next;
-            if next == u16::MAX {
-                property.next = self.free.unwrap_or(u16::MAX);
-                self.free = Some(progress.first);
-                self.pending_release = None;
-                return Ok(());
-            }
-            progress.current = next;
-        }
+        let (_, progress) = self.pending_release.as_mut().expect("property release progress exists");
+        Self::release_chain(&mut self.properties, &mut self.free, progress, &mut destroy_value)?;
+        self.pending_release = None;
+        Ok(())
     }
 
     /// ceb0c0 emits global listeners, then zero, one or two body listener
@@ -111,7 +98,7 @@ impl<T: Default> BodyProperties<T> {
         if self.heads.is_empty() {
             return Err("body-property dispatch has no global listener head".into());
         }
-        self.dispatching = true;
+        let outer_dispatch = std::mem::replace(&mut self.dispatching, true);
         let result: Result<(), String> = (|| {
             self.dispatch_chain(0, key, 0, &mut invoke)?;
             let count = if key < 9 {
@@ -126,15 +113,16 @@ impl<T: Default> BodyProperties<T> {
             }
             Ok(())
         })();
-        self.dispatching = false;
+        self.dispatching = outer_dispatch;
         result?;
-        let mut index = 0;
-        while index < self.deferred_release.len() {
-            let first = self.deferred_release[index];
-            self.release_chain(first, &mut destroy_value)?;
-            index += 1;
+        if !outer_dispatch {
+            while let Some(progress) = self.deferred_release.get_mut(self.deferred_cursor) {
+                Self::release_chain(&mut self.properties, &mut self.free, progress, &mut destroy_value)?;
+                self.deferred_cursor += 1;
+            }
+            self.deferred_release.clear();
+            self.deferred_cursor = 0;
         }
-        self.deferred_release.clear();
         Ok(())
     }
 
@@ -181,25 +169,24 @@ impl<T: Default> BodyProperties<T> {
     }
 
     fn release_chain(
-        &mut self,
-        first: u16,
+        properties: &mut [Property<T>],
+        free: &mut Option<u16>,
+        progress: &mut ReleaseProgress,
         destroy_value: &mut impl FnMut(&mut T) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut current = first;
-        for _ in 0..self.properties.len() {
-            let property = self
-                .properties
-                .get_mut(current as usize)
+        // release_body validated the links before detaching the chain.
+        loop {
+            let property = properties
+                .get_mut(progress.current as usize)
                 .ok_or("released property chain points outside storage")?;
             destroy_value(&mut property.value)?;
             if property.next == u16::MAX {
-                property.next = self.free.unwrap_or(u16::MAX);
-                self.free = Some(first);
+                property.next = free.unwrap_or(u16::MAX);
+                *free = Some(progress.first);
                 return Ok(());
             }
-            current = property.next;
+            progress.current = property.next;
         }
-        Err("cyclic released body-property chain".into())
     }
 
     pub fn get_or_create(

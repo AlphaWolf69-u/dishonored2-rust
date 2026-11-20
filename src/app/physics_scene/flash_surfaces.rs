@@ -20,7 +20,7 @@ pub(super) struct Surface {
     requires_configuration: bool,
     configured: bool,
     rendered: bool,
-    reported: bool,
+    shown: bool,
     static_released: bool,
     capture_remaining: f32,
     pending_map: Option<Arc<MapDefinition>>,
@@ -41,7 +41,7 @@ impl Surface {
             requires_configuration: false,
             configured: false,
             rendered: false,
-            reported: false,
+            shown: false,
             static_released: false,
             pending_map: None,
             cooking: None,
@@ -401,7 +401,7 @@ impl PhysicsScene {
                     !s.started
                         || (s.loaded
                             && s.playing
-                            && s.rendered
+                            && s.shown
                             && s.pending_map.is_none()
                             && (!s.requires_configuration || s.configured))
                 })
@@ -459,7 +459,7 @@ impl PhysicsScene {
     pub(in crate::app) fn flash_stopped_acknowledged(&mut self, key: Key) -> Result<(), String> {
         let surface = self.checked_surface_mut(key)?;
         surface.requested = false; surface.loaded = false; surface.playing = false;
-        surface.configured = false; surface.rendered = false; surface.reported = false;
+        surface.configured = false; surface.rendered = false; surface.shown = false;
         surface.static_released = false;
         Ok(())
     }
@@ -771,23 +771,8 @@ impl PhysicsScene {
         }
         s.configured = status.configured;
         s.rendered |= status.captured;
-        let show = !s.reported && s.loaded && s.playing && s.rendered && (!s.requires_configuration || s.configured);
-        if show {
-            s.reported = true;
-            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_WORLD_FLASH").is_some()) {
-                eprintln!(
-                    "WORLD_FLASH_SURFACE_READY entity={:?} handle={} generation={} iggy_info={} configured={} rendered={} static={}",
-                    key.entity,
-                    key.handle.packed(),
-                    key.generation,
-                    s.definition.iggy_info,
-                    s.configured,
-                    s.rendered,
-                    s.definition.is_static_texture
-                );
-            }
-        }
+        let show = !s.shown && s.loaded && s.playing && status.captured
+            && (!s.requires_configuration || s.configured);
         //4b0f40 releases only static playback; the captured image remains
         //bound until Stop's actual target/renderer acknowledgement.
         if s.definition.is_static_texture && s.playing && !s.static_released {
@@ -795,6 +780,25 @@ impl PhysicsScene {
             return Ok((show, s.capture_remaining <= 0. && status.captured));
         }
         Ok((show, false))
+    }
+
+    pub(in crate::app) fn acknowledge_flash_visibility(&mut self, key: Key) -> Result<(), String> {
+        let surface = self.checked_surface_mut(key)?;
+        surface.shown = true;
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_WORLD_FLASH").is_some()) {
+            eprintln!(
+                "WORLD_FLASH_SURFACE_READY entity={:?} handle={} generation={} iggy_info={} configured={} rendered={} static={}",
+                key.entity,
+                key.handle.packed(),
+                key.generation,
+                surface.definition.iggy_info,
+                surface.configured,
+                surface.rendered,
+                surface.definition.is_static_texture
+            );
+        }
+        Ok(())
     }
     ///HUD45af50/39ed10 initializes the actual subclass before Start. The
     ///later39ed20 value is the canonical Grenade490cd0 output, not a timer.

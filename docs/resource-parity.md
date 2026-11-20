@@ -767,6 +767,10 @@ source of the focused-thrust DoF effect.
 
 ## World FlashSurface movies and model texture scopes (2026-11-17)
 
+The host completes first-frame admission after the current movie frame is bound
+and the actor's visibility update succeeds. A failed visibility update leaves
+the presentation pending for retry by the same owner.
+
 Owners: `assets::flash_surface`, `app::physics_scene::flash_surfaces`,
 `app::flash_surface_movie`, the existing `pause_menu` Iggy worker and
 `rendering::bevy_backend::flash_ui`. `ported`, awaiting combined build and
@@ -24068,6 +24072,8 @@ Verification remains the parent's single coordinated compilation/runtime check.
 
 Contact retirement now calls the production driver wrapper before RigidBody/Throwable/Trigger unpublication and PhysicsWorld body destruction, including entered runtime-construction rollback. It retains and dispatches ordinary contact removal callbacks with actual old rows, current real bodies/motions and accepted solver parameters, then drains trigger Exit and actual water notifications before forgetting acknowledged numeric payloads. Only afterward can body properties, shapes or pool slots retire. Ordinary final actor identity retirement also waits for all accepted water-impact packets for that actual owner to post; whole-world water shutdown keeps its separate owner.
 
+
+Body-property retirement retains the current property and deferred chain across a host callback error. Completed chains return to the free list once. Nested dispatch leaves deferred releases to the outermost dispatch.
 
 ### Runtime Loot membership for recoverable projectiles (2026-11-16)
 
