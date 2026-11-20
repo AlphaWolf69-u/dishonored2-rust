@@ -167,8 +167,9 @@ pub(super) fn activate(world: &mut World, id: EntityId) -> Result<(), String> {
 pub(in crate::app) fn activate_class(world: &mut World, id: EntityId) -> Result<bool, String> {
     actor_class::activate(world, id)
 }
-///The actual idEntity/arkProjectile/idDynamicEntity/arkBreakable event tables contain no pickedUp301
-///handler (8cf620/914fb0). Other concrete classes need their own proof.
+/// The idEntity/arkProjectile/idDynamicEntity/arkBreakable event tables have no
+/// pickedUp handler (8cf620/914fb0). arkPickup's 8b6890 handler calls the no-op
+/// at 7ac710 for event 0x12d. Both cases still dispatch the named graph event.
 pub(super) fn picked_up_builtin_absent(world: &World, id: EntityId) -> Result<bool, String> {
     let live = world
         .get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
@@ -206,7 +207,9 @@ pub(super) fn picked_up_builtin_absent(world: &World, id: EntityId) -> Result<bo
         return Err("pickedUp source class spelling differs from actual metadata".into());
     }
     match actual {
-        b"idEntity" | b"arkProjectile" | b"idDynamicEntity" | b"arkBreakable" => Ok(true),
+        b"idEntity" | b"arkProjectile" | b"idDynamicEntity" | b"arkBreakable" | b"arkPickup" => {
+            Ok(true)
+        }
         b"arkGrenade" => Ok(false),
         _ => Err(format!(
             "pickedUp builtin dispatch is not verified for {}",

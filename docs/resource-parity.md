@@ -24077,6 +24077,11 @@ Body-property retirement retains the current property and deferred chain across 
 
 ### Runtime Loot membership for recoverable projectiles (2026-11-16)
 
+The placed health potion uses `arkPickup`. Constructor 784390 installs
+vtable 141c5e258, whose event dispatcher 8b6890 routes pickedUp (0x12d)
+to the no-op 7ac710. The runtime admits this class through the ordinary
+inventory and named event owners, with no built-in side effect to dispatch.
+
 - `gameplay/loot_component.rs` and `app/physics_scene/loot.rs` own623a70 →
   743c30/743cf0 runtime membership. Target Loot uses the actual policy2 lookup;
   the projectile Pickable uses policy0.76ee70 publishes a checked component
