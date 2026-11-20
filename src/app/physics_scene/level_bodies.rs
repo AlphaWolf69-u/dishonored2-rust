@@ -191,7 +191,7 @@ pub(super) struct PhysicsWorldComponent {
     pub bodies: Vec<u32>,
     shapes: Vec<usize>,
     creation: Vec<BodyInfo>,
-    created: usize,
+    initialized_bodies: usize,
     creation_entered: bool,
     creation_owner: Option<ComponentHandle>,
     registered: usize,
@@ -228,7 +228,7 @@ impl PhysicsWorldComponent {
             bodies: Vec::with_capacity(count),
             shapes: Vec::with_capacity(count),
             creation,
-            created: 0,
+            initialized_bodies: 0,
             creation_entered: false,
             creation_owner: None,
             registered: 0,
@@ -266,27 +266,28 @@ impl PhysicsWorldComponent {
             self.shapes.push(shape);
             self.registered += 1;
         }
-        while self.created < self.creation.len() {
-            let mut info = self.creation[self.created].clone();
-            // 851760 -> 694c20 -> 18cc90: real PhysicsWorld component owner,
-            // never the static motion anchor or an artificial rigid component.
-            info.user_data = CollisionUserData { component: handle }.encode();
-            if !self.creation_entered {
-                world.begin_disabled_component_body(handle, self.owner.generation, &info)?;
-                self.creation_entered = true;
+        while self.initialized_bodies < self.creation.len() {
+            let index = self.initialized_bodies;
+            if index == self.bodies.len() {
+                if !self.creation_entered {
+                    let mut info = self.creation[index].clone();
+                    info.user_data = CollisionUserData { component: handle }.encode();
+                    world.begin_disabled_component_body(handle, self.owner.generation, &info)?;
+                    self.creation_entered = true;
+                }
+                let body = world.resume_disabled_component_body(
+                    geometry,
+                    events,
+                    handle,
+                    self.owner.generation,
+                )?;
+                self.bodies.push(body);
+                self.creation_entered = false;
             }
-            let body = world.resume_disabled_component_body(
-                geometry,
-                events,
-                handle,
-                self.owner.generation,
-            )?;
-            self.bodies.push(body);
-            self.created += 1;
-            self.creation_entered = false;
-            //851760/694c20's +10 table belongs to this actual component;
-            //WorldStorage keeps the same Arc under full body generation.
-            world.register_body_materials(body, self.materials.clone())?;
+            // Keep the body recorded for rollback, and retry its registration
+            // before advancing if the material table could not be attached.
+            world.register_body_materials(self.bodies[index], self.materials.clone())?;
+            self.initialized_bodies += 1;
         }
         if !self.published {
             world.add_bodies(
