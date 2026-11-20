@@ -78,17 +78,8 @@ pub(crate) fn atom_body(body: BodyInput<'_>) -> AtomBody {
     }
 }
 
-/// 140713850 for LINEAR_CONSTRAINT_FIXED with ANGULAR_CONSTRAINT_CONE:
-/// local transforms from both body frames, stabilization, three-axis
-/// friction (m_angularFriction >= 0), the twist limit about the cone axis,
-/// the cone limit (half the cone angle, angle offset at the end of the
-/// runtime block) and the ball socket.
-pub(crate) fn cone_stack(
-    settings: &ConstraintSettings,
-    a: BodyInput<'_>,
-    b: BodyInput<'_>,
-) -> AtomStack {
-    let frame: Transform = [
+pub(crate) fn constraint_frame(settings: &ConstraintSettings) -> Transform {
+    [
         [
             settings.basis[0][0],
             settings.basis[0][1],
@@ -108,7 +99,20 @@ pub(crate) fn cone_stack(
             0.,
         ],
         [settings.pivot[0], settings.pivot[1], settings.pivot[2], 1.],
-    ];
+    ]
+}
+
+/// 140713850 for LINEAR_CONSTRAINT_FIXED with ANGULAR_CONSTRAINT_CONE:
+/// local transforms from both body frames, stabilization, three-axis
+/// friction (m_angularFriction >= 0), the twist limit about the cone axis,
+/// the cone limit (half the cone angle, angle offset at the end of the
+/// runtime block) and the ball socket.
+pub(crate) fn cone_stack(
+    settings: &ConstraintSettings,
+    a: BodyInput<'_>,
+    b: BodyInput<'_>,
+) -> AtomStack {
+    let frame = constraint_frame(settings);
     let axis = settings.angular_axis as u8;
     let huge = f32::from_bits(0x7f7f_ffee);
     let friction = (settings.angular_friction >= 0.).then(|| FrictionAtom {

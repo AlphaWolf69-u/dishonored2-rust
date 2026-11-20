@@ -74,6 +74,12 @@ fn transform(q: [f32; 4], basis: Basis) -> Basis {
 fn transpose(b: Basis) -> Basis {
     std::array::from_fn(|c| std::array::from_fn(|r| if r < 3 { b[r][c] } else { 0. }))
 }
+
+fn motion_frame(pose: &BodyPose, axes: Basis, pivot: [f32; 3]) -> (Basis, [f32; 3]) {
+    let world_to_mass = inverse(pose.orientation);
+    let offset = std::array::from_fn(|i| pivot[i] - pose.center[i]);
+    (transform(world_to_mass, axes), rotate_direction(world_to_mass, offset))
+}
 pub(crate) struct Joint {
     pub(crate) settings: ConstraintSettings,
     /// arkCpntConstraint +0x8c bit 1: the motor 1407149f0 disabled on freeze.
@@ -110,17 +116,8 @@ impl Joint {
         b_body: BodyInput<'_>,
     ) -> Self {
         let frame = settings.basis.map(vector);
-        let local = |body: BodyInput<'_>| transform(inverse(body.pose.orientation), frame);
-        let lever = |body: BodyInput<'_>| {
-            rotate_direction(
-                inverse(body.pose.orientation),
-                std::array::from_fn(|i| settings.pivot[i] - body.pose.center[i]),
-            )
-        };
-        let local_a = local(a_body);
-        let local_b = local(b_body);
-        let lever_a = lever(a_body);
-        let lever_b = lever(b_body);
+        let (local_a, lever_a) = motion_frame(a_body.pose, frame, settings.pivot);
+        let (local_b, lever_b) = motion_frame(b_body.pose, frame, settings.pivot);
         let motor = settings.motor.map(ConstraintMotor::from_settings);
         // The measurement history is relative BODY rotation, not the mass
         // principal axes. The constant mass frames cancel in relative changes;
@@ -143,6 +140,19 @@ impl Joint {
             previous_limit_angle: 0.,
             previous_friction_value: 0.,
         }
+    }
+
+    pub(crate) fn rebind_motions(
+        &mut self,
+        poses: [&BodyPose; 2],
+        world_frames: [super::atom_stack::Transform; 2],
+    ) {
+        let project = |side: usize| {
+            let frame = world_frames[side];
+            motion_frame(poses[side], [frame[0], frame[1], frame[2]], xyz(frame[3]))
+        };
+        (self.local_a, self.lever_a) = project(0);
+        (self.local_b, self.lever_b) = project(1);
     }
     pub(crate) fn motor_parameters(&self) -> Option<(bool, f32, f32, f32)> {
         let m = self.motor.as_ref()?;

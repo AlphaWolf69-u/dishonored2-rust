@@ -17,6 +17,7 @@ use crate::rendering::bevy_backend::flash_ui::FlashFrame;
 use std::sync::Arc;
 
 pub(super) struct HudMovie {
+    shortcuts_shown: bool,
     status: status::State,
     objectives: objectives::State,
     markers: markers::State,
@@ -243,6 +244,7 @@ impl HudMovie {
         ));
         let (objectives,markers)=objectives::State::load(catalog,language)?;
         Ok(Self {
+            shortcuts_shown: false,
             status: status::State::load(catalog)?,
             objectives,
             markers,

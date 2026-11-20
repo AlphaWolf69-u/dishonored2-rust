@@ -160,6 +160,7 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                         super::model_motion::set_entity_visible(world, &live, entity, true)
                     })?;
                     super::projected_decals::copy_parent_projection_contexts(world, id, entity)?;
+                    super::gameplay_action_diagnostics::destruction::speaker_chunk_released(world, id, entity);
                 }
                 Effect::ChunkImpulse { entity, point, direction, scale, falloff } => {
                     //7ee0e0 queries878230 only for positive falloff and never

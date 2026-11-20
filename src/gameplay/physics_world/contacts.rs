@@ -913,27 +913,22 @@ impl<G: ContactGeometry, E: PublicationEvents + BodyCreationCallbacks> Simulatio
                     .ok_or("prepared contact motion retired")
             });
             let motions = [motions[0]?, motions[1]?];
-            let disabled_stream = entry.callback_state.modifier_flags & 0x200 != 0;
-            entry.solvers = bodies.map(|body| {
-                if body.motion_id == 0 {
-                    return None;
+            for (side, (body, motion)) in bodies.into_iter().zip(motions).enumerate() {
+                // c583a0 writes solver slot zero for the inactive sentinel
+                // independently of the stream type. A deliberately frozen
+                // body still supplies the actual contact geometry and motion.
+                if body.motion_id == 0 || motion.solver_id == 0x7fff_ffff {
+                    entry.solvers[side] = None;
+                    continue;
                 }
                 let index = self.motion_to_solver[body.motion_id as usize];
-                //c583a0 maps a sleeping motion's7fffffff solverId to the
-                //static slot for a trigger stream; no artificial wake is needed.
-                if disabled_stream && index == usize::MAX {
-                    None
-                } else {
-                    Some(index)
+                if index == usize::MAX {
+                    return Err(format!(
+                        "contact body {:#x} motion {} solver {} missing from active roster; flags={:#x}",
+                        body.id, body.motion_id, motion.solver_id, body.flags
+                    ));
                 }
-            });
-            if entry
-                .solvers
-                .iter()
-                .flatten()
-                .any(|&slot| slot == usize::MAX)
-            {
-                return Err("contact motion missing from active solver roster".into());
+                entry.solvers[side] = Some(index);
             }
             let material = entry.material_ids.map(|id| {
                 world

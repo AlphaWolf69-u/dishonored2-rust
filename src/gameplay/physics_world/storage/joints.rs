@@ -47,7 +47,11 @@ pub(crate) struct JointObservation {
     pub pivot_separation_squared: f32,
 }
 enum Kernel {
-    Hinge(Joint),
+    Hinge {
+        joint: Joint,
+        motion_ids: [u32; 2],
+        body_frames: [joint_atoms::Transform; 2],
+    },
     Atom(AtomJoint),
 }
 struct Entry {
@@ -105,7 +109,7 @@ impl WorldStorage {
         let Some(bodies) = self.driven_bodies(id) else { return Ok(()); };
         self.joint_mutation_ready()?;
         let entry = self.joint_owner.entry_mut(id)?;
-        let Kernel::Hinge(joint) = &mut entry.kernel else { return Ok(()); };
+        let Kernel::Hinge { joint, .. } = &mut entry.kernel else { return Ok(()); };
         let changed = if far && joint.settings.started {
             joint.motor_suspended = true;
             joint.update_motor(Some(false), None, None, None)
@@ -141,7 +145,7 @@ impl WorldStorage {
 
     pub(crate) fn motor_parameters(&self, id: JointId) -> Result<Option<(bool, f32, f32, f32)>, String> {
         match &self.joint_owner.entry(id)?.kernel {
-            Kernel::Hinge(joint) => Ok(joint.motor_parameters()),
+            Kernel::Hinge { joint, .. } => Ok(joint.motor_parameters()),
             Kernel::Atom(_) => Ok(None),
         }
     }
@@ -150,7 +154,7 @@ impl WorldStorage {
         velocity: Option<f32>, acceleration: Option<f32>) -> Result<Option<[u32; 2]>, String> {
         self.joint_mutation_ready()?;
         let entry = self.joint_owner.entry_mut(id)?;
-        let Kernel::Hinge(joint) = &mut entry.kernel else { return Ok(None); };
+        let Kernel::Hinge { joint, .. } = &mut entry.kernel else { return Ok(None); };
         Ok(joint.update_motor(enabled, position, velocity, acceleration).then_some(entry.bodies))
     }
 
@@ -226,7 +230,15 @@ impl WorldStorage {
                 true,
             ))
         } else {
-            Kernel::Hinge(Joint::new(settings, 0, 0, a_input, b_input))
+            let frame = joint_atoms::constraint_frame(&settings);
+            Kernel::Hinge {
+                joint: Joint::new(settings, 0, 0, a_input, b_input),
+                motion_ids: [a.motion_id, b.motion_id],
+                body_frames: [
+                    joint_atoms::inverse_multiply(&a.transform, &frame),
+                    joint_atoms::inverse_multiply(&b.transform, &frame),
+                ],
+            }
         };
         let slot = if let Some(&slot) = self.joint_owner.free.last() {
             slot
@@ -667,9 +679,7 @@ impl WorldStorage {
         (slots, slots - free, free)
     }
     pub(crate) fn observe_joint(&self, id: JointId) -> Result<JointObservation, String> {
-        use crate::gameplay::{
-            constraint_solver::ball_socket::rotate_direction, shape_transform::compose,
-        };
+        use crate::gameplay::shape_transform::compose;
         let entry = self.joint_owner.entry(id)?;
         let a = self
             .bodies
@@ -705,37 +715,12 @@ impl WorldStorage {
                     dot,
                 )
             }
-            Kernel::Hinge(joint) => {
-                let frame = |motion: &crate::gameplay::motion::Motion,
-                             local: [[f32; 4]; 3],
-                             lever: [f32; 3]| {
-                    let mut result = [[0.; 4]; 4];
-                    for axis in 0..3 {
-                        let value = rotate_direction(
-                            motion.pose.orientation,
-                            [local[axis][0], local[axis][1], local[axis][2]],
-                        );
-                        result[axis] = [value[0], value[1], value[2], 0.];
-                    }
-                    let offset = rotate_direction(motion.pose.orientation, lever);
-                    result[3] = [
-                        motion.pose.center[0] + offset[0],
-                        motion.pose.center[1] + offset[1],
-                        motion.pose.center[2] + offset[2],
-                        1.,
-                    ];
-                    result
-                };
-                (
-                    [
-                        frame(ma, joint.local_a, joint.lever_a),
-                        frame(mb, joint.local_b, joint.lever_b),
-                    ],
-                    "hinge",
-                    None,
-                    None,
-                )
-            }
+            Kernel::Hinge { body_frames, .. } => (
+                [compose(a.transform, body_frames[0]), compose(b.transform, body_frames[1])],
+                "hinge",
+                None,
+                None,
+            ),
         };
         let linked = |body: u32| -> Result<bool, String> {
             let mut current = self
@@ -943,7 +928,19 @@ impl WorldStorage {
                     joint.b = indices[1];
                     joint.build(a_input, b_input, &atom_step);
                 }
-                Kernel::Hinge(joint) => {
+                Kernel::Hinge { joint, motion_ids, body_frames } => {
+                    let current = [a.motion_id, b.motion_id];
+                    if *motion_ids != current {
+                        // Start can move an initialized rigid body onto the fixed
+                        // anchor. Keep the installed pivot relative to the
+                        // endpoints and project it into the replacement motions.
+                        use crate::gameplay::shape_transform::compose;
+                        joint.rebind_motions(
+                            [&ma.pose, &mb.pose],
+                            [compose(a.transform, body_frames[0]), compose(b.transform, body_frames[1])],
+                        );
+                        *motion_ids = current;
+                    }
                     joint.a = indices[0];
                     joint.b = indices[1];
                     entry.hinge_rows = Some(joint.build(
@@ -974,7 +971,7 @@ impl WorldStorage {
         {
             match &mut entry.kernel {
                 Kernel::Atom(joint) => joint.solve(velocities, step),
-                Kernel::Hinge(joint) => {
+                Kernel::Hinge { joint, .. } => {
                     if let Some(rows) = &mut entry.hinge_rows {
                         solve_hinge(joint, rows, velocities, step, phase.velocity_fraction);
                     }
@@ -996,7 +993,7 @@ impl WorldStorage {
         {
             match &mut entry.kernel {
                 Kernel::Atom(joint) => joint.export(velocities, step),
-                Kernel::Hinge(joint) => {
+                Kernel::Hinge { joint, .. } => {
                     if let Some(rows) = &entry.hinge_rows {
                         joint.export(rows, velocities, step);
                     }

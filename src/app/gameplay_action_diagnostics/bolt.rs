@@ -436,11 +436,16 @@ impl Observation {
         let yaw = yaw.sin().atan2(yaw.cos());
         let pitch =
             -to.z.atan2(to.truncate().length()) + forward.z.atan2(forward.truncate().length());
+        // A ranged sensor can select a small bottle while the camera's ray
+        // still passes beside it. Stop steering before sending the fire input.
+        if yaw.abs() < 0.005 && pitch.abs() < 0.005 {
+            return Ok(true);
+        }
         //Controller increments guide input only; actual physics/focus admit actions.
         world.write_message(bevy::input::mouse::MouseMotion {
             delta: Vec2::new((-yaw * 100.).clamp(-8., 8.), (pitch * 100.).clamp(-8., 8.)),
         });
-        Ok(yaw.abs() < 0.05 && pitch.abs() < 0.05)
+        Ok(false)
     }
     fn discover(&mut self, world: &World) -> Result<(), String> {
         if self.projectile.is_some() {

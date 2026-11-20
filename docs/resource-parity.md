@@ -24082,6 +24082,22 @@ vtable 141c5e258, whose event dispatcher 8b6890 routes pickedUp (0x12d)
 to the no-op 7ac710. The runtime admits this class through the ordinary
 inventory and named event owners, with no built-in side effect to dispatch.
 
+Gameplay observations on November 20 found a separate solver failure while
+approaching a carried bottle, selecting a grenade and using Blink. The contact
+writer c583a0 maps each endpoint's inactive solver ID 0x7fffffff to the fixed
+solver lane for all stream types. The contact owner now uses that lane without
+discarding the endpoint's geometry, material, or actual motion record.
+
+In the same build the driven hinge's initialized anchor separation was 126.7 m
+before step zero. Hinge bindings now retain each pivot in its endpoint's body
+frame, as in the 713850 constraint setup. A changed motion ID reprojects the
+stored anchor to solver space without rebuilding or reallocating the joint.
+
+Shortcut publication uses the declared `Def_WheelItem.ammoMax` member already
+used by the wheel. The HUD worker records successful display before scheduling
+a hide, so releasing an input after a failed show does not call into a
+nonexistent dock.
+
 - `gameplay/loot_component.rs` and `app/physics_scene/loot.rs` own623a70 →
   743c30/743cf0 runtime membership. Target Loot uses the actual policy2 lookup;
   the projectile Pickable uses policy0.76ee70 publishes a checked component

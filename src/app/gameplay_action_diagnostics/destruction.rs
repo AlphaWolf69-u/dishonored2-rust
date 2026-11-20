@@ -110,16 +110,29 @@ pub(super) fn start_at_visible_waypoint(
             .as_mut()
             .ok_or("missing diagnostic player")?
             .teleport(feet, yaw);
+        let capture = input_for(19)?;
+        send(world, capture, true)?;
+        send(world, capture, false)?;
         Ok(true)
     } else {
         Ok(false)
     }
 }
 
-#[derive(Default, Resource)]
+#[derive(Resource)]
 struct SpeakerExplosion {
+    speaker: EntityId,
+    falling_piece: Option<EntityId>,
     damage_complete: bool,
     recipients: usize,
+}
+
+pub(in crate::app) fn speaker_chunk_released(world: &mut World, owner: EntityId, child: EntityId) {
+    if let Some(mut receipt) = world.get_resource_mut::<SpeakerExplosion>() {
+        if receipt.speaker == owner {
+            receipt.falling_piece = Some(child);
+        }
+    }
 }
 
 /// Called after the real radial damage loop succeeds. Looking up the source
@@ -129,7 +142,13 @@ pub(in crate::app) fn explosion_completed(
     request: &crate::gameplay::explosions::Request,
     recipients: usize,
 ) -> Result<(), String> {
-    if !world.contains_resource::<SpeakerExplosion>() {
+    let Some(receipt) = world.get_resource::<SpeakerExplosion>() else {
+        return Ok(());
+    };
+    let Some(inflictor) = request.inflictor else {
+        return Ok(());
+    };
+    if inflictor != receipt.speaker && Some(inflictor) != receipt.falling_piece {
         return Ok(());
     }
     let catalog = world
@@ -168,15 +187,35 @@ pub(super) struct Observation {
 
 impl Observation {
     pub(super) fn begin(world: &mut World, speaker: bool) -> Result<Self, String> {
-        let live = world.resource::<LiveEntities>();
-        let name = if speaker {
-            "script_kar_speaker_turnbuckle_01_3"
+        let target = if speaker {
+            let name = "script_kar_speaker_turnbuckle_01_3";
+            let target = world.resource::<LiveEntities>().find(name)
+                .ok_or_else(|| format!("missing destruction target {name}"))?;
+            if !start_at_visible_waypoint(world, target)? {
+                return Err(format!("no visible authored waypoint for {name}"));
+            }
+            target
         } else {
-            "env_interiors_nest_bloodfliesbuilding_floor0_7"
+            let live = world.resource::<LiveEntities>();
+            let scene = world.resource::<app::physics_scene::PhysicsScene>();
+            let mut nests = Vec::new();
+            for &id in live.spawned_entities() {
+                if live.get(id).is_some_and(|(name, _)| name.starts_with("env_interiors_nest_bloodflies"))
+                    && scene.entity_health(live, id)?.is_some_and(|(health, _)| health > 0.)
+                {
+                    nests.push(id);
+                }
+            }
+            let mut visible = None;
+            for id in nests {
+                if start_at_visible_waypoint(world, id)? {
+                    visible = Some(id);
+                    break;
+                }
+            }
+            visible.ok_or("no placed bloodfly nest visible from an authored waypoint")?
         };
-        let target = live
-            .find(name)
-            .ok_or_else(|| format!("missing destruction target {name}"))?;
+        let live = world.resource::<LiveEntities>();
         let scene = world.resource::<app::physics_scene::PhysicsScene>();
         let (health, _) = scene
             .entity_health(live, target)?
@@ -199,11 +238,13 @@ impl Observation {
         } else {
             None
         };
-        if !start_at_visible_waypoint(world, target)? {
-            return Err(format!("no visible authored waypoint for {name}"));
-        }
-        if speaker {
-            world.insert_resource(SpeakerExplosion::default());
+        if let Some((speaker, _)) = child {
+            world.insert_resource(SpeakerExplosion {
+                speaker,
+                falling_piece: None,
+                damage_complete: false,
+                recipients: 0,
+            });
         }
         let input = input_for(27)?;
         send(world, input, true)?;
@@ -291,7 +332,9 @@ impl Observation {
             return Ok(false);
         }
         let center = bolt::Observation::center(world, self.target)?;
-        bolt::Observation::steer(world, center)?;
+        if !bolt::Observation::steer(world, center)? {
+            return Ok(false);
+        }
         let Some(ammo) = ammo else { return Ok(false) };
         if player(world)?.ranged_target_entity() == Some(self.target)
             && ammo > 0

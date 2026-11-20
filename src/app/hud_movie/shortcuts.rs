@@ -66,7 +66,7 @@ pub(in crate::app) fn snapshot(
     Update {
         rows,
         slot: slot.filter(|_| enabled),
-        show: enabled && pressed && !previous.1,
+        show: enabled && pressed,
         hide: !enabled || inventory.shortcut_preview().is_none(),
     }
 }
@@ -103,7 +103,7 @@ impl HudMovie {
                     ("itemIndex", icon.into()),
                     ("label", label.into()),
                     ("ammoCount", count.into()),
-                    ("ammoTotal", total.into()),
+                    ("ammoMax", total.into()),
                 ] {
                     self.player
                         .set_value(&format!("{path}.{field}"), value)
@@ -111,7 +111,7 @@ impl HudMovie {
                 }
             }
         }
-        if update.show {
+        if update.show && !self.shortcuts_shown {
             let method = if update.slot.is_some_and(|slot| slot >= 10) {
                 "_C_Show"
             } else {
@@ -120,6 +120,7 @@ impl HudMovie {
             self.player
                 .call_path_method("_shortcuts", method, &[])
                 .map_err(|error| self.player.describe(&error))?;
+            self.shortcuts_shown = true;
         }
         if let Some(slot) = update.slot {
             self.player
@@ -149,10 +150,11 @@ impl HudMovie {
                 );
             }
         }
-        if update.hide {
+        if update.hide && self.shortcuts_shown {
             self.player
                 .call_path_method("_shortcuts", "_C_Hide", &[])
                 .map_err(|error| self.player.describe(&error))?;
+            self.shortcuts_shown = false;
         }
         self.last = None;
         Ok(())
