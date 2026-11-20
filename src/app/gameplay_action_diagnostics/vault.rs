@@ -11,6 +11,8 @@ pub(super) struct Observation {
     jump: Input,
     jump_pressed: bool,
     release_jump: bool,
+    saw_clearance: bool,
+    maximum_speed: f32,
 }
 
 impl Observation {
@@ -18,9 +20,10 @@ impl Observation {
         use crate::gameplay::player::controller::{ACTION_JUMP, ACTION_MOVE_FORWARD, ACTION_SPRINT};
         // Save positions are camera positions. Preserve the live eye offset
         // when restoring feet, then let ordinary support queries settle them.
-        let approach = Vec3::new(14.629, 100.149, 14.484);
-        let at_table = Vec3::new(15.2746, 105.8802, 14.8055);
-        let direction = (at_table - approach).with_z(0.).normalize();
+        // Use the saved forward axis, with the lateral offset already
+        // applied, to enter the same side of the table as the capture.
+        let approach = Vec3::new(15.239, 100.149, 14.484);
+        let direction = Vec3::new(0.009, 0.998, 0.).normalize();
         let p = player(world)?;
         let feet = approach - (p.published_camera_frame().0 - p.feet());
         world.resource_mut::<PlayerState>().player.as_mut()
@@ -32,13 +35,16 @@ impl Observation {
         let input = [input_for(ACTION_MOVE_FORWARD)?, input_for(ACTION_SPRINT)?];
         Ok(Self { input, started: Instant::now(), driving: false, entered: false,
             exited: None, direction, jump: input_for(ACTION_JUMP)?, jump_pressed: false,
-            release_jump: false })
+            release_jump: false, saw_clearance: false, maximum_speed: 0. })
     }
 
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         let p = player(world)?;
         let feet = p.feet();
         let vault = p.machine.is_active(StateId::VAULT);
+        let speed = p.velocity().truncate().length();
+        self.maximum_speed = self.maximum_speed.max(speed);
+        self.saw_clearance |= p.vault_sensor.can_vault;
         if self.started.elapsed() > Duration::from_secs(35) {
             let mut report = String::new();
             p.write_combat_diagnostics(&mut report);
@@ -46,8 +52,8 @@ impl Observation {
                 self.entered, self.exited);
             for input in self.input { send(world, input, false)?; }
             if self.release_jump { send(world, self.jump, false)?; }
-            return Err(format!("F8 vault approach timed out entered={} exited={:?} feet={feet:?}",
-                self.entered, self.exited));
+            return Err(format!("F8 vault approach timed out entered={} exited={:?} feet={feet:?} jump_pressed={} saw_clearance={} maximum_speed={}",
+                self.entered, self.exited, self.jump_pressed, self.saw_clearance, self.maximum_speed));
         }
         if !self.driving {
             for input in self.input { send(world, input, true)?; }
@@ -62,7 +68,7 @@ impl Observation {
             let crate::gameplay::player::states::Kind::Vault(decl) = &state.decl.kind else {
                 return Err("vault replay found a different declared state".into());
             };
-            if p.velocity().truncate().length() >= decl.min_speed {
+            if speed >= decl.min_speed {
                 send(world, self.jump, true)?;
                 self.jump_pressed = true;
                 self.release_jump = true;

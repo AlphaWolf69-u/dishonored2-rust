@@ -762,7 +762,9 @@ impl Observation {
                     } else {
                         self.stop(world)?;
                     }
-                } else if Self::focused(world, id) {
+                } else if Self::focused(world, id)
+                    && (!self.oil || super::placed_pickup::within_pickup_distance(world, center)?)
+                {
                     self.stop(world)?;
                     self.focused_seen = true;
                     self.explain(world, "actual-unlocked-bolt-focus")?;

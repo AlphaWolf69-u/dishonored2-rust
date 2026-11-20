@@ -55,6 +55,19 @@ fn selection(world: &World) -> Option<EntityId> {
         .selected_interaction_target(world.resource::<LiveEntities>())
 }
 
+pub(super) fn within_pickup_distance(world: &World, point: Vec3) -> Result<bool, String> {
+    let p = player(world)?;
+    let state = p.machine.state(StateId::LOOT_OBJECT)
+        .ok_or("pickup observation has no LootObject declaration")?;
+    let crate::gameplay::player::states::Kind::LootObject(decl) = &state.decl.kind else {
+        return Err("pickup observation found a different declared state".into());
+    };
+    let bounds = world.resource::<app::player_arms::PlayerArms>().body_model_bounds(p)?;
+    let center = (Vec3::from(bounds[0]) + Vec3::from(bounds[1])) * 0.5;
+    Ok(center.distance_squared(point - Vec3::Z * decl.object_pickup_z_offset)
+        < decl.distance * decl.distance)
+}
+
 impl Observation {
     pub(super) fn begin(world: &mut World) -> Result<Self, String> {
         let live = world.resource::<LiveEntities>();
@@ -168,28 +181,19 @@ impl Observation {
                     scene.cast_interaction_sensor(
                         live, eye, forward, sensor, &mut query, &mut casts,
                     )?;
-                    let Some(hit) = casts.hits[..3]
-                        .iter()
-                        .flatten()
-                        .find(|hit| hit.entity == Some(id))
-                    else {
-                        return Ok(false);
-                    };
-                    let witness = Vec3::from_array(app::view_to_game(hit.position));
-                    if !scene.interaction_occluded(
-                        live,
-                        id,
-                        eye,
-                        witness,
-                        sensor.shape_radii[0],
-                        &mut query,
-                    )? {
-                        return Err(format!(
-                            "saved laboratory bottle surface is exposed from actual eye {eye:?} at {witness:?}; origin-only occlusion does not establish a blocked interaction"
-                        ));
+                    let mut blocked_witness = None;
+                    for hit in casts.hits[..3].iter().flatten().filter(|hit| hit.entity == Some(id)) {
+                        let witness = Vec3::from_array(app::view_to_game(hit.position));
+                        if !scene.interaction_occluded(live, id, eye, witness, sensor.shape_radii[0], &mut query)? {
+                            return Err(format!(
+                                "saved laboratory bottle has an exposed surface from actual eye {eye:?} at {witness:?}"
+                            ));
+                        }
+                        blocked_witness = Some(witness);
                     }
+                    let Some(witness) = blocked_witness else { return Ok(false) };
                     if selected == Some(id) {
-                        return Err("occluded laboratory bottle still selected".into());
+                        return Err(format!("occluded laboratory bottle still selected from {eye:?} at {witness:?}"));
                     }
                     if selected.is_some() {
                         return Ok(false);
@@ -201,16 +205,7 @@ impl Observation {
                     return Ok(false);
                 }
                 if !wall {
-                    let p = player(world)?;
-                    let state = p.machine.state(StateId::LOOT_OBJECT)
-                        .ok_or("placed pickup observation has no LootObject declaration")?;
-                    let crate::gameplay::player::states::Kind::LootObject(decl) = &state.decl.kind else {
-                        return Err("placed pickup observation found a different declared state".into());
-                    };
-                    let bounds = world.resource::<app::player_arms::PlayerArms>().body_model_bounds(p)?;
-                    let center = (Vec3::from(bounds[0]) + Vec3::from(bounds[1])) * 0.5;
-                    if center.distance_squared(point - Vec3::Z * decl.object_pickup_z_offset)
-                        >= decl.distance * decl.distance {
+                    if !within_pickup_distance(world, point)? {
                         if self.movement.is_none() {
                             let movement = input_for(2)?;
                             send(world, movement, true)?;
