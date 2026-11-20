@@ -5,10 +5,11 @@ use crate::gameplay::{entity_lifetime::LiveEntities, interaction_sensor::Scratch
 use std::sync::Arc;
 
 const POTION: &str = "pickups_life_potion_01_14";
-const BOTTLE: &str = "env_interiors_lab_bottle_03_5";
-// Installed script_waypoint_174 and F8 1793082964979.
+const BOTTLE: &str = "env_interiors_lab_bottle_large_02_6";
+// The potion approach is installed script_waypoint_174. Use the other side
+// of the laboratory wall from F8 1793082964979 for the blocked bottle.
 const OPEN_FEET: Vec3 = Vec3::new(37.880363, 94.37499, 12.829023);
-const BLOCKED_FEET: Vec3 = Vec3::new(68.673, 8.303004, 32.943993);
+const BLOCKED_FEET: Vec3 = Vec3::new(71.100, 9.100, 32.943993);
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
@@ -55,7 +56,7 @@ fn selection(world: &World) -> Option<EntityId> {
         .selected_interaction_target(world.resource::<LiveEntities>())
 }
 
-pub(super) fn within_pickup_distance(world: &World, point: Vec3) -> Result<bool, String> {
+fn within_pickup_distance(world: &World, point: Vec3) -> Result<bool, String> {
     let p = player(world)?;
     let state = p.machine.state(StateId::LOOT_OBJECT)
         .ok_or("pickup observation has no LootObject declaration")?;

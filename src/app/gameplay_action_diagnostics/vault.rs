@@ -13,6 +13,7 @@ pub(super) struct Observation {
     release_jump: bool,
     saw_clearance: bool,
     maximum_speed: f32,
+    tried_current_clearance: bool,
 }
 
 impl Observation {
@@ -35,7 +36,7 @@ impl Observation {
         let input = [input_for(ACTION_MOVE_FORWARD)?, input_for(ACTION_SPRINT)?];
         Ok(Self { input, started: Instant::now(), driving: false, entered: false,
             exited: None, direction, jump: input_for(ACTION_JUMP)?, jump_pressed: false,
-            release_jump: false, saw_clearance: false, maximum_speed: 0. })
+            release_jump: false, saw_clearance: false, maximum_speed: 0., tried_current_clearance: false })
     }
 
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
@@ -44,7 +45,9 @@ impl Observation {
         let vault = p.machine.is_active(StateId::VAULT);
         let speed = p.velocity().truncate().length();
         self.maximum_speed = self.maximum_speed.max(speed);
-        self.saw_clearance |= p.vault_sensor.can_vault;
+        let cleared = p.vault_sensor.can_vault && p.physics.near_ground();
+        self.saw_clearance |= cleared;
+        if !cleared { self.tried_current_clearance = false; }
         if self.started.elapsed() > Duration::from_secs(35) {
             let mut report = String::new();
             p.write_combat_diagnostics(&mut report);
@@ -63,15 +66,18 @@ impl Observation {
         if self.release_jump {
             send(world, self.jump, false)?;
             self.release_jump = false;
-        } else if !self.jump_pressed && p.vault_sensor.can_vault {
+        } else if !self.entered && !self.tried_current_clearance && cleared {
             let state = p.machine.state(StateId::VAULT).ok_or("vault declaration absent")?;
             let crate::gameplay::player::states::Kind::Vault(decl) = &state.decl.kind else {
                 return Err("vault replay found a different declared state".into());
             };
             if speed >= decl.min_speed {
+                eprintln!("VAULT_CAPTURE_REPLAY_JUMP feet={feet:?} speed={speed} active={:?} target={:?}",
+                    p.active_player_states(), p.vault_sensor.vault_position);
                 send(world, self.jump, true)?;
                 self.jump_pressed = true;
                 self.release_jump = true;
+                self.tried_current_clearance = true;
             }
         }
         if vault && !self.entered {
