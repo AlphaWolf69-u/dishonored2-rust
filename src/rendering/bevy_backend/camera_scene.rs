@@ -1165,8 +1165,9 @@ fn render_opaque_particles(
         let CameraGpu { opaque_particles, particle_images, .. } = &mut *gpu;
         opaque_particles.as_mut().unwrap().pass.record_opaque(particle_images, &device, &queue,
             context.command_encoder(), inputs, draws)?;
-        if !*reported {
+        if !*reported && !draws.is_empty() {
             info!(draws = draws.len(), instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
+                materials = ?draws.iter().take(8).map(|draw| draw.material.name.as_str()).collect::<Vec<_>>(),
                 "Opaque particle submission active");
             *reported = true;
         }

@@ -1,5 +1,13 @@
 # Resource parity ledger
 
+## Pickup completion, destruction dispatch and traversal recording (2026-11-20)
+
+- **Ported.** `14076e750` uses the Pickable interaction name for valuables, including paintings. Its inventory-name substitution applies to books and readable note types. `140841030` posts HUD notices and `140841500` completes the picked-up notification and hide on the current actor. The host HUD mailbox forwards an already-loaded notice to the existing movie worker immediately. World visibility uses the shared entity render owner so no placed mesh or shadow survives pickup, including while the scene is still being populated. No new resource cache is used.
+- **Ported.** `140718c80` deducts a health hit from the pending consumable-heal target. The delayed passive regeneration target is independent.
+- **Ported for single rigid bodies.** The authored physics behavior node (`1407996b0` and `140799550`) resolves the bound list of live entities, skips bound movement owners and changes or resets existing bodies through the existing `140727880`/`140c86800` publication owner. The wood-chunk break notification connects `Step changed` to `Set`, selecting dynamic movement for its authored list. Each action updates the affected bodies once with their retained shapes and mass properties.
+- **Host.** The wgpu particle program owns a single zeroed `ParallelSamplingUniform`-sized fallback for statically reachable storage bindings. The previous fallback borrowed the instance buffer, which was 192 bytes in the recorded two-instance nest crash, while binding 120 needs 480 bytes. The substitute is shared across draws, with no frame upload or new shader pass. The fault log includes the first submitted opaque particle materials.
+- **Host diagnostic.** The existing bounded Blink and vault history now writes one automatic contact snapshot to the session log if requested horizontal movement stalls after traversal. Detection runs only inside the existing traversal follow-up window. The snapshot allocates and writes only when triggered. A pending pickup logs its target, pull and delivery phase once if it lasts a second.
+
 ## Motorized rigid hinges on the gameplay bodies (2026-11-19)
 
 Placed and runtime children now share the original unbind rule. `1408762d0` clears the bound bit, `140727450(NULL)` invokes rigid virtual `+188` with movement type 2, and `140727880` applies it if the current body differs. This releases the current body to dynamic movement even when the declaration's initial mode was static or keyframed. The existing dynamic-mode owner retains the body generation and collision resources. The earlier document pickup already used this rule. No new body, geometry or per-frame work is introduced.

@@ -502,6 +502,7 @@ pub(super) struct ParticlePrograms {
     material_layout: BindGroupLayout,
     fog_layout: BindGroupLayout,
     lighting_layout: BindGroupLayout,
+    unused_lighting: Buffer,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
     /// The zPrePass programs use only the view and material groups.
@@ -510,6 +511,15 @@ pub(super) struct ParticlePrograms {
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
+        // WebGPU validates shader-reachable group bindings even when the
+        // current lighting override does not execute those reads. The shared
+        // receiver block is the largest minimum storage binding in this group.
+        let unused_lighting = device.create_buffer(&BufferDescriptor {
+            label: Some("unused particle scene lighting"),
+            size: super::shadow_sampling::ParallelSamplingUniform::min_size().get(),
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let view_layout = device.create_bind_group_layout(
             Some("particle view"),
             &[
@@ -608,7 +618,7 @@ impl ParticlePrograms {
             label: Some("particle colour"),
             source: ShaderSource::Wgsl(source.into()),
         });
-        Self {formats, view_layout, material_layout, fog_layout, lighting_layout,
+        Self {formats, view_layout, material_layout, fog_layout, lighting_layout, unused_lighting,
             pipeline_layout, depth_layout, shader, pipelines: HashMap::new()}
     }
 }
@@ -2042,9 +2052,10 @@ impl ParticlePass {
             return Err("lit particle scene GPU resources unavailable".into());
         }
         let lighting = input.lighting.as_ref();
-        let probes = lighting.map_or(&self.instances, |v| v.probes);
-        let words = lighting.map_or(&self.instances, |v| v.words);
-        let planes = lighting.map_or(&self.instances, |v| v.planes);
+        let unused = &self.programs.unused_lighting;
+        let probes = lighting.map_or(unused, |v| v.probes);
+        let words = lighting.map_or(unused, |v| v.words);
+        let planes = lighting.map_or(unused, |v| v.planes);
         let cubes = lighting.map_or(&self.unused_cube_view, |v| v.cubes);
         let reflection_sampler = lighting.map_or(&self.wrap, |v| v.sampler);
         let direct = input.direct.as_ref();
@@ -2056,18 +2067,18 @@ impl ParticlePass {
         {
             return Err("particle local-light inputs unavailable".into());
         }
-        let directional = direct.map_or(&self.instances, |d| d.parallel);
+        let directional = direct.map_or(unused, |d| d.parallel);
         let directional_depth = direct.map_or(&self.unused_shadow_view, |d| d.parallel_depth);
         let local = direct
             .and_then(|d| d.local)
-            .map_or(&self.instances, |d| d.0);
+            .map_or(unused, |d| d.0);
         let local_depth = direct
             .and_then(|d| d.local)
             .map_or(&self.unused_shadow_view, |d| d.1);
-        let lights = direct.map_or(&self.instances, |d| d.lights);
-        let pool = direct.map_or(&self.instances, |d| d.pool);
-        let heads = direct.map_or(&self.instances, |d| d.heads);
-        let shadows = direct.map_or(&self.instances, |d| d.shadows);
+        let lights = direct.map_or(unused, |d| d.lights);
+        let pool = direct.map_or(unused, |d| d.pool);
+        let heads = direct.map_or(unused, |d| d.heads);
+        let shadows = direct.map_or(unused, |d| d.shadows);
         let pixel = direct.and_then(|d| d.pixel.as_ref());
         if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
             && pixel.is_none() {

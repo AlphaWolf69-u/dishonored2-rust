@@ -1024,27 +1024,38 @@ impl PhysicsScene {
             .and_then(entities::rigid_body_behavior_kind)
             .ok_or("bound rigid declared behavior absent")?;
         let behavior = self.bound_document_behavior(live, index, authored)?;
-        let result = (|| {
-            let shared = self.world.clone();
-            let mut guard = shared
-                .write()
-                .map_err(|_| "bound body mode world poisoned")?;
-            let world = &mut *guard;
-            scene_publication_events!(self, registry, events);
-            match behavior {
-                0 => world
-                    .storage
-                    .static_single_body(&mut world.geometry, &mut events, body),
-                1 => world
-                    .storage
-                    .keyframe_single_body(&mut world.geometry, &mut events, body),
-                2 => world
-                    .storage
-                    .dynamic_single_body(&mut world.geometry, &mut events, body),
-                _ => Err("bound body mode invalid".into()),
-            }
-        })();
-        result
+        let shared = self.world.clone();
+        let mut guard = shared.write().map_err(|_| "bound body mode world poisoned")?;
+        let world = &mut *guard;
+        scene_publication_events!(self, registry, events);
+        world.storage.change_single_body_behavior(&mut world.geometry, &mut events, body, behavior)
+    }
+
+    pub(super) fn change_graph_body_behavior(&mut self, id: EntityId, behavior: Option<u8>,
+        entity_events: &mut EntityEvents) -> Result<(), String> {
+        let Some(&index) = self.shared_indices.get(&id) else { return Ok(()); };
+        // 7996b0/799550 skip entities with a bound movement owner.
+        if self.entities[index].entity_flags & 0x80 != 0 { return Ok(()); }
+        let Some(handle) = self.document_rigid(index)? else { return Ok(()); };
+        let component = self.rigid_component(handle)?;
+        let Some(body) = component.body().filter(|_| component.owner.flags & 0xc == 8) else { return Ok(()); };
+        let behavior = match behavior {
+            Some(behavior) => behavior,
+            None => component.definition().and_then(|definition| definition.settings.physics_behavior.as_deref())
+                .and_then(entities::rigid_body_behavior_kind).ok_or("graph body has no declared physics behavior")?,
+        };
+        let shared = self.world.clone();
+        let mut guard = shared.write().map_err(|_| "graph body mode world poisoned")?;
+        let world = &mut *guard;
+        let mut registry = self.registry.take().ok_or("graph body mode registry absent")?;
+        let result = {
+            scene_publication_events!(self, &mut registry, events, &mut *entity_events);
+            world.storage.change_single_body_behavior(&mut world.geometry, &mut events, body, behavior)
+        };
+        self.registry = Some(registry);
+        result?;
+        self.rigid_component_mut(handle)?.start_behavior = Some(behavior);
+        Ok(())
     }
     pub(in crate::app) fn bind_to_player(
         &mut self,

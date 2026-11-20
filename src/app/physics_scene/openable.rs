@@ -101,7 +101,7 @@ impl PhysicsScene {
     ///already accepted first leaf a second time during cleanup/retry.
     pub(in crate::app) fn process_openable_uses(&mut self,world:&mut bevy::prelude::World,
         live:&LiveEntities,events:&mut EntityEvents)->Result<(),String>{
-        self.process_usable_uses(world,live)?;
+        self.process_usable_uses(world,live,events)?;
         if !self.openable_uses_pending{return Ok(());}
         for position in 0..self.openables.allocated_count(){
             let slot=self.openables.roster.indices[position];

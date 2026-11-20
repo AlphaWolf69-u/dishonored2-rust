@@ -46,6 +46,17 @@ impl WorldStorage {
         self.change_body_mode(geometry, events, id, Change::Dynamic)
     }
 
+    pub(crate) fn change_single_body_behavior<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32, behavior: u8,
+    ) -> Result<(), String> {
+        match behavior {
+            0 => self.static_single_body(geometry, events, id),
+            1 => self.keyframe_single_body(geometry, events, id),
+            2 => self.dynamic_single_body(geometry, events, id),
+            _ => Err("invalid rigid body behavior".into()),
+        }
+    }
+
     /// c87640 stores the real collision filter then refreshes collision state
     /// and the existing general body signal; no body is unpublished or replaced.
     pub(crate) fn set_body_filter<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(

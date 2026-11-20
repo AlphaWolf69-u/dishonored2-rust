@@ -121,7 +121,7 @@ impl PhysicsScene {
         self.entity_flags_d4[index]|=4;
         Ok(true)
     }
-    pub(in crate::app) fn process_usable_uses(&mut self,world:&mut bevy::prelude::World,live:&LiveEntities)->Result<(),String>{
+    pub(in crate::app) fn process_usable_uses(&mut self,world:&mut bevy::prelude::World,live:&LiveEntities,events:&mut EntityEvents)->Result<(),String>{
         while let Some(request)=self.usable_uses.front(){
             let reference=request.reference;let instigator=request.instigator;
             let Some(component)=(if reference.handle.class_id==self.classes[58]{self.static_usables.get(reference.handle.slot)}else{self.usables.get(reference.handle.slot)})
@@ -158,6 +158,9 @@ impl PhysicsScene {
                     }
                     UsableAction::Remove { .. } => {
                         super::super::entity_functions::enqueue_graph_removal_with_live(world, live, target)?;
+                    }
+                    UsableAction::PhysicsBehavior(behavior) => {
+                        self.change_graph_body_behavior(target, behavior, events)?;
                     }
                 }
             }

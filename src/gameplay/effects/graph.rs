@@ -26,6 +26,7 @@ pub enum UsableAction {
     Stage { stage: Option<usize>, instant: bool },
     SetAvailability(bool),
     Remove { attached: bool },
+    PhysicsBehavior(Option<u8>),
 }
 
 pub trait FxGraphWorld {
@@ -636,6 +637,29 @@ impl FxGraphRuntime {
             "arkKisculeNodeActionInteractable" if port.name == "Set" => {
                 // 52dc30 calls the resolved Interactable's virtual availability setter.
                 self.queue_availability(world, node, "m_entity", "m_usable", false)?;
+                true
+            }
+            "arkKisculeNodeChangePhysicsBehavior" if matches!(port.name.as_str(), "Set" | "Reset") => {
+                // 7996b0 and 799550 resolve the same list. Reset restores the
+                // selected body's declaration through 727730.
+                let entities = if let Some((source, output)) = self.input(node, "m_entities") {
+                    self.entity_references(source, output)?
+                } else {
+                    crate::assets::entities::event_graph::entity_reference_names(&node.params, "m_entities")?
+                        .into_iter().map(|name| name.map_or(EntityReference::Invalid, EntityReference::Named)).collect()
+                };
+                let behavior = if port.name == "Set" {
+                    let name = self.declaration_input(node, "m_behavior", "BEHAVIOR_DYNAMIC")?;
+                    Some(crate::assets::entities::rigid_body_behavior_kind(&name)
+                        .ok_or_else(|| format!("unknown physics behavior {name:?}"))?)
+                } else {
+                    None
+                };
+                for reference in &entities {
+                    if let Some(entity) = world.managed_entity(reference)? {
+                        world.request_usable_action(entity, UsableAction::PhysicsBehavior(behavior))?;
+                    }
+                }
                 true
             }
             "arkKisculeNodeActionUsable" if port.name == "Set Usability" => {

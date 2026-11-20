@@ -7,7 +7,7 @@ use crate::gameplay::{
     pickable_component::{CheckedComponent, PickableDefinition},
 };
 use bevy::prelude::{Mut, World};
-use std::sync::Arc;
+use std::{sync::Arc, time::{Duration, Instant}};
 
 ///The actual47 transaction shared by43f9b0 arrival and691970 movable catch.
 pub(in crate::app) fn request(
@@ -76,13 +76,16 @@ pub(super) struct Pending {
     pub notice: crate::gameplay::effects::instances::PickupReceipt,
     pub rejected_notice: bool,
     pub rejected_sound: Option<u32>,
+    requested_at: Instant,
+    delay_logged: bool,
 }
 impl Pending {
     pub(super) fn new(entity: EntityId, reference: CheckedComponent, definition: Arc<PickableDefinition>,
         item: Option<Arc<crate::assets::inventory_item::PickableItem>>,
         hold: Option<crate::gameplay::player::carrying::Target>, maximum: u32, from_grapple: bool) -> Self {
         Self { entity, reference, definition, item, hold, maximum, from_grapple, phase: 0, admitted: 0,
-            currency_notice: None, charm_label: None, hud_notified: false, notice: Default::default(), rejected_notice: false, rejected_sound: None }
+            currency_notice: None, charm_label: None, hud_notified: false, notice: Default::default(), rejected_notice: false, rejected_sound: None,
+            requested_at: Instant::now(), delay_logged: false }
     }
     ///615d40/615d90: admitted ammo uses the current inventory record maximum;
     ///the collection's prepared value supplies a not-yet-hosted record.
@@ -140,6 +143,15 @@ fn update_pending(world: &mut World, closing: bool) -> Result<(), String> {
     };
     let result = advance(world, &mut pending, closing);
     if !matches!(result, Ok(true)) {
+        if !closing && !pending.delay_logged && pending.requested_at.elapsed() >= Duration::from_secs(1) {
+            pending.delay_logged = true;
+            let live = world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>();
+            let name = live.and_then(|live| live.get(pending.entity)).map(|(name, _)| name);
+            let player = world.get_resource::<player::PlayerState>().and_then(|state| state.player.as_ref());
+            bevy::log::warn!("Pickup still pending entity={:?} name={name:?} phase={} pull={:?} offered={:?} error={:?}",
+                pending.entity, pending.phase, player.and_then(|player| player.world_pickup_target()),
+                player.and_then(|player| player.pending_loot_object()), result.as_ref().err());
+        }
         world
             .resource_mut::<interactions::Interactions>()
             .pending_pickup = Some(pending);
@@ -152,13 +164,13 @@ fn advance(world: &mut World, pending: &mut Pending, closing: bool) -> Result<bo
         //83f590's full-inventory branch sends pickedUp(false,fromGrapple)
         //before841490 posts its prepared full sound. A missing target alone
         //does not send this named notification.
-        super::entity_graphs::picked_up(
+        notify_graph(
             world,
             pending.entity,
             false,
             pending.from_grapple,
             &mut pending.notice,
-        )?;
+        );
         if let Some(event) = pending.rejected_sound.take() {
             world.write_message(super::audio::SoundEvent(
                 crate::gameplay::sound::Request::Post {
@@ -388,26 +400,29 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
         if !pending.hud_notified {
             if let Some(item) = &pending.item {
                 if pending.currency_notice.is_some() || matches!(item.type_number, 1 | 15) || (pending.admitted > 0 && item.type_number != 6) {
-                    let hud = world.get_non_send_resource::<super::pause_menu::PauseMenu>()
-                        .ok_or("pickup HUD delivery owner absent")?;
-                    if let Some(value) = pending.currency_notice {
-                        hud.queue_currency(value)?;
-                    } else if matches!(item.type_number, 1 | 15) {
-                        hud.queue_currency(pending.definition.quantity)?;
-                    } else if pending.admitted > 0 && item.type_number != 6 {
-                        hud.queue_named_pickup(item.clone(), pending.admitted, pending.charm_label.clone())?;
+                    if let Some(hud) = world.get_non_send_resource::<super::pause_menu::PauseMenu>() {
+                        let result = if let Some(value) = pending.currency_notice {
+                            hud.queue_currency(value)
+                        } else if matches!(item.type_number, 1 | 15) {
+                            hud.queue_currency(pending.definition.quantity)
+                        } else {
+                            hud.queue_named_pickup(item.clone(), pending.admitted, pending.charm_label.clone())
+                        };
+                        if let Err(error) = result {
+                            bevy::log::warn!("Pickup HUD for {}: {error}", item.path);
+                        }
                     }
                 }
             }
             pending.hud_notified = true;
         }
-        super::entity_graphs::picked_up(
+        notify_graph(
             world,
             pending.entity,
             pending.item.is_some(),
             pending.from_grapple,
             &mut pending.notice,
-        )?;
+        );
         pending.phase = 2;
     }
     if pending.phase == 2 {
@@ -431,10 +446,26 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
         pending.phase = 3;
     }
     if pending.phase == 3 {
-        world_models::set_visible(world, pending.entity, false)?;
+        world.resource_scope(|world, live: Mut<crate::gameplay::entity_lifetime::LiveEntities>| {
+            model_motion::set_entity_visible(world, &live, pending.entity, false)
+        })?;
         pending.phase = 4;
     }
     Ok(())
+}
+
+fn notify_graph(
+    world: &mut World,
+    entity: EntityId,
+    successful: bool,
+    from_grapple: bool,
+    receipt: &mut crate::gameplay::effects::instances::PickupReceipt,
+) {
+    // 841500 calls 76ec20 after named-event delivery even when a subscriber
+    // cannot run. A failed subscriber cannot take ownership of inventory.
+    if let Err(error) = super::entity_graphs::picked_up(world, entity, successful, from_grapple, receipt) {
+        bevy::log::warn!("Pickup notification for {entity:?}: {error}");
+    }
 }
 
 /// Only already accepted work is drained here. The player state owns original

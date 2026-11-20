@@ -118,6 +118,10 @@ impl Health {
     }
     pub fn damage(&mut self, amount: f32, attributes: &Attributes) {
         self.set(self.current - amount, attributes);
+        // The evolved-health damage virtual (718c80) subtracts the same
+        // damage from the pending healing target so spent food cannot heal a
+        // later hit again. Passive regeneration has its own target below.
+        self.heal_target -= amount;
         // 140717950 uses the half-health-unit threshold before dispatching
         // the evolved-health death callback (14071a9e0).
         if self.current < 0.5 {

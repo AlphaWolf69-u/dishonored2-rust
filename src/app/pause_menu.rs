@@ -431,17 +431,21 @@ impl PauseMenu {
     }
     pub(super) fn queue_named_pickup(&self, item: Arc<crate::assets::inventory_item::PickableItem>, count: u32,
         label: Option<Arc<str>>) -> Result<(), String> {
-        if self.hud_failed { return Err("HUD pickup delivery owner failed".into()); }
-        // Keep this epoch's accepted notice until the existing HUD-ready drain.
-        self.hud_notifications.lock().map_err(|_| "HUD pickup mailbox poisoned")?
-            .pending.push_back(super::hud_movie::notifications::Pickup::Item { item, count, label });
-        Ok(())
+        self.queue_pickup_notice(super::hud_movie::notifications::Pickup::Item { item, count, label })
     }
     ///6733c0 uses HUD-owned currency labels/image, not an inventory item.
     pub(super) fn queue_currency(&self,count:i32)->Result<(),String> {
-        if self.hud_failed {return Err("HUD currency delivery owner failed".into());}
-        self.hud_notifications.lock().map_err(|_|"HUD pickup mailbox poisoned")?
-            .pending.push_back(super::hud_movie::notifications::Pickup::Currency {count});
+        self.queue_pickup_notice(super::hud_movie::notifications::Pickup::Currency { count })
+    }
+    fn queue_pickup_notice(&self, notice: super::hud_movie::notifications::Pickup) -> Result<(), String> {
+        if self.hud_failed {
+            return Err("HUD pickup delivery owner failed".into());
+        }
+        let mut mailbox = self.hud_notifications.lock().map_err(|_| "HUD pickup mailbox poisoned")?;
+        if self.hud_started && self.hud_interval > 0.0 && mailbox.pending.is_empty() {
+            return self.commands.send(Command::HudPickup(self.hud_epoch, notice)).map_err(|e| e.to_string());
+        }
+        mailbox.pending.push_back(notice);
         Ok(())
     }
     pub(super) fn power_wheel_command(&self, command: super::power_wheel_movie::Command) -> Result<(), String> {
@@ -767,7 +771,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if let Err(error) = movie.shortcuts(update) { warn!("HUD shortcuts: {error}"); }
             },
             Command::HudPickup(epoch, value) => if let Some(movie) = hud.as_mut().filter(|_| epoch == hud_epoch) {
-                if let Err(error) = movie.pickup(value) { let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
+                if let Err(error) = movie.pickup(value) { warn!("HUD pickup notice: {error}"); }
             },
             Command::HudMarkers(markers)=>{
                 if let Some(movie)=hud.as_mut(){if let Err(error)=movie.markers(&markers){warn!("HUD objective markers: {error}");}}

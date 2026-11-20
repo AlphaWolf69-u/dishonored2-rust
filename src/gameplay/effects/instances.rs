@@ -690,13 +690,14 @@ fn usable_action(node: &crate::assets::entities::event_graph::Node, graph: &FxGr
         return node.ports.iter().filter(|port| port.kind == "InputRegular" && port.name == "In")
             .flat_map(|port| &port.links).any(|(source, _)| graph.node(*source).is_ok_and(|n| n.class == "arkKisculeNodeUsableNotification"));
     }
-    if !matches!(node.class.as_str(), "arkKisculeNodeActionUsable" | "arkKisculeNodeActionInteractable") {
+    if !matches!(node.class.as_str(), "arkKisculeNodeActionUsable" | "arkKisculeNodeActionInteractable" | "arkKisculeNodeChangePhysicsBehavior") {
         return false;
     }
     node.ports.iter().any(|port| port.kind == "InputRegular" && !port.links.is_empty() &&
         matches!((node.class.as_str(), port.name.as_str()),
             ("arkKisculeNodeActionUsable", "Next Stage" | "Set Stage" | "Set Usability") |
-            ("arkKisculeNodeActionInteractable", "Set")))
+            ("arkKisculeNodeActionInteractable", "Set") |
+            ("arkKisculeNodeChangePhysicsBehavior", "Set" | "Reset")))
 }
 
 fn gameflow_action(class: &str) -> bool {

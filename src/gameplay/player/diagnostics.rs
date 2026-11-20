@@ -39,6 +39,9 @@ pub(super) struct TraversalHistory {
     events: [Option<TraversalSample>; 16],
     next: usize,
     followup: u8,
+    last_followup_position: Option<Vec3>,
+    stalled_ticks: u8,
+    stall_recorded: bool,
 }
 
 #[derive(Debug)]
@@ -52,6 +55,7 @@ pub(super) enum TraversalEvent {
     VaultRestoreStanding,
     VaultEnd { phase: u8, corrected_position: Vec3 },
     AfterPhysics { ticks: u8, state: Option<StateId>, requested_velocity: Option<Vec3>, dt: f32 },
+    BlockedAfterTraversal { ticks: u8, state: Option<StateId>, requested_velocity: Vec3 },
 }
 
 struct TraversalSample {
@@ -71,6 +75,9 @@ impl TraversalHistory {
     pub(super) fn record(&mut self, physics: &PlayerPhysics, time: f64, event: TraversalEvent) {
         if matches!(event, TraversalEvent::BlinkPlace { .. } | TraversalEvent::VaultEnd { .. } | TraversalEvent::BlinkInterrupted) {
             self.followup = 1;
+            self.last_followup_position = Some(physics.position());
+            self.stalled_ticks = 0;
+            self.stall_recorded = false;
         }
         let mut contacts = physics.proxy.contact_hits();
         self.events[self.next] = Some(TraversalSample {
@@ -87,6 +94,28 @@ impl TraversalHistory {
         if ticks == 0 { return; }
         if matches!(ticks, 1 | 4 | 16 | 64) {
             self.record(physics, time, TraversalEvent::AfterPhysics { ticks, state, requested_velocity, dt });
+        }
+        let position = physics.position();
+        let previous = self.last_followup_position.replace(position);
+        if !self.stall_recorded && dt > 0. {
+            let blocked_request = requested_velocity.filter(|velocity| velocity.truncate().length_squared() > f32::EPSILON)
+                .filter(|_| previous.is_some_and(|p| (p - position).truncate().length_squared() <= f32::EPSILON.powi(2)))
+                .filter(|_| physics.proxy.contact_count() != 0);
+            if let Some(requested_velocity) = blocked_request {
+                self.stalled_ticks += 1;
+                if self.stalled_ticks == 4 {
+                    self.stall_recorded = true;
+                    self.record(physics, time, TraversalEvent::BlockedAfterTraversal { ticks, state, requested_velocity });
+                    #[cfg(feature = "game")]
+                    {
+                        let mut report = String::from("Movement blocked after traversal; recent contact and locomotion history:\n");
+                        self.write(&mut report);
+                        crate::platform::client_diagnostics::record(&report);
+                    }
+                }
+            } else {
+                self.stalled_ticks = 0;
+            }
         }
         self.followup = if ticks < 64 { ticks + 1 } else { 0 };
     }

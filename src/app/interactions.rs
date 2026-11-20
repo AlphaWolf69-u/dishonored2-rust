@@ -478,7 +478,11 @@ fn interaction_type(name: Option<&str>) -> i32 {
 
 fn pickable_prompt(live:&crate::gameplay::entity_lifetime::LiveEntities,id:crate::gameplay::entity_lifetime::EntityId,
     pickable:&crate::gameplay::pickable_component::PickableComponent)->Option<super::interaction_focus::InteractionPrompt> {
-    let name = pickable.item.as_ref().map(|item| &item.name)
+    // 76e750 takes the item's label for books and readable items. For a
+    // painting it keeps the authored interaction title; the inventory item
+    // itself names the currency it awards.
+    let name = pickable.item.as_ref().filter(|item| item.type_number == 25 || item.note_type != -1)
+                        .map(|item| &item.name)
                         .filter(|name| !name.is_empty())
                         .unwrap_or(&pickable.definition.interaction_labels[0]);
     Some(super::interaction_focus::InteractionPrompt {
