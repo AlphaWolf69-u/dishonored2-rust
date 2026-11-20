@@ -1331,8 +1331,9 @@ pub(crate) fn simulate_effects(
     // there are no new snapshots, allocations, counters or frame systems.
     let screen_before = trace.then(|| screen_state.lifecycle_snapshot());
     let screen = if *world_screen_fx { Ok(Vec::new()) } else {
+        let physics_delta = fx.world_frames.clock.map_or(0., |clock| clock.entity_delta);
         screen_state.advance(sources, particle_systems, water.matrices.frame,
-            water.delta_seconds, underwater, camera_frame)
+            water.delta_seconds, physics_delta, underwater, camera_frame)
     };
     if let Some(before) = screen_before {
         let after = screen_state.lifecycle_snapshot();

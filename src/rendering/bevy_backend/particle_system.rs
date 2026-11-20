@@ -984,7 +984,7 @@ impl ParticleSystem {
                 owners,
                 filter: stage.collisions.as_ref().map_or(0, |collisions| collisions.filter),
             });
-            stage.step(frame.delta, gravity, level)?;
+            stage.step(frame.physics_delta, gravity, level)?;
         }
         Self::route_havok_events(&mut self.havok_stages, &mut self.stages, &mut self.fx_events, &self.declaration);
         // 140227b90: the FX record's target parameters.

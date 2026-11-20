@@ -342,18 +342,19 @@ impl FxGraphRuntime {
     ) -> Result<(), String> {
         let node = parent.node(instance)?;
         let name = atom(&definition.parameters, "m_name").unwrap_or("");
-        if let Some((id, port)) = parent.input(node, name) {
+        if parent.input(node, name).is_some() {
             let current = self
                 .variables
                 .read()
                 .map_err(|_| "graph variable owner poisoned")?
                 .get(name)?
                 .ok_or("graph variable absent")?;
-            let value = current.read(parent, id, port)?;
-            self.variables
-                .write()
-                .map_err(|_| "graph variable owner poisoned")?
-                .set(name.to_owned(), value);
+            if let Some(value) = current.read_input(parent, node, name)? {
+                self.variables
+                    .write()
+                    .map_err(|_| "graph variable owner poisoned")?
+                    .set(name.to_owned(), value);
+            }
         }
         Ok(())
     }
@@ -855,6 +856,7 @@ impl FxGraphRuntime {
             | "arkKisculeNodeNamedVariableInt"
             | "arkKisculeNodeNamedVariableVec3"
             | "arkKisculeNodeNamedVariableEntityReference"
+            | "arkKisculeNodeNamedVariableListEntityReference"
                 if port.name == "Set" =>
             {
                 let name = atom(&node.params, "m_variableName")
@@ -865,13 +867,13 @@ impl FxGraphRuntime {
                     "arkKisculeNodeNamedVariableInt" => GraphValue::Int(0),
                     "arkKisculeNodeNamedVariableVec3" => GraphValue::Vector([0.; 3]),
                     "arkKisculeNodeNamedVariableEntityReference" => GraphValue::Entity(None),
+                    "arkKisculeNodeNamedVariableListEntityReference" => GraphValue::Entities(Vec::new()),
                     _ => GraphValue::Float(0.),
                 };
-                // 926e60 reads an explicit Value link first, then the parent
-                // declaration input with the variable's own name. An absent
-                // link leaves the current value untouched.
-                let value = if let Some((id, port)) = self.input(&node, "m_value") {
-                    Some(kind.read(self, id, port)?)
+                // 926e60/9318f0 read explicit Value links first, then the parent
+                // declaration input with the variable's own name.
+                let value = if let Some(value) = kind.read_input(self, node, "m_value")? {
+                    Some(value)
                 } else {
                     world.parent_value(&name, &kind)?
                 };

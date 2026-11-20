@@ -2,6 +2,7 @@
 use crate::assets::particle_model::{ParticleModel, ParticleModelVertex};
 use crate::rendering::bevy_backend::surface_gpu::ImageRole;
 use bevy::prelude::*;
+use std::sync::Arc;
 
 /// 1402320b0 uses the shared quad indices over 140232480's PMODEL vertices.
 /// This CPU-only conversion can run before the main-world asset publication.
@@ -41,6 +42,7 @@ pub(super) struct PreparedSurface {
     pub mesh: Handle<Mesh>,
     pub handle: Handle<super::ProbeMaterial>,
     pub images: Vec<(usize, ImageRole)>,
+    pub alpha: Option<Arc<crate::rendering::bevy_backend::alpha_depth_scene::AlphaSurface>>,
     /// The resolved material owning its shadow programs, when the material
     /// admits shadow casting (caster admission bit 0).
     pub shadow: Option<super::MaterialHandle>,
@@ -55,6 +57,12 @@ pub(super) struct ParticleSurfaceShadow {
     pub material: Option<super::MaterialHandle>,
     pub bounds: [[f32; 3]; 2],
 }
+
+#[derive(Component)]
+pub(super) struct ParticleSurfaceAlpha(pub Arc<crate::rendering::bevy_backend::alpha_depth_scene::AlphaSurface>);
+
+pub(super) type AlphaRoutes = std::collections::HashMap<AssetId<super::ProbeMaterial>,
+    (Arc<crate::rendering::bevy_backend::alpha_depth_scene::AlphaSurface>, Vec4)>;
 
 /// Game-local positions of a sprite grid (Some(level)) or a PMODEL surface,
 /// in the order the prepared mesh stores its vertices.
@@ -107,8 +115,11 @@ impl PreparedSurface {
 
     /// Publish only after the current level accepts the worker's asset batch.
     /// The entity identity is then tracked by the render readiness owner.
-    pub fn publish(self, world: &mut World) -> Entity {
-        world.spawn(self.into_bundle()).id()
+    pub fn publish(mut self, world: &mut World) -> Entity {
+        let alpha = self.alpha.take();
+        let mut entity = world.spawn(self.into_bundle());
+        if let Some(alpha) = alpha { entity.insert(ParticleSurfaceAlpha(alpha)); }
+        entity.id()
     }
 }
 
@@ -118,6 +129,8 @@ pub(super) fn publish(
 ) -> (super::MaterialHandle, Vec<(usize, ImageRole)>) {
     let binding = super::MaterialHandle::Probe(surface.handle.clone());
     let images = std::mem::take(&mut surface.images);
-    commands.spawn(surface.into_bundle());
+    let alpha = surface.alpha.take();
+    let mut entity = commands.spawn(surface.into_bundle());
+    if let Some(alpha) = alpha { entity.insert(ParticleSurfaceAlpha(alpha)); }
     (binding, images)
 }

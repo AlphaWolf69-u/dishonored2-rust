@@ -84,6 +84,10 @@ pub(in crate::app) fn describe_pose(world:&bevy::prelude::World,id:EntityId)->Re
     }
     if let Some(handle)=scene.document_rigid(index)?{
         let component=scene.rigid_component(handle)?;
+        let pool = scene.rigid_pool(handle.class_id)?;
+        let scheduled = pool.roster.indices.get(..pool.roster.sorted_start as usize)
+            .is_some_and(|members| members.contains(&handle.slot));
+        let _=writeln!(out,"  rigid_component flags={:#x} behavior={:?} scheduled={scheduled}",component.owner.flags,component.start_behavior);
         let shared=scene.point_queries()?;let queries=shared.read().map_err(|_|"carry pose physics world poisoned")?;
         if let Some(body)=component.body().and_then(|body|queries.storage.bodies.get(body)){
             let _=writeln!(out,"  actual_body id={} flags={:#x} transform={:?} motion={:?} requested_velocities={:?}",body.id,body.flags,body.transform,queries.storage.motions.get(body.motion_id),component.velocities);

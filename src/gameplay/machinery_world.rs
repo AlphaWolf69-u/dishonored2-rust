@@ -382,6 +382,34 @@ struct WindmillMotor {
     enabled: bool,
 }
 impl MachineryWorld {
+    /// 7149b0/716560 withdraw an endpoint's component constraints before its
+    /// body retires. Keep other body indices stable for physics-system skins.
+    pub(crate) fn retire_body(&mut self, index: usize) {
+        for joint_index in (0..self.joints.len()).rev() {
+            let joint = &self.joints[joint_index];
+            if joint.a != index && joint.b != index { continue; }
+            self.windmills.retain(|_, motor| motor.constraint != joint.settings.constraint_id);
+            self.joints.remove(joint_index);
+            self.solve_order.retain_mut(|slot| match slot {
+                SolveSlot::Hinge(i) if *i == joint_index => false,
+                SolveSlot::Hinge(i) if *i > joint_index => { *i -= 1; true }
+                _ => true,
+            });
+        }
+        for joint_index in (0..self.atom_joints.len()).rev() {
+            let joint = &self.atom_joints[joint_index];
+            if !joint.component || joint.a != index && joint.b != index { continue; }
+            self.atom_joints.remove(joint_index);
+            self.solve_order.retain_mut(|slot| match slot {
+                SolveSlot::Atom(i) if *i == joint_index => false,
+                SolveSlot::Atom(i) if *i > joint_index => { *i -= 1; true }
+                _ => true,
+            });
+        }
+        self.attached.retain(|body| body.parent != index);
+        self.bodies[index] = MachineryBody::fixed();
+    }
+
 
     /// 14080ac90: a bound dynamic rigid body joins its parent's motion
     /// (14080af20 -> 140c8fc00 attachBodies), then c90a90 rebuilds that

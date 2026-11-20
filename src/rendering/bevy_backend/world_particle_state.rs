@@ -968,6 +968,9 @@ impl WorldParticleState {
         if let Some(target) = target
             .filter(|id| live.stage(*id) == Some(crate::gameplay::entity_lifetime::Stage::Spawned))
         {
+            if live.get(target).is_some_and(|(name, _)| watch_destruction(name)) {
+                eprintln!("ACTION_DESTRUCTION_GRAPH_RECEIVER graph={graph} node={node} target={target:?}");
+            }
             let listeners = self.breakable_subscribers.entry(target).or_default();
             if !listeners.contains(&(graph, node)) {
                 listeners.push((graph, node));
@@ -1021,6 +1024,9 @@ impl WorldParticleState {
             .cloned()
             .unwrap_or_default();
         let mut errors = Vec::new();
+        if watch_destruction(&name) {
+            eprintln!("ACTION_DESTRUCTION_GRAPH_DISPATCH name={name} target={target:?} step={step} receivers={listeners:?}");
+        }
         for (graph, node) in listeners.into_iter().rev() {
             errors.extend(self.graphs.broken(
                 graph,
@@ -2430,6 +2436,7 @@ impl WorldParticleState {
                         allowed_mask: 1,
                         bounds_dirty: false,
                         delta,
+                        physics_delta: clock.entity_delta,
                         target: instance.target,
                     },
                     skin_target: instance.skin_target,
@@ -2547,6 +2554,14 @@ impl WorldParticleState {
     }
 }
 
+fn watch_destruction(name: &str) -> bool {
+    static TARGETS: std::sync::OnceLock<[Option<String>; 2]> = std::sync::OnceLock::new();
+    TARGETS.get_or_init(|| [
+        std::env::var("DH2_DEBUG_DESTRUCTION_TARGET").ok(),
+        std::env::var("DH2_DEBUG_DESTRUCTION_RELEASES").ok(),
+    ]).iter().any(|target| target.as_deref() == Some(name))
+}
+
 struct GraphHost<'a> {
     live: Option<&'a LiveEntities>,
     state: &'a mut WorldParticleState,
@@ -2568,6 +2583,11 @@ impl FxGraphWorld for GraphHost<'_> {
             return Err("graph removal with bound children awaits their per-child removal flags".into());
         }
         let owner = self.state.graphs.instance_id(self.graph).ok_or("usable action graph retired")?;
+        if let UsableAction::PhysicsBehavior(mode) = action {
+            if self.live.and_then(|live| live.get(target)).is_some_and(|(name, _)| watch_destruction(name)) {
+                eprintln!("ACTION_DESTRUCTION_GRAPH_BODY graph={owner} target={target:?} mode={mode:?}");
+            }
+        }
         self.state.usable_actions.push((owner, target, action));
         Ok(())
     }

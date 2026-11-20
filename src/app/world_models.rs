@@ -1077,12 +1077,24 @@ fn register_placed_pipelines(world:&mut World)->Result<(),String>{
         //its actual retained vertex layout owns direct source skin inputs.
         surfaces.push(pipelines::Surface{mesh:instance.mesh.id(),material,skinned:false,cpu_skin,alpha:route});
     }
+    let source_instances = queue.instances.len();
+    let mut particle_surfaces = world.query::<(&Mesh3d, &MeshMaterial3d<super::ProbeMaterial>, &super::particle_surface::ParticleSurfaceAlpha)>();
+    for (mesh, material, alpha) in particle_surfaces.iter(world) {
+        if alpha.0.depth.is_err() || alpha.0.lit.is_err() { continue; }
+        surfaces.push(pipelines::Surface {
+            mesh: mesh.0.id(),
+            material: material.0.id().untyped(),
+            skinned: false,
+            cpu_skin: false,
+            alpha: Some(alpha.0.clone()),
+        });
+    }
     if crate::rendering::bevy_backend::world_effects::trace_lifecycle()
         || std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
         let alpha_surfaces=surfaces.iter().filter(|surface|surface.alpha.is_some()).count();
         let alpha_descriptors=alpha_inputs.values().filter(|input|input.is_some()).count();
         eprintln!("FX_PLACED_PROGRAM_ROSTER source_instances={} unique_pairs={} alpha_surfaces={alpha_surfaces} alpha_descriptors={alpha_descriptors} excluded_reasons={} cpu_skin_surfaces={}",
-            queue.instances.len(),surfaces.len(),exclusions.len(),surfaces.iter().filter(|surface|surface.cpu_skin).count());
+            source_instances,surfaces.len(),exclusions.len(),surfaces.iter().filter(|surface|surface.cpu_skin).count());
     }
     drop(alpha_inputs); //Only enrolled Arc leases survive, no second cache.
     for error in exclusions {bevy::log::warn!("Placed program admission: Alpha/source coverage excluded: {error}");}

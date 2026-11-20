@@ -181,6 +181,8 @@ pub struct Player {
     md6: String,
     health: health::Health,
     damage_receiver: crate::gameplay::damage::Receiver,
+    pub(crate) contact_damage: damage::ContactDamage,
+    hit_reaction_impulses: std::collections::HashMap<String, (f32, f32)>,
     fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     drowning_damage_enabled: bool,
     drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
@@ -255,6 +257,7 @@ pub struct PlayerSetup {
     /// Health decl m_health before attributes.
     pub health: health::Settings,
     pub damage_receiver: crate::gameplay::damage::Receiver,
+    pub hit_reaction_impulses: std::collections::HashMap<String, (f32, f32)>,
     pub fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     pub slash_rules: Option<std::sync::Arc<crate::assets::slash_rules::Definition>>,
     pub mana: mana::Settings,
@@ -479,6 +482,18 @@ impl Player {
             self.swimming_machine.request(StateId::DEAD);
         }
         result
+    }
+
+    pub(crate) fn receive_contact_damage(&mut self, parameters: &crate::gameplay::damage::Parameters,
+        declaration: &crate::assets::damage::Declaration) {
+        let result = self.receive_damage(parameters);
+        if result.accepted && !result.incapacitated {
+            if let Some(&(strength, duration)) = declaration.player_hit_reaction.as_deref()
+                .and_then(|reaction| self.hit_reaction_impulses.get(reaction)) {
+                let direction = parameters.hit_direction.with_z(0.).normalize_or_zero();
+                self.physics.add_impulse(direction, strength, duration);
+            }
+        }
     }
 
     ///The code-referenced damage lease is acquired before Player publication.
@@ -834,6 +849,8 @@ impl Player {
             md6: setup.md6,
             health,
             damage_receiver: setup.damage_receiver,
+            contact_damage: Default::default(),
+            hit_reaction_impulses: setup.hit_reaction_impulses,
             fall_damage: setup.fall_damage,
             drowning_damage_enabled: setup.drowning_damage_enabled,
             drowning_damage: setup.drowning_damage,

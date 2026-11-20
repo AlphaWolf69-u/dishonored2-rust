@@ -6,8 +6,8 @@
 //! (1401e78b0) and publishes each body's render state, live list and death.
 //!
 //! bevy_backend: the original steps the pipeline inside the physics world
-//! step (1400908c0, clock 0's delta) on its own schedule; the rewrite steps
-//! it right after the stage frame with the same frame delta.
+//! step (1400908c0, physics timespace 0) on its own schedule. The rewrite
+//! steps it in the FX update with that physics delta and a separate emitter clock.
 use super::{
     emitter::{EmissionContext, EmitterBindings, ParticleEmitter},
     mesh_appearance::MeshInitialState,

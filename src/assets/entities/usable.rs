@@ -135,8 +135,46 @@ pub fn breakable_entities(document: &Document) -> Result<HashSet<String>, String
     Ok(result)
 }
 
-/// Readable pickables declare the read state on their pickup interaction;
-/// other pickables must not be converted into notes merely by model name.
+/// Shared Loot declaration ownership for placed Pickables, including readables.
+pub(crate) fn placed_loot_definition(
+    catalog: &crate::archive::Catalog,
+    entity: &str,
+    entry: &[(String, Value)],
+    declarations: &HashMap<&str, &Definition>,
+    sources: &mut HashMap<String, Vec<(String, Value)>>,
+    definitions: &mut HashMap<String, Arc<crate::gameplay::loot_component::LootDefinition>>,
+    read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Option<Arc<crate::gameplay::loot_component::LootDefinition>>, String> {
+    if components::entry_class(entry, declarations)?.as_deref() != Some("cpntloot") {
+        return Ok(None);
+    }
+    let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+        .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+            .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+    if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
+        return Ok(Some(shared.clone()));
+    }
+    let Some(fields) = components::entry_fields(entry, "cpntloot", declarations, sources, read)? else { return Ok(None); };
+    // The serialized list size may include a default slot with an unset
+    // entity declaration. 744b30 creates a child only when 8ae9b0 resolves
+    // the declaration. The placed Dust District key uses such a null slot.
+    if !child(&fields, "m_itemDefs").iter().all(|(name, value)|
+        name == "num" && matches!(value, Value::Atom(value) if value.parse::<usize>().is_ok())) {
+        return Err(format!("{entity}: authored Loot children require their spawn and attachment callbacks"));
+    }
+    let definition = Arc::new(crate::gameplay::loot_component::LootDefinition {
+        scheduling: components::scheduling(&fields,
+            crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
+        tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),
+            Arc::from(atom(&fields, "m_specialLootTag").unwrap_or("belt02"))],
+    });
+    if !catalog.has_overlays() {
+        if let Some(key) = identity { definitions.insert(key, definition.clone()); }
+    }
+    Ok(Some(definition))
+}
+
+/// Readable pickables declare the read state on their pickup interaction.
 pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document) -> Result<Vec<ReadableBinding>, String> {
     let mut read = |path: &str| catalog.read(path).map_err(|error| error.to_string())
         .map(|bytes| bytes.map(super::owned_declaration_text));
@@ -226,29 +264,10 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                         crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?));
                     continue;
                 }
-                let Some(fields) = components::entry_fields(entry, "cpntloot", &declarations, &mut cache, &mut read)? else { continue; };
-                if loot.is_some() { return Err(format!("{}: multiple Loot components are unsupported", entity.id)); }
-                let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
-                    .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
-                        .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
-                if let Some(shared) = identity.as_ref().and_then(|key| loot_definitions.get(key)) {
-                    loot = Some(shared.clone());
-                    continue;
+                if kind.as_deref() != Some("cpntloot") { continue; }
+                if let Some(definition) = placed_loot_definition(catalog, &entity.id, entry, &declarations, &mut cache, &mut loot_definitions, &mut read)? {
+                    if loot.replace(definition).is_some() { return Err(format!("{}: multiple Loot components are unsupported", entity.id)); }
                 }
-                if !child(&fields, "m_itemDefs").iter().all(|(name, value)|
-                    name == "num" && matches!(value, Value::Atom(value) if value == "0")) {
-                    return Err(format!("{}: nonempty Loot requires its actual child spawn/attachment callbacks", entity.id));
-                }
-                let definition = Arc::new(crate::gameplay::loot_component::LootDefinition {
-                    scheduling: components::scheduling(&fields,
-                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
-                    tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),
-                        Arc::from(atom(&fields, "m_specialLootTag").unwrap_or("belt02"))],
-                });
-                if !catalog.has_overlays() {
-                    if let Some(key) = identity { loot_definitions.insert(key, definition.clone()); }
-                }
-                loot = Some(definition);
             }
             result.push(ReadableBinding {
                 entity: entity.id.clone(), item: item.to_owned(),

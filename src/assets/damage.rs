@@ -9,6 +9,7 @@ pub struct Declaration {
     pub minimum: f32,
     pub maximum: f32,
     pub damage_type: DamageType,
+    pub player_hit_reaction: Option<Box<str>>,
 }
 impl Declaration {
     ///DAT14231f390's code-resource record14231f380 names141c5d380.
@@ -17,7 +18,12 @@ impl Declaration {
         Self::acquire(catalog, "code_referenced/damage/generic_no_reaction_damage.damage")
     }
     pub fn read(fields: &[(String, Value)]) -> Result<Self, String> {
-        Ok(Self { minimum: number(fields, "m_minDamage", 0.0)?, maximum: number(fields, "m_maxDamage", 0.0)?, damage_type: DamageType::read(atom(fields, "m_damageType").unwrap_or("0"))? })
+        Ok(Self {
+            minimum: number(fields, "m_minDamage", 0.0)?,
+            maximum: number(fields, "m_maxDamage", 0.0)?,
+            damage_type: DamageType::read(atom(fields, "m_damageType").unwrap_or("0"))?,
+            player_hit_reaction: atom(fields, "m_playerHitReaction").map(Into::into),
+        })
     }
     pub fn acquire(catalog: &Catalog, name: &str) -> Result<Arc<Self>, String> {
         let path = path(name);

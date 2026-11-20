@@ -190,12 +190,18 @@ impl Runtime {
     /// native world-space helper poses without a fabricated target entity.
     pub fn publish_helpers(&mut self,effects:&mut EffectRequests,player:&Player){
         let Some(target)=self.blink.target.as_ref() else {self.stop_helpers(effects);return};
-        let positions=[target.top_fx.map(|position|(position,Mat3::IDENTITY)),target.bottom_fx.map(|position|(position,Mat3::IDENTITY)),
-            target.mantle.map(|mantle|(mantle.position,mantle.axis))];
+        // 61dc90 starts both ground markers and the mantle helper at aim
+        // entry. 6205e0 moves those handles, using the zero world position
+        // for a marker without a current destination. A ledge changing the
+        // active marker does not restart its authored particle timeline.
+        let positions = [
+            (target.top_fx.unwrap_or(Vec3::ZERO), Mat3::IDENTITY),
+            (target.bottom_fx.unwrap_or(Vec3::ZERO), Mat3::IDENTITY),
+            target.mantle.map_or((Vec3::ZERO, Mat3::IDENTITY), |mantle| (mantle.position, mantle.axis)),
+        ];
         let root=ReferenceFrame{position:player.physics.position().to_array(),basis:player.physics.axis().to_cols_array_2d()};
         let mut inverse=root.basis;if !reference_frame::invert_basis(&mut inverse){return;}
-        for index in 0..3{
-            let Some((position,axis))=positions[index] else{if self.helper_started[index]{effects.stop_entity(self.helper_keys[index].clone());self.helper_started[index]=false;}continue};
+        for (index, (position, axis)) in positions.into_iter().enumerate() {
             let Some(path)=self.helpers[index].as_deref() else{continue};
             let world=ReferenceFrame{position:position.to_array(),basis:axis.to_cols_array_2d()};
             let local=ReferenceFrame{position:reference_frame::relative_binding(root,world).0,basis:reference_frame::basis_product(world.basis,inverse)};

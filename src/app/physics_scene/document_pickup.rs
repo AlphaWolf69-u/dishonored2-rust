@@ -46,7 +46,10 @@ impl PhysicsScene {
             return Err("styled portable item requires actual item-specific targeting callbacks".into());
         }
         self.validate_document_hierarchy(live, index)?;
-        if !live.children(id)?.is_empty() { return Err("portable document descendants require their actual hide virtuals".into()); }
+        let attached = live.children(id)?;
+        if !attached.is_empty() && !self.loot_contains_only_recoverable_attachments(index, attached)? {
+            return Err("portable document descendants require their actual hide virtuals".into());
+        }
         let entity = &self.entities[index];
         let metadata = self.types.classes().metadata(entity.class).ok_or("document entity class absent")?;
         if !matches!(self.types.classes().name_text(metadata.name), Some(b"idEntity" | b"arkPickup")) {
@@ -140,11 +143,13 @@ impl PhysicsScene {
         result
     }
 
-    pub(in crate::app) fn finish_document_pickup(&mut self, live: &LiveEntities, reference: CheckedComponent,
+    pub(in crate::app) fn finish_document_pickup(&mut self, live: &mut LiveEntities,
+        events: &mut crate::gameplay::entity_events::EntityEvents, reference: CheckedComponent,
         sources: &mut super::super::shadow_updates::ModelShadowSources,
         placements: &super::super::RenderSourcePlacements,
         hidden: &mut super::super::interaction_focus::RetiredPlacements) -> Result<(),String> {
-        let (index,_) = self.document_pickable(live,reference)?;
+        let (index, owner) = self.document_pickable(live,reference)?;
+        self.release_collected_loot(live, owner, events)?;
         // Resources, canonical body and geometry remain until real Deinitialize.
         self.entities[index].entity_flags |= 1;
         let name = &self.entities[index].name;

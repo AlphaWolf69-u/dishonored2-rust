@@ -92,6 +92,7 @@ enum Stage {
     Aim,
     Flight,
     Retry,
+    CollectSupport,
     BackAway,
     Recover,
     Pickup,
@@ -706,11 +707,21 @@ impl Observation {
                     if (runtime.has_hit_and_stopped||actual_bounce_handoff)
                         &&scene.projectile_throwable_started(handle)? {
                         self.explain(world, "actual-impact-after-Throwable-Start")?;
-                        if !scene.projectile_recoverable(id)? {
-                            if self.oil {
-                                self.retry_bottle(world,id,"previous_oil_shot_disabled_pickup")?;
-                                return Ok(false);
+                        if self.oil {
+                            let support = self.support.ok_or("oil pickup observation has no support")?;
+                            let contact = world.resource::<SupportContact>();
+                            if !contact.hit.is_some_and(|(_, _, response, _)| response == crate::gameplay::projectiles::Response::Stick)
+                                || live.parent(id)? != Some(support) {
+                                return Err("oil pickup did not retain the bolt that struck it".into());
                             }
+                            if scene.interaction_pickable(live, id)?.is_some() {
+                                return Err("attached oil bolt could be collected before its carrier".into());
+                            }
+                            eprintln!("ACTION_SMOKE_PASS check=oil_bolt_stuck_and_unavailable fired={id:?} support={support:?}");
+                            self.stage(Stage::CollectSupport);
+                            return Ok(false);
+                        }
+                        if !scene.projectile_recoverable(id)? {
                             if self.support.is_some() {
                                 eprintln!("ACTION_SMOKE_NOT_COVERED check=destroyed_support_bolt_recovery reason=source625e80_disabled_Pickable no_recovery_claim=true");
                                 self.stage(Stage::Done);
@@ -736,6 +747,31 @@ impl Observation {
                     //The next Aim samples its own actual pre-shot quantity;
                     //recovering it must not refund any earlier broken bolt.
                     self.stage(Stage::Aim);
+                }
+            }
+            Stage::CollectSupport => {
+                let support = self.support.ok_or("oil pickup observation has no support")?;
+                let (_, bolt) = self.projectile.ok_or("oil pickup observation lost its bolt")?;
+                let live = world.resource::<LiveEntities>();
+                let scene = world.resource::<app::physics_scene::PhysicsScene>();
+                if live.parent(bolt)?.is_none() && scene.interaction_pickable(live, bolt)?.is_some() {
+                    if scene.interaction_pickable(live, support)?.is_some() {
+                        return Err("oil bolt released before its carrier was collected".into());
+                    }
+                    eprintln!("ACTION_SMOKE_PASS check=oil_collection_released_bolt fired={bolt:?} support={support:?}");
+                    self.stage(Stage::BackAway);
+                } else if Self::focused(world, support) {
+                    self.stop(world)?;
+                    if !self.input_sent {
+                        let input = input_for(22)?;
+                        send(world, input, true)?;
+                        self.release = Some(input);
+                        self.input_sent = true;
+                    }
+                } else if !self.input_sent {
+                    let center = Self::center(world, support)?;
+                    if Self::steer(world, center)? { self.move_with(world, 2)?; }
+                    else { self.stop(world)?; }
                 }
             }
             Stage::BackAway | Stage::Recover => {

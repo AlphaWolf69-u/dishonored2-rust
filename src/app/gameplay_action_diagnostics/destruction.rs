@@ -176,6 +176,7 @@ pub(super) struct Observation {
     target: EntityId,
     health: f32,
     speaker: Option<(EntityId, f32)>,
+    released_body: Option<(EntityId, f32)>,
     released: bool,
     fell: bool,
     release: Option<Input>,
@@ -187,8 +188,9 @@ pub(super) struct Observation {
 
 impl Observation {
     pub(super) fn begin(world: &mut World, speaker: bool) -> Result<Self, String> {
-        let target = if speaker {
-            let name = "script_kar_speaker_turnbuckle_01_3";
+        let named = std::env::var("DH2_DEBUG_DESTRUCTION_TARGET").ok();
+        let target_name = if speaker { Some("script_kar_speaker_turnbuckle_01_3") } else { named.as_deref() };
+        let target = if let Some(name) = target_name {
             let target = world.resource::<LiveEntities>().find(name)
                 .ok_or_else(|| format!("missing destruction target {name}"))?;
             if !start_at_visible_waypoint(world, target)? {
@@ -220,6 +222,12 @@ impl Observation {
         let (health, _) = scene
             .entity_health(live, target)?
             .ok_or("target has no live Health")?;
+        let released_body = std::env::var("DH2_DEBUG_DESTRUCTION_RELEASES").ok().map(|name| {
+            let id = live.find(&name).ok_or_else(|| format!("missing released body {name}"))?;
+            let frame = scene.entity_frame(live, id)?.ok_or("released body initial frame missing")?;
+            eprintln!("ACTION_DESTRUCTION_BEFORE {}", app::physics_scene::carrying_host::describe_pose(world, id)?);
+            Ok::<_, String>((id, frame.position[2]))
+        }).transpose()?;
         let child = if speaker {
             let id = live
                 .find("script_speaker_station")
@@ -252,6 +260,7 @@ impl Observation {
             target,
             health,
             speaker: child,
+            released_body,
             released: false,
             fell: false,
             release: Some(input),
@@ -307,10 +316,22 @@ impl Observation {
                     return Ok(true);
                 }
             } else if time.elapsed() > Duration::from_secs(2) {
-                return Ok(true);
+                if let Some((body, initial_z)) = self.released_body {
+                    let frame = scene.entity_frame(live, body)?.ok_or("released body current frame missing")?;
+                    if frame.position[2] < initial_z {
+                        eprintln!("ACTION_SMOKE_PASS check=destruction_released_body_fell body={body:?} before_z={initial_z} after_z={}", frame.position[2]);
+                        eprintln!("ACTION_DESTRUCTION_AFTER {}", app::physics_scene::carrying_host::describe_pose(world, body)?);
+                        return Ok(true);
+                    }
+                } else {
+                    return Ok(true);
+                }
             }
         }
         if self.since.elapsed() > Duration::from_secs(40) {
+            if let Some((body, _)) = self.released_body {
+                eprintln!("ACTION_DESTRUCTION_TIMEOUT {}", app::physics_scene::carrying_host::describe_pose(world, body)?);
+            }
             return Err(format!(
                 "physical pistol scenario timeout target={:?} aimed={:?} health={health:?} flags={flags:?} ammunition={ammo:?} before={:?} speaker_released={} speaker_fell={} explosion={}",
                 self.target,

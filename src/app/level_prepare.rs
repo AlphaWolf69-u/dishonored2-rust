@@ -1028,7 +1028,7 @@ pub(super) fn prepare_level(
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
         let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames, level_bodies.as_ref(), &constraint_admission)
             .map_err(std::io::Error::other)?;
-        constraint_admission.finish(&mut machinery, &mut physics, &live)
+        constraint_admission.finish(&mut machinery, &mut physics, &live, &mut entity_events)
             .map_err(std::io::Error::other)?;
         physics.admit_ai_section_owners(catalog, document, &mut live)
             .map_err(std::io::Error::other)?;

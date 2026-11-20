@@ -379,6 +379,7 @@ pub(super) fn publish_runtime(
     if ready {
         readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
             generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),
+            ..Default::default()
         };
     }
     state.revision = Some(request.prepared_revision);

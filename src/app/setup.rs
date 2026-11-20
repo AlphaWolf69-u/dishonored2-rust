@@ -2068,7 +2068,8 @@ pub(super) fn prepare(
             diffuse_image_materials[slot].push((cached.handle.clone(), role));
         }
     }
-    commands.insert_resource(resolver.alpha_depth_materials());
+    let alpha_materials = resolver.alpha_depth_materials();
+    commands.insert_resource(alpha_materials.clone());
     tome_render_instances.bind_texture_demands(&render_instances, &material_images);
     if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
         let bytes: usize = expanded_placements.iter().map(|placement| {
@@ -2127,6 +2128,7 @@ pub(super) fn prepare(
         );
         let surface_failures = prepare_particle_surfaces(sources.world_meshes(), &mut resolver, meshes,
             &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials, &mut vegetation_meshes,
+            Some(&alpha_materials), &mut Default::default(),
             |surface| particle_surfaces.push(super::particle_surface::publish(commands, surface)));
         for error in surface_failures { eprintln!("Particle surface: {error}"); }
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
@@ -2316,6 +2318,8 @@ pub(super) fn prepare_particle_surfaces(
     world_images: &mut std::collections::HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     dynamic_materials: &mut HashSet<super::MaterialHandle>,
     vegetation: &mut VegetationMeshInputs,
+    alpha_materials: Option<&super::material_loading::alpha::AlphaDepthMaterials>,
+    alpha_routes: &mut super::particle_surface::AlphaRoutes,
     mut prepared: impl FnMut(super::particle_surface::PreparedSurface),
 ) -> Vec<String> {
     let mut failures = Vec::new();
@@ -2351,6 +2355,21 @@ pub(super) fn prepare_particle_surfaces(
             },
         };
         instanced.extension.surface.particle_instances.x = 1;
+        // 1401fbad0 publishes world-program PMODELs as dynamic model
+        // surfaces. Their direct-instancing bank uses the same alpha lists
+        // and glass Z-prepass parameters as other arkDefault meshes.
+        let alpha = (instanced.base.alpha_mode == AlphaMode::Blend).then(|| {
+            let (route, glass) = alpha_routes.entry(handle.id()).or_insert_with(|| {
+                if let Some(routes) = alpha_materials.and_then(|materials| materials.0.get(&resolved_handle)) {
+                    (Arc::new(routes[1].clone()), instanced.extension.surface.glass)
+                } else {
+                    let ([_, route, _], glass) = resolver.alpha_surfaces(&material);
+                    (Arc::new(route), glass)
+                }
+            });
+            instanced.extension.surface.glass = *glass;
+            route.clone()
+        });
         let images = resolver.model_images(&material);
         let mut bindings = Vec::new();
         let mut image_failure = None;
@@ -2385,7 +2404,7 @@ pub(super) fn prepare_particle_surfaces(
             dynamic_materials.insert(super::MaterialHandle::Probe(instanced.clone()));
         }
         prepared(super::particle_surface::PreparedSurface {
-            source, material, mesh, handle: instanced, images, shadow, bounds,
+            source, material, mesh, handle: instanced, images, alpha, shadow, bounds,
         });
     }
     failures

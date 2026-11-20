@@ -496,6 +496,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         md6: declarations.body_model.clone(),
         health,
         damage_receiver: crate::gameplay::damage::Receiver::read(&declarations.health)?,
+        hit_reaction_impulses: decls::hit_reaction_impulses(&declarations.controller)?,
         fall_damage: decls::fall_damage_decl(&declarations)
             .map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
         drowning_damage: drowning_damage.map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
@@ -942,6 +943,7 @@ pub(super) fn update_player(
                     base,
                 );
             }
+            scene.update_player_contact_damage(player, &clock)?;
             //Same accepted player tick, before camera/equipment publication.
             //Borrow the actual FX owner, never a copied/default random state.
             if player.combat_fx.is_some() {

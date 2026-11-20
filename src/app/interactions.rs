@@ -1578,7 +1578,7 @@ fn drain_accepted_pickups(
         navigation
             .0
             .mask_placed_owner_filter(&pending.entity, 0x0820_001f);
-        scene.finish_document_pickup(live, pending.identity.1, sources, placements, hidden)?;
+        scene.finish_document_pickup(live, entity_events, pending.identity.1, sources, placements, hidden)?;
         interactions.retire.remove(0);
     }
     Ok(())

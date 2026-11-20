@@ -101,7 +101,8 @@ impl WorldStorage {
                 }
                 progress.step = 1;
             }
-            self.edit_bodies(geometry, events, |creation| {
+            let mut activation = std::mem::take(&mut self.activation_scratch);
+            let result = self.edit_bodies(geometry, events, |creation| {
             use crate::gameplay::body_activation::ActivationOwners;
             if change == Change::Static {
                 if progress.step == 1 {
@@ -217,12 +218,19 @@ impl WorldStorage {
                             deactivation: creation.world.deactivation }, &mut progress.attachment)?;
                     progress.motion_step = 8;
                 }
-                if progress.motion_step == 8 { creation.world.invalidate_collision_cache(id, 0, creation.callbacks)?; progress.motion_step = 9; }
-                if progress.motion_step == 9 {
+                if progress.motion_step == 8 {
+                    // c928e0/c93230 add a promoted, published body and its
+                    // new motion to the active solver. Use the shared owner
+                    // so the hosted rigid component resumes publishing too.
+                    creation.world.activate_body_resumable(id, &mut activation, creation.callbacks)?;
+                    progress.motion_step = 9;
+                }
+                if progress.motion_step == 9 { creation.world.invalidate_collision_cache(id, 0, creation.callbacks)?; progress.motion_step = 10; }
+                if progress.motion_step == 10 {
                     creation.callbacks.events.motion_type_changed(ActivationOwners { bodies: creation.world.bodies,
                         motions: creation.world.motions, deactivation: creation.world.deactivation,
                         broadphase: creation.world.broadphase }, id, false)?;
-                    progress.motion_step = 10;
+                    progress.motion_step = 11;
                 }
                 progress.step = if change == Change::Dynamic { 3 } else { 2 };
             }
@@ -283,7 +291,9 @@ impl WorldStorage {
                 progress.step = 3;
             }
             Ok(())
-            })
+            });
+            self.activation_scratch = activation;
+            result
         })();
         if result.is_err() { self.body_mode_progress = Some(progress); }
         result

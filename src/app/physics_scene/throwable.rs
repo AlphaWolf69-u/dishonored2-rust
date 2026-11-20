@@ -1046,16 +1046,51 @@ impl PhysicsScene {
         };
         let shared = self.world.clone();
         let mut guard = shared.write().map_err(|_| "graph body mode world poisoned")?;
-        let world = &mut *guard;
+        let previous_flags = guard.storage.bodies.get(body).ok_or("graph rigid body is stale")?.flags;
         let mut registry = self.registry.take().ok_or("graph body mode registry absent")?;
-        let result = {
-            scene_publication_events!(self, &mut registry, events, &mut *entity_events);
-            world.storage.change_single_body_behavior(&mut world.geometry, &mut events, body, behavior)
-        };
+        let result = (|| {
+            let world = &mut *guard;
+            {
+                scene_publication_events!(self, &mut registry, events, &mut *entity_events);
+                world.storage.change_single_body_behavior(&mut world.geometry, &mut events, body, behavior)?;
+            }
+            let flags = world.storage.bodies.get(body).ok_or("changed graph rigid body is stale")?.flags;
+            drop(guard);
+            let component = self.rigid_component_mut(handle)?;
+            component.start_behavior = Some(behavior);
+            if (previous_flags ^ flags) & 1 != 0 {
+                // The new motion can already be active without a wake from a
+                // sleeping island. Reconcile the 8097f0 rigid update owner
+                // against the resulting mode and request its existing pose task.
+                let mut entity_flags = self.entity_flags_d4[index];
+                let component = self.rigid_component_mut(handle)?;
+                component.on_body_activation(false, flags, &mut entity_flags, &mut registry, || Ok(()))?;
+                let movement = component.movement_body()?;
+                self.entity_flags_d4[index] = entity_flags;
+                let actor = self.actors.bodies.get(movement).and_then(|body| body.actor)
+                    .ok_or("changed graph rigid body has no reference actor")?;
+                let generation = self.actors.actors[actor].owner.generation;
+                self.request_post_physics_actor(actor, generation)?;
+            }
+            Ok(())
+        })();
         self.registry = Some(registry);
-        result?;
-        self.rigid_component_mut(handle)?.start_behavior = Some(behavior);
-        Ok(())
+        result
+    }
+
+    pub(super) fn refresh_articulated_children(&mut self, live: &LiveEntities, parent: EntityId) -> Result<(), String> {
+        let mut registry = self.registry.take().ok_or("articulated attachment registry absent")?;
+        let result = (|| {
+            let mut descendants = live.children(parent)?.to_vec();
+            while let Some(child) = descendants.pop() {
+                let index = *self.shared_indices.get(&child).ok_or("articulated attachment identity absent")?;
+                self.refresh_bound_body_mode(live, index, &mut registry)?;
+                descendants.extend_from_slice(live.children(child)?);
+            }
+            Ok(())
+        })();
+        self.registry = Some(registry);
+        result
     }
     pub(in crate::app) fn bind_to_player(
         &mut self,

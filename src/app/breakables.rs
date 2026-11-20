@@ -133,6 +133,9 @@ pub(super) fn update(world: &mut World) -> Result<(), String> {
                         super::model_motion::set_entity_visible(world, &live, id, false)?;
                         world.resource_mut::<super::physics_scene::PhysicsScene>().breakable_hidden(&live, id, true)
                     })?;
+                    if let Some(mut machinery) = world.get_resource_mut::<super::machinery::AmbientMachinery>() {
+                        machinery.retire_breakable(id);
+                    }
                 }
                 Effect::StopOwnerRigid { owner: id } => {
                     world.resource_scope(|world, mut scene: Mut<super::physics_scene::PhysicsScene>| {

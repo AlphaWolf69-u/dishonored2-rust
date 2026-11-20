@@ -551,10 +551,7 @@ impl FxGraphInstances {
             return Ok(None);
         };
         let runtime = self[parent].as_ref().ok_or("parent FX graph busy")?;
-        runtime
-            .input(runtime.node(instance)?, name)
-            .map(|(node, port)| kind.read(runtime, node, port))
-            .transpose()
+        kind.read_input(runtime, runtime.node(instance)?, name)
     }
     pub fn loading_end(&mut self) -> Vec<String> {
         let roots = self.runtimes.iter().enumerate().filter_map(|(index, _)|

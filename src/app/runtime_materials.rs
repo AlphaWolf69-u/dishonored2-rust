@@ -412,6 +412,7 @@ impl MaterialWork {
         let mut surfaces = Vec::new();
         let mut world_images = std::collections::HashMap::new();
         let mut dynamic_materials = HashSet::new();
+        let mut alpha_routes = super::particle_surface::AlphaRoutes::new();
         let mut dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>> =
             equipment_dependencies;
         let mut vegetation = super::VegetationMeshInputs::default();
@@ -427,6 +428,8 @@ impl MaterialWork {
                 &mut world_images,
                 &mut dynamic_materials,
                 &mut vegetation,
+                None,
+                &mut alpha_routes,
                 |surface| surfaces.push(surface),
             );
             if !failures.is_empty() {
@@ -1450,10 +1453,15 @@ fn coordinate_inner(
                 proxies.push(surface.entity);
             }
         }
+        let alpha = proxies.iter().filter_map(|&entity| {
+            let surface = &world.get::<super::particle_surface::ParticleSurfaceAlpha>(entity)?.0;
+            (surface.depth.is_ok() && surface.lit.is_ok()).then(|| (entity, surface.clone()))
+        }).collect();
         let mut ready = world.resource_mut::<DynamicProxyReadiness>();
         ready.world_meshes = ProxyReadinessBatch {
             generation,
             proxies: Arc::new(proxies),
+            alpha: Arc::new(alpha),
             completed: world_gpu.clone(),
             failed: world_failed.clone(),
         };

@@ -295,27 +295,7 @@ impl PhysicsScene {
             );
             self.declarations.insert(handle.packed(), declaration);
             if let Some(definition) = &binding.loot {
-                let declaration = self.types.declaration(
-                    self.factories[7],
-                    Arc::as_ptr(definition) as usize,
-                    definition.scheduling.clone(),
-                )?;
-                let handle = ComponentFactory {
-                    declaration: &declaration,
-                    pool: &mut self.loots,
-                    registry,
-                    grow_one_at_a_time: false,
-                }
-                .create(
-                    &mut self.entities[index].components,
-                    declaration.scheduling.starts_on_spawn(),
-                    |_, _, _| {
-                        Ok(crate::gameplay::loot_component::LootComponent::new(definition.clone()))
-                    },
-                    |_, _, _| Ok(()),
-                )?
-                .ok_or("Loot component creation disabled")?;
-                self.declarations.insert(handle.packed(), declaration);
+                self.create_placed_loot(index, definition, registry)?;
             }
             if let Some((name, scheduling)) = &binding.faction {
                 let definition = self.faction_session.definition(name)?;
@@ -430,6 +410,9 @@ impl PhysicsScene {
                 |_, _, _| Ok(()),
             )?
             .ok_or("carried Pickable component creation disabled")?;
+            if let Some(definition) = &binding.loot {
+                self.create_placed_loot(index, definition, registry)?;
+            }
             let generation = self.pickable(handle)
                 .ok_or("new carried Pickable absent")?
                 .owner

@@ -4,8 +4,17 @@ use super::{
     adrenaline::Adrenaline, controller::Controller, health::Health, mana::Mana, states::Attributes,
     EntityEvent,
 };
-use crate::gameplay::damage::{Context, DamageResult, Parameters, Receiver};
+use crate::gameplay::{damage::{Context, DamageResult, Parameters, Receiver}, entity_lifetime::EntityId};
 use bevy_math::Vec3;
+
+#[derive(Default)]
+pub(crate) struct ContactDamage {
+    /// Contacts in entry order. The latest one for each damage declaration
+    /// supplies the source and interval (14070f230).
+    pub touching: Vec<(usize, EntityId)>,
+    pub current: Vec<(usize, EntityId)>,
+    pub last_hit: Vec<(usize, f64)>,
+}
 
 pub struct Recipient<'a> {
     pub health: &'a mut Health,

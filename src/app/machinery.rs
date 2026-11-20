@@ -60,7 +60,8 @@ impl ConstraintAdmission {
         }
     }
     pub(super) fn finish(self, machinery: &mut AmbientMachinery,
-        scene: &mut super::physics_scene::PhysicsScene, live: &crate::gameplay::entity_lifetime::LiveEntities)
+        scene: &mut super::physics_scene::PhysicsScene, live: &crate::gameplay::entity_lifetime::LiveEntities,
+        events: &mut crate::gameplay::entity_events::EntityEvents)
         -> Result<(), String> {
         let mut fallback = crate::entities::machinery::recipes::MachineryRecipes {
             assemblies: Vec::new(), windmills: Vec::new(), systems: Vec::new(), unsupported: Vec::new(),
@@ -89,6 +90,12 @@ impl ConstraintAdmission {
             }
             machinery.visible_previous.resize(machinery.physics.bodies.len(), false);
         }
+        machinery.breakable_endpoints = vec![None; machinery.physics.bodies.len()];
+        for (index, body) in machinery.physics.bodies.iter().enumerate() {
+            if let Some(placement) = body.placement {
+                machinery.breakable_endpoints[index] = scene.link_articulated_breakable(placement, live, events)?;
+            }
+        }
         Ok(())
     }
 }
@@ -97,6 +104,7 @@ impl ConstraintAdmission {
 pub(super) struct AmbientMachinery {
     physics: MachineryWorld,
     rigid_motors: Vec<rigid_motors::Motor>,
+    breakable_endpoints: Vec<Option<crate::gameplay::entity_lifetime::EntityId>>,
     scenes: crate::gameplay::scene_motion::SceneMotion,
     /// Per body: its owner's render source, resolved once sources exist.
     sources: Option<Vec<Option<usize>>>,
@@ -110,6 +118,14 @@ pub(super) struct AmbientMachinery {
     scene_skins: HashMap<usize, SceneSkin>,
 }
 impl AmbientMachinery {
+    pub(super) fn retire_breakable(&mut self, id: crate::gameplay::entity_lifetime::EntityId) {
+        if let Some(index) = self.breakable_endpoints.iter().position(|endpoint| *endpoint == Some(id)) {
+            self.physics.retire_body(index);
+            self.breakable_endpoints[index] = None;
+            self.moving_dirty = true;
+        }
+    }
+
     /// Read only when the opt-in gameplay constraint observer is running.
     pub(super) fn observe_motor(&self, joint: crate::gameplay::physics_world::storage::JointId)
         -> Option<([usize; 2], [i32; 2], bool, [usize; 2])> {
@@ -295,6 +311,7 @@ impl AmbientMachinery {
         Ok(Self {
             physics: world,
             rigid_motors: Vec::new(),
+            breakable_endpoints: Vec::new(),
             scenes,
             sources: None,
             visible_previous,
@@ -508,14 +525,25 @@ pub(super) fn update_machinery(
             body.update_wind_triggers(&manager.trigger_shapes);
         }
     }
-    pending
-        .0
-        .extend(machinery.physics.bodies.iter().filter_map(|body| {
-            body.placement.map(|placement| ModelPose {
-                placement,
-                delta: body.delta(),
-            })
-        }));
+    for (index, body) in machinery.physics.bodies.iter().enumerate() {
+        let Some(placement) = body.placement else { continue };
+        if let Some(id) = machinery.breakable_endpoints.get(index).copied().flatten() {
+            if let Some(scene) = physics_scene.as_deref_mut() {
+                let matrix = body.body_transform();
+                let frame = crate::gameplay::reference_frame::ReferenceFrame {
+                    position: matrix[3][..3].try_into().unwrap(),
+                    basis: std::array::from_fn(|axis| matrix[axis][..3].try_into().unwrap()),
+                };
+                match scene.publish_articulated_breakable(id, frame) {
+                    Ok(true) => pending.0.push(ModelPose { placement, delta: body.delta() }),
+                    Ok(false) => {},
+                    Err(error) => error!("Unable to publish articulated Breakable pose: {error}"),
+                }
+            }
+        } else {
+            pending.0.push(ModelPose { placement, delta: body.delta() });
+        }
+    }
     machinery.scenes.step(
         clock.delta(3).expect("five clock groups"),
         |placement, delta| pending.0.push(ModelPose { placement, delta }),

@@ -12,7 +12,7 @@ use bevy::{
         },
     },
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// Discrete material/pipeline receipts, independent of the verbose FX trace.
 pub(crate) fn trace_pipelines() -> bool {
@@ -141,6 +141,7 @@ pub struct DecalScene {
 pub(crate) struct ProxyReadinessBatch {
     pub generation: u64,
     pub proxies: Arc<Vec<Entity>>,
+    pub alpha: Arc<HashMap<Entity, Arc<super::alpha_depth_scene::AlphaSurface>>>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
     pub failed: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -188,13 +189,14 @@ fn acknowledge_dynamic_proxies(
     request: Res<DynamicProxyReadiness>,
     specialized: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
     pipelines: Res<PipelineCache>,
+    mut alpha: ResMut<super::alpha_depth_scene::AlphaGpu>,
     water: Res<super::water_scene::WaterSceneFrame>,
-    view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView, Option<&bevy::render::view::RenderVisibleEntities>, Option<&bevy::camera::visibility::RenderLayers>)>,
+    view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView, Option<&bevy::render::view::RenderVisibleEntities>, Option<&bevy::camera::visibility::RenderLayers>, &bevy::render::view::ViewTarget, &bevy::render::view::ViewDepthTexture)>,
     observation: ProxyAdmissionInputs,
     mut last_observation: Local<Option<String>>,
 ) {
     use std::sync::atomic::Ordering;
-    let (camera, view, visible, camera_layers) = view.into_inner();
+    let (camera, view, visible, camera_layers, target, depth) = view.into_inner();
     if super::world_effects::trace_lifecycle() {
         // Observe the actual render-world cache, without changing its gates,
         // specializing another pipeline, or manufacturing a proxy/binding.
@@ -274,10 +276,8 @@ fn acknowledge_dynamic_proxies(
         if batch.generation == 0 || batch.completed.load(Ordering::Acquire) == batch.generation
             || batch.failed.load(Ordering::Acquire) == batch.generation { continue; }
         let mut failed = false;
-        let ready = batch.proxies.iter().all(|entity| {
-            let main = bevy::render::sync_world::MainEntity::from(*entity);
-            let Some(id) = view_pipelines.get(&main) else { return false };
-            match pipelines.get_render_pipeline_state(*id) {
+        let mut pipeline_ready = |id| {
+            match pipelines.get_render_pipeline_state(id) {
                 CachedPipelineState::Ok(_) => return true,
                 CachedPipelineState::Err(bevy::shader::ShaderCacheError::ProcessShaderError(_))
                 | CachedPipelineState::Err(bevy::shader::ShaderCacheError::CreateShaderModule(_)) => {
@@ -287,7 +287,30 @@ fn acknowledge_dynamic_proxies(
                 _ => {}
             }
             false
-        });
+        };
+        let oit = !batch.alpha.is_empty()
+            && crate::platform::console::shared().read().cvars.int("r_OIT").unwrap_or(1) != 0;
+        let mut ready = true;
+        let mut alpha_error = false;
+        for &entity in batch.proxies.iter() {
+            let main = bevy::render::sync_world::MainEntity::from(entity);
+            let Some(&base) = view_pipelines.get(&main) else { ready = false; continue; };
+            if !pipeline_ready(base) { ready = false; continue; }
+            let Some(surface) = batch.alpha.get(&entity) else { continue; };
+            // Use the proxy's actual MAIN key and attachments. These
+            // derivatives must be ready before its source becomes usable.
+            match alpha.prepare_surface_pipelines(&pipelines, base, surface,
+                target.main_texture_format(), depth.texture.format(), oit) {
+                Ok(Some(ids)) => { for id in ids { ready &= pipeline_ready(id); } }
+                Ok(None) => ready = false,
+                Err(error) => {
+                    bevy::log::warn!("Runtime FX proxy Alpha pipelines for {base:?}: {error}");
+                    ready = false;
+                    alpha_error = true;
+                }
+            }
+        }
+        let failed = failed || alpha_error;
         if failed { batch.failed.store(batch.generation, Ordering::Release); }
         if ready {
             if trace_pipelines() && std::ptr::eq(batch, &request.decals) {

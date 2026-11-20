@@ -1,8 +1,8 @@
 //! Per-instance Kiscule variables. Setup copies authored defaults into current
 //! values (7bc710); entry refresh only replaces connected parent inputs.
 use crate::{
-    assets::entities::{effects::declarations::GraphVariable, event_graph::atom},
-    gameplay::event_graph::EntityReference,
+    assets::entities::{effects::declarations::GraphVariable, event_graph::{Node, atom}},
+    gameplay::event_graph::{EntityReference, GraphInputs},
 };
 use std::{
     collections::HashMap,
@@ -20,6 +20,26 @@ pub enum GraphValue {
     Entities(Vec<EntityReference>),
 }
 impl GraphValue {
+    pub(super) fn read_input(
+        &self,
+        inputs: &impl GraphInputs,
+        node: &Node,
+        name: &str,
+    ) -> Result<Option<Self>, String> {
+        if matches!(self, Self::Entities(_)) {
+            // 524300 collects all connected list and singleton producers, in port order.
+            let links = node.ports.iter()
+                .filter(|port| port.kind == "InputVariable" && port.name == name)
+                .flat_map(|port| port.links.iter().copied());
+            let mut values = None;
+            for (source, port) in links {
+                values.get_or_insert_with(Vec::new).extend(inputs.entity_references(source, port)?);
+            }
+            return Ok(values.map(Self::Entities));
+        }
+        inputs.input(node, name).map(|(source, port)| self.read(inputs, source, port)).transpose()
+    }
+
     pub fn read(
         &self,
         inputs: &impl crate::gameplay::event_graph::GraphInputs,

@@ -51,6 +51,7 @@ pub(super) mod sound_volumes;
 pub(super) mod damage_zone;
 pub(in crate::app) mod occluded_sensor;
 pub(super) mod damage;
+mod contact_damage;
 mod loot;
 pub(super) mod grenades;
 mod ai_world;
@@ -253,6 +254,7 @@ pub(super) struct PhysicsScene {
     health: ComponentPool<damage::HealthComponent>,
     health_doors: ComponentPool<damage::DoorHealthComponent>,
     damage_player: Option<damage::PlayerDamageContext>,
+    contact_damage: HashMap<usize, contact_damage::Source>,
     faction_session: crate::gameplay::faction_registry::SessionFactionRegistry,
     faction_manager: Option<crate::gameplay::faction_registry::ActiveFactionManager>,
     audio_bindings: Vec<entities::audio::AudioBinding>,
@@ -796,6 +798,7 @@ impl PhysicsScene {
             health: types.create_pool(factories[10], &cvars.cvars)?,
             health_doors: types.create_pool(factories[16], &cvars.cvars)?,
             damage_player: None,
+            contact_damage: HashMap::new(),
             faction_session,
             faction_manager,
             audio_bindings,
@@ -1095,6 +1098,7 @@ impl PhysicsScene {
                 )?;
             }
             scene.admit_health_components(catalog, document, &mut registry)?;
+            scene.prepare_contact_damage(catalog, document)?;
             scene.prepare_placed_sound_volumes(catalog, document, models)?;
             scene.prepare_placed_breakables(catalog, document, models)?;
             scene.prepare_placed_openables(catalog, document, models, live, &mut registry)?;

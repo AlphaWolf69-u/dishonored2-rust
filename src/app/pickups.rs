@@ -431,13 +431,12 @@ fn finish(world: &mut World, pending: &mut Pending) -> Result<(), String> {
                 |world, mut sources: Mut<shadow_updates::ModelShadowSources>| {
                     world.resource_scope(
                         |world, mut hidden: Mut<interaction_focus::RetiredPlacements>| {
-                            scene.finish_document_pickup(
-                                world.resource::<crate::gameplay::entity_lifetime::LiveEntities>(),
-                                pending.reference,
-                                &mut sources,
-                                world.resource::<RenderSourcePlacements>(),
-                                &mut hidden,
-                            )
+                            world.resource_scope(|world, mut live: Mut<crate::gameplay::entity_lifetime::LiveEntities>| {
+                                world.resource_scope(|world, mut events: Mut<crate::gameplay::entity_events::EntityEvents>| {
+                                    scene.finish_document_pickup(&mut live, &mut events, pending.reference,
+                                        &mut sources, world.resource::<RenderSourcePlacements>(), &mut hidden)
+                                })
+                            })
                         },
                     )
                 },

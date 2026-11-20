@@ -1,6 +1,10 @@
 //! Associate admitted alpha-depth materials with the actual rendered instances.
 use super::{material_loading::alpha::AlphaDepthMaterials, RenderModelSurface, SceneRenderQueue};
-use crate::rendering::bevy_backend::alpha_depth_scene::{AlphaDepthSources, AlphaSurface};
+use crate::rendering::bevy_backend::{
+    alpha_depth_scene::{AlphaDepthSources, AlphaSurface},
+    camera_scene::FxPublication,
+    particle_meshes::ParticleMeshProxy,
+};
 use std::sync::Arc;
 use bevy::{
     prelude::*,
@@ -19,6 +23,8 @@ fn extract(
     mut sources: ResMut<AlphaDepthSources>,
     scene: Extract<Option<Res<SceneRenderQueue>>>,
     materials: Extract<Res<AlphaDepthMaterials>>,
+    particles: Extract<Query<(Entity, &ParticleMeshProxy, &super::particle_surface::ParticleSurfaceAlpha)>>,
+    effects: Extract<Res<FxPublication>>,
     mut candidates: Local<(usize, usize, Vec<usize>)>,
 ) {
     let Some(scene) = scene.as_ref() else {
@@ -58,6 +64,12 @@ fn extract(
         };
         let source = surface_for(instance, routes);
         sources.0.insert(MainEntity::from(entity), source);
+    }
+    let Some((_, draws)) = effects.world_meshes().filter(|(_, draws)| !draws.is_empty()) else { return; };
+    for (entity, proxy, surface) in &particles {
+        if draws.iter().any(|draw| !draw.instances.is_empty() && draw.source == proxy.source && draw.material == proxy.material) {
+            sources.0.insert(MainEntity::from(entity), (*surface.0).clone());
+        }
     }
 }
 

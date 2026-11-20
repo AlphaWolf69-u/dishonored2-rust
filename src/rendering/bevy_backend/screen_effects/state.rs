@@ -116,6 +116,7 @@ impl ScreenEffectState {
         systems: &mut ParticleSystems,
         frame: u32,
         delta: f32,
+        physics_delta: f32,
         underwater: bool,
         camera: crate::gameplay::reference_frame::ReferenceFrame,
     ) -> Result<Vec<QuadDraw>, String> {
@@ -163,6 +164,7 @@ impl ScreenEffectState {
                             allowed_mask: 1,
                             bounds_dirty: false,
                             delta,
+                            physics_delta,
                             target: Default::default(),
                         },
                         underwater,

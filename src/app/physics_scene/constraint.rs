@@ -2,7 +2,7 @@
 use super::*;
 use bevy::log::warn;
 use crate::{assets::constraints::Definition, gameplay::{constraint::Component,
-    entity_events::{EntityEvents, Listener}, entity_lifetime::LiveEntities}};
+    entity_events::{EntityEvents, Listener}, entity_lifetime::{EntityId, LiveEntities}}};
 
 pub(in crate::app) struct ConstraintObservation<'a> {
     pub name: &'a str,
@@ -18,6 +18,31 @@ pub(in crate::app) struct ConstraintObservation<'a> {
 }
 
 impl PhysicsScene {
+    /// The articulated solver owns the motion of a destructible endpoint.
+    /// Its scene body remains the canonical collision/Breakable owner.
+    pub(in crate::app) fn link_articulated_breakable(&mut self,
+        placement: usize, live: &LiveEntities, events: &mut EntityEvents,
+    ) -> Result<Option<EntityId>, String> {
+        let Some((&index, _)) = self.rigid_placements.iter().find(|&(_, &value)| value == placement) else { return Ok(None) };
+        let id = self.entities[index].shared;
+        if self.breakable_component(live, id)?.is_none() { return Ok(None); }
+        self.change_graph_body_behavior(id, Some(1), events)?;
+        self.refresh_articulated_children(live, id)?;
+        Ok(Some(id))
+    }
+
+    pub(in crate::app) fn publish_articulated_breakable(&mut self, id: EntityId,
+        frame: crate::gameplay::reference_frame::ReferenceFrame) -> Result<bool, String> {
+        let index = *self.shared_indices.get(&id).ok_or("articulated Breakable identity absent")?;
+        if self.entities[index].retired || self.entities[index].entity_flags & 3 != 0 { return Ok(false); }
+        let previous = self.entities[index].frame.pose;
+        if previous.position == frame.position && previous.basis == frame.basis { return Ok(true); }
+        let mut registry = self.registry.take().ok_or("articulated Breakable registry absent")?;
+        let result = self.publish_entity_pose_in_registry(index, frame, &mut registry);
+        self.registry = Some(registry);
+        result.map(|()| true)
+    }
+
     ///Only a rejected loading-time admission formats this bounded snapshot.
     ///Retain each real gate and generation, rather than another anonymous
     ///provider warning that conflates membership with Initialized eligibility.

@@ -13,6 +13,7 @@ use crate::gameplay::pickable_component::{HoldProperties, PickableDefinition};
 pub(crate) struct Binding {
     pub entity: String,
     pub definition: Arc<PickableDefinition>,
+    pub loot: Option<Arc<crate::gameplay::loot_component::LootDefinition>>,
 }
 
 fn child<'a>(fields: &'a Fields, name: &str) -> &'a Fields {
@@ -68,6 +69,7 @@ pub(crate) fn bindings(
     };
     let mut sources = HashMap::new();
     let mut definitions: HashMap<String, Arc<PickableDefinition>> = HashMap::new();
+    let mut loot_definitions = HashMap::new();
     let mut result = Vec::new();
     for entity in document
         .definitions
@@ -135,7 +137,18 @@ pub(crate) fn bindings(
                     }
                     definition
                 };
-            result.push(Binding { entity: entity.id.clone(), definition });
+            let mut loot = None;
+            for (slot, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
+                if !slot.starts_with("item_add[") { continue; }
+                let Some(entry) = scope(Some(value)) else { continue; };
+                let Some(definition) = super::usable::placed_loot_definition(
+                    catalog, &entity.id, entry, &declarations, &mut sources, &mut loot_definitions, &mut read,
+                )? else { continue; };
+                if loot.replace(definition).is_some() {
+                    return Err(format!("{}: multiple Loot components are unsupported", entity.id));
+                }
+            }
+            result.push(Binding { entity: entity.id.clone(), definition, loot });
         }
     }
     Ok(result)

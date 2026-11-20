@@ -9,6 +9,50 @@ use crate::gameplay::{
     pickable_component::CheckedComponent,
 };
 impl PhysicsScene {
+    pub(super) fn create_placed_loot(
+        &mut self,
+        index: usize,
+        definition: &Arc<crate::gameplay::loot_component::LootDefinition>,
+        registry: &mut ComponentRegistry,
+    ) -> Result<(), String> {
+        let declaration = self.types.declaration(
+            self.factories[7], Arc::as_ptr(definition) as usize, definition.scheduling.clone(),
+        )?;
+        let handle = ComponentFactory {
+            declaration: &declaration, pool: &mut self.loots, registry, grow_one_at_a_time: false,
+        }.create(
+            &mut self.entities[index].components,
+            declaration.scheduling.starts_on_spawn(),
+            |_, _, _| Ok(crate::gameplay::loot_component::LootComponent::new(definition.clone())),
+            |_, _, _| Ok(()),
+        )?.ok_or("Loot component creation disabled")?;
+        self.declarations.insert(handle.packed(), declaration);
+        Ok(())
+    }
+
+    /// Release the recoverable projectiles carried by a collected Pickable.
+    /// The normal unbind restores the current body's mode and queues 0x125;
+    /// the Throwable callback clears the same checked Loot membership.
+    pub(super) fn release_collected_loot(
+        &mut self, live: &mut LiveEntities, owner: EntityId, events: &mut EntityEvents,
+    ) -> Result<(), String> {
+        let index = *self.shared_indices.get(&owner).ok_or("collected Loot owner absent")?;
+        let Some(handle) = self.loot_component_lookup(index, 7, [0x28, 0])? else { return Ok(()); };
+        loop {
+            let loot = self.loots.get(handle.slot).ok_or("collected Loot component absent")?;
+            let child = live.children(owner)?.iter().rev().copied().find(|&child| is_recoverable(loot, child));
+            let Some(child) = child else { return Ok(()); };
+            self.unbind_entity(live, child, events)?;
+            if live.parent(child)? == Some(owner) { return Err("collected Loot child is still bound after release".into()); }
+        }
+    }
+
+    pub(super) fn loot_contains_only_recoverable_attachments(&self, index: usize, attached: &[EntityId]) -> Result<bool, String> {
+        let Some(handle) = self.loot_component_lookup(index, 7, [0x28, 0])? else { return Ok(false) };
+        let loot = self.loots.get(handle.slot).ok_or("portable Loot component absent")?;
+        Ok(attached.iter().all(|&id| is_recoverable(loot, id)))
+    }
+
     pub(super) fn loot_component_lookup(
         &self,
         index: usize,
@@ -233,4 +277,8 @@ impl PhysicsScene {
             self.loots.get_mut(handle.slot).unwrap().retiring = Some(cursor + 1);
         }
     }
+}
+
+fn is_recoverable(loot: &crate::gameplay::loot_component::LootComponent, id: EntityId) -> bool {
+    loot.members.iter().any(|member| member.entity == id && member.requires_incapacitated_owner && !member.collected)
 }

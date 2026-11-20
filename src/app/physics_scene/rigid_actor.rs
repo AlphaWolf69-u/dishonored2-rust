@@ -569,6 +569,12 @@ impl ActorMotionBody for RigidPostHost<'_> {
         }
         self.commands.enqueue_activation(body.id, false, false)?;
         self.publish_motion(actors, actor)?;
+        // The command can move a keyframed body that is already active in
+        // the solver, so there may be no 8097f0 wake callback to request its
+        // post-physics pose. Publish that accepted motion on the same actor
+        // queue even when the component is outside the scheduled prefix.
+        actors.request_phase_update(actor, self.post_frame, ActorUpdatePhase::PostPhysics,
+            |actors, actor| self.enqueue_post(actors, actor))?;
         Ok(1)
     }
 }

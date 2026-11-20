@@ -63,6 +63,22 @@ fn boolean(fields: &Fields, key: &str, default: bool) -> Result<bool, String> {
     }
 }
 
+/// 7f8910 reads the reaction's strength and duration from the controller.
+pub fn hit_reaction_impulses(controller: &Fields) -> Result<HashMap<String, (f32, f32)>, String> {
+    let mut impulses = HashMap::new();
+    let Some(types) = scope(controller, "m_hitReact").and_then(|fields| scope(fields, "m_types")) else {
+        return Ok(impulses);
+    };
+    for (key, value) in types {
+        let (Some(name), Value::Scope(fields)) = (key.strip_prefix("enumItem[").and_then(|key| key.strip_suffix(']')), value) else { continue };
+        let Some(impulse) = scope(fields, "m_impulse") else { continue };
+        let strength = number(impulse, "m_strength", 0.)?;
+        let duration = number(scope(impulse, "m_duration").unwrap_or_default(), "m_seconds", 0.)?;
+        if strength > 0. && duration > 0. { impulses.insert(name.to_owned(), (strength, duration)); }
+    }
+    Ok(impulses)
+}
+
 /// `item[i]` scopes of a list in index order.
 fn items<'a>(fields: &'a Fields, key: &str) -> Vec<&'a Fields> {
     let Some(list) = scope(fields, key) else { return Vec::new() };
